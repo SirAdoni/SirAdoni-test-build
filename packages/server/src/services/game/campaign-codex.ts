@@ -680,7 +680,7 @@ export async function resolveCampaignSessionChats(db: DB, chatId: string): Promi
   // A branch stands in for the session it forked from: that session's line past the fork is
   // not what happened in the branch, so the chain the branch came from is left out.
   const replaced = new Set<string>();
-  for (let row: typeof chat | undefined = chat; row && isBranch(row); ) {
+  for (let row: typeof chat | undefined = chat; row && isBranch(row);) {
     const parentId = readString(parseMetadata(row.metadata).branchParentChatId);
     if (!parentId || parentId === chat.id || replaced.has(parentId)) break;
     replaced.add(parentId);

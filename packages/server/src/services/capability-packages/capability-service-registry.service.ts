@@ -18,6 +18,10 @@ export function getCapabilityService<T>(key: string): T | null {
   return (services.get(key) as T | undefined) ?? null;
 }
 
+export function listCapabilityServiceKeys(prefix: string): string[] {
+  return [...services.keys()].filter((key) => key.startsWith(prefix)).sort();
+}
+
 export function resetCapabilityServices(): void {
   services.clear();
 }

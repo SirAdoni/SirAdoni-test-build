@@ -49,8 +49,48 @@ export interface RulesetCombatDamage extends RulesetCombatAmount {
 /** A condition a hit or a failed save puts on its target. */
 export interface RulesetCombatApplies {
   condition: string;
-  duration: "instant" | "until-save" | { rounds: number };
+  duration: "instant" | "until-save" | { rounds: number; at?: "turn-start" };
   saveEnds?: { save: string; at: "turn-end" | "turn-start" };
+  endsAfter?: RulesetConditionEnding;
+}
+
+/** What takes a condition off after it has been used once: the holder's own next attack roll, the
+ *  next attack roll made against the holder, or the holder's own next save. */
+export type RulesetConditionEnding = "own-attack" | "attacked" | "own-save";
+
+/** One side of a contest as it was thrown: the check it added, and, when a condition made it more or
+ *  less than one throw or changed the number, how. */
+export interface RulesetContestSide {
+  check: string;
+  rolls: number[];
+  modifier: number;
+  total: number;
+  mode?: RulesetCombatRollMode;
+  bonuses?: RulesetConditionBonus[];
+  /** Under `dice-pool`: the pool as it was thrown, and `total` is its net successes. */
+  pool?: RulesetCombatPoolRoll;
+}
+
+/** One pool a `dice-pool` fight threw to act: how many dice went in after everything that adds or
+ *  takes them away (the ruleset's own floor and ceiling included), the per-die target, the wound
+ *  penalty it took, and whether it botched. The event's `modifier` is the number it started from and
+ *  its `total` the net successes. */
+export interface RulesetCombatPoolRoll {
+  dice: number;
+  target: number;
+  /** Dice the wound penalty took off, as a negative number. Absent when it took none. */
+  penalty?: number;
+  botch?: boolean;
+}
+
+/** What one condition (or a level of a track) added to, or took from, one roll or number. `level` is
+ *  set when it came from a level, and then `condition` is the track's id. Dice it rolled are kept, so
+ *  the log can say what was thrown. */
+export interface RulesetConditionBonus {
+  condition: string;
+  level?: number;
+  value: number;
+  rolls?: number[];
 }
 
 export interface RulesetCombatSaveRider {
@@ -135,17 +175,33 @@ export interface RulesetStatBlockAction {
   sequence?: Array<{ action: string; times: number }>;
   /** Bought out of the block's own `signaturePoints` instead of a budget. */
   signature?: { cost: number };
+  /** Taken at a moment rather than on a turn, as a catalog entry's reaction is. */
+  reaction?: {
+    on: RulesetReactionMoment;
+    at?: "source" | "chosen";
+    cancels?: true;
+    against?: { catalogs: string[] };
+  };
+  /** It lands on the creature itself. */
+  self?: true;
 }
 
 /** An opponent's numbers. A bestiary entry becomes one of these, and a hand-written one is still
  *  accepted, which is why everything a block can do without is optional. */
 export interface RulesetStatBlock {
   /** What it can take. With `healthDice` beside it this is the AVERAGE, which is what a forecast
-   *  reads while the dice decide the fight. */
-  health: number;
-  defense: number;
-  initiativeModifier: number;
+   *  reads while the dice decide the fight. Absent from a block that carries a `sheet`, which says
+   *  it in the ruleset's own terms instead. */
+  health?: number;
+  defense?: number;
+  initiativeModifier?: number;
   actions: RulesetStatBlockAction[];
+  /** The creature described in the ruleset's OWN terms: a character sheet, as partial as it likes,
+   *  keyed by the ids the ruleset declares. An opponent built from one is built the way a party
+   *  member is, so its health, defense, saves, speed, initiative and the abilities on its lists all
+   *  come from what the ruleset declares rather than from the numbers above, which it then does
+   *  not carry. Its own `actions` still add to what the sheet gives it. */
+  sheet?: RulesetSheetBuild;
   /** Thrown once when the encounter is created, in place of the flat number. */
   healthDice?: RulesetCombatAmount;
   speed?: number;
@@ -153,11 +209,15 @@ export interface RulesetStatBlock {
   abilities?: Record<string, number>;
   /** Save modifiers by the ruleset's own save ids. A save it does not name reads as zero. */
   saves?: Record<string, number>;
+  /** What it adds in a contest, by the ids of `combat.checks`. One it does not name reads as zero. */
+  checks?: Record<string, number>;
   /** Damage types, matched without case: half damage, double damage, none at all. */
   resist?: string[];
   vulnerable?: string[];
   immune?: string[];
   conditionImmunities?: string[];
+  /** What it soaks in a `dice-pool` fight, for any harm and by kind of the health track. */
+  soak?: RulesetCombatSoak;
   /** The threat tier a bestiary filed it under, read when creatures are clamped to the scale. */
   tier?: string;
   /** Lines the Game Master is shown and nothing resolves. */
@@ -167,6 +227,21 @@ export interface RulesetStatBlock {
   /** What this creature adds to the first qualifying hit of a period, all by itself. */
   riders?: RulesetCombatRider[];
 }
+
+/** What a combatant soaks: `all` for any harm, and `byKind` for one kind of the health track. */
+export interface RulesetCombatSoak {
+  all?: number;
+  byKind?: Record<string, number>;
+}
+
+/** A block with its own numbers and no sheet. What a Game Master invents is always one, and it is
+ *  all the clamp can hold to a tier, because it holds a creature there by exactly those numbers. */
+export type RulesetPlainStatBlock = RulesetStatBlock & {
+  health: number;
+  defense: number;
+  initiativeModifier: number;
+  sheet?: undefined;
+};
 
 /** Who is in the fight. A party member is sheet-backed and reads and writes its numbers through the
  *  sheet's own rules; an opponent carries a stat block and lives inside the encounter only. */
@@ -189,7 +264,7 @@ export type RulesetCombatantInput =
  *  Resolved once, when the fight begins: armour and bonuses do not change mid-fight in this kind. */
 export interface RulesetCombatAction {
   id: string;
-  kind: "attack" | "ability" | "block";
+  kind: "attack" | "ability" | "block" | "contest";
   label: string;
   budget: string;
   /** Who it may be pointed at, relative to the actor: "enemy" is the other side. */
@@ -224,12 +299,43 @@ export interface RulesetCombatAction {
   sequence?: RulesetCombatSequenceStep[];
   /** Bought with the actor's own points at the end of somebody else's turn, not with a budget. */
   signature?: { cost: number };
+  /** Taken at a MOMENT rather than on a turn: which moment, whom it may be aimed at, and whether
+   *  taking it stops what opened the window. On no turn's menu, ever. */
+  reaction?: {
+    on: RulesetReactionMoment;
+    at: "source" | "chosen";
+    cancels?: true;
+    /** Only an action from an entry of one of these catalogs opens its moment for this reaction. */
+    against?: { catalogs: string[] };
+  };
+  /** The catalog of the entry this action was built from, when it was built from one. A weapon row,
+   *  a stat block's own action, a contest and a standard action have none. */
+  catalog?: string;
   /** IN CELLS, resolved once when the fight began, and read only by a positioned fight. An action
    *  with neither reaches one cell, which is the smallest step a board has. */
   reach?: number;
   range?: RulesetCombatRange;
   /** The shape this one covers, in cells, aimed at a cell rather than at anybody. */
   area?: RulesetCombatArea;
+  /** What a contest rolls and what winning it does, on an action of kind `contest`. */
+  contest?: RulesetCombatContest;
+}
+
+/** A contest as the fight resolves it: the check each side adds, who takes a tie, and what winning
+ *  does. Both sides throw the fight's own attack dice. */
+export interface RulesetCombatContest {
+  /** The contest's own id in `combat.contests`. */
+  id: string;
+  /** Each side rolls the best of the checks it may use here. */
+  attacker: string[];
+  defender: string[];
+  ties: "defender" | "attacker";
+  /** Aimed only at whoever put this condition on the actor, and offered only while it holds. */
+  from?: string;
+  applies?: Array<{ condition: string; rounds?: number }>;
+  ends?: Array<{ condition: string; on: "actor" | "target" }>;
+  /** How far the loser is pushed straight away, IN CELLS. Read only by a positioned fight. */
+  push?: number;
 }
 
 /** A shape on the board, in cells. `friendlyFire` false leaves the actor's own side out of it. */
@@ -262,6 +368,10 @@ export interface RulesetTrackedCondition {
   /** Turns of the affected combatant left, or null for a condition with no clock of its own. */
   rounds: number | null;
   saveEnds?: { save: string; at: "turn-end" | "turn-start" };
+  /** When its rounds count down: as each of the holder's turns begins, rather than as each ends. */
+  clock?: "turn-start";
+  /** What takes it off after one use, whatever its clock says. */
+  endsAfter?: RulesetConditionEnding;
   /** The difficulty the repeated save is rolled against: the one that applied it. */
   difficulty?: number;
   /** Who applied it, and whether their concentration is what holds it. */
@@ -314,6 +424,16 @@ export interface RulesetCombatant {
   /** Read from the sheet or the block once, when the fight began. */
   defense: number;
   saves: Record<string, number>;
+  /** What this combatant adds in a contest, by check id. Present only when the ruleset has checks. */
+  checks?: Record<string, number>;
+  /** What they soak in a `dice-pool` fight, read once as the fight began. Absent when nothing. */
+  soak?: RulesetCombatSoak;
+  /** How many of their own turns they have begun crashed, where initiative is a number attacks move
+   *  and the ruleset lets a crash recover. Absent while they are not crashed. */
+  crashedTurns?: number;
+  /** How much of each limited live pool they may still spend this turn or round, read once as the
+   *  fight began and counted down as they pay. Absent for anybody nothing limits. */
+  limits?: Record<string, { max: number; per: "turn" | "round"; spent: number }>;
   speed: number;
   /** A party member's sheet, which is where their health and conditions really live. */
   sheet?: { build: RulesetSheetBuild; live: RulesetLiveState; catalogs: RulesetCatalogEntriesById };
@@ -383,12 +503,85 @@ export type RulesetWindowTrigger =
   /** A walk left this one's reach. `from` and `to` are the step that did it, not the whole walk. */
   | { kind: "leaves-reach"; moverId: string; from: RulesetCombatCell; to: RulesetCombatCell }
   /** One turn has ended and the next has not begun. */
-  | { kind: "between-turns"; nextActorId: string };
+  | { kind: "between-turns"; nextActorId: string }
+  /** Something is ABOUT to land on the ones being asked. It is already paid for and is held here
+   *  until they have answered, and an answer that cancels stops it from happening at all.
+   *  `catalog` is where the entry behind it came from, when there is one. */
+  | { kind: "aimed"; sourceId: string; optionId: string; label: string; catalog?: string }
+  /** Somebody on the other side is ABOUT to use something, whoever it is aimed at: held the same
+   *  way, for everybody holding an answer that reaches them. */
+  | { kind: "used"; sourceId: string; optionId: string; label: string; catalog?: string }
+  /** An attack roll has just hit the one being asked, and its damage has not been dealt. What they
+   *  take counts for it: the roll (`total`, made against `defense`) is checked again afterwards. */
+  | {
+      kind: "hit";
+      sourceId: string;
+      optionId: string;
+      label: string;
+      catalog?: string;
+      total: number;
+      defense: number;
+    }
+  /** Something has just hurt the ones being asked. It has already happened: nothing answered here
+   *  unmakes it, and `sourceId` is whoever dealt it, for a reaction aimed back at them. */
+  | { kind: "harmed"; sourceId: string; label: string; catalog?: string };
+
+/** The moments the Engine notices, and opens a window for. `aimed` is before something lands on
+ *  the holder, `used` is before somebody on the other side uses something, `hit` is after an attack
+ *  roll has hit the holder and before its damage, and `harmed` is after something has hurt them. */
+export type RulesetReactionMoment = "aimed" | "hit" | "harmed" | "used";
+
+/** What the fight goes back to once the window closes. A window opened after something has already
+ *  happened carries none: there is nothing to pick up. */
+export type RulesetWindowResume = RulesetWalkResume | RulesetActionResume;
+
+/** Something paid for and held while everybody it is aimed at is asked. It resolves when the window
+ *  closes, from the state as it stands then, unless an answer called it off. */
+export interface RulesetActionResume {
+  kind: "action";
+  actorId: string;
+  optionId: string;
+  targetIds: string[];
+  payWith?: string;
+  /** The initiative style it was made in, so a held attack picks up in the same one. */
+  style?: string;
+  /** What a spending blow throws: its maker's number as they made it. */
+  spend?: number;
+  /** An answer stopped it. What it cost is still spent: it was paid for before the asking. */
+  cancelled?: true;
+  /** Held after one of its attack rolls hit, rather than before anything happened. */
+  held?: RulesetHeldAttack;
+}
+
+/** An attack held after its roll hit, while the one it hit is asked. It picks up exactly here: the
+ *  same roll against that target, then the rest of this action's targets, then the rest of its parts
+ *  when it is one part of an action made of others. */
+export interface RulesetHeldAttack {
+  /** Its place among the parts of the action it belongs to, when that action is made of others. */
+  part?: number;
+  targetId: string;
+  /** The targets still to come after this one, of the same action or part, in order. */
+  rest: string[];
+  roll: {
+    mode: RulesetCombatRollMode;
+    total: number;
+    /** What it was rolled against. */
+    defense: number;
+    critical: boolean;
+    /** A natural face decided it, so no change to the defense can turn it. */
+    natural: boolean;
+  };
+  /** The attacker's one-use conditions the roll used, spent once the blow is over. */
+  mine: string[];
+  /** Whoever the action had already hurt before it was held, for the moment after it. */
+  hurt: string[];
+}
 
 /** A walk stopped in its tracks, with everything needed to finish it exactly as it would have gone:
  *  the cells already crossed, the ones still to cross, what has been paid so far and who has
  *  already struck, so nobody strikes the same passer-by twice. */
-export interface RulesetWindowResume {
+export interface RulesetWalkResume {
+  kind: "walk";
   actorId: string;
   from: RulesetCombatCell;
   walked: RulesetCombatCell[];
@@ -420,6 +613,8 @@ export type RulesetCombatRefusal =
   | "bad-pool"
   /** A bestiary reference the handed-in catalogs do not hold. */
   | "unknown-creature"
+  /** A creature whose sheet gives it no health at all, so it would walk in already out. */
+  | "no-health"
   /** A cell this move cannot end on, or cannot pay for. */
   | "unreachable"
   /** The fight is held open for somebody else, and nothing but their answer moves it. */
@@ -431,7 +626,9 @@ export type RulesetCombatRefusal =
   /** Something solid stands between the two of them. */
   | "no-line-of-sight"
   /** An area aimed at a cell it may not be aimed at. */
-  | "bad-cell";
+  | "bad-cell"
+  /** An initiative style this attack is not offered in. */
+  | "unknown-style";
 
 export type RulesetCombatAttackOutcome = "hit" | "miss" | "critical";
 export type RulesetCombatRollMode = "normal" | "advantage" | "disadvantage";
@@ -452,9 +649,18 @@ export type RulesetCombatEvent =
       rolls: number[];
       kept: number;
       modifier: number;
+      /** What the attacker's conditions added, already inside `total`. */
+      bonuses?: RulesetConditionBonus[];
       total: number;
       defense: number;
+      /** What the target's conditions added to its defense, already inside `defense`. */
+      guards?: RulesetConditionBonus[];
       outcome: RulesetCombatAttackOutcome;
+      /** Under `dice-pool`: the pool as it was thrown. `total` is its net successes and `defense` the
+       *  successes it needed. */
+      pool?: RulesetCombatPoolRoll;
+      /** The initiative style it was made in, where initiative is a number attacks move. */
+      style?: string;
     }
   | {
       type: "save";
@@ -467,11 +673,16 @@ export type RulesetCombatEvent =
       rolls: number[];
       kept: number;
       modifier: number;
+      /** What the saver's conditions added, already inside `total`. */
+      bonuses?: RulesetConditionBonus[];
       total: number;
       difficulty: number;
       success: boolean;
       /** A condition that fails this save automatically rolls nothing. */
       automatic?: boolean;
+      /** Under `dice-pool`: the pool as it was thrown. `total` is its net successes and `difficulty`
+       *  the successes it needed. */
+      pool?: RulesetCombatPoolRoll;
     }
   | {
       type: "damage";
@@ -491,6 +702,14 @@ export type RulesetCombatEvent =
       health: number;
       maxHealth: number;
       critical?: boolean;
+      /** Under `dice-pool`: `rolls` are the damage dice as they fell, `flat` the automatic successes,
+       *  and this is what they counted, against which target, and what soak took off before
+       *  `amount`. Soak thrown has its own dice; soak taken off the dice beforehand has none. */
+      pool?: {
+        target: number;
+        successes: number;
+        soak?: { value: number; rolls?: number[]; taken: number };
+      };
     }
   | {
       type: "heal";
@@ -508,7 +727,32 @@ export type RulesetCombatEvent =
       targetId: string;
       condition: string;
       active: boolean;
-      reason: "applied" | "immune" | "save" | "expired" | "damage" | "concentration" | "revived" | "down";
+      reason:
+        | "applied"
+        | "immune"
+        | "save"
+        | "expired"
+        | "damage"
+        | "concentration"
+        | "revived"
+        | "down"
+        | "contest"
+        | "spent"
+        | "recovered";
+    }
+  /** A number that attacks move: what came off it or went on it, why, and what it is now. A style
+   *  that takes carries the damage dice that decided it, as a damage event does. */
+  | {
+      type: "shift";
+      actorId: string;
+      amount: number;
+      total: number;
+      reason: "taken" | "gained" | "crash" | "spent" | "missed" | "recovered";
+      sourceId?: string;
+      label?: string;
+      rolls?: number[];
+      flat?: number;
+      pool?: { target: number; successes: number; soak?: { value: number; rolls?: number[]; taken: number } };
     }
   | { type: "spend"; actorId: string; pool: string; label: string; amount: number }
   | { type: "budget"; actorId: string; budget: string; left: number }
@@ -558,9 +802,61 @@ export type RulesetCombatEvent =
   | { type: "opportunity"; actorId: string; targetId: string; label: string; budget: string }
   /** The fight was held open, and for whom. Everything those combatants then take is its own event,
    *  exactly as it is on a turn, so a log reads the window as an interruption rather than a mode. */
-  | { type: "window"; window: string; kind: RulesetWindowKind; waiting: string[]; moverId?: string }
+  | {
+      type: "window";
+      window: string;
+      kind: RulesetWindowKind;
+      waiting: string[];
+      moverId?: string;
+      /** Which moment opened it, for the ones a reaction waits for, what is happening at it, and
+       *  who is doing it. */
+      moment?: RulesetReactionMoment;
+      label?: string;
+      sourceId?: string;
+      /** For a held hit: what the roll came to, and what it was made against. */
+      total?: number;
+      defense?: number;
+    }
   /** Somebody let their window go by without spending anything. */
   | { type: "pass"; actorId: string; window: string }
+  /** Something held open by a window was called off, and never happened. What it cost stays spent:
+   *  it was paid for before anybody was asked. */
+  | { type: "cancelled"; actorId: string; optionId: string; label: string; byId: string }
+  /** Both sides of a contest: what each threw, what it added and the total, and who won. What winning
+   *  did follows as its own events (a condition, a push). */
+  | {
+      type: "contest";
+      actorId: string;
+      targetId: string;
+      optionId: string;
+      label: string;
+      attacker: RulesetContestSide;
+      defender: RulesetContestSide;
+      winner: "actor" | "target";
+    }
+  /** Somebody pushed across the board by somebody else. Forced, so it spends nothing of their own
+   *  allowance and draws no strike on the way. */
+  | {
+      type: "pushed";
+      actorId: string;
+      targetId: string;
+      from: RulesetCombatCell;
+      to: RulesetCombatCell;
+      path: RulesetCombatCell[];
+    }
+  /** A held attack's roll, checked again once the one it hit had answered: against what their
+   *  defense then was, and whether it still lands. */
+  | {
+      type: "recheck";
+      actorId: string;
+      targetId: string;
+      optionId: string;
+      label: string;
+      total: number;
+      defense: number;
+      guards?: RulesetConditionBonus[];
+      outcome: RulesetCombatAttackOutcome;
+    }
   /** What the ground the target stands on added to the defense the next attack is rolled against. */
   | { type: "cover"; targetId: string; bonus: number; defense: number }
   /** Where an area landed, and the cells it covered. */
@@ -595,7 +891,7 @@ export type RulesetEncounterOutcome = "ongoing" | "victory" | "defeat";
 export interface RulesetCombatOption {
   id: string;
   /** `move` is the one a positioned fight adds: walking, and getting back up. */
-  kind: "attack" | "ability" | "block" | "standard" | "end-turn" | "move";
+  kind: "attack" | "ability" | "block" | "contest" | "standard" | "end-turn" | "move";
   label: string;
   /** Absent on "end turn", which spends nothing, and on anything that costs no budget: something
    *  the entry called free, or a strike taken out of what a spend already bought. */
@@ -619,6 +915,14 @@ export interface RulesetCombatOption {
    *  forecasts the sum of its parts' damage and no single chance to hit, because its parts each
    *  roll their own. */
   forecast?: { hitChance?: number; averageDamage?: number };
+  /** The initiative styles this attack may be made in, each with what it is expected to do: a style
+   *  that takes says how much of the target's number it would take (`shift`), one that spends says
+   *  the harm its dice would do. Present only where initiative is a number attacks move. */
+  styles?: Array<{
+    id: string;
+    label: string;
+    forecast?: { hitChance?: number; averageDamage?: number; shift?: number };
+  }>;
   /** Where the `move` option may go, with what each cell costs of the allowance and who a path to
    *  it would be struck at by. */
   cells?: RulesetReachableCell[];
@@ -645,6 +949,9 @@ export interface RulesetCombatChoice {
   /** The window this answers, when it answers one. An answer carrying the id of a window that has
    *  already closed changes nothing: it was written for a question the fight has moved past. */
   window?: string;
+  /** Which of the ruleset's initiative styles an attack is made in, where initiative is a number
+   *  attacks move. The first style when left out; one the option does not offer is refused. */
+  style?: string;
 }
 
 export interface RulesetCombatStep {

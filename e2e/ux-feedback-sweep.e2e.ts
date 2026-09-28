@@ -1,3 +1,4 @@
+import { clickTopbarPanel } from "./topbar-navigation.js";
 import { expect, test, type Page, type Locator } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { seedUIState } from "./ui-state-fixture.js";
@@ -87,7 +88,7 @@ test("UX sweep: narrow desktop windows use the overlay shell before sidebar topb
   await page.locator('[data-topbar-hover-key="chats"]').click();
   await expect(page.locator('[data-component="ChatSidebarPanel"]')).toBeVisible();
   await expect(page.locator('[data-component="RightPanelMobile"]')).toHaveCount(0);
-  await page.locator('[data-tour="panel-settings"]').click();
+  await clickTopbarPanel(page, "settings");
   await expect(page.locator('[data-component="RightPanelMobile"]')).toBeVisible();
   await page.setViewportSize({ width: 1600, height: 900 });
   await expect(center).not.toHaveAttribute("data-shell-overlay-mode", "true");
@@ -195,7 +196,7 @@ for (const spec of [
 
 test("UX sweep: Appearance groups, quick access, width and hidden-panel state", async ({ page }, testInfo) => {
   await page.goto("/");
-  await page.locator('[data-tour="panel-settings"]').click();
+  await clickTopbarPanel(page, "settings");
   await page.getByRole("tab", { name: "Appearance", exact: true }).click();
   const modes = page.getByRole("group", { name: "Appearance by chat mode" });
   await expect(modes.locator("button")).toHaveCount(4);
@@ -242,8 +243,8 @@ test("UX sweep: Appearance groups, quick access, width and hidden-panel state", 
   await page.screenshot({ path: testInfo.outputPath("appearance-groups.png") });
   await page.getByRole("tab", { name: "General", exact: true }).click();
   await page.getByPlaceholder("Search settings").fill("width draft preserved");
-  await page.locator('[data-tour="panel-personas"]').click();
-  await page.locator('[data-tour="panel-settings"]').click();
+  await clickTopbarPanel(page, "personas");
+  await clickTopbarPanel(page, "settings");
   await expect(page.getByPlaceholder("Search settings")).toHaveValue("width draft preserved");
   await page.reload();
   await page.evaluate(async () => {
@@ -256,7 +257,7 @@ test("UX sweep: Appearance groups, quick access, width and hidden-panel state", 
 
 test("UX sweep: Background library mobile toolbar, accent marker and settled modal", async ({ page }, testInfo) => {
   await page.goto("/");
-  await page.locator('[data-tour="panel-settings"]').click();
+  await clickTopbarPanel(page, "settings");
   await page.getByRole("tab", { name: "Appearance", exact: true }).click();
   await page.getByPlaceholder("Search settings").fill("Backgrounds");
   await page.getByRole("button", { name: /Backgrounds Section/ }).click();

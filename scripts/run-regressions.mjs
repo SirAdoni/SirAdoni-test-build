@@ -163,9 +163,10 @@ function regressionEnvironment(scratchDir) {
 
 function runRegression(relativePath) {
   const { args, command, cwd } = commandFor(relativePath);
+  // Cold native runners need time for the real server's first boot and restart.
+  const timeoutMs = relativePath === 'scripts/regressions/restart-supervisor.regression.ts' ? 90_000 : FILE_TIMEOUT_MS;
   const startedAt = Date.now();
   process.stdout.write(`[${relativePath}] START\n`);
-
   const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "marinara-regression-"));
   return new Promise((resolve) => {
     const child = spawn(command, args, {
@@ -183,9 +184,9 @@ function runRegression(relativePath) {
     let timedOut = false;
     const timeoutTimer = setTimeout(() => {
       timedOut = true;
-      process.stderr.write(`[${relativePath}] TIMEOUT after ${FILE_TIMEOUT_MS / 1000}s; terminating child.\n`);
+      process.stderr.write(`[${relativePath}] TIMEOUT after ${timeoutMs / 1000}s; terminating child.\n`);
       terminateActiveChild();
-    }, FILE_TIMEOUT_MS);
+    }, timeoutMs);
 
     const finish = (result) => {
       if (settled) return;

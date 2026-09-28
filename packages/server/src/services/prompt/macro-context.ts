@@ -7,6 +7,12 @@
 
 import {
   CHARACTER_REFERENCE_ID_PATTERN,
+  DEFERRED_RELOCATION_CONDITIONAL_TOKEN_RE,
+  hasDeferredRelocationConditionals,
+  parseDeferredConditionalPayload,
+  selectConditionalPayloadBranch,
+  CHAT_VARIABLE_STORED_NAME_RE,
+  MAX_CHAT_VARIABLES,
   PERSONA_REFERENCE_ID_PATTERN,
   formatRpgStatsForPrompt,
   resolveMacros,
@@ -87,11 +93,70 @@ export function normalizeChatMacroVariables(value: unknown): Record<string, stri
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const entries: Array<[string, string]> = [];
   for (const [name, entry] of Object.entries(value as Record<string, unknown>)) {
-    if (!/^[\w.-]+$/u.test(name) || typeof entry !== "string") continue;
+    if (!CHAT_VARIABLE_STORED_NAME_RE.test(name) || typeof entry !== "string") continue;
     entries.push([name, entry]);
-    if (entries.length >= 500) break;
+    if (entries.length >= MAX_CHAT_VARIABLES) break;
   }
   return Object.fromEntries(entries);
+}
+
+/** Persist generation writes only while the saved value still matches its starting snapshot. */
+export function mergeGeneratedChatMacroVariables(
+  current: unknown,
+  previous: Record<string, string>,
+  generated: Record<string, string>,
+): Record<string, string> {
+  const merged = normalizeChatMacroVariables(current);
+  for (const [name, value] of Object.entries(generated)) {
+    const before = Object.hasOwn(previous, name) ? previous[name] : undefined;
+    const saved = Object.hasOwn(merged, name) ? merged[name] : undefined;
+    // A newer editor change (including removal/rename) wins over this request.
+    if (value !== before && saved === before) {
+      Object.defineProperty(merged, name, { value, enumerable: true, writable: true, configurable: true });
+    }
+  }
+  return normalizeChatMacroVariables(merged);
+}
+
+/**
+ * Names a preset defines through its stored variable values.
+ *
+ * Only the names matter to callers that need to know which names a preset owns
+ * before the assembler has resolved their values.
+ */
+export function parsePresetVariableNames(rawVariableValues: unknown): string[] {
+  if (typeof rawVariableValues !== "string" || !rawVariableValues.trim()) return [];
+  try {
+    const parsed: unknown = JSON.parse(rawVariableValues);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+    return Object.keys(parsed as Record<string, unknown>);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Evaluate `{{#if}}` blocks that were deferred because a preset owned their
+ * operand, now that the assembler has merged the real values in.
+ *
+ * Deferral keeps a conditional from being decided off the chat's value while the
+ * preset's is still pending; this is the other half of it. Uses the same token
+ * as the conversation relocation deferral, which never overlaps: preset
+ * variables do not apply in Conversation mode. Mutates the messages in place.
+ */
+export function decodeDeferredPresetConditionals(messages: Array<{ content: string }>, macroCtx: MacroContext): void {
+  for (const message of messages) {
+    if (!hasDeferredRelocationConditionals(message.content)) continue;
+    message.content = message.content.replace(DEFERRED_RELOCATION_CONDITIONAL_TOKEN_RE, (_match, encoded: string) => {
+      const payload = parseDeferredConditionalPayload(encoded);
+      if (!payload) {
+        logger.error("[prompt] Malformed deferred preset conditional token; dropping block");
+        return "";
+      }
+      const selected = selectConditionalPayloadBranch(payload, macroCtx, { trimResult: false });
+      return resolveMacros(selected, macroCtx, { trimResult: false });
+    });
+  }
 }
 
 /** Clone mutable macro maps for preview-only resolution that must discard variable writes. */

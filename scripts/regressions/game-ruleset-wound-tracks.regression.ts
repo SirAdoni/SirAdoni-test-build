@@ -201,8 +201,12 @@ try {
     assert.equal(harm(live).overflow, 1);
     assert.equal(harm(live).penalty, -99, "still the lowest marked level's own penalty");
 
-    // One heal takes the overflow; the next takes a tear and the penalty comes back up a rung.
-    live = mark(live, "knock", -2).live;
+    // One heal takes the overflow; the next takes a tear and the penalty comes back up a rung. A heal
+    // that names a kind clears only that kind, so naming the knocks that are no longer there takes
+    // the overflow and nothing else, and naming no kind clears the lightest there is.
+    const knocksOnly = mark(live, "knock", -2).live;
+    assert.deepEqual([harm(knocksOnly).marks.length, harm(knocksOnly).overflow], [4, 0]);
+    live = mark(live, "", -2).live;
     assert.deepEqual(harm(live).marks, ["tear", "tear", "tear"]);
     assert.equal(harm(live).penalty, -3);
   }
@@ -252,6 +256,11 @@ try {
     delete plain.layers;
     plain.id = "gravewatch-plain";
     delete plain.resolution.explode;
+    // The example's Grave Sight charm moves the exploding face, which a ruleset may only let a
+    // check do while its explode rule has a min; a copy that takes the rule away takes the charm too.
+    for (const catalog of plain.catalogs ?? []) {
+      catalog.entries = (catalog.entries ?? []).filter((entry: any) => entry.mechanics?.check?.explode === undefined);
+    }
     const parsedPlain = parseRulesetDefinition(plain);
     assert.ok(parsedPlain.ok, `the variant must validate: ${JSON.stringify(parsedPlain)}`);
     const plainDefinition = parsedPlain.definition;
@@ -331,11 +340,17 @@ try {
     // penalty MEANS is the resolution kind's business.
     const summed = JSON.parse(gravewatchText) as Record<string, any>;
     delete summed.layers;
+    // Its fight throws pools, which a summed ruleset has none of.
+    delete summed.combat;
     // The example's charm changes a POOL check, which a summed ruleset cannot honour and is
     // refused for elsewhere. This case is about the penalty, so it reads the file without one.
     delete summed.catalogs;
     delete summed.sheet.lists;
     delete summed.gm.sheetSummary.lists;
+    // And with the lists goes the one that adds levels to the track, and a summed roll has no per-die
+    // target for a skill to roll one step harder against.
+    delete summed.sheet.live.tracks[0].extra;
+    for (const skill of summed.sheet.skills) if (skill.untrained === "harder") delete skill.untrained;
     summed.id = "gravewatch-summed";
     summed.resolution = {
       kind: "dice-sum",
@@ -455,7 +470,7 @@ try {
       delete track(copy).levels;
       delete track(copy).kinds;
       track(copy).max = 4;
-      refuse(copy, /no levels, so it carries no penalty/);
+      refuse(copy, /no levels or boxes, so it carries no penalty/);
     }
     // A penalty track nobody declared.
     {
@@ -519,12 +534,15 @@ try {
 
   // ── The penalty reader the resolver uses ──
   {
-    assert.equal(readRulesetWoundPenalty(gravewatch, {}, "harm"), 0);
-    assert.equal(readRulesetWoundPenalty(gravewatch, mark({}, "knock", 3).live, "harm"), -3);
-    assert.equal(readRulesetWoundPenalty(gravewatch, mark({}, "knock", 3).live, "nowhere"), 0);
+    assert.equal(readRulesetWoundPenalty(gravewatch, build, {}, "harm"), 0);
+    assert.equal(readRulesetWoundPenalty(gravewatch, build, mark({}, "knock", 3).live, "harm"), -3);
+    assert.equal(readRulesetWoundPenalty(gravewatch, build, mark({}, "knock", 3).live, "nowhere"), 0);
     // Junk in the blob costs that one entry, never a throw.
-    assert.equal(readRulesetWoundPenalty(gravewatch, { wounds: { harm: "nonsense" } }, "harm"), 0);
-    assert.equal(readRulesetWoundPenalty(gravewatch, { wounds: { harm: { marks: ["gone", "knock"] } } }, "harm"), 0);
+    assert.equal(readRulesetWoundPenalty(gravewatch, build, { wounds: { harm: "nonsense" } }, "harm"), 0);
+    assert.equal(
+      readRulesetWoundPenalty(gravewatch, build, { wounds: { harm: { marks: ["gone", "knock"] } } }, "harm"),
+      0,
+    );
   }
 
   // ── Install gate: a packaged ruleset with wound tracks needs 1.30 ──
@@ -548,6 +566,55 @@ try {
     const document = JSON.parse(gravewatchText) as Record<string, any>;
     // The example also carries a layer and a pool resolution, which have gates of their own.
     delete document.layers;
+    // And 1.37's: the rules a check may move, two abilities together, and the charm that moves one.
+    delete document.resolution.explode.min;
+    delete document.resolution.pool.abilityPlusAbility;
+    // And 1.38's standing re-throw.
+    delete document.resolution.reroll;
+    // And 1.39's: a cap off the live Resolve, a value off the live Harm track, and a hide rule
+    // that compares with notEquals.
+    for (const skill of document.sheet.skills) delete skill.cap;
+    document.sheet.derived = document.sheet.derived.filter((entry: { id: string }) => entry.id !== "harm_left");
+    for (const field of document.sheet.fields) delete field.hideWhen;
+    // And 1.40's: the levels a list adds to Harm, and the rest that clears one kind of harm.
+    for (const track of document.sheet.live.tracks) delete track.extra;
+    document.rests = document.rests.filter((rest: { id: string }) => rest.id !== "breather");
+    // And 1.41's: sections on skills, and what a check does untrained.
+    for (const skill of document.sheet.skills) {
+      delete skill.section;
+      delete skill.untrained;
+    }
+    for (const section of document.sheet.sections) delete section.untrained;
+    // And 1.42's: the live Light, the tables that follow it and the watch, the modifier that carries
+    // the light to Nerve, and the vigil step that relights it.
+    document.sheet.derived = document.sheet.derived.filter(
+      (entry: { id: string }) => !["dawn_resolve", "light_nerve"].includes(entry.id),
+    );
+    for (const entry of document.sheet.derived) {
+      if (Array.isArray(entry.of))
+        entry.of = entry.of.filter((ref: { derived?: string }) => ref.derived !== "dawn_resolve");
+    }
+    delete document.resolution.adjust;
+    delete document.sheet.live.states;
+    for (const rest of document.rests) {
+      rest.restore = rest.restore.filter((step: { state?: string }) => step.state === undefined);
+    }
+    // And 1.49's items block, with the catalog written in it.
+    delete document.items;
+    document.catalogs = document.catalogs.filter((catalog: { holds?: string }) => catalog.holds !== "items");
+    // And 1.47's fight, with the bestiary written in its numbers and the charms it offers.
+    delete document.combat;
+    document.catalogs = (document.catalogs ?? []).filter(
+      (catalog: { holds?: string }) => catalog.holds !== "creatures",
+    );
+    for (const catalog of document.catalogs) {
+      catalog.entries = (catalog.entries ?? []).filter(
+        (entry: { mechanics?: { check?: unknown } }) => !entry.mechanics || entry.mechanics.check !== undefined,
+      );
+    }
+    for (const catalog of document.catalogs ?? []) {
+      catalog.entries = (catalog.entries ?? []).filter((entry: any) => entry.mechanics?.check?.explode === undefined);
+    }
     // The example trips more than one of 1.30's rules at once, so the reason it gives is whichever
     // the gate reads first; what matters here is that 29 is refused and 30 installs. Each rule's
     // own wording is pinned below, on a document that trips only that one.

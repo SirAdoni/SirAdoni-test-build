@@ -381,7 +381,11 @@ export function createGameStateStorage(db: DB) {
     async create(
       state: Omit<GameState, "id" | "createdAt">,
       manualOverrides?: Record<string, string> | null,
-      options?: { trustedInventoryIdentitySource?: TrustedInventoryIdentitySource },
+      options?: {
+        trustedInventoryIdentitySource?: TrustedInventoryIdentitySource;
+        /** Preserve inventory when a tracker carries prior stats into a replacement snapshot. */
+        keepReplacedInventory?: boolean;
+      },
     ) {
       const latestOverall = state.messageId ? await this.getLatest(state.chatId) : null;
       const existingAnchorRows = await db
@@ -479,6 +483,15 @@ export function createGameStateStorage(db: DB) {
           }
         }
       }
+      const replacedInventory = (() => {
+        if (!options?.keepReplacedInventory || !replaced?.playerStats || !state.playerStats) return undefined;
+        const stats = parseSnapshotJson<{ inventory?: unknown } | null>(replaced.playerStats, null);
+        return Array.isArray(stats?.inventory) ? stats.inventory : undefined;
+      })();
+      const incomingPlayerStats =
+        state.playerStats && replacedInventory
+          ? { ...state.playerStats, inventory: replacedInventory as NonNullable<typeof state.playerStats>["inventory"] }
+          : state.playerStats;
       // Remove any prior snapshot for the same message + swipe so duplicates don't accumulate
       if (state.messageId) {
         await db
@@ -492,10 +505,14 @@ export function createGameStateStorage(db: DB) {
           );
       }
       const id = newId();
-      const playerStats = state.playerStats
-        ? reconcileInventoryItemIdentities(parseStoredPlayerStats(latestBeforeInsert?.playerStats), state.playerStats, {
-            trustedIncomingIds,
-          })
+      const playerStats = incomingPlayerStats
+        ? reconcileInventoryItemIdentities(
+            parseStoredPlayerStats(latestBeforeInsert?.playerStats),
+            incomingPlayerStats,
+            {
+              trustedIncomingIds,
+            },
+          )
         : state.playerStats;
       await db.insert(gameStateSnapshots).values({
         id,

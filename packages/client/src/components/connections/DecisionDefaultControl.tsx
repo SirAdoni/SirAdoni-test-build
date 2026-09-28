@@ -236,7 +236,10 @@ export function DecisionDefaultControl() {
         </button>
       )}
 
-      {selected?.slot && !selected.unavailable && (
+      {/* Only an entry the server sends a Thinking value for has these settings: the
+          two chat slots. The decision sidecar scores in one pass and has nothing to
+          think with, and the server refuses a Thinking write for it. */}
+      {selected?.slot && !selected.unavailable && selected.thinking && (
         <LocalSlotControls
           entry={selected}
           slot={selected.slot}

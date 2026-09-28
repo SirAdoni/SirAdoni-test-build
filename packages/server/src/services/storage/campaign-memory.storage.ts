@@ -1361,24 +1361,22 @@ export function createCampaignMemoryStorage(
         .select()
         .from(campaignMemoryMutationJournal)
         .where(eq(campaignMemoryMutationJournal.chatId, scope.chatId))
-    ).map(
-      (row): CampaignMemoryMutationJournal => ({
-        journalId: row.journalId,
-        chatId: row.chatId,
-        operationId: row.operationId,
-        recordType: row.recordType as CampaignMemoryMutationJournal["recordType"],
-        recordId: row.recordId,
-        actor: row.actor as CampaignMemoryActor,
-        ...(row.expectedRevision == null ? {} : { expectedRevision: row.expectedRevision }),
-        ...(row.before == null ? {} : { before: parse(row.before, null) }),
-        ...(row.after == null ? {} : { after: parse(row.after, null) }),
-        reason: row.reason,
-        evidence: parse(row.evidence, []),
-        ...(row.compensationOperationId == null ? {} : { compensationOperationId: row.compensationOperationId }),
-        payloadHash: row.payloadHash,
-        createdAt: row.createdAt,
-      }),
-    );
+    ).map((row): CampaignMemoryMutationJournal => ({
+      journalId: row.journalId,
+      chatId: row.chatId,
+      operationId: row.operationId,
+      recordType: row.recordType as CampaignMemoryMutationJournal["recordType"],
+      recordId: row.recordId,
+      actor: row.actor as CampaignMemoryActor,
+      ...(row.expectedRevision == null ? {} : { expectedRevision: row.expectedRevision }),
+      ...(row.before == null ? {} : { before: parse(row.before, null) }),
+      ...(row.after == null ? {} : { after: parse(row.after, null) }),
+      reason: row.reason,
+      evidence: parse(row.evidence, []),
+      ...(row.compensationOperationId == null ? {} : { compensationOperationId: row.compensationOperationId }),
+      payloadHash: row.payloadHash,
+      createdAt: row.createdAt,
+    }));
   }
   return {
     createEntity,

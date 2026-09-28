@@ -95,8 +95,7 @@ const sourceCache = new Map<string, { at: number; version: string; sources: Map<
 /** Changes whenever a message in the chat is added, edited, swiped or deleted. */
 async function chatVersion(db: DB, chatId: string): Promise<string> {
   const row = (await db.select().from(chats).where(eq(chats.id, chatId)).limit(1))[0] as
-    | { updatedAt?: string | null; lastMessageAt?: string | null }
-    | undefined;
+    { updatedAt?: string | null; lastMessageAt?: string | null } | undefined;
   return `${row?.updatedAt ?? ""}|${row?.lastMessageAt ?? ""}`;
 }
 

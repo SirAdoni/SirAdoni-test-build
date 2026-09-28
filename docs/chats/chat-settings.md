@@ -54,6 +54,20 @@ The profile controls do not appear in Game mode.
 
 Marinara reserves **preset** for prompt presets. A prompt preset shapes the system prompt structure and generation parameters; a settings profile bundles the reusable chat configuration listed above. For the full rules, see [Settings Profiles](settings-profiles.md).
 
+## Chat Variables
+
+The **Chat Variables** section lets you give a name to a piece of text and reuse it by typing that name in double braces. Add a variable called `char1` with the value `Mary`, then write `{{char1}} walks in.` in a message. The AI reads "Mary walks in."
+
+Each row has a **name** and a **value**. Names use letters, numbers, and underscores, and must start with a letter or underscore. Names with exactly 21 characters are reserved for character references. A name that belongs to a built-in macro, such as `char` or `user`, is refused, because the built-in one always wins. Press Enter or click outside a field to save it. The trash button removes a variable.
+
+Three things are worth knowing.
+
+- Your message keeps showing the tag you typed. Only the AI sees the value. That also means changing a value later changes every earlier turn that used the tag.
+- Variables belong to this chat alone. Another chat has its own list, and yours survives a restart.
+- This is the same storage `{{setvar}}` uses. A value set by a prompt section or a lorebook entry shows up here as a row you can edit, and such an entry overwrites the value you typed if it uses the same name.
+
+For everything else you can write in double braces, see [Prompt Macros](../prompts/macros.md).
+
 ## Other sections in the panel
 
 The **Chat Settings** panel is also the home for many per-chat features. Each has its own guide:

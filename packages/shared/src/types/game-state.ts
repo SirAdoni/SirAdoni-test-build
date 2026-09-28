@@ -157,8 +157,12 @@ export interface RPGAttributes {
 
 /** An item in the player's inventory. */
 export interface InventoryItem {
-  /** Host-assigned identity. Legacy rows may omit this until an unambiguous write reconciles them. */
+  /** Host-assigned identity for this detailed row. Legacy rows may omit it until reconciled. */
   itemId?: string;
+  /** Semantic Game Mode item identity (`plain:…` or `<catalog>/<entry>`), when linked to a stack. */
+  item?: string;
+  /** Display alias; `name` remains the canonical item name. */
+  nickname?: string;
   name: string;
   description: string;
   quantity: number;

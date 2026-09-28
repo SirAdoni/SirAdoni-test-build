@@ -1,8 +1,8 @@
-# Feature Switches
-
 This build adds a number of features on top of the original Marinara Engine. Every one of them can be switched off. Switched on (the default), you get today's behaviour. The one exception is **Keep generating when the tab is closed**, which starts off. Switched off, you get the original upstream behaviour, as if the addition was never there.
 
 Changes apply straight away. You do not need to restart the server or reload the page.
+
+This personal build defaults all 11 switches on (and uses the listed numeric defaults). In particular, **Stable lorebook picks** and **Retry failed provider calls** default on here; both default off on upstream `staging`.
 
 ## Overview
 
@@ -263,3 +263,10 @@ On providers with prompt caching, a send is held with a question first when the 
 The first two use the same names as upstream Marinara Engine, where they are off unless set. Here they are on unless set, so an unset variable keeps this build's behaviour.
 
 The game switches and the chat switch have no environment variable. Each game or chat keeps its own choice, independent of the app-wide switches.
+## Settings API
+
+The API is `GET` and `PUT /api/app-settings/features`. `PUT` replaces the whole object and rejects unknown keys and values with the wrong type. The server keeps a cached copy; saving the setting refreshes it immediately.
+
+## For developers
+
+The switch names and defaults are defined in `packages/shared/src/schemas/feature-settings.schema.ts`. Add a switch to the registry and English locale, list it in `SERVER_SWITCHES` in `packages/client/src/components/panels/settings/FeatureSwitchesSettings.tsx`, then read it with `isFeatureEnabled("<key>")` on the server or `useFeatureEnabled("<key>")` in the client.

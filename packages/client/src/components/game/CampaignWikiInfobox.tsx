@@ -24,13 +24,7 @@ import {
 import { EntityAvatar, humanizeKey, recordOrigin } from "./campaign-wiki-ui";
 
 export type CampaignWikiView =
-  | "facts"
-  | "knowledge"
-  | "events"
-  | "connections"
-  | "timeline"
-  | "commitments"
-  | "details";
+  "facts" | "knowledge" | "events" | "connections" | "timeline" | "commitments" | "details";
 
 const OPEN_COMMITMENT_STATES = new Set(["proposed", "accepted", "active", "unresolved"]);
 const INFOBOX_CONNECTIONS = 5;

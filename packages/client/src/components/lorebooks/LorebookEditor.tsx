@@ -655,6 +655,7 @@ export function LorebookEditor() {
   const [formRecursive, setFormRecursive] = useState(false);
   const [formMaxRecursionDepth, setFormMaxRecursionDepth] = useState(3);
   const [formExcludeFromVectorization, setFormExcludeFromVectorization] = useState(false);
+  const [formVectorIncludeAssistant, setFormVectorIncludeAssistant] = useState(false);
   const [formVectorQueryDepth, setFormVectorQueryDepth] = useState<number>(LIMITS.LOREBOOK_VECTOR_QUERY_DEPTH_DEFAULT);
   const [formVectorScoreThreshold, setFormVectorScoreThreshold] = useState<number>(
     LIMITS.LOREBOOK_VECTOR_SCORE_THRESHOLD_DEFAULT,
@@ -735,6 +736,7 @@ export function LorebookEditor() {
     setFormMaxRecursionDepth(lorebook.maxRecursionDepth ?? 3);
     setFormExcludeFromVectorization(lorebook.excludeFromVectorization ?? false);
     setFormVectorQueryDepth(lorebook.vectorQueryDepth ?? LIMITS.LOREBOOK_VECTOR_QUERY_DEPTH_DEFAULT);
+    setFormVectorIncludeAssistant(lorebook.vectorIncludeAssistant ?? false);
     setFormVectorScoreThreshold(lorebook.vectorScoreThreshold ?? LIMITS.LOREBOOK_VECTOR_SCORE_THRESHOLD_DEFAULT);
     setFormVectorMaxResults(lorebook.vectorMaxResults ?? LIMITS.LOREBOOK_VECTOR_MAX_RESULTS_DEFAULT);
     const characterSource =
@@ -1684,6 +1686,7 @@ export function LorebookEditor() {
           maxRecursionDepth: formMaxRecursionDepth,
           excludeFromVectorization: formExcludeFromVectorization,
           vectorQueryDepth: formVectorQueryDepth,
+          vectorIncludeAssistant: formVectorIncludeAssistant,
           vectorScoreThreshold: formVectorScoreThreshold,
           vectorMaxResults: formVectorMaxResults,
           characterIds: formIsGlobal ? [] : formCharacterIds,
@@ -1720,6 +1723,7 @@ export function LorebookEditor() {
     formMaxRecursionDepth,
     formExcludeFromVectorization,
     formVectorQueryDepth,
+    formVectorIncludeAssistant,
     formVectorScoreThreshold,
     formVectorMaxResults,
     formCharacterIds,
@@ -2683,10 +2687,15 @@ export function LorebookEditor() {
                   entries={entries}
                   excludeFromVectorization={formExcludeFromVectorization}
                   vectorQueryDepth={formVectorQueryDepth}
+                  vectorIncludeAssistant={formVectorIncludeAssistant}
                   vectorScoreThreshold={formVectorScoreThreshold}
                   vectorMaxResults={formVectorMaxResults}
                   hasUnsavedChanges={lorebookDirty}
                   onBeforeVectorize={handleSaveLorebook}
+                  onVectorIncludeAssistantChange={(value) => {
+                    setFormVectorIncludeAssistant(value);
+                    markLorebookDirty();
+                  }}
                   onVectorQueryDepthChange={(value) => {
                     setFormVectorQueryDepth(value);
                     markLorebookDirty();
@@ -3248,11 +3257,13 @@ function VectorizeSection({
   entries,
   excludeFromVectorization,
   vectorQueryDepth,
+  vectorIncludeAssistant,
   vectorScoreThreshold,
   vectorMaxResults,
   hasUnsavedChanges,
   onBeforeVectorize,
   onVectorQueryDepthChange,
+  onVectorIncludeAssistantChange,
   onVectorScoreThresholdChange,
   onVectorMaxResultsChange,
 }: {
@@ -3260,11 +3271,13 @@ function VectorizeSection({
   entries: LorebookEntry[];
   excludeFromVectorization: boolean;
   vectorQueryDepth: number;
+  vectorIncludeAssistant: boolean;
   vectorScoreThreshold: number;
   vectorMaxResults: number;
   hasUnsavedChanges: boolean;
   onBeforeVectorize: () => Promise<boolean>;
   onVectorQueryDepthChange: (value: number) => void;
+  onVectorIncludeAssistantChange: (value: boolean) => void;
   onVectorScoreThresholdChange: (value: number) => void;
   onVectorMaxResultsChange: (value: number) => void;
 }) {
@@ -3475,6 +3488,13 @@ function VectorizeSection({
           </span>
         )}
       </div>
+      <SettingsSwitch
+        label={localizeUi("ui.lorebooks.vectorizesection.includeCharacterContext")}
+        description={localizeUi("ui.lorebooks.vectorizesection.includeCharacterContextHint")}
+        checked={vectorIncludeAssistant}
+        onChange={onVectorIncludeAssistantChange}
+        disabled={excludeFromVectorization}
+      />
       <div className="grid gap-2 sm:grid-cols-3">
         <label className="space-y-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
           <span className="flex items-center gap-1">

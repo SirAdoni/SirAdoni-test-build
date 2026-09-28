@@ -28,9 +28,25 @@ type TestApp = {
 let app: TestApp | null = null;
 try {
   const shared = await import("../../packages/shared/src/index.js");
-  const { FEATURE_SETTINGS_KEY, FEATURE_SWITCH_NAMES, normalizeFeatureSettings } = shared;
+  const { FEATURE_SETTINGS_KEY, FEATURE_SWITCH_NAMES, FEATURE_SWITCH_DEFAULTS, normalizeFeatureSettings } = shared;
   const features = await import("../../packages/server/src/services/features/feature-settings.js");
-  const { isFeatureEnabled, getFeatureNumber, resetFeatureSettingsForTests } = features;
+  const { getFeatureNumber, isFeatureEnabled, resetFeatureSettingsForTests, onFeatureSettingsChange } = features;
+
+  // All private and upstream switches share the registry.
+  assert.deepEqual([...FEATURE_SWITCH_NAMES].sort(), [
+    "backgroundCallCap",
+    "cacheFriendlyPromptLayout",
+    "chatgptHistoryReplay",
+    "consoleTray",
+    "gameCacheStableLayout",
+    "gameFreezeNpcCardsPerSession",
+    "messageTrash",
+    "providerRetry",
+    "stableLoreOrder",
+    "stableLorebookGroupPicks",
+    "usageAndActivationStats",
+  ]);
+  for (const name of FEATURE_SWITCH_NAMES) assert.equal(FEATURE_SWITCH_DEFAULTS[name], true, `${name} defaults on`);
 
   // ── shared normalization: bad values fall back to the default ──
   assert.deepEqual(normalizeFeatureSettings(null), {});
@@ -66,6 +82,21 @@ try {
   delete process.env.PROVIDER_RETRY_TRANSIENT_ERRORS;
   resetFeatureSettingsForTests();
 
+  // ── change listeners: run on every change, a throwing one does not break the writer ──
+  let notified = 0;
+  const stopThrowing = onFeatureSettingsChange(() => {
+    throw new Error("listener failure fixture");
+  });
+  const stop = onFeatureSettingsChange(() => {
+    notified += 1;
+  });
+  resetFeatureSettingsForTests({ providerRetry: true });
+  assert.equal(notified, 1);
+  stop();
+  stopThrowing();
+  resetFeatureSettingsForTests();
+  assert.equal(notified, 1, "an unsubscribed listener is not called");
+
   // ── routes + storage invalidation ──
   const requireServer = createRequire(new URL("../../packages/server/package.json", import.meta.url));
   const Fastify = requireServer("fastify") as typeof import("fastify").default;
@@ -77,8 +108,9 @@ try {
   const storage = createAppSettingsStorage(db);
   // A value saved before startup is loaded when the routes register.
   await storage.set(FEATURE_SETTINGS_KEY, JSON.stringify({ usageAndActivationStats: false }));
+  assert.equal(isFeatureEnabled("usageAndActivationStats"), false, "a storage write refreshes the cache");
   resetFeatureSettingsForTests();
-  assert.equal(isFeatureEnabled("usageAndActivationStats"), true);
+  assert.equal(isFeatureEnabled("usageAndActivationStats"), true, "reset restores the default before route startup");
 
   const fastify = Fastify();
   fastify.decorate("db", db);
@@ -141,19 +173,22 @@ try {
 
   // A raw row write that bypasses app-settings storage (Professor Mari's generic DB commands) is
   // picked up by reloadFeatureSettingsIfTouched; unrelated rows leave the cache alone.
+  await storage.set(FEATURE_SETTINGS_KEY, JSON.stringify({ stableLorebookGroupPicks: false }));
+  assert.equal(isFeatureEnabled("stableLorebookGroupPicks"), false, "the baseline is cached before a raw write");
   const { appSettings } = await import("../../packages/server/src/db/schema/index.js");
+  const raw = JSON.stringify({ stableLorebookGroupPicks: true });
   await db
     .insert(appSettings)
-    .values({ key: FEATURE_SETTINGS_KEY, value: JSON.stringify({ messageTrash: false }), updatedAt: "x" })
-    .onConflictDoUpdate({ target: appSettings.key, set: { value: JSON.stringify({ messageTrash: false }) } });
-  assert.equal(isFeatureEnabled("messageTrash"), true, "raw write alone does not reach the cache");
+    .values({ key: FEATURE_SETTINGS_KEY, value: raw, updatedAt: "x" })
+    .onConflictDoUpdate({ target: appSettings.key, set: { value: raw } });
+  assert.equal(isFeatureEnabled("stableLorebookGroupPicks"), false, "a raw write alone does not reach the cache");
   assert.equal(await features.reloadFeatureSettingsIfTouched([{ table: "chats", id: "features" }], storage), false);
-  assert.equal(isFeatureEnabled("messageTrash"), true);
+  assert.equal(isFeatureEnabled("stableLorebookGroupPicks"), false);
   assert.equal(
     await features.reloadFeatureSettingsIfTouched([{ table: "app_settings", id: FEATURE_SETTINGS_KEY }], storage),
     true,
   );
-  assert.equal(isFeatureEnabled("messageTrash"), false, "Mari-style writes refresh the cache");
+  assert.equal(isFeatureEnabled("stableLorebookGroupPicks"), true, "Mari-style writes refresh the cache");
   await storage.remove(FEATURE_SETTINGS_KEY);
 
   // The generic key route does not expose it (the typed route validates).

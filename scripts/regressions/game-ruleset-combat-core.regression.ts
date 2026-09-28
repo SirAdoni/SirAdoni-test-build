@@ -34,6 +34,8 @@ import {
   rulesetCombatConditions,
   parseRulesetCombatDice,
   rulesetCombatOptions,
+  rulesetWindowOptions,
+  RULESET_PASS_OPTION,
   rulesetOptionTargets,
   rulesetCombatRoller,
   rulesetEncounterOutcome,
@@ -55,8 +57,53 @@ import {
 } from "../../packages/shared/src/index.js";
 
 const read = (path: string) => readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
-const fiveEText = read("../../docs/development/ruleset-5e-2014.example.json");
-const emberText = read("../../docs/examples/rulesets/ember-roads.json");
+/** 1.45's numbers a condition changes, its check effects and the levels of a track, which every gate
+ *  this lane proves predates too. */
+const withoutConditionNumbers = (doc: Record<string, any>) => {
+  delete doc.combat.levels;
+  const older = (effect: string) => !effect.startsWith("own-checks-");
+  for (const entry of doc.combat.conditions ?? []) {
+    delete entry.modifiers;
+    entry.effects = (entry.effects ?? []).filter(older);
+    if (Array.isArray(entry.whileSourceInSight)) entry.whileSourceInSight = entry.whileSourceInSight.filter(older);
+  }
+};
+/** The reference less 1.43's contests and the checks they read, which every gate this lane proves
+ *  predates, and less 1.45's keys. */
+const fiveEText = (() => {
+  const doc = JSON.parse(read("../../docs/development/ruleset-5e-2014.example.json"));
+  delete doc.combat.checks;
+  delete doc.combat.contests;
+  for (const catalog of doc.catalogs ?? []) for (const entry of catalog.entries ?? []) delete entry.creature?.checks;
+  withoutConditionNumbers(doc);
+  return JSON.stringify(doc);
+})();
+/** The example less the sheet keys 1.37 added (a track always shown, a summary list's columns),
+ *  1.38's modifier off the sheet, 1.39's list sum, 1.40's box track, 1.41's untrained rule and
+ *  1.42's live state: every gate this lane proves is older, so it is proven on a file that trips
+ *  nothing newer. */
+const emberText = (() => {
+  const doc = JSON.parse(read("../../docs/examples/rulesets/ember-roads.json"));
+  for (const track of doc.sheet.live.tracks) delete track.alwaysShow;
+  for (const list of doc.gm.sheetSummary?.lists ?? []) delete list.columns;
+  delete doc.resolution.adjust;
+  doc.sheet.derived = doc.sheet.derived.filter((entry: { id: string }) => !["burden", "burdened"].includes(entry.id));
+  doc.sheet.live.tracks = doc.sheet.live.tracks.filter((track: { id: string }) => track.id !== "strain");
+  for (const skill of doc.sheet.skills) delete skill.untrained;
+  // And 1.42's live Stance, the table that follows it and the camp step that settles it.
+  doc.sheet.derived = doc.sheet.derived.filter((entry: { id: string }) => entry.id !== "stance_brawn");
+  delete doc.sheet.live.states;
+  for (const rest of doc.rests)
+    rest.restore = rest.restore.filter((step: { state?: string }) => step.state === undefined);
+  // And 1.43's contests and the checks they read.
+  delete doc.combat.checks;
+  delete doc.combat.contests;
+  withoutConditionNumbers(doc);
+  // And 1.49's items block, with the catalog written in it.
+  delete doc.items;
+  doc.catalogs = doc.catalogs.filter((catalog: { holds?: string }) => catalog.holds !== "items");
+  return JSON.stringify(doc);
+})();
 
 /** One of the shipped examples, optionally edited first. */
 const variant = (text: string, edit: (doc: Record<string, any>) => void = () => {}): Record<string, any> => {
@@ -199,6 +246,35 @@ function firstOf<T extends RulesetCombatEvent["type"]>(events: RulesetCombatEven
     /two different tracks/,
   );
   assert.match(refusal(withCombat((combat) => (combat.dying.condition = "dead"))), /Unknown condition "dead"/);
+  // A death-save track counts to the rules' own number, with room to count, on every sheet: a top
+  // the sheet works out, a top with no room, or a hidden track would each let one roll settle it.
+  const withSuccessesTrack = (edit: (track: Record<string, any>) => void) =>
+    variant(fiveEText, (doc) =>
+      edit(doc.sheet.live.tracks.find((entry: Record<string, any>) => entry.id === "death_save_successes")),
+    );
+  assert.match(
+    refusal(withSuccessesTrack((track) => (track.max = { const: 2 }))),
+    /"death_save_successes" counts death saves, so its max is a number rather than the sheet's/,
+  );
+  assert.match(
+    refusal(withSuccessesTrack((track) => (track.max = track.min))),
+    /"death_save_successes" counts death saves, so its max is at least 1 and above its min/,
+  );
+  // Room above a floor below zero is not enough: a top of 0 is reached by the very first roll.
+  assert.match(
+    refusal(
+      withSuccessesTrack((track) => {
+        track.min = -1;
+        track.max = 0;
+        track.default = -1;
+      }),
+    ),
+    /"death_save_successes" counts death saves, so its max is at least 1 and above its min/,
+  );
+  assert.match(
+    refusal(withSuccessesTrack((track) => (track.hideWhen = { field: "level", equals: 1 }))),
+    /"death_save_successes" counts death saves, so it cannot be hidden/,
+  );
   assert.match(
     refusal(withCombat((combat) => (combat.threat.tiers[0].health = [12, 3]))),
     /lowest is above the highest/,
@@ -208,7 +284,7 @@ function firstOf<T extends RulesetCombatEvent["type"]>(events: RulesetCombatEven
     /Duplicate damage type "Fire"/,
   );
   assert.match(refusal(withCombat((combat) => (combat.standard = ["dodge", "dodge"]))), /Duplicate standard action/);
-  assert.match(refusal(withCombat((combat) => (combat.kind = "grid-tactics"))), /Invalid literal value/);
+  assert.match(refusal(withCombat((combat) => (combat.kind = "grid-tactics"))), /Invalid enum value/);
   assert.match(refusal(withCombat((combat) => (combat.reach = 5))), /Unrecognized key/);
 
   // A pool that counts up cannot be what a fight takes away.
@@ -240,6 +316,23 @@ function firstOf<T extends RulesetCombatEvent["type"]>(events: RulesetCombatEven
       .join("; ");
 
   assert.equal(issues({ targetCount: 3, autoHit: true, budget: "bonus" }), "");
+  // `reaction` has taken a boolean since the key existed, and `false` says the same as leaving it
+  // out. A package that has been shipping one is not broken by the moment an object now names.
+  assert.equal(issues({ reaction: false }), "");
+  assert.equal(issues({ reaction: true }), "");
+  assert.equal(issues({ reaction: { on: "aimed", cancels: true } }), "");
+  // What has already happened cannot be called off. That one is the schema's, not this checker's:
+  // `rulesetCatalogEntryIssues` reads an entry against the ruleset's own names, and the shape of
+  // the key is settled before it ever gets here.
+  {
+    const entries = (fiveE.catalogs ?? []).find((catalog) => catalog.entries?.length)?.entries;
+    assert.ok(entries?.length, "the example ships a catalog with entries in it");
+    const badMoment = variant(fiveEText, (doc) => {
+      const catalog = (doc.catalogs as Array<Record<string, any>>).find((entry) => entry.entries?.length)!;
+      catalog.entries[0].mechanics = { ...catalog.entries[0].mechanics, reaction: { on: "harmed", cancels: true } };
+    });
+    assert.match(refusal(badMoment), /Only an "aimed" or "used" reaction cancels/);
+  }
   assert.match(issues({ budget: "swing" }), /Unknown budget "swing"/);
   assert.match(
     issues({ applies: [{ condition: "hexed", duration: "instant" }] }),
@@ -419,6 +512,71 @@ const spellEntries = [
   );
 }
 
+/** The two that wait for a moment. They live in a catalog of their own rather than beside the
+ *  spells every fixture holds: a wizard who answers being aimed at would hold up every other test
+ *  that aims something at him, which is the whole point of a window and not what those prove. */
+const reactionEntries = [
+  {
+    // A moment, not a turn: taken when somebody aims something at its holder, and it stops that
+    // thing from happening at all.
+    id: "unmake",
+    label: "Unmake",
+    rows: [{ list: "spells", values: { name: "Unmake", level: 3, prepared: true } }],
+    mechanics: {
+      kind: "utility",
+      reaction: { on: "aimed", cancels: true },
+      budget: "reaction",
+      cost: [{ pool: "slots_3", amount: 1 }],
+    },
+  },
+  {
+    // The other moment: taken once something has hurt its holder, and aimed back at whoever did.
+    id: "sear",
+    label: "Sear",
+    rows: [{ list: "spells", values: { name: "Sear", level: 1, prepared: true } }],
+    mechanics: {
+      kind: "attack",
+      reaction: { on: "harmed" },
+      budget: "reaction",
+      amount: { dice: "2d10" },
+      damageType: "fire",
+      save: { save: "dex_save", onSuccess: "half" },
+      cost: [{ pool: "slots_1", amount: 1 }],
+    },
+  },
+  {
+    // Its holder picks, rather than it being aimed back at whoever caused the moment, and it may be
+    // pointed at anybody. Hits hard enough to take a wizard out in one, because what this is for is
+    // what happens to a held blow when one of the two it was aimed at is gone before it lands.
+    id: "backlash",
+    label: "Backlash",
+    rows: [{ list: "spells", values: { name: "Backlash", level: 2, prepared: true } }],
+    mechanics: {
+      kind: "attack",
+      reaction: { on: "aimed", at: "chosen" },
+      budget: "reaction",
+      targets: "any",
+      autoHit: true,
+      amount: { dice: "1d4", flat: 60 },
+      damageType: "force",
+    },
+  },
+  {
+    // Free of the economy, so it is taken at its moment whether or not a reaction is left.
+    id: "flinch",
+    label: "Flinch",
+    rows: [{ list: "spells", values: { name: "Flinch", level: 1, prepared: true } }],
+    mechanics: {
+      kind: "buff",
+      targets: "self",
+      reaction: { on: "harmed" },
+      free: true,
+      temporary: { dice: "1d4" },
+    },
+  },
+] as unknown as RulesetCatalogEntry[];
+const reactionRows = reactionEntries.flatMap((entry) => rowsFromCatalogEntry("spells", entry).map((row) => row.row));
+
 const spellRows = spellEntries.flatMap((entry) => rowsFromCatalogEntry("spells", entry).map((row) => row.row));
 const spellCatalogs = { spells: spellEntries };
 
@@ -467,6 +625,15 @@ const wizard = (live: unknown = {}): RulesetCombatantInput => ({
   live,
   catalogs: spellCatalogs,
 });
+/** The same wizard, holding the two that wait for a moment as well. */
+const reactiveWizard = (live: unknown = {}): RulesetCombatantInput => {
+  const base = wizardBuild();
+  return {
+    ...wizard(live),
+    build: { ...base, lists: { ...base.lists, spells: [...spellRows, ...reactionRows] } },
+    catalogs: { spells: [...spellEntries, ...reactionEntries] },
+  };
+};
 const foe = (id: string, name: string, block: RulesetStatBlock): RulesetCombatantInput => ({
   id,
   name,
@@ -1124,6 +1291,22 @@ const labels = (definition: RulesetDefinition, state: RulesetEncounterState, id:
   assert.equal(firstOf(healed.events, "spend").pool, "slots_1");
 }
 
+// ── A death track's top is read off the track, not assumed ──
+{
+  // Two successes, because this variant's successes track stops at two.
+  const shorter = parsedOrThrow(
+    variant(fiveEText, (doc) => {
+      doc.sheet.live.tracks.find((entry: Record<string, any>) => entry.id === "death_save_successes").max = 2;
+    }),
+    "5e with a shorter death track",
+  );
+  let state = fight(shorter, [fighter({ pools: { hp: { value: 0 } } }), wizard(), rot()], 10, 9, 18);
+  let last = endTurn(shorter, state, "rot", 12);
+  state = endTurn(shorter, endTurn(shorter, last.state, "brenna").state, "corwin").state;
+  last = endTurn(shorter, state, "rot", 14);
+  assert.equal(eventsOf(last.events, "dying").at(-1)!.result, "stable", "two of the track's two are enough");
+}
+
 // ── Three successes make her stable, and a blow while stable starts the count again ──
 {
   let state = fight(fiveE, [fighter({ pools: { hp: { value: 0 } } }), wizard(), rot()], 10, 9, 18);
@@ -1547,14 +1730,24 @@ const labels = (definition: RulesetDefinition, state: RulesetEncounterState, id:
       );
     }
     for (const catalog of doc.catalogs ?? []) {
+      // An entry that names the moment it waits for is later again (1.33).
       catalog.entries = (catalog.entries ?? []).filter(
-        (entry: Record<string, any>) => entry.mechanics?.kind !== "rider",
+        (entry: Record<string, any>) =>
+          entry.mechanics?.kind !== "rider" && typeof entry.mechanics?.reaction !== "object",
       );
       for (const entry of catalog.entries) {
         for (const key of ["plus", "free", "gives", "standard", "rider"]) delete entry.mechanics?.[key];
         delete entry.creature?.riders;
         for (const action of entry.creature?.actions ?? []) delete action.damage?.plus;
       }
+    }
+    withoutCreatureSheets(doc);
+  };
+  /** And a creature written in the ruleset's own terms, which is later again (1.34), for the same
+   *  reason: an older seam is proven on a file that trips nothing newer. */
+  const withoutCreatureSheets = (doc: Record<string, any>) => {
+    for (const catalog of doc.catalogs ?? []) {
+      catalog.entries = (catalog.entries ?? []).filter((entry: Record<string, any>) => !entry.creature?.sheet);
     }
   };
   const combatOnly = variant(emberText, (doc) => {
@@ -2140,7 +2333,10 @@ const labels = (definition: RulesetDefinition, state: RulesetEncounterState, id:
   const feats = fiveE.catalogs!.find((catalog) => catalog.id === "feats")!.entries!;
   const featRows = (ids: string[], list: string) =>
     ids.flatMap((id) =>
-      rowsFromCatalogEntry("feats", feats.find((entry) => entry.id === id)!)
+      rowsFromCatalogEntry(
+        "feats",
+        feats.find((entry) => entry.id === id)!,
+      )
         .filter((row) => row.list === list)
         .map((row) => row.row),
     );
@@ -2808,7 +3004,9 @@ const labels = (definition: RulesetDefinition, state: RulesetEncounterState, id:
     const strikesOnly = variant(emberText, (doc) => {
       doc.catalogs = (doc.catalogs ?? []).filter((catalog: Record<string, any>) => catalog.holds === "creatures");
       for (const catalog of doc.catalogs) {
-        for (const entry of catalog.entries ?? []) {
+        // A creature written as a sheet is 1.34, a gate of its own.
+        catalog.entries = (catalog.entries ?? []).filter((entry: Record<string, any>) => !entry.creature?.sheet);
+        for (const entry of catalog.entries) {
           for (const action of entry.creature?.actions ?? []) delete action.damage?.plus;
         }
       }
@@ -2834,6 +3032,10 @@ const labels = (definition: RulesetDefinition, state: RulesetEncounterState, id:
     // And the entries, inline or in the catalog file the install already holds.
     const inline = variant(emberText, (doc) => {
       doc.catalogs = (doc.catalogs ?? []).filter((catalog: Record<string, any>) => catalog.holds !== "creatures");
+      // An entry that names the moment it waits for is later again (1.33).
+      doc.catalogs[0].entries = doc.catalogs[0].entries.filter(
+        (entry: Record<string, any>) => typeof entry.mechanics?.reaction !== "object",
+      );
       doc.catalogs[0].entries[0].mechanics = { kind: "utility", free: true, gives: [{ budget: "act", count: 1 }] };
     });
     assert.match(getCapabilityPackageInstallIssue(manifest(28), inline) ?? "", economyIssue);
@@ -2866,3 +3068,298 @@ const labels = (definition: RulesetDefinition, state: RulesetEncounterState, id:
 }
 
 console.info("game ruleset combat core regressions passed.");
+
+// ── The moment a reaction waits for: aimed at, and hurt ──
+{
+  /** By name rather than by index: these entries sit at the end of a shared list, and one added in
+   *  front of them would otherwise quietly re-point every choice below. */
+  const idFor = (state: RulesetEncounterState, actorId: string, label: string) => {
+    const action = who(state, actorId).actions.find((entry) => entry.label === label);
+    assert.ok(action, `no action called "${label}"`);
+    return action.id;
+  };
+  // Snag swings at the wizard, who holds one thing that answers being aimed at and one that answers
+  // being hurt. Neither is ever on his own turn's menu.
+  const state = fight(fiveE, [reactiveWizard(), snag(), rot()], 20, 5, 3);
+  assert.ok(!labels(fiveE, state, "corwin").includes("Unmake"), "a reaction is on no turn's menu");
+  assert.ok(!labels(fiveE, state, "corwin").includes("Sear"), "whichever moment it waits for");
+
+  const swing = { actorId: "snag", optionId: "scimitar", targetIds: ["corwin"] };
+  const aimed = act(fiveE, endTurn(fiveE, state, "corwin").state, swing);
+  const window = aimed.state.window;
+  assert.ok(window, "the swing is held while the one it is aimed at is asked");
+  assert.deepEqual(window.trigger, { kind: "aimed", sourceId: "snag", optionId: "scimitar", label: "Scimitar" });
+  assert.deepEqual(window.waiting, ["corwin"]);
+  assert.equal(eventsOf(aimed.events, "attack").length, 0, "and nothing is rolled until it is answered");
+  // Paid for before the asking: the budget is gone whatever the answer turns out to be.
+  assert.equal(who(aimed.state, "snag").budgets.action, 0);
+  assert.deepEqual(
+    rulesetWindowOptions(fiveE, aimed.state, "corwin").map((option) => [option.label, option.targets]),
+    [
+      ["Unmake", { side: "self", count: 0 }],
+      // The one whose holder picks keeps its own targets, and is the only one that asks.
+      ["Backlash", { side: "any", count: 1 }],
+    ],
+    "only the ones that wait for THIS moment, and only the one that picks asks whom to point at",
+  );
+
+  // A pool the window did not offer is refused as the wrong pool, exactly as it is on a turn.
+  assert.deepEqual(
+    act(fiveE, aimed.state, {
+      actorId: "corwin",
+      optionId: idFor(aimed.state, "corwin", "Unmake"),
+      targetIds: [],
+      payWith: "slots_1",
+      window: window.id,
+    }).events,
+    [
+      {
+        type: "refused",
+        actorId: "corwin",
+        optionId: idFor(aimed.state, "corwin", "Unmake"),
+        reason: "bad-pool",
+      },
+    ],
+  );
+
+  // Taking the one that cancels: the swing never happens, and its slot is still gone.
+  const stopped = act(fiveE, aimed.state, {
+    actorId: "corwin",
+    optionId: idFor(aimed.state, "corwin", "Unmake"),
+    targetIds: [],
+    window: window.id,
+  });
+  assert.deepEqual(firstOf(stopped.events, "cancelled"), {
+    type: "cancelled",
+    actorId: "snag",
+    optionId: "scimitar",
+    label: "Scimitar",
+    byId: "corwin",
+  });
+  assert.equal(eventsOf(stopped.events, "attack").length, 0, "the swing never lands");
+  assert.equal(eventsOf(stopped.events, "damage").length, 0);
+  assert.equal(stopped.state.window, undefined);
+  assert.equal(who(stopped.state, "corwin").budgets.reaction, 0, "and answering cost the reaction");
+
+  // Letting it go by instead: the swing lands, and being hurt is its own moment.
+  const through = act(
+    fiveE,
+    aimed.state,
+    {
+      actorId: "corwin",
+      optionId: RULESET_PASS_OPTION,
+      targetIds: [],
+      window: window.id,
+    },
+    18,
+    5,
+    4,
+    6,
+  );
+  assert.equal(firstOf(through.events, "attack").outcome, "hit", "the held swing resolves after the asking");
+  const hurt = through.state.window;
+  assert.ok(hurt, "and being hurt opens a moment of its own");
+  assert.deepEqual(hurt.trigger, { kind: "harmed", sourceId: "snag", label: "Scimitar" });
+  assert.deepEqual(
+    rulesetWindowOptions(fiveE, through.state, "corwin").map((option) => option.label),
+    ["Sear", "Flinch"],
+    "only the ones that wait for being hurt",
+  );
+
+  // It is aimed back at whoever did it, without anybody picking.
+  const back = act(
+    fiveE,
+    through.state,
+    {
+      actorId: "corwin",
+      optionId: idFor(through.state, "corwin", "Sear"),
+      targetIds: [],
+      window: hurt.id,
+    },
+    3,
+    5,
+    5,
+    5,
+    5,
+    5,
+    5,
+    5,
+    5,
+    5,
+  );
+  assert.equal(firstOf(back.events, "damage").targetId, "snag", "the answer lands on whoever hurt them");
+  assert.equal(back.state.window, undefined);
+  // One window at a time: what the answer itself deals opens no further moment.
+  assert.equal(eventsOf(back.events, "window").length, 0, "a reaction is not itself reacted to");
+
+  // Everybody one blow hurt is asked, in the FIGHT's order rather than the order the blow happened
+  // to write them down in. Wren acts first and is hurt second, and is asked first all the same.
+  {
+    const both = (): RulesetCombatantInput => ({ ...reactiveWizard(), id: "wren", name: "Wren" });
+    const sweep = foe("sweep", "Sweep", {
+      health: 8,
+      defense: 12,
+      initiativeModifier: 0,
+      saves: { dex_save: 1, wis_save: 0 },
+      actions: [
+        {
+          id: "lash",
+          name: "Lash",
+          budget: "action",
+          targetCount: 2,
+          toHit: 6,
+          damage: { count: 1, sides: 4, flat: 1 },
+        },
+      ],
+    });
+    // Rot stands at the back and never acts here: it is only there so taking Sweep out does not end
+    // the fight and close the window along with it.
+    const many = fight(fiveE, [both(), reactiveWizard(), sweep, rot()], 22, 20, 5, 1);
+    assert.deepEqual(many.order, ["wren", "corwin", "sweep", "rot"], "the fight's own order");
+
+    // A friend aiming something at you is not a threat to answer. Wren mends Corwin, who holds
+    // something that would call it off, and nobody is asked: had the window opened, an ally played
+    // by the Engine could have cancelled its own friend's healing.
+    const mended = act(
+      fiveE,
+      many,
+      { actorId: "wren", optionId: idFor(many, "wren", "Mending Light"), targetIds: ["corwin"] },
+      5,
+    );
+    assert.equal(mended.state.window, undefined, "a friend's help opens no window");
+    assert.equal(firstOf(mended.events, "heal").targetId, "corwin", "and it simply lands");
+    let ready = endTurn(fiveE, many, "wren").state;
+    ready = endTurn(fiveE, ready, "corwin").state;
+    // Corwin first in the targets, so that is the order the blow names them in.
+    const lash = act(fiveE, ready, { actorId: "sweep", optionId: "lash", targetIds: ["corwin", "wren"] });
+    assert.equal(lash.state.window?.trigger.kind, "aimed");
+    assert.deepEqual(
+      lash.state.window?.waiting,
+      ["wren", "corwin"],
+      "asked in the fight's order, not in the order the blow named them",
+    );
+    assert.deepEqual(
+      firstOf(lash.events, "window").waiting,
+      ["wren", "corwin"],
+      "and the log says the same order the window really holds",
+    );
+
+    // One of the two it is aimed at is put down while it is held. What resumes lands on the fight
+    // as it stands THEN, and in this ruleset down is not out, so the blow still swings at both.
+    {
+      const felling = act(
+        fiveE,
+        lash.state,
+        {
+          actorId: "wren",
+          optionId: idFor(lash.state, "wren", "Backlash"),
+          targetIds: ["corwin"],
+          window: lash.state.window!.id,
+        },
+        4,
+        18,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+      );
+      assert.equal(who(felling.state, "corwin").down, true, "the answer put the other target down");
+      // Down is not gone: this ruleset's own dying rule keeps a character on the board, so the held
+      // blow still finds them. What the resumed blow reads is the fight as it stands when it lands,
+      // which is the point; who is still on it is the ruleset's business, not the window's.
+      assert.deepEqual(
+        eventsOf(felling.events, "attack")
+          .filter((event) => event.actorId === "sweep")
+          .map((event) => event.targetId),
+        ["corwin", "wren"],
+        "and the held blow still swung at both, because neither is out of the fight",
+      );
+      // Down and with nothing left to answer with, so the window let their moment go by for them
+      // rather than waiting on somebody who cannot answer.
+      assert.deepEqual(firstOf(felling.events, "pass").actorId, "corwin");
+      assert.equal(felling.state.window, undefined, "the window closed once both had been asked");
+    }
+
+    // One of the two calls the blow off, and the other is not asked at all: the question was what to
+    // do about something that is now not going to happen, and they keep what they were holding.
+    {
+      const called = act(fiveE, lash.state, {
+        actorId: "wren",
+        optionId: idFor(lash.state, "wren", "Unmake"),
+        targetIds: [],
+        window: lash.state.window!.id,
+      });
+      assert.equal(firstOf(called.events, "cancelled").byId, "wren");
+      assert.equal(called.state.window, undefined, "the window closed with the question");
+      assert.equal(eventsOf(called.events, "cancelled").length, 1, "and nobody called it off twice");
+      assert.equal(eventsOf(called.events, "pass").length, 0, "nobody's moment was let go, it was withdrawn");
+      assert.equal(who(called.state, "corwin").budgets.reaction, 1, "the one never asked kept their reaction");
+      assert.equal(eventsOf(called.events, "attack").length, 0, "and the blow never swung");
+    }
+
+    // Both let the blow through, so being hurt opens a moment for both of them.
+    const pass = (from: typeof lash.state, who: string, ...faces: number[]) =>
+      act(
+        fiveE,
+        from,
+        { actorId: who, optionId: RULESET_PASS_OPTION, targetIds: [], window: from.window!.id },
+        ...faces,
+      );
+    const landed = pass(pass(lash.state, "wren").state, "corwin", 18, 3, 18, 3);
+    assert.equal(landed.state.window?.trigger.kind, "harmed");
+    assert.deepEqual(landed.state.window?.waiting, ["wren", "corwin"], "both were hurt, and both are asked");
+
+    // Wren answers first and takes Sweep out with it. Corwin is next, and what Corwin holds that is
+    // aimed BACK at Sweep is no longer offered: there is nobody left for it to land on.
+    const felled = act(
+      fiveE,
+      landed.state,
+      {
+        actorId: "wren",
+        optionId: idFor(landed.state, "wren", "Sear"),
+        targetIds: [],
+        window: landed.state.window!.id,
+      },
+      1,
+      10,
+      10,
+    );
+    assert.equal(who(felled.state, "sweep").defeated, true, "the answer took the source out");
+    assert.deepEqual(felled.state.window?.waiting, ["corwin"], "and the window is still asking the other one");
+    assert.deepEqual(
+      rulesetWindowOptions(fiveE, felled.state, "corwin").map((option) => option.label),
+      ["Flinch"],
+      "what is aimed back at the source is gone with the source; what its holder does to themselves stays",
+    );
+  }
+
+  // Free of the economy: still on the moment's menu with the reaction spent, and taking it asks
+  // for no budget at all.
+  assert.equal(who(back.state, "corwin").budgets.reaction, 0, "the answer above spent it");
+  // The next opponent in the order, in the same round: the reaction is still gone, and Corwin's own
+  // turn, which would hand it back, has not come round yet.
+  const bite = { actorId: "rot", optionId: "bite", targetIds: ["corwin"] };
+  const spentOut = act(fiveE, endTurn(fiveE, back.state, "snag").state, bite, 19, 4);
+  const nothingLeft = spentOut.state.window;
+  assert.ok(nothingLeft, "being hurt still opens the moment");
+  assert.deepEqual(
+    rulesetWindowOptions(fiveE, spentOut.state, "corwin").map((option) => [option.label, option.budget]),
+    [["Flinch", undefined]],
+    "and what is left on it is the one that costs no budget",
+  );
+  const flinched = act(
+    fiveE,
+    spentOut.state,
+    { actorId: "corwin", optionId: idFor(spentOut.state, "corwin", "Flinch"), targetIds: [], window: nothingLeft.id },
+    3,
+  );
+  assert.equal(eventsOf(flinched.events, "budget").length, 0, "nothing was spent that it does not have");
+  assert.deepEqual(
+    { to: firstOf(flinched.events, "temporary").targetId, from: firstOf(flinched.events, "temporary").sourceId },
+    { to: "corwin", from: "corwin" },
+    "and it did what it does, to its own holder rather than to whoever hurt them",
+  );
+  assert.equal(flinched.state.window, undefined);
+}

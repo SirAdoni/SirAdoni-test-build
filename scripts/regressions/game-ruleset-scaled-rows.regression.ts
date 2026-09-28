@@ -75,8 +75,9 @@ const emberBuild = (heart: number, uses = 1) =>
   assert.deepEqual(trick.scaled, { uses: { from: { abilityScore: "heart" } } });
   assert.equal(trick.values.uses, 1, "the row still holds what it is before any sheet is known");
   assert.equal(ember.resolution.dice.count, 2, "the scaled example is not a d20 system");
+  // The fight's own `levels` are rungs of a track (Heat), not a character level, so they are left out.
   assert.equal(
-    JSON.stringify(ember).includes("level"),
+    JSON.stringify({ ...ember, combat: { ...ember.combat, levels: undefined } }).includes("level"),
     false,
     "nothing about scaled values needs the word level; this system has none",
   );

@@ -1,7 +1,10 @@
-// Storage write path: a flush that would rewrite a shard or the manifest with
-// byte-identical content skips the disk (no tmp, fsync, rename
-// or .bak refresh), real changes still go through the crash-safe writer, and
-// a large shard is serialized in slices that yield the event loop.
+// Storage write path, both settings opt-in: with STORAGE_SKIP_UNCHANGED_WRITES
+// a flush that would rewrite a shard or the manifest with byte-identical
+// content skips the disk (no tmp, fsync, rename or .bak refresh) while real
+// changes still go through the crash-safe writer, and with
+// STORAGE_YIELDING_SERIALIZE a large shard is serialized in slices that yield
+// the event loop. With both unset (step 12) every flush writes as before and
+// never yields.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -10,6 +13,9 @@ import { join } from "node:path";
 
 process.env.LOG_LEVEL = "silent";
 process.env.LOG_FILE_LEVEL = "silent";
+// Steps 1 to 11 test the opt-in behaviour; step 12 turns both off again.
+process.env.STORAGE_SKIP_UNCHANGED_WRITES = "true";
+process.env.STORAGE_YIELDING_SERIALIZE = "true";
 
 const storageDir = mkdtempSync(join(tmpdir(), "marinara-storage-write-"));
 process.env.FILE_STORAGE_DIR = storageDir;
@@ -132,7 +138,14 @@ try {
   } as never);
   await db.insert(messages).values([
     { id: "m1", chatId: CHAT, role: "user", content: "hello", extra: "{}", createdAt: "2026-01-01T00:00:01.000Z" },
-    { id: "m2", chatId: CHAT, role: "assistant", content: "hi there", extra: "{}", createdAt: "2026-01-01T00:00:02.000Z" },
+    {
+      id: "m2",
+      chatId: CHAT,
+      role: "assistant",
+      content: "hi there",
+      extra: "{}",
+      createdAt: "2026-01-01T00:00:02.000Z",
+    },
   ] as never);
   await db.insert(appSettings).values({ key: "fixture-setting", value: "one", updatedAt: "2026-01-01" } as never);
   await store.flush(true);
@@ -179,7 +192,11 @@ try {
   reset();
   store.markShardDirty!("messages", [CHAT]);
   await store.flush();
-  assert.deepEqual(written.filter((label) => label === shardLabel), [shardLabel], "hook still runs before a skip");
+  assert.deepEqual(
+    written.filter((label) => label === shardLabel),
+    [shardLabel],
+    "hook still runs before a skip",
+  );
   assert.ok(skipped.includes(shardLabel));
   assert.equal(mtime(shardPath(CHAT)), shardMtime);
 
@@ -236,8 +253,15 @@ try {
   reset();
   await db.update(appSettings).set({ value: "two" }).where(eq(appSettings.key, "fixture-setting"));
   await store.flush();
-  assert.ok(written.some((label) => label.startsWith("app_settings")), "changed setting reaches the write path");
-  assert.equal(skipped.some((label) => label.startsWith("app_settings")), false, "changed setting must be written");
+  assert.ok(
+    written.some((label) => label.startsWith("app_settings")),
+    "changed setting reaches the write path",
+  );
+  assert.equal(
+    skipped.some((label) => label.startsWith("app_settings")),
+    false,
+    "changed setting must be written",
+  );
   const manifestBefore = mtime(manifestFile);
   const manifestTextBefore = readFileSync(manifestFile, "utf8");
   await db.insert(messages).values({
@@ -315,6 +339,67 @@ try {
     ],
   );
   await reopened._fileStore.close();
+
+  // 11. A primary recovered from its .bak at load is rewritten, never skipped,
+  //     and the repair does not copy the corrupt primary over the .bak.
+  const bakBefore = readFileSync(`${shardPath(CHAT)}.bak`, "utf8");
+  writeFileSync(shardPath(CHAT), "{ not json");
+  const recoveredSkips: string[] = [];
+  const recovered = await createFileNativeDB({ onTableWriteSkipped: (table) => recoveredSkips.push(table) });
+  const recoveredRows = await recovered.select().from(messages).where(eq(messages.chatId, CHAT));
+  const bakIds = (JSON.parse(bakBefore) as Array<{ id: string }>).map((row) => row.id);
+  assert.deepEqual(
+    (recoveredRows as Array<{ id: string }>).map((row) => row.id),
+    bakIds,
+    "rows come back from the .bak",
+  );
+  await recovered._fileStore.flush();
+  assert.equal(recoveredSkips.includes(shardLabel), false, "a recovered path is never skipped");
+  assert.deepEqual(
+    (JSON.parse(readFileSync(shardPath(CHAT), "utf8")) as Array<{ id: string }>).map((row) => row.id),
+    bakIds,
+    "the corrupt primary is repaired from memory",
+  );
+  assert.equal(readFileSync(`${shardPath(CHAT)}.bak`, "utf8"), bakBefore, "the .bak stays the recovery source");
+  await recovered._fileStore.close();
+
+  // 12. Default (both settings unset): an identical re-mark is written again
+  //     exactly as before, and a shard flush never yields, even with a clock
+  //     that would make every slice run over budget.
+  delete process.env.STORAGE_SKIP_UNCHANGED_WRITES;
+  delete process.env.STORAGE_YIELDING_SERIALIZE;
+  const plainWrites: string[] = [];
+  const plainSkips: string[] = [];
+  let plainTurnsAtBigHook: number | null = null;
+  const plain = await createFileNativeDB({
+    beforeTableWrite: (table) => {
+      if (table === `messages/${encodeShardKey(BIG_CHAT)}` && plainTurnsAtBigHook === null) {
+        plainTurnsAtBigHook = eventLoopTurns;
+      }
+      plainWrites.push(table);
+    },
+    onTableWriteSkipped: (table) => plainSkips.push(table),
+  });
+  await plain.select().from(messages).where(eq(messages.chatId, CHAT));
+  await plain._fileStore.flush(true);
+  const plainMtime = mtime(shardPath(CHAT));
+  const plainBytes = readFileSync(shardPath(CHAT), "utf8");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  plainWrites.length = 0;
+  plain._fileStore.markShardDirty!("messages", [CHAT]);
+  await plain._fileStore.flush();
+  assert.ok(plainWrites.includes(shardLabel), "default: the re-marked shard reaches the writer");
+  assert.deepEqual(plainSkips, [], "default: nothing is ever skipped");
+  assert.notEqual(mtime(shardPath(CHAT)), plainMtime, "default: the identical shard is rewritten on disk");
+  assert.equal(readFileSync(shardPath(CHAT), "utf8"), plainBytes);
+  await plain.select().from(messages).where(eq(messages.chatId, BIG_CHAT));
+  plain._fileStore.markShardDirty!("messages", [BIG_CHAT]);
+  const stopPlain = countTurns();
+  await withClock("advancing", () => plain._fileStore.flush());
+  stopPlain();
+  assert.equal(plainTurnsAtBigHook, 0, "default: the serializer never yields before the write");
+  assert.equal(readFileSync(shardPath(BIG_CHAT), "utf8"), bigBefore);
+  await plain._fileStore.close();
 
   console.info("Robustness storage-write regression passed.");
 } finally {

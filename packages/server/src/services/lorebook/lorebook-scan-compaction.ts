@@ -1,12 +1,14 @@
 /**
  * Every generated message records the lorebook scan that built its prompt (`extra.lorebookScan`), and that scan
- * used to carry the full resolved text of every activated entry. With large lorebooks that is hundreds of KB per
- * message, stored again in each swipe: one 473-message chat held 184 MB of copied lore in a 192 MB shard, and
+ * carries the full resolved text of every activated entry. With large lorebooks that is hundreds of KB per message,
+ * stored again in each swipe: in a chat of a few hundred messages that copied lore was most of a ~190 MB shard, and
  * because chats stay resident once loaded it drove the server towards its heap limit in long sessions.
  *
- * Only the newest generated message's scan is ever read with its text (Active Context and agent retries), so that
- * one message row keeps the text and every other stored scan keeps only ids, keys and scores. Readers fall back to
- * the entry's stored text when a scan has no text.
+ * Opt-in with LOREBOOK_COMPACT_STORED_SCANS=true (off by default, which keeps the stored shape unchanged). Only the
+ * newest assistant or narrator message's scan is read with its text (Active Context and agent retries), so that message keeps
+ * the text on its row and on every swipe (swiping back still restores the text that built that swipe), and the
+ * scans of older messages keep only ids, names, keys and scores. When an older message becomes the newest again
+ * (the newer ones were deleted), readers fall back to the entry's stored text.
  */
 
 export const COMPACT_LOREBOOK_SCAN_MARKER = "contentStripped";
@@ -42,6 +44,25 @@ export function serializedExtraMayHoldFullLorebookScan(extra: unknown): boolean 
     extra.includes('"lorebookScan"') &&
     !extra.includes(`"${COMPACT_LOREBOOK_SCAN_MARKER}":true`)
   );
+}
+
+/**
+ * Stored text of each activated entry that a scan keeps without text (a compacted scan), by entry id. Entries that
+ * still carry their resolved text, and entries that no longer exist, are left out.
+ */
+export async function storedContentForTextlessScanEntries(
+  scan: unknown,
+  getEntry: (id: string) => Promise<unknown>,
+): Promise<Map<string, string>> {
+  const contentById = new Map<string, string>();
+  if (!isRecord(scan) || !Array.isArray(scan.activatedEntries)) return contentById;
+  for (const entry of scan.activatedEntries) {
+    if (!isRecord(entry) || typeof entry.id !== "string" || typeof entry.content === "string") continue;
+    if (contentById.has(entry.id)) continue;
+    const stored = await getEntry(entry.id).catch(() => null);
+    if (isRecord(stored) && typeof stored.content === "string") contentById.set(entry.id, stored.content);
+  }
+  return contentById;
 }
 
 /** Returns the extra with a compacted scan, or null when there was nothing to compact. */

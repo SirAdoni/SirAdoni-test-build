@@ -9,10 +9,12 @@ export const MAX_RELEASE_NOTE_VERSIONS = 20;
 
 export const capabilityPackageKindSchema = z.enum(["agent", "maps", "conversation-calls", "turn-game", "ruleset"]);
 export const capabilityPermissionSchema = z.enum([
+  "achievements",
   "agent-runtime",
   "chat-read",
   "chat-write",
   "conversation-actions",
+  "mari-actions",
   "network",
   "prompt-context",
   "routes",
@@ -45,6 +47,14 @@ const capabilityPackageManifestBaseSchema = z
               })
               .strict()
               .optional(),
+            homeWidgets: z
+              .record(
+                z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+                z
+                  .object({ label: z.string().min(1).max(80).optional(), description: z.string().max(200).optional() })
+                  .strict(),
+              )
+              .optional(),
           })
           .strict(),
       )
@@ -72,6 +82,8 @@ const capabilityPackageManifestBaseSchema = z
               "game-world-map",
               // Adds a top-level destination to Home's browser shell.
               "home-browser-tab",
+              // Agent-owned cards inside the Home widget grid.
+              "home-widget",
               // Mounts the package's own game UI over the narration.
               "game-surface",
               // Compact package-owned tracker controls in Roleplay chat chrome.
@@ -138,6 +150,51 @@ const capabilityPackageManifestBaseSchema = z
               .optional(),
           })
           .strict()
+          .optional(),
+        homeWidgets: z
+          .array(
+            z
+              .object({
+                id: z
+                  .string()
+                  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
+                  .max(64),
+                label: z.string().min(1).max(80),
+                description: z.string().max(200),
+                size: z.enum(["compact", "large"]),
+                icon: z
+                  .enum([
+                    "activity",
+                    "bell",
+                    "calendar",
+                    "chart",
+                    "circle",
+                    "clock",
+                    "file",
+                    "flame",
+                    "heart",
+                    "image",
+                    "list",
+                    "message",
+                    "sparkles",
+                    "star",
+                    "zap",
+                  ])
+                  .optional(),
+                iconPath: z
+                  .string()
+                  .min(1)
+                  .max(240)
+                  .regex(/\.(?:gif|jpe?g|png|webp)$/iu)
+                  .optional(),
+                accent: z.enum(["cyan", "green", "amber", "orange", "rose", "violet"]).optional(),
+                surface: z.enum(["soft", "solid", "quiet"]).optional(),
+                header: z.enum(["standard", "compact", "banner"]).optional(),
+              })
+              .strict(),
+          )
+          .min(1)
+          .max(3)
           .optional(),
         /** General package-owned static assets (art, sprite atlases, tilemap JSON) served over
          *  `/api/capability-packages/:id/assets/*` through the same verification chain as
@@ -310,7 +367,109 @@ const capabilityPackageManifestBaseSchema = z
 //        for. Not a soft seam, for the same reason as 1.20 through 1.31: an Engine that cannot read
 //        the key refuses the whole ruleset file, so a package that ships it declares 1.32. No
 //        permission.
-export const supportedCapabilityApi = Object.freeze({ major: 1, minor: 32 } as const);
+// 1.33: a catalog entry that says WHICH moment it waits for. `mechanics.reaction` may be an object
+//        rather than `true`: `on` names the moment the Engine notices ("aimed" before something
+//        lands on its holder, "harmed" after something has hurt them), `at` says whom what is taken
+//        is pointed at, and `cancels` stops what the window was holding from happening at all. An
+//        entry that still says only `true` is on no menu, exactly as before, so a package that
+//        ships one needs nothing newer. Not a soft seam, for the same reason as 1.20 through 1.32:
+//        an Engine that cannot read the object refuses the whole catalog asset, so a package that
+//        ships one declares 1.33. No permission.
+// 1.34: a bestiary creature described in the ruleset's own terms. A creature may carry a `sheet`:
+//        a character sheet, as partial as it likes, keyed by the ids the ruleset declares. An
+//        opponent built from one is built the way a party member is, so its health (a pool or a
+//        track), defense, saves, speed, initiative and the abilities on its lists come from the
+//        ruleset's own declarations, and it may pay for them out of its own pools. The fixed
+//        `health`, `defense` and `initiativeModifier` a creature needed before are then not given,
+//        and a creature with a sheet may have no block actions of its own. Not a soft seam, for the
+//        same reason as 1.20 through 1.33: an Engine that cannot read the key refuses the whole
+//        strict catalog file, so a package that ships one declares 1.34. No permission.
+// 1.36: package achievements. `api.registerAchievements` adds badges to the Home panel and
+//        `api.runtime.achievements` reads and unlocks them. Requires the `achievements` permission.
+// 1.37: a check's rules moved for one roll, and a sheet the Game Master reads more of.
+//        `resolution.explode` and `resolution.double` may carry a `min` (and then may leave `from`
+//        out) so a check can move the face they fire on, a catalog entry's `mechanics.check` may do
+//        the same with `explode` and `double`, `resolution.pool.abilityPlusAbility` lets an ability
+//        check add a second ability, and `resolution.botch.rule` reads a botch as low faces on half
+//        the dice or more. On the sheet, a plain `live.tracks` entry may take its `max` from a value
+//        the sheet works out and may carry `hideWhen` and `alwaysShow`, and a `gm.sheetSummary.lists`
+//        entry may show `columns` and be named by an enum column. Not a soft seam, for the same
+//        reason as 1.20 through 1.34: an Engine that cannot read these keys refuses the whole
+//        ruleset file, or the catalog file that holds them, so a package that ships any of them
+//        declares 1.37. No permission.
+// 1.38: what a check may buy and what rides along on it. `resolution.reroll` lists standing re-throws
+//        a check may name with `reroll=`, a `resolution.spend` entry may buy a `reroll` and read its
+//        `perCheck` limit off the sheet (a value reference, or `"pool"` for the check's own dice), a
+//        ruleset may declare up to four spends, and `resolution.adjust` adds numbers off the sheet to
+//        every check they apply to. Not a soft seam, for the same reason as 1.20 through 1.37: an
+//        Engine that cannot read these keys refuses the whole ruleset file, so a package that ships
+//        any of them declares 1.38. No permission.
+// 1.39: what a sheet can read. A value reference may read a live track (`liveTrack`, with `read`)
+//        or pool (`livePool`), or add up a list's column (`listSum`); a skill or save may carry a
+//        `cap`; and `hideWhen` may compare with `notEquals` or `in` as well as `equals`. Not a soft
+//        seam, for the same reason as 1.20 through 1.38: an Engine that cannot read these keys
+//        refuses the whole ruleset file, so a package that ships any of them declares 1.39. No
+//        permission.
+// 1.40: wound tracks that are more than a fixed list. A track may be numbered `boxes` (as many as
+//        its own `max`, with a penalty table over boxes filled or remaining), `fill` by box
+//        (`indexed`), `onFull: "refuse"`, and take `extra` levels from a list; a rest's restore
+//        step may name the `kind` it heals. Not a soft seam, for the same reason as 1.20 through
+//        1.39: an Engine that cannot read these keys refuses the whole ruleset file, so a package
+//        that ships any of them declares 1.40. No permission.
+// 1.41: abilities, skills and saves may sit in a `section`, and a skill, save or section may say
+//        what a check does `untrained` (roll as usual, one step harder, not at all, or `by` a
+//        number). Not a soft seam, for the same reason as 1.20 through 1.40: an Engine that cannot
+//        read these keys refuses the whole ruleset file, so a package that ships any of them
+//        declares 1.41. No permission.
+// 1.42: a sheet's live section may declare `states` (one value out of a closed set that changes in
+//        play, set by `op="state"`), a derived value may be an `enumTable` keyed on an enum field or a
+//        live state, and a rest's restore step may put a `state` back. Not a soft seam, for the same
+//        reason as 1.20 through 1.41: an Engine that cannot read these keys refuses the whole ruleset
+//        file, so a package that ships any of them declares 1.42. No permission.
+// 1.43: a ruleset's combat block may declare `checks` (numbers off the sheet a contest reads) and
+//        `contests` (both sides throw the attack dice and add a check; winning applies or ends
+//        conditions and pushes on a board), and a creature may give its own `checks`. Not a soft
+//        seam, for the same reason as 1.20 through 1.42: an Engine that cannot read these keys
+//        refuses the whole ruleset or catalog file, so a package that ships any of them declares
+//        1.43. No permission.
+// 1.44: a catalog entry's reaction may wait for `on: "used"` (somebody on the other side is about to
+//        use something, anywhere it reaches, and it may be called off) and may name `against` (only
+//        entries of these catalogs open its moment). Not a soft seam, for the same reason as 1.20
+//        through 1.43: an Engine that cannot read these refuses the whole catalog, so a package that
+//        ships any of them declares 1.44. No permission.
+// 1.45: a combat condition may change numbers (`modifiers` to defense, attacks, saves, checks and
+//        speed) and make checks easier or harder, `combat.levels` makes a live track's levels count
+//        as conditions, and an applied condition may count down as turns begin (`duration.at`) or end
+//        after one use (`endsAfter`). Not a soft seam, for the same reason as 1.20 through 1.44: an
+//        Engine that cannot read these refuses the whole ruleset or catalog file, so a package that
+//        ships any of them declares 1.45. No permission.
+// 1.46: a reaction may wait for `on: "hit"` (an attack roll has just hit its holder, before the
+//        damage; what is taken counts for that attack), and a creature's action may carry the same
+//        `reaction` object and `self: true` for one that lands on the creature itself. Not a soft
+//        seam, for the same reason as 1.20 through 1.45: an Engine that cannot read these refuses the
+//        whole catalog, so a package that ships any of them declares 1.46. No permission.
+// 1.47: a second combat kind, `dice-pool`: a fight thrown in the ruleset's own pools and counted in
+//        successes, with a `pool` block (damage target and soak by kind), a creature's own `soak`,
+//        and an attack row's `toHit.skill`. Beside it, for either kind, `initiative.each` throws
+//        initiative again every round and `combat.spendLimits` caps what one combatant spends of a
+//        pool per turn or round. Not a soft seam, for the same reason as 1.20 through 1.46: an Engine
+//        that cannot read these refuses the whole ruleset or catalog file, so a package that ships
+//        any of them declares 1.47. No permission.
+// 1.48: initiative in a `dice-pool` fight may be thrown as a pool (`initiative.pool`, whose
+//        successes and `plus` are the number), and may be a number attacks move
+//        (`initiative.resource`: styles of attack that take it or spend it, a crash line, and the
+//        order following it every round). Not a soft seam, for the same reason as 1.20 through 1.47:
+//        an Engine that cannot read these refuses the whole ruleset file, so a package that ships any
+//        of them declares 1.48. No permission.
+// 1.49: a ruleset may describe items: an `items` block (categories, rarities, tags, stats, slots,
+//        binding, carry, currencies, `native` and `freeform`) and a third catalog kind,
+//        `holds: "items"`, whose entries carry an `item`. Not a soft seam, for the same reason as 1.20
+//        through 1.48: an Engine that cannot read these refuses the whole ruleset or catalog file, so
+//        a package that ships any of them declares 1.49. No permission.
+// 1.50: Professor Mari actions. A package holding the `mari-actions` permission may register
+//        `api.registerService("mari-actions:<package-id>", { list, run })`, and Professor Mari's
+//        `package_service` tool can list and run those actions. Requires the `mari-actions` permission.
+export const supportedCapabilityApi = Object.freeze({ major: 1, minor: 50 } as const);
 
 const capabilityApiVersionSchema = z
   .object({
@@ -383,6 +542,28 @@ export const capabilityPackageManifestSchema = z
         });
       }
     }
+    // Same reason as `tools`: `registerAchievements` only exists on an Engine this new.
+    if (manifest.permissions.includes("achievements")) {
+      const api = manifest.schemaVersion === 2 ? manifest.capabilityApi : null;
+      if (!api || api.major < 1 || (api.major === 1 && api.minor < 36)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["permissions"],
+          message: 'The "achievements" permission requires schemaVersion 2 and capabilityApi 1.36 or newer',
+        });
+      }
+    }
+    // Same reason as `tools`: the `mari-actions:` service is only read by an Engine this new.
+    if (manifest.permissions.includes("mari-actions")) {
+      const api = manifest.schemaVersion === 2 ? manifest.capabilityApi : null;
+      if (!api || api.major < 1 || (api.major === 1 && api.minor < 50)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["permissions"],
+          message: 'The "mari-actions" permission requires schemaVersion 2 and capabilityApi 1.50 or newer',
+        });
+      }
+    }
     if (manifest.contributions?.gameSurface?.prepareBeforeStart) {
       const api = manifest.schemaVersion === 2 ? manifest.capabilityApi : null;
       if (!api || api.major < 1 || (api.major === 1 && api.minor < 17)) {
@@ -426,6 +607,43 @@ export const capabilityPackageManifestSchema = z
         });
       }
     }
+    const homeWidgets = manifest.contributions?.homeWidgets;
+    if (manifest.contributions?.slots?.includes("home-widget") || homeWidgets) {
+      const api = manifest.schemaVersion === 2 ? manifest.capabilityApi : null;
+      if (!api || api.major !== 1 || api.minor < 35) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["contributions", "homeWidgets"],
+          message: "Home widgets require capability API 1.35",
+        });
+      }
+      if (
+        !manifest.kind.includes("agent") ||
+        !manifest.permissions.includes("ui") ||
+        !manifest.entrypoints.client?.trim()
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["contributions", "homeWidgets"],
+          message: "Agent Home widgets require an agent package with UI permission and a client entrypoint",
+        });
+      }
+      if (!manifest.contributions?.slots?.includes("home-widget") || !homeWidgets?.length) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["contributions", "homeWidgets"],
+          message: "The home-widget slot and widget definitions must be declared together",
+        });
+      }
+      const ids = homeWidgets?.map((widget) => widget.id) ?? [];
+      if (new Set(ids).size !== ids.length) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["contributions", "homeWidgets"],
+          message: "Home widget IDs must be unique within the agent",
+        });
+      }
+    }
     // Icon paths feed the same serve-path allowlist as general assets, so they
     // must be hash-pinned in files[] whether or not the home-browser-tab slot is
     // declared — an unpinned (or traversal-shaped) icon path would otherwise
@@ -436,6 +654,15 @@ export const capabilityPackageManifestSchema = z
           code: z.ZodIssueCode.custom,
           path: ["contributions", "homeBrowserTab", "iconPaths", index],
           message: "A Home browser tab icon must be declared in the package file manifest",
+        });
+      }
+    }
+    for (const [index, widget] of (manifest.contributions?.homeWidgets ?? []).entries()) {
+      if (widget.iconPath && !manifest.files.some((file) => file.path === widget.iconPath)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["contributions", "homeWidgets", index, "iconPath"],
+          message: "A Home widget icon must be declared in the package file manifest",
         });
       }
     }

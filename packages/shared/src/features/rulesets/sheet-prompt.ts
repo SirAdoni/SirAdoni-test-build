@@ -13,11 +13,17 @@ import {
   type RulesetCatalogEntriesById,
   type RulesetDefinition,
   type RulesetField,
+  type RulesetListColumn,
   type RulesetSheetBuild,
 } from "../../schemas/ruleset.schema.js";
 import { readRulesetLive } from "./live-state.js";
 import { rulesetCatalogEntriesByRef } from "./scaled-rows.js";
-import { evaluateRulesetSheet, formatRulesetCheckValue, isRulesetItemHidden } from "./sheet-math.js";
+import {
+  evaluateRulesetSheet,
+  formatRulesetCheckValue,
+  isRulesetItemHidden,
+  rulesetSectionGroups,
+} from "./sheet-math.js";
 
 /** How much of one sheet value reaches the prompt. */
 const MAX_VALUE_LENGTH = 80;
@@ -51,6 +57,21 @@ function cellText(value: unknown): string {
   return "";
 }
 
+/** One cell as the sheet shows it: a cell the row leaves out reads as its column's default, the way
+ *  the editor shows it, and an enum column's value reads by the label the ruleset gives it. */
+function columnText(
+  list: { columns: ReadonlyArray<RulesetListColumn> },
+  id: string,
+  row: Record<string, unknown>,
+): string {
+  const column = list.columns.find((candidate) => candidate.id === id);
+  const stored = own(row, id);
+  const value = stored === undefined ? column?.default : stored;
+  if (column?.type === "boolean") return value === true ? safeValue(column.label) : "";
+  if (column?.type === "enum" && typeof value === "string") return safeValue(column.valueLabels?.[value] ?? value);
+  return cellText(value);
+}
+
 function fieldText(field: RulesetField, build: RulesetSheetBuild): string {
   const stored = build.fields?.[field.id];
   const value = stored === undefined ? field.default : stored;
@@ -67,8 +88,8 @@ export function renderRulesetSheetBlock(
 ): string {
   const { sheet, gm } = definition;
   const build = card.build;
-  const evaluated = evaluateRulesetSheet(definition, build);
   const live = readRulesetLive(definition, build, stored);
+  const evaluated = evaluateRulesetSheet(definition, build, live);
   const catalogEntries = rulesetCatalogEntriesByRef(catalogs);
   const lines: string[] = [];
   const push = (line: string) => {
@@ -81,10 +102,17 @@ export function renderRulesetSheetBlock(
   // shows its one number and a 3d6 system shows what it adds. How it is SPELLED follows the
   // resolution kind: a pool ruleset's number is dice, not a bonus, and "+5" would read as one.
   const checkValue = (value: number) => formatRulesetCheckValue(definition, value);
+  // Grouped under their section headings where the ruleset gives them some ("Physical: Strength 3;
+  // Mental: Wits 2"); a sheet with no sections reads exactly as it always has.
+  const grouped = <T extends { section?: string }>(entries: T[], text: (entry: T) => string) =>
+    rulesetSectionGroups(definition, entries)
+      .map((group) => `${group.section ? `${group.section.label}: ` : ""}${group.entries.map(text).join(", ")}`)
+      .join("; ");
   push(
-    sheet.abilities
-      .map((ability) => `${ability.short ?? ability.label} ${checkValue(evaluated.abilityMods[ability.id] ?? 0)}`)
-      .join(", "),
+    grouped(
+      sheet.abilities,
+      (ability) => `${ability.short ?? ability.label} ${checkValue(evaluated.abilityMods[ability.id] ?? 0)}`,
+    ),
   );
 
   // "Trained" is whatever the ruleset's first tier is not: the first tier is the untrained default
@@ -93,12 +121,18 @@ export function renderRulesetSheetBlock(
   const trained = [
     ...sheet.skills
       .filter((skill) => (evaluated.skillTiers[skill.id] ?? firstTier) !== firstTier)
-      .map((skill) => `${skill.label} ${checkValue(evaluated.skillMods[skill.id] ?? 0)}`),
+      .map((skill) => ({
+        section: skill.section,
+        text: `${skill.label} ${checkValue(evaluated.skillMods[skill.id] ?? 0)}`,
+      })),
     ...sheet.saves
       .filter((save) => (evaluated.saveTiers[save.id] ?? firstTier) !== firstTier)
-      .map((save) => `${save.label} ${checkValue(evaluated.saveMods[save.id] ?? 0)}`),
+      .map((save) => ({
+        section: save.section,
+        text: `${save.label} ${checkValue(evaluated.saveMods[save.id] ?? 0)}`,
+      })),
   ];
-  if (trained.length > 0) push(`Trained: ${trained.join(", ")}`);
+  if (trained.length > 0) push(`Trained: ${grouped(trained, (entry) => entry.text)}`);
 
   const summary: string[] = [];
   for (const id of gm.sheetSummary.fields) {
@@ -122,7 +156,8 @@ export function renderRulesetSheetBlock(
 
   // A track at its default says nothing: three death saves at zero are the absence of a fact. A
   // marked WOUND track says how far down it is, what that level is called and what it costs a roll,
-  // because those three are exactly what the Game Master has to narrate honestly.
+  // because those three are exactly what the Game Master has to narrate honestly. A track the
+  // ruleset marks `alwaysShow` is a rating that matters every turn, so it is said at its default too.
   const resolvedTracks = new Map(live.tracks.map((track) => [track.id, track]));
   push(
     sheet.live.tracks
@@ -130,16 +165,18 @@ export function renderRulesetSheetBlock(
         const resolved = resolvedTracks.get(track.id);
         if (!resolved) return [];
         if (resolved.wound) {
-          if (resolved.value === 0 && resolved.wound.overflow === 0) return [];
-          const level = resolved.wound.levels[resolved.value - 1]?.label;
+          if (resolved.value === 0 && resolved.wound.overflow === 0 && !track.alwaysShow) return [];
+          // Numbered boxes have no name to say beyond how many are marked.
+          const level = resolved.wound.numbered ? undefined : resolved.wound.levels[resolved.wound.lowest]?.label;
           const over = resolved.wound.overflow > 0 ? ` +${resolved.wound.overflow} over` : "";
           const penalty = resolved.wound.penalty !== 0 ? ` ${resolved.wound.penalty} to rolls` : "";
           return [
             `${track.label} ${resolved.value}/${resolved.max}${level ? ` ${safeValue(level)}` : ""}${penalty}${over}`,
           ];
         }
-        const fallback = Math.min(Math.max(track.default ?? track.min, track.min), track.max);
-        return resolved.value === fallback ? [] : [`${track.label} ${resolved.value}`];
+        // The maximum is the character's own, which is what the resolved track already holds.
+        const fallback = Math.min(Math.max(track.default ?? track.min, track.min), resolved.max);
+        return resolved.value === fallback && !track.alwaysShow ? [] : [`${track.label} ${resolved.value}`];
       })
       .join(", "),
   );
@@ -147,6 +184,10 @@ export function renderRulesetSheetBlock(
   push(
     live.text.flatMap((entry) => (entry.value.trim() ? [`${entry.label}: ${safeValue(entry.value)}`] : [])).join(", "),
   );
+
+  // A state is always one of its values, so it is said even at its default: "in human form" is a
+  // fact the narration needs every turn, where a track at its default is the absence of one.
+  push(live.states.map((state) => `${state.label} ${safeValue(state.valueLabel)}`).join(", "));
 
   const conditions = live.conditions.flatMap((condition) => (condition.active ? [condition.label] : []));
   if (conditions.length > 0) push(`Conditions: ${conditions.join(", ")}`);
@@ -167,8 +208,14 @@ export function renderRulesetSheetBlock(
         const on = typeof flag === "boolean" ? flag : column?.type === "boolean" && (column.default ?? false);
         if (!on) continue;
       }
-      const name = cellText(own(row as Record<string, unknown>, entry.nameColumn));
+      const name = columnText(list, entry.nameColumn, row as Record<string, unknown>);
       if (!name) continue;
+      // The columns the ruleset asked to see beside the name, as the sheet would show them: a rating
+      // is its number, an enum its label, and a flag its column's label when it is set.
+      const beside = (entry.columns ?? [])
+        .map((id) => columnText(list, id, row as Record<string, unknown>))
+        .filter(Boolean)
+        .join(" ");
       const ref = own(row as Record<string, unknown>, RULESET_CATALOG_ROW_KEY);
       const mechanics = typeof ref === "string" ? catalogEntries.get(ref)?.mechanics : undefined;
       const cost = mechanics?.cost?.map((term) => `${term.amount} ${safeValue(term.pool)}`).join(" + ");
@@ -179,7 +226,7 @@ export function renderRulesetSheetBlock(
       const check = mechanics?.check
         ? ` (check: ${JSON.stringify(mechanics.check)}${cost ? `; pool cost: ${cost}` : ""}${scale})`
         : "";
-      const describedName = name + check;
+      const describedName = (beside ? `${name} ${beside}` : name) + check;
       const group = entry.groupBy === undefined ? "" : cellText(own(row as Record<string, unknown>, entry.groupBy));
       const bucket = groups.get(group);
       if (bucket) bucket.push(describedName);

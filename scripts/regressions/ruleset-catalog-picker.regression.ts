@@ -85,7 +85,7 @@ const definition = parsed.definition;
 const catalog = definition.catalogs?.[0];
 assert.ok(catalog, "the example ruleset ships a catalog");
 const entries = catalog.entries ?? [];
-assert.equal(entries.length, 7);
+assert.equal(entries.length, 8);
 
 const emptyBuild = (lists: RulesetSheetBuild["lists"] = {}, fields: RulesetSheetBuild["fields"] = {}) =>
   ({ abilities: {}, skills: {}, saves: {}, bonuses: {}, fields, lists }) satisfies RulesetSheetBuild;

@@ -143,11 +143,9 @@ export function buildChatSearchSnippet(
   const shift = prefix.length - start;
   const highlights = ranges
     .filter(([rangeStart, rangeEnd]) => rangeEnd > start && rangeStart < end)
-    .map(
-      ([rangeStart, rangeEnd]): ChatSearchHighlight => [
-        Math.max(rangeStart, start) + shift,
-        Math.min(rangeEnd, end) + shift,
-      ],
-    );
+    .map(([rangeStart, rangeEnd]): ChatSearchHighlight => [
+      Math.max(rangeStart, start) + shift,
+      Math.min(rangeEnd, end) + shift,
+    ]);
   return { text: `${prefix}${text.slice(start, end)}${suffix}`, highlights };
 }

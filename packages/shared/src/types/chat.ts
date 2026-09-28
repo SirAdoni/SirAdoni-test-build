@@ -252,12 +252,7 @@ export function normalizeSummaryTailMessages(value: unknown): number {
 export const CHAT_SUMMARY_OUTPUT_TOKENS = { MIN: 1, MAX: 32768, DEFAULT: 4096 } as const;
 
 export type CampaignMemoryBranchHeldRecordType =
-  | "entity"
-  | "fact"
-  | "knowledge"
-  | "event"
-  | "current-state"
-  | "relationship";
+  "entity" | "fact" | "knowledge" | "event" | "current-state" | "relationship";
 
 export interface CampaignMemoryBranchHeldRecord {
   recordType: CampaignMemoryBranchHeldRecordType;
@@ -319,6 +314,9 @@ export interface ChatMetadata {
   automaticSummaryEnabled?: boolean;
   /** Keep recent automatic summaries in context while retrieving relevant older Conversation weeks or Roleplay entries. */
   semanticSummaryRetrievalEnabled?: boolean;
+  semanticSummaryRecentCount?: number;
+  semanticSummaryOlderCount?: number;
+  semanticSummaryMinSimilarity?: number;
   /** Last assistant message ID processed by the automatic Roleplay summary updater. */
   lastAutomaticSummaryMessageId?: string | null;
   /** Chat-scoped manual summary prompt templates. Missing or empty uses the built-in default. */
@@ -422,6 +420,8 @@ export interface ChatMetadata {
   spriteCharacterIds?: string[];
   /** Which sprite file families the roleplay Expression Engine may display. */
   spriteDisplayModes?: Array<"expressions" | "full-body">;
+  /** Only show roleplay sprites returned by the latest completed Expression Engine result. Off by default. */
+  expressionOnlyActiveSprites?: boolean;
   /** Preferred sidebar / default layout side for chat sprites. */
   spritePosition?: SpriteSide;
   /**
@@ -523,6 +523,7 @@ export interface ChatMetadata {
   roleplayRollAudience?: RoleplayCommandAudience;
   roleplayCombatAudience?: RoleplayCommandAudience;
   roleplayDocumentAudience?: RoleplayCommandAudience;
+  roleplayWhisperAudience?: RoleplayCommandAudience;
   roleplaySoundConnectionId?: string | null;
   /** Chat-scoped Intiface Central WebSocket URL for haptic manual and auto-connect. */
   hapticIntifaceUrl?: string | null;
@@ -962,6 +963,8 @@ export interface MessageExtra {
   mariDeferredMutations?: boolean | null;
   /** Per-swipe sprite expressions from the Expression Engine agent */
   spriteExpressions?: Record<string, string> | null;
+  /** All sprite owners in the completed expression result, including the persona. Empty means none. */
+  expressionSpriteIds?: string[];
   /** Per-swipe CYOA choices from the CYOA Choices agent */
   cyoaChoices?: Array<{ label: string; text: string }> | null;
   /** Presentation-only Game Mode cues retained so completed turns can be replayed without rerunning scene analysis. */

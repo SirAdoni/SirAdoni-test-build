@@ -2607,6 +2607,23 @@ function cloneNovelAiRequestForMetadata(body: Record<string, unknown>): Record<s
   return metadataBody;
 }
 
+/** Inspector text follows the final provider payload, including native character captions. */
+export function getNovelAiDisplayPrompt(body: Record<string, unknown>): string {
+  const parameters = isRecord(body.parameters) ? body.parameters : {};
+  const v4Prompt = isRecord(parameters.v4_prompt) ? parameters.v4_prompt : {};
+  const caption = isRecord(v4Prompt.caption) ? v4Prompt.caption : {};
+  const base = typeof caption.base_caption === "string" ? caption.base_caption : body.input;
+  const characters = Array.isArray(caption.char_captions) ? caption.char_captions : [];
+  return [
+    typeof base === "string" ? base : "",
+    ...characters.flatMap((entry) =>
+      isRecord(entry) && typeof entry.char_caption === "string" ? [entry.char_caption] : [],
+    ),
+  ]
+    .filter((part) => part.trim())
+    .join(" | ");
+}
+
 function sanitizeNovelAiV4Prompt(value: string, allowUnicode = false): string {
   return value
     .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
@@ -2830,6 +2847,7 @@ async function generateNovelAI(baseUrl: string, apiKey: string, request: ImageGe
     use_new_shared_trial: true,
   });
   const metadataBody = cloneNovelAiRequestForMetadata(body);
+  const effectivePrompt = getNovelAiDisplayPrompt(body);
 
   const hasReferences = directorReferenceImages.length > 0;
   const resp = await imageFetch(
@@ -2865,7 +2883,7 @@ async function generateNovelAI(baseUrl: string, apiKey: string, request: ImageGe
     if (extracted) {
       const imageBytes = appendNovelAiGenerationMetadata(Buffer.from(extracted), metadataBody);
       const base64 = imageBytes.toString("base64");
-      return { base64, mimeType: "image/png", ext: "png" };
+      return { base64, mimeType: "image/png", ext: "png", effectivePrompt };
     }
   }
 
@@ -2873,7 +2891,7 @@ async function generateNovelAI(baseUrl: string, apiKey: string, request: ImageGe
   if (bytes[0] === 0x89 && bytes[1] === 0x50) {
     const imageBytes = appendNovelAiGenerationMetadata(Buffer.from(bytes), metadataBody);
     const base64 = imageBytes.toString("base64");
-    return { base64, mimeType: "image/png", ext: "png" };
+    return { base64, mimeType: "image/png", ext: "png", effectivePrompt };
   }
 
   // Try parsing as JSON (some proxies return JSON with base64)
@@ -2881,7 +2899,7 @@ async function generateNovelAI(baseUrl: string, apiKey: string, request: ImageGe
     const text = new TextDecoder().decode(bytes);
     const json = JSON.parse(text);
     const b64 = json.data?.[0]?.b64_json ?? json.output?.[0] ?? json.image;
-    if (b64) return { base64: b64, mimeType: "image/png", ext: "png" };
+    if (b64) return { base64: b64, mimeType: "image/png", ext: "png", effectivePrompt };
   } catch {
     /* not JSON */
   }

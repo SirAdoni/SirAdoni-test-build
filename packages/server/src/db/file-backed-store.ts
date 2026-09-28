@@ -31,12 +31,20 @@ import { hostname, networkInterfaces, uptime } from "node:os";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { STORAGE_MIGRATION_NOTICE_SETTINGS_KEY, type StorageMigrationNotice } from "@marinara-engine/shared";
 import { logger } from "../lib/logger.js";
-import { logSuppressed } from "../lib/best-effort.js";
 import { diagnosticDetails, getDiagnosticContext, runWithRootDiagnosticContext } from "../lib/diagnostics.js";
 import { registerWorkerGauge } from "../lib/worker-gauges.js";
 import { getRuntimeMemorySnapshot } from "../utils/runtime-memory.js";
-import { getFileStorageDir, getMaxResidentChatUnits } from "../config/runtime-config.js";
-import { cachedBootId, persistentWriterHostId } from "./writer-host-identity.js";
+import {
+  getFileStorageDir,
+  getMaxResidentChatUnits,
+  getWindowsBootIdCachePath,
+  isStorageSkipUnchangedWritesEnabled,
+  isStorageYieldingSerializeEnabled,
+  isWindowsBootIdCacheEnabled,
+} from "../config/runtime-config.js";
+import { logRateLimited } from "../lib/log-rate-limit.js";
+import { cachedBootId } from "./writer-boot-id-cache.js";
+import { persistentWriterHostId } from "./writer-host-identity.js";
 import * as schema from "./schema/index.js";
 import { inArray, isFileCondition, isFileOrdering, type FileCondition, type FileOrdering } from "./file-query.js";
 import { migrateLegacyNoodleAccountRow } from "./noodle-platform-migration.js";
@@ -189,6 +197,7 @@ export type QuarantinedStorageTable = {
   }>;
 };
 
+/** Counts-only view of the live store, for the admin runtime diagnostics endpoint. */
 export type FileStoreStats = {
   tables: Record<string, { rows: number; lazy: boolean; fullyResident: boolean }>;
   residentChatUnits: number;
@@ -713,7 +722,7 @@ export function encodeShardKey(rawKey: string): string {
 export function decodeShardKey(encoded: string): string | null {
   if (!encoded || encoded.startsWith("%h")) return null;
   const bytes: number[] = [];
-  for (let i = 0; i < encoded.length; ) {
+  for (let i = 0; i < encoded.length;) {
     const char = encoded[i]!;
     if (char === "%") {
       const hex = encoded.slice(i + 1, i + 3);
@@ -1753,8 +1762,8 @@ function readBootId() {
     }
   }
   if (process.platform === "win32") {
-    // The PowerShell probe below costs about 1.5 to 2 s of blocked startup on
-    // every launch; reuse its exact output for the rest of this OS boot.
+    // The PowerShell probe can block startup for 1.5–2 s. Preserve the private per-user cache;
+    // on installs without LOCALAPPDATA, the upstream DATA_DIR cache remains explicitly opt-in.
     if (process.env.LOCALAPPDATA) {
       return cachedBootId(
         join(process.env.LOCALAPPDATA, "MarinaraEngine", "writer-boot-id.json"),
@@ -1762,12 +1771,15 @@ function readBootId() {
         probeWindowsBootId,
       );
     }
+    if (isWindowsBootIdCacheEnabled()) {
+      return cachedBootId(getWindowsBootIdCachePath(), Date.now() - uptime() * 1000, probeWindowsBootId);
+    }
     return probeWindowsBootId();
   }
   return null;
 }
 
-/** Exact LastBootUpTime string; its format must never change (leases compare it). */
+/** Exact LastBootUpTime string; its format must never change (writer leases compare it). */
 function probeWindowsBootId(): string | null {
   try {
     const executable = process.env.SystemRoot
@@ -1786,6 +1798,8 @@ function probeWindowsBootId(): string | null {
         stdio: ["ignore", "pipe", "ignore"],
         timeout: 2_000,
         maxBuffer: 8 * 1024,
+        // Without this, a server started without a console (tray app,
+        // shortcut, service) flashes a PowerShell window on every boot.
         windowsHide: true,
       },
     );
@@ -2219,7 +2233,7 @@ function serializeTableRows(table: string, rows: Row[]): string {
 /**
  * Longest stretch (ms) the flush serializer runs before yielding the event
  * loop. JSON.stringify of a large chat shard is one synchronous call (about
- * 90ms for a 9.5 MB shard on a desktop), which stalled every HTTP request and
+ * 90 ms for a 9.5 MB shard on a desktop), which stalls every HTTP request and
  * stream chunk for the duration of each flush during generation.
  */
 const SERIALIZE_YIELD_BUDGET_MS = 12;
@@ -2233,15 +2247,19 @@ function yieldToEventLoop(): Promise<void> {
  * to the event loop whenever a slice exceeds SERIALIZE_YIELD_BUDGET_MS, so a
  * large shard no longer blocks requests while it is flushed. Small shards
  * finish inside one slice and never yield. The content fingerprint is hashed
- * incrementally in the same slices, so no single sync pass covers the whole
- * payload either. Safe to interleave: the caller hands over a private bucket
- * array and stored rows are immutable (every mutation replaces the object).
+ * incrementally in the same slices. Safe to interleave: the caller hands over
+ * a private bucket array and stored rows are immutable (every mutation
+ * replaces the object).
  */
-async function serializeTableRowsYielding(table: string, rows: Row[]): Promise<{ text: string; fingerprint: string }> {
+async function serializeTableRowsYielding(
+  table: string,
+  rows: Row[],
+  withFingerprint = true,
+): Promise<{ text: string; fingerprint: string | null }> {
   const vectorColumns = VECTOR_TEXT_COLUMNS[table];
-  const hash = createHash("sha1");
+  const hash = withFingerprint ? createHash("sha1") : null;
   let text = "[";
-  hash.update(text);
+  hash?.update(text);
   let sliceStart = performance.now();
   for (let index = 0; index < rows.length; index++) {
     let row = rows[index]!;
@@ -2256,13 +2274,14 @@ async function serializeTableRowsYielding(table: string, rows: Row[]): Promise<{
     // JSON.stringify(array) renders an unserializable element as null.
     const part = (index > 0 ? "," : "") + (JSON.stringify(row) ?? "null");
     text += part;
-    hash.update(part);
+    hash?.update(part);
     if (performance.now() - sliceStart >= SERIALIZE_YIELD_BUDGET_MS) {
       await yieldToEventLoop();
       sliceStart = performance.now();
     }
   }
   text += "]";
+  if (!hash) return { text, fingerprint: null };
   hash.update("]");
   return { text, fingerprint: `${text.length}:${hash.digest("hex")}` };
 }
@@ -2287,6 +2306,7 @@ function fileStillMatches(path: string, written: WrittenFileFingerprint): boolea
     const stats = statSync(path);
     return stats.isFile() && stats.size === written.size && stats.mtimeMs === written.mtimeMs;
   } catch {
+    // Missing or unreadable: not a match, so the flush writes it again.
     return false;
   }
 }
@@ -2820,11 +2840,8 @@ class FileTableStore {
   private tableWriteGenerations = new Map<string, number>();
   private backupRecoveredPaths = new Set<string>();
   /**
-   * Last durable write per snapshot path (shards, flat tables, manifest). A
-   * flush whose serialized content matches, while the file on disk still has
-   * the recorded size and mtime, skips the tmp + fsync + rename and the .bak
-   * refresh: a dirty mark that changed nothing (an update that set the same
-   * values, a re-marked shard) no longer rewrites a multi-megabyte chat.
+   * Last durable write per snapshot path (shards, flat tables, and manifest). An unchanged
+   * fingerprint plus matching disk size and mtime skips the tmp/fsync/rename and backup refresh.
    */
   private writtenFingerprints = new Map<string, WrittenFileFingerprint>();
   private dirty = false;
@@ -4559,17 +4576,6 @@ class FileTableStore {
     return leased;
   }
 
-  getResidentLazyRows(table: string): ReadonlyArray<Row> {
-    // Every row of the table currently in memory, whatever unit it belongs to
-    // (#5613): the condition language can only address rows by column values,
-    // which cannot express "any row in this unit" for rows whose owner key is
-    // null or malformed — those live in the pinned UNASSIGNED unit and would
-    // otherwise be unreachable without a whole-table lease. The array is a
-    // snapshot; the row objects are shared, which is safe because rows are
-    // immutable once stored (#4730 — every mutation replaces).
-    return [...(this.tables.get(table) ?? [])];
-  }
-
   getStorageStats(): FileStoreStats {
     // Counts only: no row data leaves the store, and nothing is loaded from disk.
     const tables: FileStoreStats["tables"] = {};
@@ -4588,6 +4594,17 @@ class FileTableStore {
       lastFlushError: flushError ? (flushError instanceof Error ? flushError.message : String(flushError)) : null,
       quarantinedTables: this.quarantinedTables.length,
     };
+  }
+
+  getResidentLazyRows(table: string): ReadonlyArray<Row> {
+    // Every row of the table currently in memory, whatever unit it belongs to
+    // (#5613): the condition language can only address rows by column values,
+    // which cannot express "any row in this unit" for rows whose owner key is
+    // null or malformed — those live in the pinned UNASSIGNED unit and would
+    // otherwise be unreachable without a whole-table lease. The array is a
+    // snapshot; the row objects are shared, which is safe because rows are
+    // immutable once stored (#4730 — every mutation replaces).
+    return [...(this.tables.get(table) ?? [])];
   }
 
   markDirty(table: string, shardKeys?: Iterable<string>) {
@@ -5995,13 +6012,26 @@ class FileTableStore {
     for (const [key, shardRows] of rowsByShard) {
       const encoded = encodeShardKey(key);
       if (!effectiveDirty.has(key) && known.has(encoded)) continue;
-      const serialized = await serializeTableRowsYielding(table, shardRows);
+      const skipUnchanged = isStorageSkipUnchangedWritesEnabled();
+      let text: string;
+      let fingerprint: (() => string) | null = null;
+      if (isStorageYieldingSerializeEnabled()) {
+        const serialized = await serializeTableRowsYielding(table, shardRows, skipUnchanged);
+        text = serialized.text;
+        if (serialized.fingerprint !== null) {
+          const digest = serialized.fingerprint;
+          fingerprint = () => digest;
+        }
+      } else {
+        text = serializeTableRows(table, shardRows);
+      }
       const path = shardFilePath(this.rootDir, table, encoded);
-      await this.writeSnapshotFile(path, serialized.text, serialized.fingerprint, {
+      await this.writeSnapshotFile(path, text, fingerprint ?? (() => contentFingerprint(text)), {
         recoveredFromBackup: recoveredPaths.has(path),
         hookLabel: `${table}/${encoded}`,
         table,
         stats,
+        skipUnchanged,
       });
       known.add(encoded);
       if (this.deferredFlushWarnings.size > 0) {
@@ -6155,8 +6185,7 @@ class FileTableStore {
       }
       const path = tableFilePath(this.rootDir, table);
       if (dirtyTables.has(table) || !existsSync(path)) {
-        // Unreachable while every built-in table is sharded; kept as the
-        // plain full rewrite (no skip, no yield) so no untested path exists.
+        // Kept as the plain full rewrite: built-in tables are sharded, so this path has no trusted fingerprint.
         const serializedRows = serializeTableRows(table, rows);
         stats.currentPath = path;
         stats.tables.add(table);
@@ -6176,13 +6205,12 @@ class FileTableStore {
     };
     const path = manifestPath(this.rootDir);
     const serializedManifest = JSON.stringify(manifest, null, 2);
-    // savedAt changes on every flush, so the fingerprint covers everything
-    // EXCEPT it: a flush that changed no row counts keeps the manifest file
-    // (and its fsyncs) untouched. Nothing reads savedAt back.
+    // `savedAt` changes every flush, so the fingerprint covers stable manifest identity only.
     const { savedAt: _savedAt, ...manifestIdentity } = manifest;
-    await this.writeSnapshotFile(path, serializedManifest, contentFingerprint(JSON.stringify(manifestIdentity)), {
+    await this.writeSnapshotFile(path, serializedManifest, () => contentFingerprint(JSON.stringify(manifestIdentity)), {
       recoveredFromBackup: recoveredPaths.has(path),
       stats,
+      skipUnchanged: isStorageSkipUnchangedWritesEnabled(),
     });
     // No whole-set clear: the captured marks die with this batch on success,
     // and marks added DURING this flush (lazy unit loads recovering shards
@@ -6190,41 +6218,59 @@ class FileTableStore {
   }
 
   /**
-   * Durable snapshot write that skips the disk entirely when `fingerprint`
-   * matches this process's last durable write to `path` and the file still
-   * carries that write's size and mtime. Crash safety is unchanged: a real
-   * write still goes through atomicWriteFile (.bak refresh, tmp, fsync,
-   * rename), and a skipped write leaves the already-durable identical file.
-   * A path recovered from .bak this flush is never skipped: its primary is
-   * the corrupt copy that must be repaired.
+   * Durable snapshot write. With `skipUnchanged` off (the default) this is
+   * exactly the atomicWriteFile call it replaces. With it on
+   * (STORAGE_SKIP_UNCHANGED_WRITES), the disk is skipped entirely when the
+   * content fingerprint matches this process's last durable write to `path`
+   * and the file still carries that write's size and mtime. Crash safety is
+   * unchanged: a real write still goes through atomicWriteFile (.bak refresh,
+   * tmp, fsync, rename), and a skipped write leaves the already-durable
+   * identical file. A path recovered from .bak this flush is never skipped:
+   * its primary is the corrupt copy that must be repaired.
    */
   private async writeSnapshotFile(
     path: string,
     content: string,
-    fingerprint: string,
-    options: { recoveredFromBackup: boolean; hookLabel?: string; table?: string; stats: FlushStats },
+    fingerprint: () => string,
+    options: {
+      recoveredFromBackup: boolean;
+      hookLabel?: string;
+      table?: string;
+      stats: FlushStats;
+      skipUnchanged: boolean;
+    },
   ): Promise<boolean> {
-    const { recoveredFromBackup, hookLabel, table, stats: flushStats } = options;
+    const { recoveredFromBackup, hookLabel, table, stats: flushStats, skipUnchanged } = options;
     flushStats.currentPath = path;
     if (hookLabel !== undefined) await this.testHooks?.beforeTableWrite?.(hookLabel, content);
     const previous = this.writtenFingerprints.get(path);
-    if (!recoveredFromBackup && previous && previous.fingerprint === fingerprint && fileStillMatches(path, previous)) {
-      flushStats.filesSkipped += 1;
-      if (hookLabel !== undefined) this.testHooks?.onTableWriteSkipped?.(hookLabel);
-      return false;
-    }
-    if (table !== undefined) flushStats.tables.add(table);
-    // Forget the old record BEFORE writing: a failed or partial write must
-    // never leave a fingerprint vouching for content that is not on disk.
+    const effectiveTable = table ?? flushStats.currentTable;
+    if (effectiveTable) flushStats.tables.add(effectiveTable);
     this.writtenFingerprints.delete(path);
-    await atomicWriteFile(path, content, { refreshBackup: !recoveredFromBackup, stats: flushStats });
-    try {
-      const stats = statSync(path);
-      this.writtenFingerprints.set(path, { fingerprint, size: stats.size, mtimeMs: stats.mtimeMs });
-    } catch (error) {
-      // No record means the next flush simply writes again.
-      logSuppressed(error, { event: "storage.flush", stage: "fingerprint", level: "debug" });
+    if (skipUnchanged) {
+      const current = fingerprint();
+      if (!recoveredFromBackup && previous && previous.fingerprint === current && fileStillMatches(path, previous)) {
+        this.writtenFingerprints.set(path, previous);
+        flushStats.filesSkipped += 1;
+        if (hookLabel !== undefined) this.testHooks?.onTableWriteSkipped?.(hookLabel);
+        return false;
+      }
+      await atomicWriteFile(path, content, { refreshBackup: !recoveredFromBackup, stats: flushStats });
+      try {
+        const stat = statSync(path);
+        this.writtenFingerprints.set(path, { fingerprint: current, size: stat.size, mtimeMs: stat.mtimeMs });
+      } catch (err) {
+        logRateLimited(
+          "warn",
+          "file-storage.fingerprint-stat",
+          err,
+          "[file-storage] Could not record the written fingerprint for %s",
+          path,
+        );
+      }
+      return true;
     }
+    await atomicWriteFile(path, content, { refreshBackup: !recoveredFromBackup, stats: flushStats });
     return true;
   }
 

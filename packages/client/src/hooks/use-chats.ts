@@ -223,14 +223,7 @@ export function applyRecentMessageContentEditsToData(
 }
 
 export type ExpungeScope =
-  | "chats"
-  | "characters"
-  | "personas"
-  | "lorebooks"
-  | "presets"
-  | "connections"
-  | "automation"
-  | "media";
+  "chats" | "characters" | "personas" | "lorebooks" | "presets" | "connections" | "automation" | "media";
 
 export interface ConversationSummaryBackfillResult {
   generatedDays: string[];
@@ -643,6 +636,16 @@ function mergeMetadataForVersion(
     }
   }
   return next as Chat["metadata"];
+}
+
+/**
+ * Mark metadata fields as written by the client now, for a write that saves them through its own
+ * route rather than {@link useUpdateChatMetadata} (the Game inventory route). A metadata response
+ * produced before this moment then keeps its hands off those fields, exactly as it would after a
+ * metadata PATCH of them (#5641).
+ */
+export function claimChatMetadataFields(chatId: string, keys: string[]): number {
+  return nextChatMetadataMutationVersion(chatId, keys);
 }
 
 /**
@@ -1685,7 +1688,7 @@ export function usePeekPrompt() {
         } | null;
         gameToolPlanning?: GameToolPlanningInfo | null;
         agentNote?: string;
-        decisions?: { unanswered: string[]; decisionModelSet: boolean };
+        decisions?: { unanswered: string[]; dropped?: string[]; decisionModelSet: boolean };
       }>(`/chats/${chatId}/peek-prompt`, messageId ? { messageId } : latestExact ? { latestExact: true } : {});
     },
   });
@@ -1902,6 +1905,8 @@ export function useSetActiveSwipe(chatId: string | null) {
       // Switching an interruption's owner can also restore or cut its predecessor.
       qc.invalidateQueries({ queryKey: chatKeys.messages(chatId) });
       qc.invalidateQueries({ queryKey: lorebookKeys.active(chatId) });
+      // A game's inventory follows the telling that is shown, so the chat is read again.
+      qc.invalidateQueries({ queryKey: chatKeys.detail(chatId) });
     },
     onError: (_err, _vars, context) => {
       if (chatId && context?.previous) {
@@ -1922,6 +1927,8 @@ export function useDeleteSwipe(chatId: string | null) {
       qc.invalidateQueries({ queryKey: chatKeys.messages(chatId) });
       qc.invalidateQueries({ queryKey: lorebookKeys.active(chatId) });
       qc.invalidateQueries({ queryKey: [...chatKeys.all, "swipes", messageId] });
+      // Deleting the telling that is shown shows another, and a game's inventory follows it.
+      qc.invalidateQueries({ queryKey: chatKeys.detail(chatId) });
     },
   });
 }

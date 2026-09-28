@@ -16,8 +16,10 @@ import { createWriteStream, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { SidecarDecisionModelInfo } from "@marinara-engine/shared";
 import { logSuppressed } from "../../lib/best-effort.js";
+import { runWithRootLogContext } from "../../lib/log-context.js";
 import { logger } from "../../lib/logger.js";
 import { getDataDir } from "../../utils/data-dir.js";
+import { askNoulQuestions } from "../decision/system-one.client.js";
 import {
   artifactSnapshotPath,
   decisionRuntimeInstalled,
@@ -31,6 +33,8 @@ const LOG_PATH = join(getDataDir(), "sidecar-runtime", "decision", "server.log")
 const READY_TIMEOUT_MS = 180_000;
 /** How long a failed start is remembered before another one is attempted. */
 const START_BACKOFF_MS = 60_000;
+/** The first request on a cold kernel cache took 14.4 s once; a warm-up never waits longer than this. */
+const WARM_UP_TIMEOUT_MS = 60_000;
 
 export interface DecisionProcessStatus {
   running: boolean;
@@ -61,6 +65,8 @@ class DecisionProcessService {
    * began with and gives up at every checkpoint where it has changed.
    */
   private generation = 0;
+  /** Cancels the warm-up of the start in progress, so a stop never waits it out. */
+  private warmUpAbort: AbortController | null = null;
 
   getStatus(): DecisionProcessStatus {
     return {
@@ -100,29 +106,34 @@ class DecisionProcessService {
     }
     this.startingModelId = model.id;
     const generation = this.generation;
-    this.starting = this.start(model)
-      // Every failure path ends as a null, never a rejection. Callers gate on this,
-      // and a gate that throws stops an agent rather than running it.
-      .catch((error: unknown) => {
-        this.error = error instanceof Error ? error.message : "The decision sidecar could not start.";
-        logger.warn(error, "[decision-sidecar] Start threw");
-        return null;
-      })
-      .then((baseUrl) => {
-        if (baseUrl) {
-          this.failedModelId = null;
-        } else if (generation === this.generation) {
-          // Only a start that failed on its own backs off. One the user stopped did
-          // not fail, and turning the sidecar straight back on must not wait a minute.
-          this.failedModelId = model.id;
-          this.failedAt = Date.now();
-        }
-        return baseUrl;
-      })
-      .finally(() => {
-        this.starting = null;
-        this.startingModelId = null;
-      });
+    // Root log context: the process outlives the request that started it and is shared
+    // by later gates, so its ready-timeout, child-error and start-failure lines must not
+    // carry the first requester's requestId.
+    this.starting = runWithRootLogContext({}, () =>
+      this.start(model)
+        // Every failure path ends as a null, never a rejection. Callers gate on this,
+        // and a gate that throws stops an agent rather than running it.
+        .catch((error: unknown) => {
+          this.error = error instanceof Error ? error.message : "The decision sidecar could not start.";
+          logger.warn(error, "[decision-sidecar] Start threw");
+          return null;
+        })
+        .then((baseUrl) => {
+          if (baseUrl) {
+            this.failedModelId = null;
+          } else if (generation === this.generation) {
+            // Only a start that failed on its own backs off. One the user stopped did
+            // not fail, and turning the sidecar straight back on must not wait a minute.
+            this.failedModelId = model.id;
+            this.failedAt = Date.now();
+          }
+          return baseUrl;
+        })
+        .finally(() => {
+          this.starting = null;
+          this.startingModelId = null;
+        }),
+    );
     return this.starting;
   }
 
@@ -257,10 +268,36 @@ class DecisionProcessService {
         if (this.child === child) {
           this.child = null;
           this.baseUrl = null;
+          // Set here too, not only through finish(): once the address line has settled
+          // the start, finish() ignores this. A crash during the warm-up, the model's
+          // first forward pass, would then fail the start and back off for a minute
+          // with no reason for the panel to show. A stop or a restart clears
+          // `this.child` before killing, so only an exit on its own lands here.
+          this.error = `The decision sidecar exited with code ${code}.`;
+          // A warm-up in flight is asking this process, so it will never answer. Cancelled
+          // here, after the reason is kept, so the start reports the exit at once instead
+          // of waiting out the warm-up's limit.
+          this.warmUpAbort?.abort();
         }
         finish(null, `The decision sidecar exited with code ${code}.`);
       });
     });
+
+    // The first request a freshly loaded model answers is slow, on every start: about
+    // 1.5 s on Open-Jev 2B against 0.09 s for the same request after it. Paid here,
+    // while callers already wait on the load, so the first gate and the Test button
+    // after a start see the model's normal speed instead of the warm-up.
+    if (baseUrl && !stopped() && this.child === child) {
+      const abort = new AbortController();
+      this.warmUpAbort = abort;
+      const failed = await this.warmUp(baseUrl, model, abort.signal).finally(() => {
+        if (this.warmUpAbort === abort) this.warmUpAbort = null;
+      });
+      // Only while the process is still ours and running. A stop or an exit during the
+      // warm-up is reported by its own path, and the model is not "slow", it is gone.
+      if (failed && !stopped() && this.child === child)
+        logger.warn("[decision-sidecar] Warm-up request failed (%s); the first question may be slow", failed);
+    }
 
     // A stop can also land after the child printed its address but before this line
     // runs. Publishing that address would hand gates a process nobody wants running.
@@ -271,6 +308,33 @@ class DecisionProcessService {
     }
     this.baseUrl = baseUrl;
     return baseUrl;
+  }
+
+  /**
+   * One small question, shaped like the Test button's, sent before the address is
+   * published. Returns the error code of a failed request. A failure is not fatal: the
+   * model is loaded and serving, and only the first real question pays the warm-up.
+   */
+  private async warmUp(
+    baseUrl: string,
+    model: SidecarDecisionModelInfo,
+    signal: AbortSignal,
+  ): Promise<string | undefined> {
+    const result = await askNoulQuestions({
+      connection: {
+        protocol: "system_one",
+        endpoint: `${baseUrl}/v1/systemone`,
+        apiKey: "",
+        model: "jev-latest",
+        maxStateTokens: 256,
+      },
+      state: { recent_messages: [{ role: "user", name: "User", content: "The door is open." }] },
+      questions: [{ id: "warm-up", instructions: "The door is open." }],
+      timeoutMs: WARM_UP_TIMEOUT_MS,
+      signal,
+      questionShape: model.calibration.questionShape,
+    });
+    return result.error;
   }
 
   /**
@@ -295,6 +359,9 @@ class DecisionProcessService {
     this.generation += 1;
     // An explicit stop is a fresh start's prelude, so it clears the backoff.
     this.failedModelId = null;
+    // Before waiting on the start below: a warm-up request left open would otherwise
+    // hold the stop for up to its whole time limit.
+    this.warmUpAbort?.abort();
     await this.terminate();
     await this.starting?.catch(() => null);
     // The start may have spawned between the first terminate and giving up.

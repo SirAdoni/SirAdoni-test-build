@@ -48,6 +48,7 @@ import {
   scanSkillCheckTagSpans,
   selectGameBranchHalf,
   serializeResolvedSkillCheckTag,
+  serializeSparseSkillCheckTag,
   stripGameBranchDelimiters,
   type DiceRollResult,
   type GameBranchBlock,
@@ -75,8 +76,10 @@ import {
 import type { GameSkillModifierView } from "./gm-prompts.js";
 import {
   isResolvableSkillCheckRequest,
+  readRulesetDifficulty,
   loadSkillCheckModifierContext,
   resolveSkillCheckWithContext,
+  rulesetRefusesUntrained,
   type SkillCheckModifierContext,
   type SkillCheckRulesetContext,
   type SkillCheckRequest,
@@ -191,7 +194,8 @@ export type GameBranchArmRefusal =
   /** Two blocks, or two check tags, claimed the same label, so the label decides nothing. */
   | "ambiguous-label"
   /** The claimed tag is not a check this engine rolls, is out of bounds, or already carries a result. */
-  | "unrollable-check";
+  | "unrollable-check"
+  | "untrained-check";
 
 /** Plain words for each refusal, so the log says what the model wrote rather than what a flag is called. */
 const BRANCH_REFUSAL_REASONS: Record<GameBranchArmRefusal, string> = {
@@ -203,6 +207,7 @@ const BRANCH_REFUSAL_REASONS: Record<GameBranchArmRefusal, string> = {
   "unmatched-label": "no check tag claimed the block's label",
   "ambiguous-label": "the label was claimed more than once, so it decides nothing",
   "unrollable-check": "the claimed check is not one this engine rolls",
+  "untrained-check": "the claimed check is one the character cannot attempt untrained",
 };
 
 /** What the arm decided about one block, before anything is spliced. */
@@ -275,13 +280,27 @@ export function planGameTurnBranches(content: string, blocks: GameBranchBlock[])
         tag && !tag.resolvedResult && isEngineRollableSkillCheckTag(tag)
           ? {
               skill: tag.skill,
-              dc: tag.dc,
+              ...(tag.dc !== undefined ? { dc: tag.dc } : {}),
+              ...(tag.difficulty ? { difficulty: tag.difficulty } : {}),
+              ...(tag.explode != null ? { explode: tag.explode } : {}),
+              ...(tag.double != null ? { double: tag.double } : {}),
+              ...(tag.reroll ? { reroll: tag.reroll } : {}),
               advantage: tag.advantage,
               disadvantage: tag.disadvantage,
               preRolledD20: tag.preRolledD20,
+              // Read only by a ruleset game: whose check it is, and the per-check freedoms it may
+              // grant, so the arm rolls (or refuses) what the content resolver would.
+              who: tag.who,
+              withAbility: tag.withAbility,
+              threshold: tag.threshold,
+              bonusDice: tag.bonusDice,
             }
           : null;
-      if (request && isResolvableSkillCheckRequest(request)) check = { ...span, request };
+      // A difficulty named only by its ladder step is read when the sheet is, below, because that is
+      // when the ruleset is in hand; until then it is plannable on the strength of the name alone.
+      const plannable =
+        request && (request.dc === undefined ? !!request.difficulty : isResolvableSkillCheckRequest(request));
+      if (request && plannable) check = { ...span, request };
       else matchRefusal = "unrollable-check";
     }
     return { block, check, refusal: block.refusal ?? matchRefusal };
@@ -325,16 +344,53 @@ export async function resolveGameTurnBranches(
   const edits: GameBranchEdit[] = [];
   for (const plan of plans) {
     let result: SkillCheckResult | null = null;
+    let refusal = plan.refusal;
     if (plan.check && context) {
-      result = resolveSkillCheckWithContext(context, plan.check.request, () => session.roll(20));
-      edits.push({
-        start: plan.check.start,
-        end: plan.check.end,
-        replacement: serializeResolvedSkillCheckTag(result),
-      });
+      const definition = context.ruleset?.definition;
+      const request = readRulesetDifficulty(plan.check.request, definition);
+      // Only a named difficulty is read here; a check that wrote its own number was bounded above.
+      if (plan.check.request.dc === undefined && !isResolvableSkillCheckRequest(request, definition)) {
+        refusal = "unrollable-check";
+      } else if (context.ruleset && rulesetRefusesUntrained(context.ruleset, request)) {
+        // Not rolled, and so neither half happened. The ask is written back with the reason on it,
+        // which settles it: the client's own fallback never rolls it a second time.
+        refusal = "untrained-check";
+        edits.push({
+          start: plan.check.start,
+          end: plan.check.end,
+          replacement: serializeSparseSkillCheckTag(
+            {
+              skill: request.skill,
+              dc: plan.check.request.dc,
+              advantage: request.advantage,
+              disadvantage: request.disadvantage,
+            },
+            {
+              ...(request.difficulty ? { difficulty: request.difficulty } : {}),
+              ...(request.explode != null ? { explode: request.explode } : {}),
+              ...(request.double != null ? { double: request.double } : {}),
+              ...(request.reroll ? { reroll: request.reroll } : {}),
+              ...(request.threshold != null && Number.isFinite(request.threshold)
+                ? { threshold: request.threshold }
+                : {}),
+              ...(request.who ? { who: request.who } : {}),
+              ...(request.withAbility ? { with: request.withAbility } : {}),
+              ...(request.bonusDice != null ? { bonus: request.bonusDice } : {}),
+              reason: "untrained",
+            },
+          ),
+        });
+      } else {
+        result = resolveSkillCheckWithContext(context, request, () => session.roll(20));
+        edits.push({
+          start: plan.check.start,
+          end: plan.check.end,
+          replacement: serializeResolvedSkillCheckTag(result),
+        });
+      }
     }
 
-    const half = plan.refusal === null && result ? selectGameBranchHalf(plan.block, result.success) : null;
+    const half = refusal === null && result ? selectGameBranchHalf(plan.block, result.success) : null;
     if (half) {
       edits.push({ start: plan.block.start, end: plan.block.end, replacement: half.text });
       session.ledger.push({ stage: "branch", outcome: "resolved", span: plan.block.raw.slice(0, LOGGED_SPAN_MAX) });
@@ -353,7 +409,7 @@ export async function resolveGameTurnBranches(
       "[game/one-request-dice] Refused a branch block in chat %s: %s (%s)%s",
       session.chatId,
       plan.block.raw.slice(0, LOGGED_SPAN_MAX),
-      BRANCH_REFUSAL_REASONS[plan.refusal ?? "unmatched-label"],
+      BRANCH_REFUSAL_REASONS[refusal ?? "unmatched-label"],
       result ? " the check was still rolled and recorded" : "",
     );
   }

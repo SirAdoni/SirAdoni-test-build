@@ -13,7 +13,12 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { RULESET_RESOLUTION_KINDS, parseRulesetDefinition } from "../../packages/shared/src/index.js";
+import {
+  RULESET_CREATURE_PLAIN_NEEDS,
+  RULESET_CREATURE_SHEET_REPLACES,
+  RULESET_RESOLUTION_KINDS,
+  parseRulesetDefinition,
+} from "../../packages/shared/src/index.js";
 
 const script = fileURLToPath(new URL("../generate-ruleset-schema.mjs", import.meta.url));
 const result = spawnSync(process.execPath, [script, "--check"], { encoding: "utf8", windowsHide: true });
@@ -56,9 +61,25 @@ assert.equal(
   type Constrained = { allOf?: Array<{ anyOf?: unknown }> };
   const damageNodes: Constrained[] = [];
   // And a charm's `check`, which is the same rule one step along: an effect that throws no dice
-  // again, adds no dice, adds no successes and moves no target spends a resource for nothing.
+  // again, adds no dice, adds no successes, moves no target and moves no face rule spends a resource
+  // for nothing.
   const checkNodes: Constrained[] = [];
   const checkKeys = ["reroll", "dice", "successes", "threshold"];
+  const checkEffects = [...checkKeys, "explode", "double"];
+  // And a pool's `explode` or `double`, which names its face, how low a check may move it, or both.
+  const faceNodes: Constrained[] = [];
+  // And a resource spent on a check, which buys successes, dice, a throw again, or several.
+  const spendNodes: Constrained[] = [];
+  // And a sheet item's hideWhen, which compares its field exactly one way, and a value reference,
+  // whose `read` goes only beside `liveTrack`.
+  const hideWhenNodes: Array<{ oneOf?: unknown }> = [];
+  const liveTrackNodes: Array<{ dependencies?: Record<string, string[]> }> = [];
+  // And a wound track: an indexed one refuses a mark when full, so the editor asks for that too.
+  const woundTrackNodes: Array<{ allOf?: Array<Record<string, any>> }> = [];
+  // And an enum table, keyed on exactly one thing with one to forty rows, and a rest step, whose
+  // `to` is a word only on a state.
+  const enumTableNodes: Array<{ properties: Record<string, any> }> = [];
+  const restStepNodes: Array<{ allOf?: Array<Record<string, any>> }> = [];
   const walk = (node: unknown): void => {
     if (Array.isArray(node)) return node.forEach(walk);
     if (!node || typeof node !== "object") return;
@@ -71,6 +92,15 @@ assert.equal(
       keys.every((key) => ["dice", "flat", "type", "plus", "save"].includes(key));
     if (damageShaped) damageNodes.push(object);
     if (checkKeys.every((key) => keys.includes(key))) checkNodes.push(object);
+    if (keys.length === 2 && keys.includes("from") && keys.includes("min")) faceNodes.push(object);
+    if (keys.includes("pool") && keys.includes("perCheck")) spendNodes.push(object);
+    if (["field", "equals", "notEquals", "in"].every((key) => keys.includes(key))) hideWhenNodes.push(object);
+    if (keys.includes("liveTrack")) liveTrackNodes.push(object);
+    if (["levels", "boxes", "kinds", "fill", "onFull"].every((key) => keys.includes(key))) woundTrackNodes.push(object);
+    if ((object.properties?.op as { const?: string } | undefined)?.const === "enumTable") {
+      enumTableNodes.push(object as { properties: Record<string, any> });
+    }
+    if (["track", "state", "to", "by"].every((key) => keys.includes(key))) restStepNodes.push(object);
     Object.values(node).forEach(walk);
   };
   // The same for what a combat block measures in cells: the Engine refuses any of it in a block
@@ -104,11 +134,114 @@ assert.equal(
   for (const node of checkNodes) {
     assert.ok(
       node.allOf?.some(
-        (rule) => JSON.stringify(rule.anyOf) === JSON.stringify(checkKeys.map((key) => ({ required: [key] }))),
+        (rule) => JSON.stringify(rule.anyOf) === JSON.stringify(checkEffects.map((key) => ({ required: [key] }))),
       ),
-      "and asks that it do one of the four things it can do",
+      "and asks that it do one of the six things it can do",
     );
+  }
+  assert.equal(faceNodes.length, 2, "the schema describes a pool's explode and double rules");
+  for (const node of faceNodes) {
+    assert.ok(
+      node.allOf?.some(
+        (rule) => JSON.stringify(rule.anyOf) === JSON.stringify([{ required: ["from"] }, { required: ["min"] }]),
+      ),
+      "and asks for a face, a min, or both",
+    );
+  }
+  assert.ok(spendNodes.length > 0, "the schema describes what a spend buys");
+  for (const node of spendNodes) {
+    assert.ok(
+      node.allOf?.some(
+        (rule) =>
+          JSON.stringify(rule.anyOf) ===
+          JSON.stringify([{ required: ["successes"] }, { required: ["dice"] }, { required: ["reroll"] }]),
+      ),
+      "and asks that it buy successes, dice or a throw again",
+    );
+  }
+  assert.ok(hideWhenNodes.length > 0, "the schema describes hideWhen");
+  for (const node of hideWhenNodes) {
+    assert.deepEqual(
+      node.oneOf,
+      [{ required: ["equals"] }, { required: ["notEquals"] }, { required: ["in"] }],
+      "and asks for exactly one comparison",
+    );
+  }
+  assert.equal(enumTableNodes.length, 1, "the schema describes an enum table");
+  assert.deepEqual(enumTableNodes[0]!.properties.from.oneOf, [{ required: ["field"] }, { required: ["liveState"] }]);
+  assert.deepEqual(
+    [enumTableNodes[0]!.properties.table.minProperties, enumTableNodes[0]!.properties.table.maxProperties],
+    [1, 40],
+  );
+  assert.equal(restStepNodes.length, 1, "the schema describes a rest step");
+  assert.ok(
+    restStepNodes[0]!.allOf?.some(
+      (rule) =>
+        JSON.stringify(rule.if) === JSON.stringify({ required: ["state"] }) &&
+        rule.then?.properties?.to?.type === "string" &&
+        JSON.stringify(rule.else?.properties?.to?.anyOf) ===
+          JSON.stringify([{ enum: ["max", "min"] }, { type: "integer" }]),
+    ),
+    "and allows a word in `to` only on a state",
+  );
+  assert.ok(woundTrackNodes.length > 0, "the schema describes a wound track");
+  for (const node of woundTrackNodes) {
+    assert.ok(
+      node.allOf?.some(
+        (rule) => rule.if?.properties?.fill?.const === "indexed" && rule.then?.properties?.onFull?.const === "refuse",
+      ),
+      "and says an indexed one refuses when full",
+    );
+  }
+  assert.ok(liveTrackNodes.length > 0, "the schema describes a value that reads a live track");
+  for (const node of liveTrackNodes) {
+    assert.deepEqual(node.dependencies?.read, ["liveTrack"], "and keeps read beside it");
   }
 }
 
 console.info("game ruleset JSON Schema regression passed.");
+
+// ── The rule that only a moment about to happen may be called off, in the published schema too ──
+{
+  // A refinement the generator cannot see, patched in by hand, which means a test rather than
+  // trust: an editor that accepted `cancels` on a moment that has already happened would send an
+  // author to the Engine to find out, which is exactly what the published file exists to prevent.
+  const schema = JSON.parse(
+    readFileSync(fileURLToPath(new URL("../../docs/extending/ruleset.schema.json", import.meta.url)), "utf8"),
+  ) as Record<string, never>;
+  const path = ["catalogs", "items", "properties", "entries", "items", "properties", "mechanics"];
+  let node: Record<string, never> = (schema.properties as Record<string, never>).catalogs;
+  for (const step of path.slice(1)) node = node[step];
+  const reaction = (node.properties as Record<string, never>).reaction;
+  const named = (reaction.anyOf as Array<Record<string, never>>).find((member) => !!member.properties?.cancels);
+  assert.ok(named, "the published schema has lost the moment a reaction names");
+  assert.deepEqual(named.if, { required: ["cancels"] });
+  assert.deepEqual(named.then, { properties: { on: { enum: ["aimed", "used"] } }, required: ["on"] });
+}
+
+// ── One source for each of a creature's numbers, in the published schema too ──
+{
+  // A creature with a sheet takes its health, defense and the rest from it; one without a sheet has
+  // to give them. The editor has to say both halves, or an author finds out from the Engine.
+  const schema = JSON.parse(
+    readFileSync(fileURLToPath(new URL("../../docs/extending/ruleset.schema.json", import.meta.url)), "utf8"),
+  ) as Record<string, never>;
+  const path = ["catalogs", "items", "properties", "entries", "items", "properties", "creature"];
+  let node: Record<string, never> = (schema.properties as Record<string, never>).catalogs;
+  for (const step of path.slice(1)) node = node[step];
+  assert.ok((node.properties as Record<string, unknown>).sheet, "the published schema has lost a creature's sheet");
+  const rule = (node.allOf as Array<Record<string, never>> | undefined)?.find(
+    (member) => JSON.stringify(member.if) === JSON.stringify({ required: ["sheet"] }),
+  );
+  assert.ok(rule, "the published schema no longer says where a creature's numbers come from");
+  // Read off the shared lists the Engine's own refinement uses, so the three never drift apart.
+  assert.deepEqual(rule.then, {
+    not: { anyOf: RULESET_CREATURE_SHEET_REPLACES.map((key) => ({ required: [key] })) },
+  });
+  assert.deepEqual(rule.else, {
+    required: [...RULESET_CREATURE_PLAIN_NEEDS, "actions"],
+    properties: { actions: { minItems: 1 } },
+  });
+  // And the three numbers are not required outright, or a creature with a sheet could never be valid.
+  assert.deepEqual(node.required, ["tier"]);
+}

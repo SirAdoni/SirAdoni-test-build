@@ -162,6 +162,116 @@ try {
     await memory.reindex(chat.id);
     assert.equal(summaryRequests.length, before + 1, "repair retries and reindex do not repeat model work");
   });
+  await test("a deleted scene can be regenerated alone without changing other corrections", async () => {
+    const { chat, messages, row, sceneId } = await fixture();
+    const deletedId = `${sceneId}-deleted`;
+    await db.insert(advancedMemoryRecords).values({
+      ...row,
+      id: deletedId,
+      content: "The original recap.",
+      audienceCharacterIds: '["maukie"]',
+      manualOverride: 1,
+    });
+    const laterId = `scene-${messages[2]!.id}`;
+    const preserved = {
+      ...row,
+      id: `${laterId}-corrected`,
+      sceneId: laterId,
+      startMessageId: messages[2]!.id,
+      endMessageId: messages[2]!.id,
+      messageIds: JSON.stringify([messages[2]!.id]),
+      status: "open",
+      content: "A different corrected scene stays intact.",
+      manualOverride: 1,
+    };
+    await db.insert(advancedMemoryRecords).values(preserved);
+    await memory.deleteRecord(chat.id, deletedId);
+    const before = summaryRequests.length;
+    await memory.maintain(chat.id);
+    assert.equal(summaryRequests.length, before, "routine maintenance respects the deletion");
+    const deleted = (await memory.status(chat.id)).unpreparedScenes?.find((scene) => scene.sceneId === sceneId);
+    assert.equal(deleted?.deleted, true, "the deleted range remains available for explicit recovery");
+    helperFinishReason = "length";
+    try {
+      await assert.rejects(memory.initialize(chat.id, { sceneId }), /truncat|limit|length/i);
+    } finally {
+      helperFinishReason = "stop";
+    }
+    assert.equal(
+      (await memory.status(chat.id)).unpreparedScenes?.find((scene) => scene.sceneId === sceneId)?.deleted,
+      true,
+    );
+    const afterFailure = summaryRequests.length;
+    const controller = new AbortController();
+    await assert.rejects(
+      memory.initialize(chat.id, {
+        sceneId,
+        signal: controller.signal,
+        onProgress: (job) => {
+          if (job.stage === "summarizing" && job.completed === 1)
+            controller.abort(new Error("Recovery interrupted after saving paid work"));
+        },
+      }),
+      /Recovery interrupted/,
+    );
+    assert.equal(summaryRequests.length, afterFailure + 1);
+    await memory.initialize(chat.id, { sceneId });
+    const recovered = await memory.status(chat.id);
+    assert.deepEqual(recovered.unpreparedScenes, []);
+    const recap = recovered.records.find(
+      (record) => record.kind === "scene" && record.sceneId === sceneId && record.content,
+    )!;
+    assert(recap.enabled);
+    assert.equal(recap.manualOverride, false);
+    assert.deepEqual(
+      recap.messageIds,
+      messages.slice(0, 2).map((message) => message.id),
+    );
+    assert.equal(summaryRequests.length, afterFailure + 1, "retry reuses the selected scene's saved paid work");
+    assert.doesNotMatch(summaryRequests.at(-1)!, /COMPASS_NEXT_SCENE/);
+    const untouched = (
+      await db.select().from(advancedMemoryRecords).where(eq(advancedMemoryRecords.id, preserved.id))
+    )[0];
+    assert.deepEqual(untouched, { ...preserved, embedding: null, embeddingSpaceId: null, summaryWork: null });
+    await memory.initialize(chat.id, { sceneId });
+    assert.equal(summaryRequests.length, afterFailure + 1, "a repeated recovery is free");
+    await memory.deleteRecord(chat.id, recap.id);
+    await memory.initialize(chat.id, { sceneId });
+    assert.equal(summaryRequests.length, afterFailure + 2, "a later deletion starts a fresh recovery");
+    assert(
+      (await memory.status(chat.id)).records.some(
+        (record) => record.kind === "scene" && record.sceneId === sceneId && record.content && record.enabled,
+      ),
+    );
+  });
+  await test("partial visibility review is saveable and clears its error without rewriting the recap", async () => {
+    const { chat, messages, row, sceneId } = await fixture();
+    await chats.updateMessageExtra(messages[1]!.id, { hiddenFromAICharacterIds: ["maukie"] });
+    const id = `${sceneId}-partial-reader`;
+    const content = '{{#if char == "Maukie"}}The public promise.{{/if}}';
+    await db.insert(advancedMemoryRecords).values({
+      ...row,
+      id,
+      content,
+      manualOverride: 1,
+      audienceCharacterIds: '["maukie","pantalone"]',
+      dependencies: '[{"id":"scene-audience","revision":"participants-v1"}]',
+    });
+    await assert.rejects(memory.initialize(chat.id, { sceneId }), /manually corrected memory/);
+    const failed = await memory.status(chat.id);
+    assert.equal(failed.job.reviewRecordId, id);
+    assert.equal(failed.records.find((record) => record.id === id)?.embeddingStatus, "stale");
+    const paid = summaryRequests.length;
+    const reviewed = await memory.updateRecord(chat.id, id, { content });
+    assert.equal(reviewed.job.error, null);
+    assert.equal(reviewed.job.reviewRecordId, null);
+    assert.equal(reviewed.job.status, "cancelled", "saving allows resume without claiming unfinished work completed");
+    assert.notEqual(reviewed.records.find((record) => record.id === id)?.embeddingStatus, "stale");
+    await memory.maintain(chat.id);
+    assert.equal((await memory.status(chat.id)).job.status, "ready");
+    assert.equal(summaryRequests.length, paid, "review requires no model call");
+    assert.equal((await memory.status(chat.id)).records.find((record) => record.id === id)?.content, content);
+  });
   await test("legacy corrections stay authoritative through inspection, export, preparation and reindex", async () => {
     const { chat, messages, row, sceneId } = await fixture();
     const corrected = {
@@ -270,15 +380,13 @@ try {
   await test("backup round trips keep confirmed shared access without overwriting local corrections", async () => {
     const { chat, row, sceneId } = await fixture();
     for (const participant of ["maukie", "pantalone"])
-      await db
-        .insert(advancedMemoryRecords)
-        .values({
-          ...row,
-          id: `${sceneId}-${participant}`,
-          content: "A confirmed shared compass scene.",
-          audienceCharacterIds: JSON.stringify([participant]),
-          dependencies: '[{"id":"scene-audience","revision":"participants-v1"}]',
-        });
+      await db.insert(advancedMemoryRecords).values({
+        ...row,
+        id: `${sceneId}-${participant}`,
+        content: "A confirmed shared compass scene.",
+        audienceCharacterIds: JSON.stringify([participant]),
+        dependencies: '[{"id":"scene-audience","revision":"participants-v1"}]',
+      });
     const backup = await memory.exportMemory(chat.id);
     const target = await fixture();
     const imported = await memory.importMemory(target.chat.id, backup);
@@ -298,6 +406,170 @@ try {
     const disabledTarget = await fixture();
     const disabled = await memory.importMemory(disabledTarget.chat.id, await memory.exportMemory(chat.id));
     assert.equal(disabled.records.find((record) => record.kind === "scene" && record.content)!.enabled, false);
+  });
+  await test("a correction with legacy globally hidden gaps can be reviewed and saved without losing its text", async () => {
+    for (const edit of ["text", "audience"] as const) {
+      const { chat, messages, row, sceneId } = await fixture();
+      await chats.updateMessageExtra(messages[1]!.id, { hiddenFromAI: true });
+      const sourceIds = messages.map((message) => message.id);
+      await db
+        .update(advancedMemoryRecords)
+        .set({
+          endMessageId: messages[2]!.id,
+          messageIds: JSON.stringify(sourceIds),
+        })
+        .where(eq(advancedMemoryRecords.id, sceneId));
+      const correctionId = `${sceneId}-corrected`;
+      await db.insert(advancedMemoryRecords).values({
+        ...row,
+        id: correctionId,
+        endMessageId: messages[2]!.id,
+        messageIds: JSON.stringify([messages[0]!.id, messages[2]!.id]),
+        audienceCharacterIds: '["maukie"]',
+        manualOverride: 1,
+        content: "The corrected compass promise stays intact.",
+      });
+      await assert.rejects(memory.initialize(chat.id, { sceneId }), /manually corrected memory/);
+      const before = (await memory.status(chat.id)).records.find((record) => record.id === correctionId)!;
+      assert.equal(before.content, "The corrected compass promise stays intact.");
+      await memory.updateRecord(
+        chat.id,
+        correctionId,
+        edit === "text" ? { content: before.content } : { audienceCharacterIds: ["maukie"] },
+      );
+      const reviewed = (await memory.status(chat.id)).records.find((record) => record.id === correctionId)!;
+      assert.equal(reviewed.content, before.content);
+      assert.deepEqual(
+        reviewed.messageIds,
+        sourceIds,
+        "saving acknowledges the hidden gap in the original source range",
+      );
+      assert.deepEqual(reviewed.audienceCharacterIds, ["maukie"]);
+      const paid = summaryRequests.length;
+      await memory.initialize(chat.id, { sceneId });
+      assert.equal(summaryRequests.length, paid, "an acknowledged correction needs no new summary");
+      await chats.updateMessageExtra(messages[1]!.id, { hiddenFromAICharacterIds: ["maukie"] });
+      await memory.updateRecord(chat.id, correctionId, { content: before.content });
+      for (const message of messages)
+        await chats.updateMessageExtra(message.id, { hiddenFromAICharacterIds: ["maukie"] });
+      await assert.rejects(
+        memory.updateRecord(chat.id, correctionId, { content: before.content }),
+        /no longer available/,
+      );
+    }
+  });
+  await test("invalid scaffolds do not suppress valid saved recap boundaries", async () => {
+    const { chat, messages, row, sceneId } = await fixture();
+    await db.insert(advancedMemoryRecords).values({
+      ...row,
+      id: `${sceneId}-saved-recap`,
+      content: "The original compass scene is already saved.",
+      audienceCharacterIds: '["maukie"]',
+    });
+    await db
+      .update(advancedMemoryRecords)
+      .set({
+        endMessageId: messages[2]!.id,
+        messageIds: JSON.stringify([messages[0]!.id, "deleted-message", messages[1]!.id, messages[2]!.id]),
+      })
+      .where(eq(advancedMemoryRecords.id, sceneId));
+    assert.deepEqual((await memory.status(chat.id)).unpreparedScenes, []);
+    await db
+      .update(advancedMemoryRecords)
+      .set({ messageIds: JSON.stringify([messages[0]!.id, "deleted-message", messages[1]!.id]) })
+      .where(eq(advancedMemoryRecords.id, `${sceneId}-saved-recap`));
+    assert.deepEqual(
+      (await memory.status(chat.id)).unpreparedScenes?.map(({ startIndex, endIndex }) => [startIndex, endIndex]),
+      [[1, 2]],
+      "a stale recap still offers recovery of its own source range",
+    );
+  });
+  await test("a correction spanning a recovered boundary can be excluded without losing its text", async () => {
+    for (const boundary of ["shrunk", "expanded", "removed", "reopened"]) {
+      const { chat, messages, row, sceneId } = await fixture();
+      await chats.updateMessageExtra(messages[1]!.id, { hiddenFromAI: true });
+      await chats.createMessagesBatch(chat.id, [
+        {
+          role: "assistant",
+          characterId: "maukie",
+          content: "The later compass scene also ends.",
+          createdAt: new Date(Date.parse(messages.at(-1)!.createdAt) + 1000).toISOString(),
+        },
+        {
+          role: "user",
+          content: "A fresh compass scene begins.",
+          extra: { isConversationStart: true },
+          createdAt: new Date(Date.parse(messages.at(-1)!.createdAt) + 2000).toISOString(),
+        },
+      ]);
+      const source = await chats.listMessages(chat.id);
+      const laterSceneId = `scene-${source[2]!.id}`;
+      if (boundary !== "shrunk") {
+        await db
+          .update(advancedMemoryRecords)
+          .set({
+            status: boundary === "reopened" ? "open" : "closed",
+            endMessageId: source[boundary === "reopened" ? 4 : 3]!.id,
+            messageIds: JSON.stringify(source.slice(0, boundary === "reopened" ? 5 : 4).map((message) => message.id)),
+          })
+          .where(eq(advancedMemoryRecords.id, sceneId));
+      } else
+        await db.insert(advancedMemoryRecords).values({
+          ...row,
+          id: laterSceneId,
+          sceneId: laterSceneId,
+          startMessageId: source[2]!.id,
+          endMessageId: source[3]!.id,
+          messageIds: JSON.stringify(source.slice(2, 4).map((message) => message.id)),
+        });
+      const originalStart = boundary === "removed" ? 2 : 0;
+      const originalSceneId = `scene-${source[originalStart]!.id}`;
+      const correctionId = `${originalSceneId}-spanning-correction`;
+      const correction = "The original correction describes its authored compass events.";
+      const originalEnd = source[boundary === "expanded" ? 1 : boundary === "reopened" ? 4 : 3]!.id;
+      await db.insert(advancedMemoryRecords).values({
+        ...row,
+        id: correctionId,
+        sceneId: originalSceneId,
+        startMessageId: source[originalStart]!.id,
+        endMessageId: originalEnd,
+        messageIds: JSON.stringify(
+          source
+            .slice(originalStart, boundary === "expanded" ? 2 : boundary === "reopened" ? 5 : 4)
+            .filter((message) => message.id !== source[1]!.id)
+            .map((message) => message.id),
+        ),
+        audienceCharacterIds: '["maukie"]',
+        manualOverride: 1,
+        content: correction,
+      });
+      const paid = summaryRequests.length;
+      await assert.rejects(memory.initialize(chat.id, { detectScenes: false }), /Disable or delete/);
+      assert.equal(summaryRequests.length, paid, "changed boundaries never regenerate over a manual correction");
+      await assert.rejects(memory.updateRecord(chat.id, correctionId, { content: correction }), /Disable or delete/);
+      assert.equal(
+        (await memory.status(chat.id)).records.find((record) => record.id === correctionId)!.content,
+        correction,
+      );
+      await memory.updateRecord(chat.id, correctionId, { enabled: false });
+      await memory.initialize(chat.id, { detectScenes: false });
+      const status = await memory.status(chat.id);
+      assert.equal(status.job.status, "ready", "disabling the spanning correction unblocks preparation");
+      assert.deepEqual(status.unpreparedScenes, [], "retained corrections do not restore obsolete scene boundaries");
+      const preserved = status.records.find((record) => record.id === correctionId)!;
+      assert.equal(preserved.content, correction);
+      assert.equal(preserved.enabled, false);
+      assert.equal(
+        preserved.endMessageId,
+        originalEnd,
+        "the authored source range is never silently shortened or expanded",
+      );
+      await assert.rejects(memory.updateRecord(chat.id, correctionId, { enabled: true }), /Disable or delete/);
+      assert.equal((await memory.status(chat.id)).records.find((record) => record.id === correctionId)!.enabled, false);
+      if (boundary === "shrunk")
+        assert(status.records.some((record) => record.sceneId === laterSceneId && record.content));
+      assert.deepEqual(await chats.listMessages(chat.id), source);
+    }
   });
   await test("named participants resolve to separate chat characters and unknown names never grant access", async () => {
     for (const [result, expected] of [

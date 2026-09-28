@@ -5,10 +5,9 @@ import { scanForActivatedEntries } from "../../packages/server/src/services/lore
 import { resetFeatureSettingsForTests } from "../../packages/server/src/services/features/feature-settings.js";
 import { lorebookGroupPickRandom } from "../../packages/server/src/services/lorebook/group-pick-policy.js";
 
-// Settings > Features "Stable lorebook picks" (stableLorebookGroupPicks). Every processLorebooks
-// caller passes `random: lorebookGroupPickRandom()` next to the chat id (which processLorebooks turns
-// into the group seed). ON (default): undefined, so the seeded winner is kept, as today. OFF: Math.random,
-// which disables the seed, so the winner re-rolls every scan, as upstream. LOREBOOK_STABLE_GROUP_WINNERS
+// Settings > Features "Stable lorebook picks" (stableLorebookGroupPicks). processLorebooks forwards the random policy
+// and derives a group seed only while the switch is enabled. ON (default): undefined, so the same chat's winner stays
+// put. OFF: Math.random with no seed, so the winner re-rolls every scan, as upstream. LOREBOOK_STABLE_GROUP_WINNERS
 // wins when set.
 delete process.env.LOREBOOK_STABLE_GROUP_WINNERS;
 const entries = ["alder", "birch", "cedar", "hazel", "larch", "rowan"].map(
@@ -20,10 +19,13 @@ const entries = ["alder", "birch", "cedar", "hazel", "larch", "rowan"].map(
     }) as LorebookEntry,
 );
 const scene = [{ role: "user" as const, content: "alder birch cedar hazel larch rowan" }];
-// Mirrors processLorebooks: the chat id becomes groupSeed and the caller's random is forwarded when set.
+// Mirrors processLorebooks: seed only while stable picks are enabled; otherwise forward random without a seed.
 const scan = () => {
   const random = lorebookGroupPickRandom();
-  return scanForActivatedEntries(scene, entries, { groupSeed: "chat-grove", ...(random ? { random } : {}) })
+  return scanForActivatedEntries(scene, entries, {
+    ...(random ? {} : { groupSeed: "chat-grove" }),
+    ...(random ? { random } : {}),
+  })
     .filter((row) => row.entry.group === "grove")
     .map((row) => row.entry.id)[0];
 };

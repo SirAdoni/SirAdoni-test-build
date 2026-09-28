@@ -395,21 +395,9 @@ export function useApplyCampaignMemoryImport(chatId: string | null) {
 
 /** Pulse 8 commitments (quests, promises, offers, invitations): projected from `commitment` facts and continuity-published records. */
 export type CampaignMemoryCommitmentKind =
-  | "invitation"
-  | "promise"
-  | "offer"
-  | "quest"
-  | "employment"
-  | "candidacy"
-  | "other";
+  "invitation" | "promise" | "offer" | "quest" | "employment" | "candidacy" | "other";
 export type CampaignMemoryCommitmentState =
-  | "proposed"
-  | "accepted"
-  | "active"
-  | "completed"
-  | "declined"
-  | "cancelled"
-  | "unresolved";
+  "proposed" | "accepted" | "active" | "completed" | "declined" | "cancelled" | "unresolved";
 export interface CampaignMemoryCommitmentTransition {
   factId: string;
   state: CampaignMemoryCommitmentState;

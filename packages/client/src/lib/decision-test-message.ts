@@ -12,13 +12,21 @@ export function decisionConnectionTestMessage(t: TFunction, result: ConnectionTe
   const limit = result.timeLimitMs ?? DECISION_TIMEOUT_MS.systemOne;
   if (result.success) {
     const tooSlow = result.latencyMs > limit;
+    // Only a chat-model connection reports these, and only the caveats are worth a line.
+    const caveats = [
+      result.logprobs === false ? t("connections.decision.logprobsMissing") : "",
+      result.answersDirectly === false ? t("connections.decision.needsToThink") : "",
+    ].filter(Boolean);
     return {
       ok: !tooSlow,
-      message: t(tooSlow ? "connections.decision.testTooSlow" : "connections.decision.testSuccess", {
-        probability: result.decisionProbability?.toFixed(3),
-        seconds: formatSeconds(result.latencyMs),
-        limit: formatSeconds(limit),
-      }),
+      message: [
+        t(tooSlow ? "connections.decision.testTooSlow" : "connections.decision.testSuccess", {
+          probability: result.decisionProbability?.toFixed(3),
+          seconds: formatSeconds(result.latencyMs),
+          limit: formatSeconds(limit),
+        }),
+        ...caveats,
+      ].join(" "),
     };
   }
   const reason =

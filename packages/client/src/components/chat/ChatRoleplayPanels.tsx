@@ -80,14 +80,7 @@ function formatSemanticScore(score: number | null | undefined) {
 
 function formatActivationSource(
   source:
-    | "current_location"
-    | "keyword"
-    | "semantic"
-    | "constant"
-    | "always_loaded"
-    | "sticky"
-    | "recursive"
-    | "decision",
+    "current_location" | "keyword" | "semantic" | "constant" | "always_loaded" | "sticky" | "recursive" | "decision",
   t: TFunction,
 ) {
   return t(`chat.activeContext.source.${source}`);

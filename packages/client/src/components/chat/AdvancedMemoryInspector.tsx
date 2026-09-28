@@ -16,6 +16,10 @@ import type { MemoryCharacterOption } from "./AdvancedMemorySettings";
 const buttonClass =
   "mari-chrome-control inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs disabled:opacity-50";
 const reasonKeys: Record<string, string> = {
+  "decision-recall": "chat.advancedMemory.reason.decisionRecall",
+  "decision-recall-fallback": "chat.advancedMemory.reason.decisionRecallFallback",
+  "decision-recall-preview": "chat.advancedMemory.reason.decisionRecallPreview",
+  "decision-excerpt-fallback": "chat.advancedMemory.reason.decisionExcerptFallback",
   "preparation-needed": "chat.advancedMemory.reason.preparationNeeded",
   "unverified-summary-omitted": "chat.advancedMemory.reason.unverifiedSummaryOmitted",
   "scene-boundary-rollover": "chat.advancedMemory.reason.sceneBoundaryRollover",
@@ -50,9 +54,13 @@ export function AdvancedMemoryInspector({
       .sort((a, b) => a.startIndex - b.startIndex || a.endIndex - b.endIndex);
   }, [status.data?.records]);
   const sceneNumbers = new Map(
-    [...new Set(records.filter((record) => record.kind === "scene").map((record) => record.sceneId))].map(
-      (id, index) => [id, index + 1],
-    ),
+    [
+      ...new Set(
+        [...records.filter((record) => record.kind === "scene"), ...(status.data?.unpreparedScenes ?? [])]
+          .sort((a, b) => a.startIndex - b.startIndex)
+          .map((record) => record.sceneId),
+      ),
+    ].map((id, index) => [id, index + 1]),
   );
   const recordTitle = (record: AdvancedMemoryRecord) =>
     record.kind === "scene"
@@ -66,7 +74,9 @@ export function AdvancedMemoryInspector({
     !selected.manualOverride &&
     !selected.dependencies.some((item) => item.id === SCENE_AUDIENCE.id && item.revision === SCENE_AUDIENCE.revision);
   const reviewCorrection =
-    selected?.kind === "scene" && selected.manualOverride && selected.embeddingStatus === "stale";
+    selected?.kind === "scene" &&
+    selected.manualOverride &&
+    (selected.embeddingStatus === "stale" || selected.id === blockedRecord?.id);
   const audienceChanged =
     !!selected && [...draftAudience].sort().join("\0") !== [...selected.audienceCharacterIds].sort().join("\0");
   const receipt = status.data?.latestReceipt;
@@ -234,9 +244,15 @@ export function AdvancedMemoryInspector({
               className="space-y-2 rounded-lg border border-[var(--border)] bg-[var(--card)] p-3 text-xs"
             >
               <p className="font-medium">
-                {t("chat.advancedMemory.missingScene", { start: scene.startIndex, end: scene.endIndex })}
+                {t(scene.deleted ? "chat.advancedMemory.deletedScene" : "chat.advancedMemory.missingScene", {
+                  number: sceneNumbers.get(scene.sceneId),
+                  start: scene.startIndex,
+                  end: scene.endIndex,
+                })}
               </p>
-              <p className="text-[var(--muted-foreground)]">{t("chat.advancedMemory.missingSceneHelp")}</p>
+              <p className="text-[var(--muted-foreground)]">
+                {t(scene.deleted ? "chat.advancedMemory.deletedSceneHelp" : "chat.advancedMemory.missingSceneHelp")}
+              </p>
               <button
                 type="button"
                 className={`${buttonClass} min-h-11`}
@@ -245,7 +261,7 @@ export function AdvancedMemoryInspector({
                 }
                 onClick={() => action.mutate({ action: "initialize", sceneId: scene.sceneId })}
               >
-                {t("chat.advancedMemory.prepareScene")}
+                {t(scene.deleted ? "chat.advancedMemory.regenerateScene" : "chat.advancedMemory.prepareScene")}
               </button>
             </div>
           ))}
@@ -509,7 +525,11 @@ export function AdvancedMemoryInspector({
                   ) : (
                     <span className="block text-[0.6875rem] text-[var(--muted-foreground)]">
                       {t(record.manualOverride ? "chat.advancedMemory.manual" : "chat.advancedMemory.generated")} ·{" "}
-                      {t(`chat.advancedMemory.embedding.${record.embeddingStatus}`)}
+                      {t(
+                        status.data?.settings.decisionEnabled && record.embeddingStatus === "pending"
+                          ? "chat.advancedMemory.embedding.decision"
+                          : `chat.advancedMemory.embedding.${record.embeddingStatus}`,
+                      )}
                       {!record.enabled ? <> · {t("chat.advancedMemory.disabled")}</> : null}
                     </span>
                   )}

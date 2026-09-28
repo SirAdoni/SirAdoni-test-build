@@ -22,6 +22,8 @@ import {
   type SkillCheckTag,
   type WidgetUpdate,
   coerceWidgetValue,
+  readResolvedInventoryTagBody,
+  type ResolvedInventoryTag,
 } from "@marinara-engine/shared";
 
 // The check-tag reader lives in shared so the server reads a GM tag exactly the
@@ -56,11 +58,9 @@ export interface ElementAttackTag {
   target: string;
 }
 
-export interface InventoryTag {
-  action: "add" | "remove";
-  items: string[];
-  count?: number;
-}
+/** One item of an `[inventory:]` tag as the server resolved it. The server applies every tag when it
+ *  saves the reply; the client only announces what the resolved tags say. */
+export type InventoryTag = ResolvedInventoryTag;
 
 export interface SegmentInventoryUpdate {
   segment: number;
@@ -320,39 +320,6 @@ function extractBalancedTags(text: string, tagPrefix: string): { contents: strin
   return { contents, remaining };
 }
 
-function parseInventoryTagBody(body: string): InventoryTag | null {
-  // action: either action="add" / action=add, or a bare leading add/remove word
-  let action: "add" | "remove" = "add";
-  const actAttr = /action\s*=\s*"?(add|remove)"?/i.exec(body);
-  if (actAttr) {
-    action = actAttr[1]!.toLowerCase() as "add" | "remove";
-  } else {
-    const bareAct = /(^|\s)(add|remove)(\s|$)/i.exec(body);
-    if (bareAct) action = bareAct[2]!.toLowerCase() as "add" | "remove";
-  }
-
-  // items: prefer quoted capture, fall back to unquoted single token / rest
-  let itemStr = "";
-  const itemsQuoted = /items?\s*=\s*"([^"]+)"/i.exec(body);
-  if (itemsQuoted) {
-    itemStr = itemsQuoted[1]!;
-  } else {
-    const itemsUnquoted = /items?\s*=\s*([^,\]\s][^,\]]*)/i.exec(body);
-    if (itemsUnquoted) itemStr = itemsUnquoted[1]!;
-  }
-
-  const items = itemStr
-    .split(",")
-    .map((item) => item.trim().replace(/^["']|["']$/g, ""))
-    .filter(Boolean);
-
-  const countMatch = /(?:count|quantity|qty)\s*=\s*"?(\d+)"?/i.exec(body);
-  const parsedCount = countMatch ? parseInt(countMatch[1]!, 10) : 1;
-  const count = Number.isFinite(parsedCount) && parsedCount > 0 ? Math.min(parsedCount, 9999) : 1;
-
-  return items.length > 0 ? { action, items, count } : null;
-}
-
 function parsePartyCharacterName(body: string): string {
   const quoted = /(?:character|name)\s*=\s*"([^"]+)"/i.exec(body);
   const unquoted = quoted ? null : /(?:character|name)\s*=\s*([^,\]]+)/i.exec(body);
@@ -484,7 +451,7 @@ export function parseSegmentInventoryUpdates(content: string): SegmentInventoryU
 
     const inventoryUpdates: InventoryTag[] = [];
     line = line.replace(inventoryRegex, (_match, body: string) => {
-      const update = parseInventoryTagBody(body);
+      const update = readResolvedInventoryTagBody(body);
       if (update) inventoryUpdates.push(update);
       return "";
     });
@@ -787,18 +754,13 @@ export function parseGmTags(content: string): ParsedGmTags {
   }
   text = text.replace(/\[status:\s*[^\]]+\]/gi, "");
 
-  // [inventory: ...] — lenient parser: accepts any attribute order, quoted or
-  // unquoted values, `item` or `items`, and a bare `add|remove` keyword.
-  // Examples that all parse:
-  //   [inventory: action="add" item="Bronze Key, Health Potion"]
-  //   [inventory: add item="Bronze Key"]
-  //   [inventory: item="Bronze Key" action=add]
-  //   [inventory: items="Bronze Key, Map"]   (plural)
-  //   [inventory: remove item=Bronze Key]    (unquoted single word)
+  // [inventory: ...] — only the tags the server already applied and answered (one per item,
+  // with result=). What the Game Master may write is read on the server, in
+  // `parseInventoryTagBody` (shared), and a tag it never answered changed nothing.
   const invBlockRegex = /\[inventory:\s*([^\]]+)\]/gi;
   let invBlock: RegExpExecArray | null;
   while ((invBlock = invBlockRegex.exec(text)) !== null) {
-    const update = parseInventoryTagBody(invBlock[1] || "");
+    const update = readResolvedInventoryTagBody(invBlock[1] || "");
     if (update) result.inventoryUpdates.push(update);
   }
   text = text.replace(/\[inventory:\s*[^\]]+\]/gi, "");

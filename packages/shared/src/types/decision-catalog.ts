@@ -113,10 +113,12 @@ export interface SidecarDecisionModelInfo {
   /** Where this model answers, which is not where a general chat model answers. */
   calibration: DecisionCalibration;
   /**
-   * Measured extra time per question beyond the first, for a model that answers
-   * questions one after another rather than in a single pass. The request budget grows
-   * by this much per question, so a group of questions is not always cut off by a
-   * budget sized for one. Omitted when the extra cost is negligible.
+   * Measured extra time per question beyond the first. The prefix cache stays off, so
+   * every question, and every Choice option, re-reads the whole scene: the cost grows
+   * with the number of questions and with the scene's length. Each entry says what
+   * scene length it was measured on. The request budget grows by this much per
+   * question, so a group of questions is not cut off by a budget sized for one. Only
+   * curated entries carry one; a pasted model keeps the flat sidecar budget.
    */
   perQuestionMs?: number;
   licenses: string[];
@@ -159,6 +161,12 @@ export const SIDECAR_DECISION_MODELS: SidecarDecisionModelInfo[] = [
     // every relevant turn. Any threshold from roughly 0.03 to 0.15 classified all
     // eight correctly; 0.1 sits in the middle of that band.
     calibration: { defaultThreshold: 0.1, questionShape: "task_object" },
+    // Measured through the engine on the longest chat it sends: 24 statements took
+    // 5.9 s and 32 took 7.9 s, and a Choice option costs the same as a statement. With
+    // the flat 4 s budget both got no answers at all, so every statement read as no.
+    // A scene at the model's own full length (3,479 tokens) costs 0.33 s a statement,
+    // hence 350 rather than the 250 an English chat needs.
+    perQuestionMs: 350,
     // Read from the LICENSE file at each pinned revision. Qwen3.5-2B is Apache-2.0 there.
     licenses: ["MIT (source)", "Apache-2.0 (adapter)", "Apache-2.0 (base weights)"],
     thirdParty: true,

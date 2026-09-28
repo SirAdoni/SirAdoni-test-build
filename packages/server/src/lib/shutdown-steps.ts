@@ -18,7 +18,9 @@ export const RUNTIME_STOP_BUDGET_MS = 2_000;
  */
 export const STORE_CLOSE_RESERVE_MS = 1_500;
 
-let activeRuntimeStopBudgetMs = RUNTIME_STOP_BUDGET_MS;
+export const UNBOUNDED_RUNTIME_STOP_BUDGET_MS = Number.POSITIVE_INFINITY;
+
+let activeRuntimeStopBudgetMs = UNBOUNDED_RUNTIME_STOP_BUDGET_MS;
 
 /** The runtime stop budget for the shutdown in progress. */
 export function getRuntimeStopBudgetMs(): number {
@@ -30,8 +32,8 @@ export function getRuntimeStopBudgetMs(): number {
  * a shutdown with a short force-exit deadline (a Windows console close) still
  * leaves the store close its reserve.
  */
-export function setRuntimeStopBudgetMs(budgetMs: number = RUNTIME_STOP_BUDGET_MS): void {
-  activeRuntimeStopBudgetMs = Math.max(0, budgetMs);
+export function setRuntimeStopBudgetMs(budgetMs: number = UNBOUNDED_RUNTIME_STOP_BUDGET_MS): void {
+  activeRuntimeStopBudgetMs = Number.isNaN(budgetMs) ? UNBOUNDED_RUNTIME_STOP_BUDGET_MS : Math.max(0, budgetMs);
 }
 
 export interface NamedShutdownStep {
@@ -112,13 +114,14 @@ export async function runShutdownStepsWithin(
     }),
   );
   let timer: NodeJS.Timeout | undefined;
-  const budget = new Promise<void>((resolve) => {
-    // Referenced on purpose: a hung step holding no handles must not let the
-    // loop drain before the store close below gets its turn.
-    timer = setTimeout(resolve, budgetMs);
-  });
+  const budget = Number.isFinite(budgetMs)
+    ? new Promise<void>((resolve) => {
+        // Referenced on purpose: a hung step holding no handles must not let the store close after this gets its turn.
+        timer = setTimeout(resolve, budgetMs);
+      })
+    : null;
   try {
-    await Promise.race([settled, budget]);
+    await (budget ? Promise.race([settled, budget]) : settled);
   } finally {
     clearTimeout(timer);
     budgetSpent = true;

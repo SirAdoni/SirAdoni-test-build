@@ -23,6 +23,7 @@ import {
   rulesetOptionNeedsTargets,
   rulesetPickTarget,
   rulesetSendsOnPick,
+  rulesetStyleForecastText,
   type RulesetMenuStep,
 } from "../../lib/ruleset-combat-menu";
 import { cn } from "../../lib/utils";
@@ -32,6 +33,9 @@ export interface RulesetCombatMenuProps {
   /** The ruleset's own name for a budget id, so the menu says "Bonus action" or "Action" as the
    *  file does, never a word this Engine picked. */
   budgetLabel: (id: string) => string;
+  /** What the ruleset calls the number an attack is rolled against ("Armor Class", "Guard"), so a
+   *  held hit reads as the log does. Empty when the ruleset names none. */
+  defenseLabel?: string;
   busy: boolean;
   onChoose: (
     optionId: string,
@@ -39,6 +43,8 @@ export interface RulesetCombatMenuProps {
     payWith?: string,
     /** Where a walk goes, and where a shape is aimed. Only a positioned fight ever sends one. */
     cell?: { to?: RulesetCombatCell; at?: RulesetCombatCell },
+    /** The initiative style an attack is made in, where initiative is a number attacks move. */
+    style?: string,
   ) => void;
   /** Walking away. The ruleset's menu never carries it, because leaving is not a thing the rules
    *  resolve: it is the director ending the session, exactly as the other two styles end it. */
@@ -54,9 +60,21 @@ export interface RulesetCombatMenuProps {
 const buttonClass =
   "min-h-11 rounded-lg border px-3 py-2 text-left text-xs transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)] disabled:opacity-50";
 
+/** Which question the window is asking, by what opened it. A moment a reaction waits for names
+ *  itself; the other two are the kind of window they are. */
+const WINDOW_PROMPTS = {
+  aimed: "Aimed",
+  hit: "Hit",
+  harmed: "Harmed",
+  used: "Used",
+  signature: "Between",
+  reaction: "Leaving",
+} as const;
+
 export function RulesetCombatMenu({
   view,
   budgetLabel,
+  defenseLabel,
   busy,
   onChoose,
   onFlee,
@@ -119,7 +137,7 @@ export function RulesetCombatMenu({
   useEffect(() => {
     // A step the BOARD draws has its keyboard on the board, so the menu must not take it back the
     // moment the stage opens.
-    if (stepStage === "pay" || stepStage === "target") first.current?.focus();
+    if (stepStage === "style" || stepStage === "pay" || stepStage === "target") first.current?.focus();
     // Going BACK unmounts the step, and the browser would drop focus on the body, leaving a keyboard
     // player to Tab down from the top of the page. The menu takes it instead, and only then: a
     // menu that appears, or is reset because the turn moved on, must not steal focus from wherever
@@ -138,9 +156,9 @@ export function RulesetCombatMenu({
     );
   }
 
-  const send = (option: DirectedRulesetOption, targets: string[], payWith?: string) => {
+  const send = (option: DirectedRulesetOption, targets: string[], payWith?: string, style?: string) => {
     closeStep();
-    onChoose(option.id, targets, payWith);
+    onChoose(option.id, targets, payWith, undefined, style);
   };
   /** Which picking step this option opens, or null for one that is simply sent. On a board, a walk
    *  and a shape are picked on the board; everything else is the list below. */
@@ -149,23 +167,33 @@ export function RulesetCombatMenu({
     if (view.grid && rulesetOptionNeedsAim(option)) return "aim";
     return rulesetOptionNeedsTargets(option) ? "target" : null;
   };
-  const take = (option: DirectedRulesetOption) => {
+  /** The step after the style is chosen: what pays for it, where it goes, or who it is aimed at. */
+  const afterStyle = (option: DirectedRulesetOption, style?: string) => {
+    const styled = style ? { style } : {};
     if (option.payWith && option.payWith.length > 0) {
-      setStep({ stage: "pay", option, targets: [] });
+      setStep({ stage: "pay", option, ...styled, targets: [] });
       return;
     }
     const stage = stageFor(option);
     if (stage) {
-      setStep({ stage, option, targets: [] });
+      setStep({ stage, option, ...styled, targets: [] });
       return;
     }
-    send(option, rulesetDefaultTargets(option));
+    send(option, rulesetDefaultTargets(option), undefined, style);
+  };
+  const take = (option: DirectedRulesetOption) => {
+    // Where attacks move initiative, how the attack is made comes first: it decides what it does.
+    if (option.styles && option.styles.length > 0) {
+      setStep({ stage: "style", option, targets: [] });
+      return;
+    }
+    afterStyle(option);
   };
   const paid = (payWith?: string) => {
     if (!step) return;
     const stage = stageFor(step.option);
     if (!stage) {
-      send(step.option, rulesetDefaultTargets(step.option), payWith);
+      send(step.option, rulesetDefaultTargets(step.option), payWith, step.style);
       return;
     }
     setStep({ ...step, stage, ...(payWith ? { payWith } : {}), targets: [] });
@@ -174,11 +202,43 @@ export function RulesetCombatMenu({
     if (!step) return;
     const targets = rulesetPickTarget(step.option, step.targets, id);
     if (rulesetSendsOnPick(step.option) && targets.length === 1) {
-      send(step.option, targets, step.payWith);
+      send(step.option, targets, step.payWith, step.style);
       return;
     }
     setStep({ ...step, targets });
   };
+
+  // ── Making an attack in one of the ruleset's initiative styles ──
+  const styles = step?.stage === "style" ? (step.option.styles ?? []) : [];
+  if (step && styles.length > 0) {
+    const option = step.option;
+    return (
+      <div className="flex flex-col gap-2 p-3">
+        <p className="text-xs text-white/60" id="ruleset-style-prompt">
+          {t("game.combat.ruleset.style.prompt", { label: rulesetOptionLabel(option, t) })}
+        </p>
+        <div className="flex flex-wrap gap-2" role="group" aria-labelledby="ruleset-style-prompt">
+          {styles.map((style, index) => {
+            const forecast = rulesetStyleForecastText(style, t);
+            return (
+              <button
+                ref={index === 0 ? first : undefined}
+                key={style.id}
+                type="button"
+                disabled={busy}
+                onClick={() => afterStyle(option, style.id)}
+                className={cn(buttonClass, "border-white/15 bg-white/5 text-white/85 hover:bg-white/10")}
+              >
+                <span className="block font-semibold text-white/90">{style.label}</span>
+                {forecast && <span className="block text-[0.65rem] text-white/45">{forecast}</span>}
+              </button>
+            );
+          })}
+        </div>
+        <BackButton onClick={closeStep} label={t("game.combat.ruleset.target.back")} />
+      </div>
+    );
+  }
 
   // ── Paying for it out of another pool of the family ──
   const pools = step?.stage === "pay" ? (step.option.payWith ?? []) : [];
@@ -297,7 +357,7 @@ export function RulesetCombatMenu({
             <button
               type="button"
               disabled={busy || step.targets.length === 0}
-              onClick={() => send(option, step.targets, step.payWith)}
+              onClick={() => send(option, step.targets, step.payWith, step.style)}
               className={cn(buttonClass, "border-[var(--primary)]/50 bg-[var(--primary)]/20 text-white")}
             >
               {t("game.combat.ruleset.target.confirm", { count: step.targets.length })}
@@ -326,9 +386,18 @@ export function RulesetCombatMenu({
           phone the shell above still names the actor, and the two would otherwise contradict. */}
       {view.window ? (
         <p className="text-[0.65rem] uppercase tracking-wide text-[var(--primary)]">
-          {view.window.kind === "signature"
-            ? t("game.combat.ruleset.menu.windowBetween", { name: askedName })
-            : t("game.combat.ruleset.menu.windowLeaving", { name: askedName, mover: nameOf(view.window.moverId) })}
+          {t(`game.combat.ruleset.menu.window${WINDOW_PROMPTS[view.window.moment ?? view.window.kind]}`, {
+            name: askedName,
+            mover: nameOf(view.window.sourceId ?? view.window.moverId),
+            label: view.window.label ?? "",
+            total: view.window.total ?? "",
+            defense:
+              view.window.defense === undefined
+                ? ""
+                : defenseLabel
+                  ? `${defenseLabel} ${view.window.defense}`
+                  : String(view.window.defense),
+          })}
         </p>
       ) : (
         <p className="hidden text-[0.65rem] uppercase tracking-wide text-white/45 sm:block">

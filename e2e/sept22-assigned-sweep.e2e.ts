@@ -1,3 +1,4 @@
+import { clickTopbarPanel } from "./topbar-navigation.js";
 import { expect, test, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { seedUIState } from "./ui-state-fixture.js";
@@ -51,7 +52,7 @@ for (const kind of ["character", "persona", "lorebook"] as const) {
       }
       await prepare(page);
       await page.goto("/");
-      await page.locator(`[data-tour="panel-${kind}s"]`).click();
+      await clickTopbarPanel(page, `${kind}s`);
       const folder = page.locator(`[data-${kind}-folder-id="${folderId}"]`);
       const header = folder.locator(':scope > [role="button"]');
       if ((await header.getAttribute("aria-expanded")) !== "true") await header.click();
@@ -166,7 +167,7 @@ for (const theme of ["light", "dark"] as const) {
         });
         await prepare(page, { theme, sidebarOpen: kind === "chat" });
         await page.goto("/");
-        if (kind !== "chat") await page.locator(`[data-tour="panel-${kind}s"]`).click();
+        if (kind !== "chat") await clickTopbarPanel(page, `${kind}s`);
         const rows = page.locator(`[data-${kind}-folder-id]`).filter({ hasText: prefix });
         const order = () =>
           rows.evaluateAll(

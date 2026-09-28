@@ -674,14 +674,7 @@ export function ChangeReview({
 /* ------------------------------------------------ Create record ------------------------------------------------ */
 
 type CreateError =
-  | "validation"
-  | "preview"
-  | "apply"
-  | "conflict"
-  | "crossSession"
-  | "ownerLinked"
-  | "ownerChecking"
-  | null;
+  "validation" | "preview" | "apply" | "conflict" | "crossSession" | "ownerLinked" | "ownerChecking" | null;
 
 export function CampaignWikiCreateRecord({
   chatId,

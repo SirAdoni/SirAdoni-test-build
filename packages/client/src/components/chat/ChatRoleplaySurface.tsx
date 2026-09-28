@@ -1,6 +1,7 @@
 import { createPortal } from "react-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
+import { normalizeSemanticSummaryRetrievalSettings } from "@marinara-engine/shared";
 import { toast } from "sonner";
 import {
   Suspense,
@@ -873,6 +874,9 @@ function SummaryButton({
   summaryMaxTokens,
   automaticSummaryEnabled,
   semanticSummaryRetrievalEnabled,
+  semanticSummaryRecentCount,
+  semanticSummaryOlderCount,
+  semanticSummaryMinSimilarity,
   activeAgentIds,
   summaryRunInterval,
   hideSummarisedMessages,
@@ -892,6 +896,9 @@ function SummaryButton({
   summaryMaxTokens?: number;
   automaticSummaryEnabled: boolean;
   semanticSummaryRetrievalEnabled: boolean;
+  semanticSummaryRecentCount: number;
+  semanticSummaryOlderCount: number;
+  semanticSummaryMinSimilarity: number;
   activeAgentIds: string[];
   summaryRunInterval?: number;
   hideSummarisedMessages?: boolean;
@@ -1024,6 +1031,9 @@ function SummaryButton({
             summaryMaxTokens={summaryMaxTokens}
             automaticSummaryEnabled={automaticSummaryEnabled}
             semanticSummaryRetrievalEnabled={semanticSummaryRetrievalEnabled}
+            semanticSummaryRecentCount={semanticSummaryRecentCount}
+            semanticSummaryOlderCount={semanticSummaryOlderCount}
+            semanticSummaryMinSimilarity={semanticSummaryMinSimilarity}
             activeAgentIds={activeAgentIds}
             summaryRunInterval={summaryRunInterval}
             hideSummarisedMessages={hideSummarisedMessages}
@@ -1252,6 +1262,7 @@ type RoleplaySurfaceProps = {
   spriteCharacterIds: string[];
   spriteDisplayModes: SpriteDisplayMode[];
   spriteExpressions: Record<string, string>;
+  visibleExpressionSpriteIds?: readonly string[];
   expressionAvatarResolver?: ExpressionAvatarResolver;
   spritePlacements: Record<string, SpritePlacement>;
   spriteScale: number;
@@ -1328,7 +1339,7 @@ type RoleplaySurfaceProps = {
   onOpenScheduleEditor?: ComponentProps<typeof ChatCommonOverlays>["onOpenScheduleEditor"];
   onCloseSettings: () => void;
   onCloseGallery: () => void;
-  onIllustrate?: (prompt?: string) => void;
+  onIllustrate?: (prompt?: string, messageRange?: [string, string]) => void;
   onIllustrateWithAgent?: (agentType: string) => void | Promise<void>;
   onGenerateBackground?: () => void | Promise<void>;
   onGenerateVideo?: () => void | Promise<void>;
@@ -1376,6 +1387,7 @@ export function ChatRoleplaySurface({
   spriteCharacterIds,
   spriteDisplayModes,
   spriteExpressions,
+  visibleExpressionSpriteIds,
   expressionAvatarResolver,
   spritePlacements,
   spriteScale,
@@ -2027,6 +2039,7 @@ export function ChatRoleplaySurface({
     chatMeta.automaticSummaryEnabled === true ||
     (chatMeta.enableAgents === true && summaryActiveAgentIds.includes("chat-summary"));
   const semanticSummaryRetrievalEnabled = chatMeta.semanticSummaryRetrievalEnabled === true;
+  const semanticSummaryRetrievalSettings = normalizeSemanticSummaryRetrievalSettings(chatMeta);
   const summaryRunInterval =
     typeof chatMeta.summaryRunInterval === "number" && Number.isFinite(chatMeta.summaryRunInterval)
       ? chatMeta.summaryRunInterval
@@ -2177,6 +2190,7 @@ export function ChatRoleplaySurface({
           <Suspense fallback={null}>
             <SpriteOverlay
               characterIds={spriteCharacterIds}
+              visibleCharacterIds={visibleExpressionSpriteIds}
               messages={msgPayload}
               side={visualNovel ? "center" : spritePosition}
               spriteDisplayModes={spriteDisplayModes}
@@ -2188,7 +2202,9 @@ export function ChatRoleplaySurface({
               expressionSpriteScale={expressionSpriteScale}
               fullBodySpriteScale={fullBodySpriteScale}
               spriteScaleMultiplier={visualNovel ? vnSpriteScale : 1}
-              activeCharacterIds={visualNovel ? activeVnSpriteIds : undefined}
+              activeCharacterIds={
+                visualNovel && chatMeta.expressionOnlyActiveSprites !== true ? activeVnSpriteIds : undefined
+              }
               spriteOpacity={spriteOpacity}
               expressionSpriteOpacity={expressionSpriteOpacity}
               fullBodySpriteOpacity={fullBodySpriteOpacity}
@@ -2283,6 +2299,9 @@ export function ChatRoleplaySurface({
                         summaryMaxTokens={summaryMaxTokens}
                         automaticSummaryEnabled={automaticSummaryEnabled}
                         semanticSummaryRetrievalEnabled={semanticSummaryRetrievalEnabled}
+                        semanticSummaryRecentCount={semanticSummaryRetrievalSettings.semanticSummaryRecentCount}
+                        semanticSummaryOlderCount={semanticSummaryRetrievalSettings.semanticSummaryOlderCount}
+                        semanticSummaryMinSimilarity={semanticSummaryRetrievalSettings.semanticSummaryMinSimilarity}
                         activeAgentIds={summaryActiveAgentIds}
                         summaryRunInterval={summaryRunInterval}
                         hideSummarisedMessages={hideSummarisedMessages}
@@ -2420,6 +2439,9 @@ export function ChatRoleplaySurface({
                           summaryMaxTokens={summaryMaxTokens}
                           automaticSummaryEnabled={automaticSummaryEnabled}
                           semanticSummaryRetrievalEnabled={semanticSummaryRetrievalEnabled}
+                          semanticSummaryRecentCount={semanticSummaryRetrievalSettings.semanticSummaryRecentCount}
+                          semanticSummaryOlderCount={semanticSummaryRetrievalSettings.semanticSummaryOlderCount}
+                          semanticSummaryMinSimilarity={semanticSummaryRetrievalSettings.semanticSummaryMinSimilarity}
                           activeAgentIds={summaryActiveAgentIds}
                           summaryRunInterval={summaryRunInterval}
                           hideSummarisedMessages={hideSummarisedMessages}
@@ -2513,6 +2535,9 @@ export function ChatRoleplaySurface({
                         summaryMaxTokens={summaryMaxTokens}
                         automaticSummaryEnabled={automaticSummaryEnabled}
                         semanticSummaryRetrievalEnabled={semanticSummaryRetrievalEnabled}
+                        semanticSummaryRecentCount={semanticSummaryRetrievalSettings.semanticSummaryRecentCount}
+                        semanticSummaryOlderCount={semanticSummaryRetrievalSettings.semanticSummaryOlderCount}
+                        semanticSummaryMinSimilarity={semanticSummaryRetrievalSettings.semanticSummaryMinSimilarity}
                         activeAgentIds={summaryActiveAgentIds}
                         summaryRunInterval={summaryRunInterval}
                         hideSummarisedMessages={hideSummarisedMessages}

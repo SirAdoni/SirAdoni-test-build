@@ -111,7 +111,17 @@ export interface GmPromptContext {
   /** Available sprite expressions per character (name → expressions + custom fullBody aliases) */
   characterSprites?: CharacterSpriteInfo[];
   /** Player's current inventory items (for GM context) */
-  playerInventory?: Array<{ name: string; quantity: number }>;
+  /** `ownName` is the item's own name when `name` is a nickname the player gave it; `item` is the
+   *  ruleset item it is, when it is one. */
+  playerInventory?: Array<{ name: string; quantity: number; ownName?: string; item?: string }>;
+  /** Each bag's totals, the player's first (no `holder`). Read instead of `playerInventory` once
+   *  anybody but the player carries something, so the Game Master knows who holds what. */
+  partyInventory?: Array<{
+    holder?: string;
+    items: Array<{ name: string; quantity: number; ownName?: string; item?: string }>;
+  }>;
+  /** What each ruleset item held is, by item id, as one line (`rulesetItemPromptFacts`). */
+  inventoryItemFacts?: Record<string, string>;
   /** Language for all narration and dialogue */
   language?: string;
   /** User-overridable GM instruction body. Wrapped in <instructions> before sending. */
@@ -660,8 +670,12 @@ function buildCampaignPlanLines(plan?: GameCampaignPlan | null): string[] {
 const LIVE_HUD_VALUES_POINTER = `- Current widget values: see <gm_only_hud_values> in the latest turn context (absent when no widget exists).`;
 const LIVE_SHEETS_POINTER = `Current sheets: see <character_sheets> in the latest turn context.`;
 
-function buildCompactInventoryLine(items: Array<{ name: string; quantity: number }>): string {
-  return items.map((item) => `${item.name}${item.quantity > 1 ? ` ×${item.quantity}` : ""}`).join("; ");
+function buildCompactInventoryLine(items: Array<{ name: string; quantity: number; facts?: string }>): string {
+  return items
+    .map(
+      (item) => `${item.name}${item.quantity > 1 ? ` ×${item.quantity}` : ""}${item.facts ? ` [${item.facts}]` : ""}`,
+    )
+    .join("; ");
 }
 
 function buildWidgetSummaryLines(widgets: HudWidget[]): string[] {
@@ -1026,6 +1040,46 @@ export function buildGmSystemPrompt(ctx: GmPromptContext): string {
  * Build the GM format reminder near the prompt tail. The actual current player
  * message is moved after it at the provider boundary.
  */
+/** A re-throw in words: which faces are thrown again, and whether until they clear it. */
+function rerollWords(reroll: { upTo: number; mode: "once" | "until" }): string {
+  return `dice showing ${reroll.upTo} or less${reroll.mode === "until" ? ", until they show more" : ", once"}`;
+}
+
+/** Where a number on the sheet comes from, in the ruleset's own words, for a line that cannot say
+ *  the number itself because it differs for every character. */
+function describeSheetValue(
+  ruleset: import("@marinara-engine/shared").RulesetDefinition,
+  ref: import("@marinara-engine/shared").RulesetValueRef,
+): string {
+  const { sheet } = ruleset;
+  const labelOf = (entries: ReadonlyArray<{ id: string; label: string }>, id: string) =>
+    entries.find((entry) => entry.id === id)?.label ?? id;
+  if (ref.const !== undefined) return String(ref.const);
+  if (ref.field !== undefined) return `the sheet's ${labelOf(sheet.fields, ref.field)}`;
+  if (ref.derived !== undefined) return `the sheet's ${labelOf(sheet.derived, ref.derived)}`;
+  if (ref.abilityScore !== undefined) return `the sheet's ${labelOf(sheet.abilities, ref.abilityScore)}`;
+  if (ref.abilityMod !== undefined) return `the sheet's ${labelOf(sheet.abilities, ref.abilityMod)} modifier`;
+  if (ref.abilityModFromField !== undefined) {
+    return `the modifier of the ability the sheet's ${labelOf(sheet.fields, ref.abilityModFromField)} names`;
+  }
+  if (ref.skillMod !== undefined) return `the sheet's ${labelOf(sheet.skills, ref.skillMod)}`;
+  if (ref.saveMod !== undefined) return `the sheet's ${labelOf(sheet.saves, ref.saveMod)}`;
+  if (ref.livePool !== undefined) return `the ${labelOf(sheet.live.pools, ref.livePool)} left`;
+  if (ref.liveTrack !== undefined) {
+    const track = labelOf(sheet.live.tracks, ref.liveTrack);
+    if (ref.read === "penalty") return `the penalty from ${track}`;
+    if (ref.read === "remaining") return `the room left on ${track}`;
+    if (ref.read === "filled") return `the ${track} above its floor`;
+    return `the current ${track}`;
+  }
+  if (ref.listSum !== undefined) {
+    const list = sheet.lists.find((entry) => entry.id === ref.listSum!.list);
+    const column = list?.columns.find((entry) => entry.id === ref.listSum!.column)?.label ?? ref.listSum.column;
+    return `the ${column} of the sheet's ${list?.label ?? ref.listSum.list} added up`;
+  }
+  return "a number on the sheet";
+}
+
 /** The ruleset's own check line, in place of the built-in one. Everything in it is the ruleset's
  *  validated, prompt-safe text; the Engine adds only the tag shape and the ladder. */
 function renderRulesetSkillCheckLine(
@@ -1045,9 +1099,55 @@ function renderRulesetSkillCheckLine(
       ]
     : [];
   const whoClause = `Add who="Character Name" to roll for a party member; without it the player is checked.`;
+  // Every ruleset has a ladder, so every ruleset can be asked for a step by name.
+  const difficultyClause = `Or name a step with difficulty="Label" in place of dc.`;
+  // What having no training does, named by the section that says it or the skill or save that says
+  // its own, so the Game Master asks for checks a character can actually make.
+  const untrainedWords = (rule: import("@marinara-engine/shared").RulesetUntrained): string =>
+    rule === "refuse"
+      ? "cannot be attempted"
+      : rule === "harder"
+        ? "one step harder"
+        : typeof rule === "object"
+          ? `${rule.by > 0 ? "+" : ""}${rule.by}${resolution.kind === "dice-pool" ? (Math.abs(rule.by) === 1 ? " die" : " dice") : ""}`
+          : "";
+  const untrainedItems = [
+    ...ruleset.sheet.sections.flatMap((section) =>
+      section.untrained && section.untrained !== "normal"
+        ? [`${section.label} (${untrainedWords(section.untrained)})`]
+        : [],
+    ),
+    ...[...ruleset.sheet.skills, ...ruleset.sheet.saves].flatMap((entry) =>
+      entry.untrained && entry.untrained !== "normal" ? [`${entry.label} (${untrainedWords(entry.untrained)})`] : [],
+    ),
+  ];
+  const refusesAny =
+    ruleset.sheet.sections.some((section) => section.untrained === "refuse") ||
+    [...ruleset.sheet.skills, ...ruleset.sheet.saves].some((entry) => entry.untrained === "refuse");
+  const untrainedClause =
+    untrainedItems.length > 0
+      ? [
+          `Untrained checks: ${untrainedItems.join(", ")}.${
+            refusesAny
+              ? ` A check the engine marks reason="untrained" was not rolled: the character could not attempt it.`
+              : ""
+          }`,
+        ]
+      : [];
 
   if (resolution.kind === "dice-pool") {
-    const { target, situationalDice, difficultyLadder } = resolution;
+    const { target, situationalDice, difficultyLadder, die, explode, double, botch, pool } = resolution;
+    // A face rule is taught only where the ruleset lets a check move it, and says what happens when
+    // nobody asks, which for a rule with no `from` is nothing at all.
+    const faceClause = (key: "explode" | "double", rule: typeof explode, does: string) =>
+      rule?.min === undefined
+        ? []
+        : [
+            `Add ${key}="N" to make dice showing N or more ${does} on this check, from ${rule.min} to ${die.sides}; without it ${
+              rule.from === undefined ? "none do" : `dice showing ${rule.from} or more do`
+            }.`,
+          ];
+    const [firstAbility, secondAbility] = ruleset.sheet.abilities;
     const ladder = difficultyLadder
       .map(
         (step) =>
@@ -1060,6 +1160,10 @@ function renderRulesetSkillCheckLine(
       `- [skill_check: skill="Name" dc="N"] - ${ruleset.gm.checkGuidance}`,
       `dc is how many successes the check needs.`,
       `Difficulty: ${ladder}.`,
+      // The step's own target only means something where a step names one.
+      difficultyLadder.some((step) => step.target !== undefined)
+        ? `${difficultyClause} A step's target is the one the check counts with unless you add threshold.`
+        : difficultyClause,
       whoClause,
       // Both are offered only where this ruleset declares them, so the prompt never teaches an
       // attribute the resolver would then ignore.
@@ -1073,18 +1177,35 @@ function renderRulesetSkillCheckLine(
             `Add bonus="+N" or bonus="-N" to add or take dice for this check, from ${situationalDice.min} to ${situationalDice.max}.`,
           ]
         : []),
+      // The standing re-throws the Game Master may name, each with the faces it throws again.
+      ...(resolution.reroll?.length
+        ? [
+            `When the rules let a roll be thrown again, add reroll="id": ${resolution.reroll
+              .map((reroll) => `${reroll.id} (${rerollWords(reroll)})`)
+              .join(", ")}.`,
+          ]
+        : []),
       ...(resolution.spend ?? []).map((spend) => {
         const pool = ruleset.sheet.live.pools.find((entry) => entry.id === spend.pool);
         const buys = [
           spend.successes ? `${spend.successes} automatic ${spend.successes === 1 ? "success" : "successes"}` : "",
           spend.dice ? `${spend.dice} extra ${spend.dice === 1 ? "die" : "dice"}` : "",
+          spend.reroll ? `a throw again of ${rerollWords(spend.reroll)}` : "",
         ]
           .filter(Boolean)
           .join(" and ");
+        // How many purchases one check may make, said the way the ruleset set it: a number, the check's
+        // own dice, or a number on each character's sheet, which the engine reads for whoever rolls.
+        const cap =
+          typeof spend.perCheck === "number"
+            ? `up to ${spend.perCheck} ${spend.perCheck === 1 ? "time" : "times"} per check`
+            : spend.perCheck === "pool"
+              ? `up to as many times per check as the check has dice`
+              : `up to as many times per check as ${describeSheetValue(ruleset, spend.perCheck)}`;
         // Taught only where this ruleset declares it, so the prompt never offers a purchase the
         // resolver would then ignore. What it costs and what it buys are said in the ruleset's own
         // words; the engine works out both, and a pool that cannot cover it buys nothing.
-        return `When the player spends to change a roll, add spend="${spend.pool}:N" to that same check: every ${spend.amount} ${pool?.label ?? spend.pool} buys ${buys}, up to ${spend.perCheck} ${spend.perCheck === 1 ? "time" : "times"} per check. Do not also write a sheet command for it, and do not change the dice yourself.`;
+        return `When the player spends to change a roll, add spend="${spend.pool}:N" to that same check: every ${spend.amount} ${pool?.label ?? spend.pool} buys ${buys}, ${cap}. Do not also write a sheet command for it, and do not change the dice yourself.`;
       }),
       // Taught whenever this ruleset has any entry that changes a check. What each one DOES is the
       // entry's own business and the Engine reads it; the Game Master only names it.
@@ -1097,7 +1218,21 @@ function renderRulesetSkillCheckLine(
             `When a character uses something from their sheet to change a roll, add use="Its name" to that same check. Do not write a separate sheet command for it: the engine pays for it and applies it on the same roll.`,
           ]
         : []),
+      ...faceClause("explode", explode, "roll one more die"),
+      ...faceClause("double", double, "count twice"),
       ...withClause,
+      ...untrainedClause,
+      // Named with this ruleset's own first two abilities, so the example is never another game's.
+      ...(pool.abilityPlusAbility && firstAbility && secondAbility
+        ? [
+            `On an ability check, with= adds a second ability's dice: skill="${firstAbility.label}" with="${secondAbility.label}".`,
+          ]
+        : []),
+      ...(botch?.rule === "halfOrMore"
+        ? [
+            `A check the engine marks complication="true" kept its result, but something went wrong alongside it: narrate both.`,
+          ]
+        : []),
       `Do NOT write rolls, modifier, total or result: the engine rolls the pool from the character sheet and counts the successes.`,
       ...branchClause,
     ].join(" ");
@@ -1109,9 +1244,11 @@ function renderRulesetSkillCheckLine(
   return [
     `- [skill_check: skill="Name" dc="N"${playerDie ? ` rolls="the player's d20 result"` : ""}] - ${ruleset.gm.checkGuidance}`,
     `Difficulty: ${ladder}.`,
+    difficultyClause,
     whoClause,
     ...(advantage ? [`Add mode="advantage" or mode="disadvantage" when the rules grant one.`] : []),
     ...withClause,
+    ...untrainedClause,
     playerDie
       ? `Use the player's exact die. Do NOT write modifier, total or result: the engine applies the character sheet.`
       : `Do NOT write rolls, modifier, total or result: the engine rolls ${dice.count}d${dice.sides} and applies the character sheet.`,
@@ -1129,6 +1266,12 @@ function renderRulesetSheetSection(
   const blocks = sheetBlocks.map((block) => block.trim()).filter(Boolean);
   if (blocks.length === 0) return [];
   const names = (entries: ReadonlyArray<{ label: string }>) => entries.map((entry) => entry.label).join(", ");
+  // A wound track is marked with a kind of harm rather than counted, so it has a command of its own
+  // and is listed apart from the tracks `op="track"` moves.
+  const woundTracks = ruleset.sheet.live.tracks.flatMap((track) =>
+    (track.levels || track.boxes) && track.kinds ? [{ ...track, kinds: track.kinds }] : [],
+  );
+  const plainTracks = ruleset.sheet.live.tracks.filter((track) => !track.levels && !track.boxes);
   const lines = [
     ``,
     `CHARACTER SHEETS:`,
@@ -1138,15 +1281,29 @@ function renderRulesetSheetSection(
     `- [sheet: who="Name" op="damage" pool="Pool" amount="N"] - takes it away, temporary points first.`,
     `- [sheet: who="Name" op="temp" pool="Pool" amount="N"] - sets temporary points on a pool that has them.`,
     `- [sheet: who="Name" op="track" track="Track" by="+1"] - or to="N" to set it.`,
+    ...(woundTracks.length > 0
+      ? [
+          `- [sheet: who="Name" op="damage" track="Track" kind="Kind" amount="N"] - marks harm of that kind on a wound track; a negative amount heals marks of that kind, or the lightest when kind is left out.`,
+          // Taught only where a track fills by box, since everywhere else a box number means nothing.
+          ...(woundTracks.some((track) => track.fill === "indexed")
+            ? [
+                `  On a track that fills by box, add box="N" for the box the hit lands on; it takes the next free box above when that one is marked, and is refused when none is free.`,
+              ]
+            : []),
+        ]
+      : []),
     `- [sheet: who="Name" op="condition" condition="Condition" state="on|off"]`,
+    ...(ruleset.sheet.live.states.length > 0
+      ? [`- [sheet: who="Name" op="state" state="State" value="Value"] - sets a state to one of its values.`]
+      : []),
     `- [sheet: who="Name" op="note" field="Field" value="text"] - an empty value clears it.`,
     ...(ruleset.rests.length > 0
       ? [`- [sheet: who="Name" op="rest" rest="Rest"] - rests: ${names(ruleset.rests)}.`]
       : []),
-    // Only a ruleset with catalogs of ROWS has entries to use: a bestiary writes nothing onto a
-    // sheet, so without one of those nothing on a sheet carries a price the Engine could pay, and
-    // the line would describe a command that always refuses.
-    ...(ruleset.catalogs?.some((catalog) => catalog.holds !== "creatures")
+    // Only a ruleset with catalogs of ROWS has entries to use: a bestiary or an item catalog writes
+    // nothing onto a sheet, so without one of those nothing on a sheet carries a price the Engine
+    // could pay, and the line would describe a command that always refuses.
+    ...(ruleset.catalogs?.some((catalog) => catalog.holds === "rows")
       ? [
           `- [sheet: who="Name" op="use" name="Name on the sheet"] - pays what that ability costs. Add pool="Pool" to pay from a higher pool of the same group.`,
         ]
@@ -1154,13 +1311,40 @@ function renderRulesetSheetSection(
     `Leave out who for the player; who="party" applies to every member. Use the pool, track, field and condition names shown on the sheets. Never write result, reason or now yourself: the Engine adds them. A refused command did not happen, so do not narrate it as if it had.`,
     // A sheet block leaves out a track or a note that still has its default, so the names a command
     // can use are listed once here.
-    ...(ruleset.sheet.live.tracks.length > 0
+    ...(plainTracks.length > 0
       ? [
-          `Tracks: ${ruleset.sheet.live.tracks.map((track) => `${track.label} (${track.min} to ${track.max})`).join(", ")}.`,
+          `Tracks: ${plainTracks
+            .map(
+              (track) =>
+                `${track.label} (${track.min} to ${typeof track.max === "number" ? track.max : "the character's own maximum"})`,
+            )
+            .join(", ")}.`,
+        ]
+      : []),
+    // Best rung to worst, and the kinds a mark may be, so a damage command names real ones.
+    ...(woundTracks.length > 0
+      ? [
+          `Wound tracks: ${woundTracks
+            .map(
+              (track) =>
+                `${track.label} (${track.levels ? `${track.levels[0]!.label} to ${track.levels[track.levels.length - 1]!.label}` : "numbered boxes"}${track.fill === "indexed" ? ", fills by box" : ""}${track.onFull === "refuse" || track.fill === "indexed" ? ", refuses a mark when full" : ""}; ${track.kinds.map((kind) => kind.id).join(", ")})`,
+            )
+            .join(", ")}.`,
         ]
       : []),
     ...(ruleset.sheet.live.text.length > 0 ? [`Note fields: ${names(ruleset.sheet.live.text)}.`] : []),
     ...(ruleset.sheet.live.conditions.length > 0 ? [`Conditions: ${names(ruleset.sheet.live.conditions)}.`] : []),
+    // Every value a state may take, by the name the sheets show, so a command names a real one.
+    ...(ruleset.sheet.live.states.length > 0
+      ? [
+          `States: ${ruleset.sheet.live.states
+            .map(
+              (state) =>
+                `${state.label} (${state.values.map((value) => state.valueLabels?.[value] ?? value).join(", ")})`,
+            )
+            .join(", ")}.`,
+        ]
+      : []),
     ...(ruleset.gm.sheetGuidance ? [ruleset.gm.sheetGuidance] : []),
     ``,
     // The sheets are data, and part of that data is free text (names, notes the model wrote with
@@ -1194,6 +1378,8 @@ export function buildGmFormatReminder(
     | "playerName"
     | "characterSprites"
     | "playerInventory"
+    | "partyInventory"
+    | "inventoryItemFacts"
     | "language"
     | "rating"
     | "enableQuickTimeEvents"
@@ -1286,15 +1472,40 @@ export function buildGmFormatReminder(
   // An experience that tracks items itself owns the whole loop, so asking the GM for [inventory:] here
   // would only produce commands nothing consumes.
   const experienceOwnsInventory = ctx.experienceProvidedSystems?.inventory === true;
+  // A nicknamed item is shown with its own name too, which is how the Game Master can also name it.
+  const inventoryName = (item: { name?: unknown; ownName?: unknown } | undefined) => {
+    const name = normalizePromptText(item?.name);
+    const own = normalizePromptText(item?.ownName);
+    return name && own && own.toLowerCase() !== name.toLowerCase() ? `${name} (${own})` : name;
+  };
+  // A ruleset item also says what it is, from its ruleset: category, rarity, tags and visible stats.
+  const itemFacts = (item: { item?: unknown } | undefined) => {
+    const facts = typeof item?.item === "string" ? ctx.inventoryItemFacts?.[item.item] : undefined;
+    const text = normalizePromptText(facts);
+    return text ? { facts: text } : {};
+  };
   const playerInventory = Array.isArray(ctx.playerInventory)
     ? ctx.playerInventory.flatMap((item) => {
-        const name = normalizePromptText(item?.name);
+        const name = inventoryName(item);
         if (!name) return [];
         const quantity =
           typeof item?.quantity === "number" && Number.isFinite(item.quantity) ? Math.max(1, item.quantity) : 1;
-        return [{ name, quantity }];
+        return [{ name, quantity, ...itemFacts(item) }];
       })
     : [];
+  // Bags other than the player's, each with a name to show; only these make the block per member.
+  const partyBags = (Array.isArray(ctx.partyInventory) ? ctx.partyInventory : []).flatMap((bag) => {
+    const holder = bag.holder ? normalizePromptText(bag.holder) : "";
+    const items = (Array.isArray(bag.items) ? bag.items : []).flatMap((item) => {
+      const name = inventoryName(item);
+      if (!name) return [];
+      const quantity =
+        typeof item?.quantity === "number" && Number.isFinite(item.quantity) ? Math.max(1, item.quantity) : 1;
+      return [{ name, quantity, ...itemFacts(item) }];
+    });
+    return items.length > 0 ? [{ holder, items }] : [];
+  });
+  const carriedByOthers = partyBags.some((bag) => bag.holder);
 
   // ── Current State (closest to generation) ──
   lines.push(
@@ -1431,7 +1642,12 @@ export function buildGmFormatReminder(
     ...(experienceOwnsInventory
       ? []
       : [
-          `- [inventory: action="add|remove" item="Item A, Item B" count="3"] - record every real item gain or loss after it happens in the fiction; never expose an item to a character merely to create or update this command. Keep names short and use count/quantity for stacked items.`,
+          `- [inventory: action="add|remove|give" item="Item A, Item B" count="3" who="Name" to="Name"] - record every real item gain or loss after it happens in the fiction; never expose an item merely to create or update this command. Keep names short and use count/quantity for stacked items. Everyone in the party carries their own things: who is whose bag an item goes into or comes out of, and leaving who out means the player (a remove without who then takes from the rest of the party once the player has none). A give hands items from who to to. An item listed as "Nickname (Name)" is one item: write either name in item, never both. Never write result, reason or now yourself: the Engine adds them, and a refused action did not happen.`,
+          ...(ctx.ruleset?.catalogs?.some((catalog) => catalog.holds === "items")
+            ? [
+                `  This game's ruleset has its own items: an item named exactly as one of them becomes that item, and what an item of the ruleset is shows in [brackets] after it in the inventory below (never write the brackets in item).`,
+              ]
+            : []),
         ]),
     `- [Note: contents] or [Book: contents] - when a new readable note or book is acquired and should be tracked in the journal.`,
     `- [state: exploration|dialogue|combat|travel_rest] - only on actual mode transitions. If you're planning to use [state: combat], this one ALWAYS has to be at the end of the turn, as it initiates a new combat generation and UI.`,
@@ -1604,11 +1820,17 @@ export function buildGmFormatReminder(
 
   // Inventory context. Skipped when an experience owns items: an older save can still carry a stale
   // built-in list, which would contradict the inventory the player has on screen.
-  if (!experienceOwnsInventory && playerInventory.length > 0) {
+  if (!experienceOwnsInventory && (carriedByOthers || playerInventory.length > 0)) {
+    const playerLabel = normalizePromptText(ctx.playerName) || "Player";
     (liveValuesAfterFormat ? liveValueLines : lines).push(
       ``,
       `<gm_only_inventory>`,
-      `PLAYER INVENTORY: ${buildCompactInventoryLine(playerInventory)}`,
+      ...(carriedByOthers
+        ? [
+            `PARTY INVENTORY:`,
+            ...partyBags.map((bag) => `- ${bag.holder || playerLabel}: ${buildCompactInventoryLine(bag.items)}`),
+          ]
+        : [`PLAYER INVENTORY: ${buildCompactInventoryLine(playerInventory)}`]),
       `This is private bookkeeping. It does not establish that any NPC knows an item exists, where it is, how many there are, or what the player intends to do with it.`,
       `</gm_only_inventory>`,
     );

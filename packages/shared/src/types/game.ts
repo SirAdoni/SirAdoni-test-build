@@ -489,6 +489,26 @@ export interface SkillCheckResult {
   used?: string;
   /** How many dice a bought re-throw replaced. Absent when none were. */
   rerolled?: number;
+  /**
+   * The faces a pool check exploded and doubled from, set only when the check moved them off the
+   * ruleset's own default (a Game Master's `explode=` or `double=`, or an entry that grants it).
+   */
+  explodeFrom?: number;
+  doubleFrom?: number;
+  /**
+   * The roll did not botch outright, but something went wrong on the side of it: a pool ruleset whose
+   * `botch.rule` is `halfOrMore` saw low faces on half its dice or more while a die still succeeded.
+   * `success` is still the outcome; this is what happens beside it. Absent everywhere else.
+   */
+  complication?: boolean;
+  /**
+   * What the sheet itself added to or took off the check through `resolution.adjust`, beside any
+   * wound penalty: dice on a pool, a flat number on a sum (where it is inside `modifier` too). Absent
+   * when nothing applied.
+   */
+  adjust?: number;
+  /** The standing re-throw the Game Master named with `reroll=` and the check applied, by its id. */
+  reroll?: string;
 }
 
 // ── The sighted dice pool (opt-in, last) ──
@@ -983,13 +1003,7 @@ export interface PartyDialogueLine {
 // ── Checkpoints ──
 
 export type CheckpointTrigger =
-  | "manual"
-  | "session_start"
-  | "session_end"
-  | "combat_start"
-  | "combat_end"
-  | "location_change"
-  | "auto_interval";
+  "manual" | "session_start" | "session_end" | "combat_start" | "combat_end" | "location_change" | "auto_interval";
 
 export interface GameCheckpoint {
   id: string;
@@ -1024,20 +1038,10 @@ export interface GeneratedSceneVideo {
 }
 
 export type GameStoryboardStatus =
-  | "planning"
-  | "rendering_images"
-  | "rendering_videos"
-  | "complete"
-  | "partial"
-  | "failed";
+  "planning" | "rendering_images" | "rendering_videos" | "complete" | "partial" | "failed";
 
 export type GameStoryboardKeyframeStatus =
-  | "planned"
-  | "rendering_image"
-  | "image_complete"
-  | "rendering_video"
-  | "complete"
-  | "failed";
+  "planned" | "rendering_image" | "image_complete" | "rendering_video" | "complete" | "failed";
 
 export type StoryboardAnimationSuitability = "suitable" | "simplify" | "subtle" | "regenerate";
 

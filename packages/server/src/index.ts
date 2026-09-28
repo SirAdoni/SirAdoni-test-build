@@ -27,6 +27,7 @@ import {
   getLogLevel,
   getPort,
   getServerProtocol,
+  isShutdownEarlyFlushEnabled,
   loadTlsOptions,
   logStorageDiagnostics,
 } from "./config/runtime-config.js";
@@ -116,11 +117,11 @@ async function main() {
   await startup.phase("build.integrity", () => startup.record("buildIntegrity", checkBuildIntegrity()), {
     optional: true,
   });
-  const tls = loadTlsOptions();
-  logStorageDiagnostics();
+  const tls = await startup.phase("config.tls", () => loadTlsOptions());
+  await startup.phase("storage.diagnostics", () => logStorageDiagnostics());
   // Started before buildApp so the startup memory peak is captured.
   let stopRuntimeMemoryMonitor: () => void = startRuntimeMemoryMonitor();
-  const app = await buildApp(tls ?? undefined);
+  const app = (await startup.phase("app.build", () => buildApp(tls ?? undefined)))!; // Required phases throw on failure.
   const envWatcher = startEnvWatcher();
   const protocol = tls ? "https" : getServerProtocol();
   const port = getPort();
@@ -203,13 +204,12 @@ async function main() {
     // #5838: bound the whole close - sever connections at 4 s, force-exit at
     // 8 s - so a supervisor's stop window (earlyoom ~10 s, Docker 10 s) never
     // expires on a connection-wait and escalates to a write-dropping SIGKILL.
-    // A Windows console close gets a tighter budget (see shutdownDeadlinesFor).
+    // Bound close and begin the optional early flush while connections close.
     armShutdownDeadline(app, signal, shutdownDeadlinesFor(signal));
     setRuntimeStopBudgetMs(runtimeStopBudgetFor(signal));
-
-    // Start writing pending saves now, while app.close() may still be waiting
-    // on open connections; the store close inside onClose writes the rest.
-    void flushDB().catch((err) => logger.warn(err, "Early shutdown flush failed; the store close will retry"));
+    if (isShutdownEarlyFlushEnabled()) {
+      void flushDB().catch(() => {});
+    }
 
     const shutdownStarted = Date.now();
     try {
@@ -232,8 +232,7 @@ async function main() {
     }
   };
 
-  // Duplicate delivery of one stop request is ignored; a deliberate repeat
-  // after the grace window forces the exit.
+  // Repeat handling and Windows signal support follow the configured shutdown controller.
   installShutdownSignalHandlers(
     createShutdownSignalController({
       alreadyStopping: () => isShuttingDown,
@@ -244,7 +243,7 @@ async function main() {
   );
 
   try {
-    await app.listen({ port, host });
+    await startup.phase("http.listen", () => app.listen({ port, host }));
     logStartupReady(`${protocol}://${host}:${port}`);
     startFreezeDetector();
     startSessionPostmortem();

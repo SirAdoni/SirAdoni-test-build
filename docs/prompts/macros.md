@@ -205,7 +205,20 @@ Variables let one part of your prompt store a value and let a later part read it
 
 Variables resolve from left to right in one prompt build. A value set early, for example in a lorebook entry that comes first, can be read later in the same prompt. Marinara also saves them in the current chat, matching SillyTavern local-variable behavior: later turns and app restarts retain them, while another chat has its own separate values.
 
-Any `{{NAME}}` that is not a built-in macro is treated as a preset variable and looked up by name. If no variable with that name exists, the tag is left in the text exactly as you typed it. See [Preset Variables](preset-variables.md) for how to define these.
+Any `{{NAME}}` that is not a built-in macro is looked up by name: first among the preset variables, then among the chat's own variables. If neither has that name, the tag is left in the text exactly as you typed it. A preset variable wins when both use the same name. See [Preset Variables](preset-variables.md) for the preset side.
+
+### Chat variables
+
+You do not have to use `{{setvar}}` to create a variable. The **Chat Variables** section of the **Chat Settings** panel lets you type a name and a value directly, then use the name anywhere macros work, including your own messages. Add `char1` with the value `Mary`, type `{{char1}} walks in.` and the AI reads "Mary walks in."
+
+Rules worth knowing:
+
+- Names use letters, numbers, and underscores, and must start with a letter or underscore. Names with exactly 21 characters are reserved for character references. A name with a dot or a dash can still be set and read with `{{setvar}}` and `{{getvar}}`, but it will not resolve as a bare `{{name}}`.
+- A built-in macro name cannot be used. `{{char}}` always means the character.
+- Your own message keeps showing the tag you typed. The value is filled in when the prompt is built, so changing a value later also changes the earlier turns that used it.
+- The section lists variables set by `{{setvar}}` too, because they share one storage per chat.
+
+See [Chat Settings Overview](../chats/chat-settings.md) for the panel itself.
 
 ## Formatting macros
 
@@ -225,7 +238,7 @@ These macros shape the text around them.
 
 ## Showing literal double braces
 
-There is no escape character for macros. If you want double braces to stay in the text, use a name that Marinara does not know. Any unknown `{{name}}` is left exactly as typed, as long as no preset variable shares that name. If you need a private note that never reaches the AI, use `{{// like this}}` instead.
+There is no escape character for macros. If you want double braces to stay in the text, use a name that Marinara does not know. Any unknown `{{name}}` is left exactly as typed, as long as no preset variable and no chat variable shares that name. If you need a private note that never reaches the AI, use `{{// like this}}` instead.
 
 ## The Macro reference and /macros
 
@@ -238,12 +251,13 @@ You can also type `/macros` in the chat box (the short form `/macro` works too).
 
 Conditional blocks can combine comparisons with `||` (OR), `&&` (AND), and parentheses. Equality lists may use the compact form `{{#if character == "Maukie" || "Pantalone"}}`. See [Conditional Prompts](conditional-prompts.md) for precedence, group-chat examples, and the full operator list.
 
-A condition can also ask your Decision model about the scene: `{{#if decision:"The latest message moves the scene to a new place"}}` for yes or no, and `{{#if decision_choice:"Kaelen's mood in the latest message" == "angry"}}` to pick one option. With no Decision model, or no answer, these read as no. See [Asking the Decision model](conditional-prompts.md#asking-the-decision-model).
+A condition can also ask your Decision model about the scene: `{{#if decision:"The latest message moves the scene to a new place"}}` for yes or no, and `{{#if decision_choice:"The kind of scene in the latest message" == "combat"}}` to pick one option. With no Decision model, or no answer, these read as no. See [Asking the Decision model](conditional-prompts.md#asking-the-decision-model). Add `sticky:3 cooldown:5` after a statement to keep a yes for three turns and then rest it for five; see [Sticky and cooldown](conditional-prompts.md#sticky-and-cooldown). `every:3` asks a statement only every three turns, and `priority:high` or `priority:low` chooses which statements fit within a prompt plan; see [Checking every few turns](conditional-prompts.md#checking-every-few-turns), [Priority](conditional-prompts.md#priority), and [Limits and cost](conditional-prompts.md#limits-and-cost).
 
 ## Common mistakes
 
 - Do not write variables inside a `{{random::...}}` block. A `{{setvar}}` inside a random option runs for every option before the choice is made, not just the chosen one.
 - Do not use a local variable as global state. It persists only inside the chat where it was set.
+- A prompt section or lorebook entry that runs `{{setvar}}` overwrites a chat variable of the same name, because both use one storage per chat. Give them different names if you want both.
 - `{{prompt}}` is not a macro. If your whole message is `{{prompt}}`, Marinara opens the **Peek Prompt** viewer instead of sending it. See [Peek Prompt](../chats/peek-prompt.md).
 - Custom Tools do not use `{{macro}}` text. Do not paste `{{roll:1d20}}` into a tool field expecting it to resolve.
 - The **Impersonate** prompt template accepts only a few placeholders, not the full macro list. Its names differ too, so a macro that works in a card may not work there.

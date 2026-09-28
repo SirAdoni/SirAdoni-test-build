@@ -1014,6 +1014,90 @@ export function resolveTTSAudioResponseContentType(contentType: string | null, b
   return detectTTSAudioMimeType(bytes);
 }
 
+/** OpenRouter exposes model-specific PCM layout in Content-Type, not a universal 24 kHz rate.
+ * https://github.com/OpenRouterTeam/skills/blob/main/skills/openrouter-tts/SKILL.md
+ * Only the official OpenAI endpoint has a documented fixed PCM layout fallback.
+ * https://developers.openai.com/api/docs/guides/text-to-speech#supported-output-formats
+ */
+export function resolveTTSPcmFormat(contentType: string | null, baseUrl: string) {
+  const parameters = new Map<string, string>();
+  for (const parameter of (contentType ?? "").split(";").slice(1)) {
+    const separator = parameter.indexOf("=");
+    const name = (separator < 0 ? parameter : parameter.slice(0, separator)).trim().toLowerCase();
+    if (name !== "rate" && name !== "channels") continue;
+    if (separator < 0) throw new Error(`TTS provider returned invalid PCM ${name} metadata`);
+    if (parameters.has(name)) throw new Error(`TTS provider returned duplicate PCM ${name} metadata`);
+    parameters.set(
+      name,
+      parameter
+        .slice(separator + 1)
+        .trim()
+        .replace(/^"(.*)"$/, "$1"),
+    );
+  }
+  let officialOpenAi = false;
+  try {
+    const url = new URL(baseUrl);
+    officialOpenAi = url.protocol === "https:" && url.hostname === "api.openai.com";
+  } catch {
+    // An invalid/custom URL cannot establish a provider-specific audio contract.
+  }
+  const readParameter = (name: string, fallback: number, min: number, max: number) => {
+    const value = parameters.get(name);
+    if (value === undefined && officialOpenAi) return fallback;
+    if (value === undefined) {
+      throw new Error(`TTS provider omitted PCM ${name}; return audio/pcm with rate and channels, or select WAV/MP3`);
+    }
+    const parsed = Number(value);
+    if (!/^\d+$/.test(value) || !Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+      throw new Error(`TTS provider returned invalid PCM ${name} metadata`);
+    }
+    return parsed;
+  };
+  return { sampleRate: readParameter("rate", 24_000, 8_000, 192_000), channels: readParameter("channels", 1, 1, 8) };
+}
+
+/** Wrap signed 16-bit little-endian samples for browser playback without changing the samples. */
+export function wrapTTSPcm16AsWav(pcm: Uint8Array, format: { sampleRate: number; channels: number }): Uint8Array {
+  const { sampleRate, channels } = format;
+  if (
+    !Number.isInteger(sampleRate) ||
+    sampleRate < 8_000 ||
+    sampleRate > 192_000 ||
+    !Number.isInteger(channels) ||
+    channels < 1 ||
+    channels > 8
+  ) {
+    throw new Error("TTS provider returned invalid PCM layout");
+  }
+  const blockAlign = channels * 2;
+  if (pcm.byteLength === 0) throw new Error("TTS provider returned empty PCM audio");
+  if (pcm.byteLength % blockAlign !== 0)
+    throw new Error("TTS provider returned malformed PCM audio (incomplete frame)");
+
+  const wav = new Uint8Array(44 + pcm.byteLength);
+  const view = new DataView(wav.buffer);
+  const writeAscii = (offset: number, value: string) => {
+    for (let index = 0; index < value.length; index += 1) view.setUint8(offset + index, value.charCodeAt(index));
+  };
+
+  writeAscii(0, "RIFF");
+  view.setUint32(4, 36 + pcm.byteLength, true);
+  writeAscii(8, "WAVE");
+  writeAscii(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, channels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * blockAlign, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, 16, true);
+  writeAscii(36, "data");
+  view.setUint32(40, pcm.byteLength, true);
+  wav.set(pcm, 44);
+  return wav;
+}
+
 function buildSpeechInstructions(input: { speaker?: string; tone?: string; includeSpeaker?: boolean }) {
   const parts: string[] = [];
   if (input.includeSpeaker !== false && input.speaker?.trim()) {
@@ -1689,7 +1773,7 @@ export async function ttsRoutes(app: FastifyInstance) {
     }
 
     const contentType = providerRes.headers.get("content-type");
-    let audioBuffer: ArrayBuffer;
+    let audioBuffer: ArrayBufferLike;
     try {
       audioBuffer = await providerRes.arrayBuffer();
     } catch (error: unknown) {
@@ -1703,9 +1787,75 @@ export async function ttsRoutes(app: FastifyInstance) {
       );
     }
 
-    const responseContentType = resolveTTSAudioResponseContentType(contentType, new Uint8Array(audioBuffer));
+    const providerAudio = new Uint8Array(audioBuffer);
+    const declaredMime = contentType?.split(";", 1)[0]?.trim().toLowerCase();
+    const isRawPcm =
+      declaredMime === "audio/pcm" ||
+      (audioFormat === "pcm" && (!declaredMime || declaredMime === "application/octet-stream"));
+    if (isRawPcm) {
+      try {
+        // A provider may return a WAV container despite a PCM request/header. Never double-wrap it.
+        // Do not use generic MP3 sniffing here: FF FF is also a valid signed PCM sample (-1).
+        if (detectTTSAudioMimeType(providerAudio) === "audio/wav") {
+          const view = new DataView(providerAudio.buffer, providerAudio.byteOffset, providerAudio.byteLength);
+          let valid = view.getUint32(4, true) + 8 === providerAudio.byteLength;
+          let hasFormat = false;
+          let hasData = false;
+          let frameAlignment = 0;
+          let offset = 12;
+          // ponytail: check container bounds and fixed-frame layouts here; codec-specific validation stays with the browser decoder.
+          while (valid && offset < providerAudio.byteLength) {
+            if (offset + 8 > providerAudio.byteLength) {
+              valid = false;
+              break;
+            }
+            const chunkId = String.fromCharCode(...providerAudio.subarray(offset, offset + 4));
+            const size = view.getUint32(offset + 4, true);
+            const payloadOffset = offset + 8;
+            offset = payloadOffset + size + (size % 2);
+            valid = offset <= providerAudio.byteLength;
+            if (chunkId === "fmt ") {
+              valid &&= !hasFormat;
+              hasFormat = size >= 16;
+              valid &&= hasFormat;
+              if (valid) {
+                const formatTag = view.getUint16(payloadOffset, true);
+                const channels = view.getUint16(payloadOffset + 2, true);
+                const sampleRate = view.getUint32(payloadOffset + 4, true);
+                const blockAlign = view.getUint16(payloadOffset + 12, true);
+                const bitsPerSample = view.getUint16(payloadOffset + 14, true);
+                if (formatTag === 1 || formatTag === 3) frameAlignment = blockAlign;
+                // Compressed WAV formats can legitimately report zero bits per sample.
+                valid =
+                  channels > 0 &&
+                  sampleRate > 0 &&
+                  ((formatTag !== 1 && formatTag !== 3) ||
+                    (bitsPerSample > 0 &&
+                      blockAlign * 8 === channels * bitsPerSample &&
+                      view.getUint32(payloadOffset + 8, true) === sampleRate * blockAlign));
+              }
+            } else if (chunkId === "data") {
+              hasData = size > 0;
+              valid &&= hasData && hasFormat && (frameAlignment === 0 || size % frameAlignment === 0);
+            }
+          }
+          if (!valid || !hasFormat || !hasData) {
+            throw new Error("TTS provider returned malformed WAV audio");
+          }
+        } else {
+          audioBuffer = wrapTTSPcm16AsWav(providerAudio, resolveTTSPcmFormat(contentType, base)).buffer;
+        }
+      } catch (error: unknown) {
+        return reply.status(502).send({
+          error: "TTS provider returned invalid PCM audio",
+          detail: error instanceof Error ? error.message : "Unknown PCM error",
+        });
+      }
+    }
+
+    const responseContentType = isRawPcm ? "audio/wav" : resolveTTSAudioResponseContentType(contentType, providerAudio);
     if (!responseContentType) {
-      const body = new TextDecoder().decode(audioBuffer);
+      const body = new TextDecoder().decode(new Uint8Array(audioBuffer));
       return replySpeakFailure(
         reply,
         502,

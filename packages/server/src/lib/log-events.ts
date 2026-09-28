@@ -14,14 +14,7 @@ import { logger } from "./logger.js";
 
 export type Outcome = "ok" | "failed" | "cancelled" | "skipped";
 export type JobState =
-  | "accepted"
-  | "running"
-  | "progress"
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | "recovered"
-  | "expired";
+  "accepted" | "running" | "progress" | "completed" | "failed" | "cancelled" | "recovered" | "expired";
 export type JobKind = "image" | "sprite" | "tts" | "video" | "illustration";
 
 export type EventName =

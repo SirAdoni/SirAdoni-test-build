@@ -95,9 +95,15 @@ export function parseSheetCommandTagBody(body: string): ParsedSheetCommandTag {
     // the harm; the pool form is untouched, so a ruleset whose health is a pool reads as it always did.
     const track = values.get("track")?.trim();
     if (name === "damage" && track) {
-      const kind = values.get("kind")?.trim();
-      if (!kind || amount === null) return parsed;
-      return { ...parsed, op: { op: "damage", track, kind, amount } };
+      // A mark has to say what it is; a heal may leave the kind out, and then clears the lightest.
+      const kind = values.get("kind")?.trim() ?? "";
+      if (amount === null || (amount >= 0 && !kind)) return parsed;
+      // Where the mark aims on an indexed track. A box that does not read as a number is a tag that
+      // does not say what it means, so it is refused rather than dropped to box 1.
+      const rawBox = values.get("box");
+      const box = rawBox === undefined ? null : readInteger(rawBox);
+      if (rawBox !== undefined && box === null) return parsed;
+      return { ...parsed, op: { op: "damage", track, kind, amount, ...(box !== null ? { box } : {}) } };
     }
     const pool = values.get("pool")?.trim();
     if (!pool || amount === null) return parsed;
@@ -116,6 +122,13 @@ export function parseSheetCommandTagBody(body: string): ParsedSheetCommandTag {
     const active = readState(values.get("state"));
     if (!condition || active === null) return parsed;
     return { ...parsed, op: { op: "condition", condition, active } };
+  }
+  if (name === "state") {
+    // `state=` names the state here; on a condition it is on or off. The op decides which.
+    const state = values.get("state")?.trim();
+    const value = values.get("value")?.trim();
+    if (!state || !value) return parsed;
+    return { ...parsed, op: { op: "state", state, value } };
   }
   if (name === "note") {
     const field = values.get("field")?.trim();
@@ -180,8 +193,9 @@ export function serializeSheetCommandTag(
     attribute("op", op.op);
     if (op.op === "damage" && "track" in op) {
       attribute("track", op.track);
-      attribute("kind", op.kind);
+      if (op.kind) attribute("kind", op.kind);
       attribute("amount", op.amount);
+      if (op.box !== undefined) attribute("box", op.box);
     } else if (op.op === "spend" || op.op === "restore" || op.op === "damage" || op.op === "temp") {
       attribute("pool", op.pool);
       attribute("amount", op.amount);
@@ -192,6 +206,9 @@ export function serializeSheetCommandTag(
     } else if (op.op === "condition") {
       attribute("condition", op.condition);
       attribute("state", op.active ? "on" : "off");
+    } else if (op.op === "state") {
+      attribute("state", op.state);
+      attribute("value", op.value);
     } else if (op.op === "note") {
       attribute("field", op.field);
       attribute("value", op.value);
@@ -247,6 +264,9 @@ export function readResolvedSheetCommandTags(text: string): ResolvedSheetCommand
       values.get("pool") ??
       values.get("track") ??
       values.get("condition") ??
+      // Only a state command names its state here: a condition's `state` is on or off, and it
+      // has already answered above.
+      (name === "state" ? values.get("state") : undefined) ??
       values.get("field") ??
       values.get("rest");
     const head = [who, name ?? "sheet", target].filter(Boolean).join(" ");

@@ -485,6 +485,90 @@ try {
   assert.ok(unconfirmed.body.includes('"blocking":true'), unconfirmed.body);
   assert.equal(modelCalls, unconfirmedCalls, "missing knowledge cannot be sent to a model before confirmation");
 
+  for (const hiddenExtra of [{ hiddenFromAICharacterIds: [second.id] }, { hiddenFromAI: true }, {}]) {
+    const cutoffChat = await chats.create({
+      name: "Shared cutoff across swipes",
+      mode: "roleplay",
+      characterIds: [first.id, second.id],
+      connectionId: connection.id,
+      promptPresetId: preset.id,
+    });
+    assert(cutoffChat);
+    await chats.patchMetadata(cutoffChat.id, {
+      groupChatMode: "individual",
+      groupResponseOrder: "manual",
+      enableAgents: false,
+      advancedMemory: {
+        ...DEFAULT_ADVANCED_MEMORY_SETTINGS,
+        enabled: true,
+        maxContextTokens: 16_384,
+        summaryBudgetTokens: 512,
+        retrieveMaxScenes: 0,
+        sceneCheckInterval: 100,
+        knowledgeStarts: { [first.id]: null, [second.id]: null },
+        knowledgeConfirmed: true,
+      },
+    });
+    const cutoffSourceIds = await chats.createMessagesBatch(cutoffChat.id, [
+      { role: "user", content: "CUTOFF_OLD_USER" },
+      { role: "assistant", characterId: second.id, content: "CUTOFF_OLD_REPLY" },
+      { role: "assistant", characterId: first.id, content: "CUTOFF_ANCHOR", extra: hiddenExtra },
+      { role: "assistant", characterId: second.id, content: "CUTOFF_PREVIOUS_LIVE" },
+      { role: "user", content: "CUTOFF_CURRENT_INPUT" },
+    ]);
+    const setCutoff = (messageId: string) =>
+      chats.patchMetadata(cutoffChat.id, (metadata) => ({
+        advancedMemoryState: {
+          ...(metadata.advancedMemoryState as Record<string, unknown>),
+          contextStarts: [
+            { messageId, sceneStartMessageId: messageId, audienceCharacterIds: [], manualStartMessageId: null },
+          ],
+        },
+      }));
+    const reply = async (regenerateMessageId?: string) => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/generate/",
+        payload: { chatId: cutoffChat.id, forCharacterId: second.id, regenerateMessageId },
+      });
+      assert.equal(response.statusCode, 200, response.body);
+      assert(!response.body.includes('"type":"error"'), response.body);
+      return response;
+    };
+    const checkCutoff = () => {
+      const sent = prompts.at(-1)!;
+      assert.doesNotMatch(sent, /CUTOFF_OLD_/u, "swipes cannot restore raw history before the shared cutoff");
+      assert.match(sent, /CUTOFF_CURRENT_INPUT/u);
+      if ("hiddenFromAI" in hiddenExtra || "hiddenFromAICharacterIds" in hiddenExtra)
+        assert.doesNotMatch(sent, /CUTOFF_ANCHOR/u, "a hidden boundary must not expose its own content");
+    };
+    await setCutoff(cutoffSourceIds[2]!);
+    await reply();
+    checkCutoff();
+    const cutoffReply = (await chats.listMessages(cutoffChat.id)).at(-1)!;
+    const cachedSwipe = await reply(cutoffReply.id);
+    assert.match(cachedSwipe.body, /reused-swipe-memory/u);
+    checkCutoff();
+    // Missing/invalid snapshots must rebuild the same history boundary.
+    for (const swipe of await chats.getSwipes(cutoffReply.id))
+      await chats.updateSwipeExtra(cutoffReply.id, swipe.index, { advancedMemorySnapshot: null });
+    await reply(cutoffReply.id);
+    checkCutoff();
+    assert.match(prompts.at(-1)!, /CUTOFF_PREVIOUS_LIVE/u);
+
+    await setCutoff(cutoffSourceIds[4]!);
+    await reply(cutoffReply.id);
+    checkCutoff();
+    assert.doesNotMatch(
+      prompts.at(-1)!,
+      /CUTOFF_PREVIOUS_LIVE/u,
+      "a newer cutoff invalidates an older swipe selection",
+    );
+    await reply(cutoffSourceIds[1]!);
+    assert.match(prompts.at(-1)!, /CUTOFF_OLD_USER/u, "regeneration before a later cutoff keeps historical context");
+    assert.doesNotMatch(prompts.at(-1)!, /CUTOFF_CURRENT_INPUT/u, "historical regeneration cannot see future turns");
+  }
+
   const beforeSharedStart = await chats.listMessages(chat.id);
   const sharedStart = beforeSharedStart.find((message) => message.content.includes("HISTORY_8:"))!;
   await chats.updateMessageExtra(sharedStart.id, { isConversationStart: true });

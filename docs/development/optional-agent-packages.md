@@ -601,13 +601,13 @@ An agent prompt template shipped by a package can use decision statements exactl
 
 Package runtime code has no way to ask the Decision model directly yet. That needs a capability API method and a version bump of its own.
 
-Design every use for a user with no Decision model, which is most users. A statement with no answer reads as no, so the `{{else}}` branch, or nothing, must be a sensible default. Never write "requires Jev": a user's own local model often answers as well.
+Design every use for a user with no Decision model. A statement with no answer reads as no, so the `{{else}}` branch, or nothing, must be a sensible default. Write for "a Decision model", rather than requiring Jev: local chat models and other supported backends use the same syntax, but can give different answers. See [Thresholds](../connections/decision-models.md#thresholds) and [Limits and cost](../prompts/conditional-prompts.md#limits-and-cost) before relying on a particular score, request count or cached answer.
 
 ### A note for Game Mode Experience developers
 
 Engine combat decides what ordinary enemies do on its own. Every non-boss enemy on the GM's side of a fight gets a role from its skills and class (bruiser, bulwark, skirmisher, marksman, spellcaster, supporter or controller), a proficiency from its level unless the enemy sets one (novice, trained, veteran or master), and a temperament such as reckless, cautious, opportunistic or protective. Beasts and monstrosities are always mindless. Engine code picks these from a seed with no model call, and the game's difficulty changes how consistently enemies play to type. Only authored bosses are directed by the GM through a model call. See [Game Mode combat AI](game-combat-ai-design.md).
 
-More combat improvements are on the way. Before involving a decision model anywhere in the combat pipeline, check that vanilla Engine combat does not already do what you need. If an enemy needs a particular personality, give it the matching proficiency and temperament first. A decision per enemy turn would add a network request, cost and a time limit to something the Engine settles locally and instantly, and a fight would then depend on a model the user may not have set up, which reads as "no".
+More combat improvements are on the way. Before involving a decision model anywhere in the combat pipeline, check that vanilla Engine combat does not already do what you need. If an enemy needs a particular personality, give it the matching proficiency and temperament first. A decision per enemy turn would add model work and a time limit; a hosted backend would also add network requests and charges. The fight would then depend on answers from a model the user may not have set up, so it would need a sensible no-answer fallback.
 
 ## Initial packages
 
@@ -1085,6 +1085,211 @@ summary.
 Use the existing startup-readiness declaration independently when the world must
 be prepared before the opening turn. Declare API 1.18 as the package minimum;
 older hosts cannot interpret this setup declaration.
+
+### Capability API 1.50: Professor Mari actions
+
+A package holding the new `mari-actions` permission can offer named actions to Professor Mari. It
+registers one service under its own id; Mari's `package_service` tool lists every offered action and
+runs one when the user asks for it.
+
+```ts
+export async function activate({ api }) {
+  api.registerService("mari-actions:my-package", {
+    list: () => [
+      { name: "add-idea", summary: "Give a Creator an idea for a post.", inputs: { accountId: "The Creator.", text: "The idea." } },
+    ],
+    run: async (name, input, { signal }) => {
+      const parsed = schemas[name]?.safeParse(input);
+      if (!parsed?.success) return { ok: false, status: 400, error: "Invalid input." };
+      return { ok: true, value: await doIt(name, parsed.data, signal) };
+    },
+  });
+}
+```
+
+Rules worth knowing:
+
+- The key must be `mari-actions:<package-id>` for the registering package. Registration throws without
+  the permission or under another package's id, so an action Mari runs always belongs to the package it
+  names.
+- `list()` returns `{ name, summary?, inputs? }` entries. Names are 1 to 80 letters, digits, `.`, `_` or
+  `-`; other entries are not shown. `summary` and `inputs` are what Mari reads, so write them in plain
+  words. Only the first 50 actions can be seen or run, Mari sees at most 40 inputs per action, input
+  names are cut at 80 characters and each text at 300 characters.
+  `list()` must answer within 5 seconds, or the package's actions are left out.
+- `run(name, input, { signal })` is called only with a listed name and a plain JSON object of at most 64,000
+  characters. The input comes from a model: validate it against your own schema before doing anything.
+  Answer `{ ok: true, value }` or `{ ok: false, status?, error }`; Mari sees the first 2,000 characters
+  of the error text. `signal` aborts when the user stops Mari or after 5 minutes; the Engine stops
+  waiting at that point, so stop your work too.
+- The Engine elides data URLs in `value` before Mari reads it, and truncates long answers. Return ids
+  and short text, not files.
+- Listing is read-only. Every run counts as a change for Mari's Permissions Mode: Plan refuses it,
+  Manual holds it for the user's Accept. The Engine cannot preview or undo a package action, so no
+  Keep/Restore card is shown; offer an undo action of your own when a change is hard to take back.
+  Because of this, Plan mode also refuses actions that only read.
+- Deactivating or removing the package removes its actions.
+
+`mari-actions` is refused on a manifest that declares a `capabilityApi` older than 1.50.
+
+### Capability API 1.36: package achievements
+
+A package holding the new `achievements` permission can add badges to the Home **Achievements** panel,
+read whether they are unlocked, and unlock them. The panel shows them under a section headed with the
+package name, after the Engine's own badges.
+
+```ts
+export async function activate({ api }) {
+  api.registerAchievements([
+    { id: "first_run", title: "First Run", description: "Ran the package once.", iconPath: "art/first-run.png" },
+    {
+      id: "ten_runs",
+      title: "Regular",
+      description: "Ran the package ten times.",
+      target: 10,
+      readProgress: () => runs,
+    },
+  ]);
+  // Later, when the package decides a badge is earned:
+  if (await api.runtime.achievements.unlock("first_run")) celebrate();
+}
+```
+
+Rules worth knowing:
+
+- Ids are namespaced to `<packageId>.<id>`. A built-in id has no dot, so the two cannot collide. The
+  host accepts the local or the namespaced id, and refuses any id the package did not register itself.
+- `unlock(id)` resolves `true` only for the call that unlocked the badge. `isUnlocked(id)` and `list()`
+  read state; `list()` returns the package's own badges with progress.
+- Counting stays with the package. A ranked badge sets `target` and a `readProgress` callback, both
+  or neither; the
+  Engine unlocks it on the same pass as its own ranked badges once the count reaches the target. Keep
+  the counter in the persistence host. A callback that throws, or does not settle within **2 seconds**,
+  reports zero and is logged. As with tools, this bounds asynchronous waits only: synchronous work
+  that blocks the event loop cannot be interrupted.
+- `iconPath` is a path inside the package's asset root, served from the package assets route. A locked
+  card still shows the padlock. When the art fails to load, the card falls back to `icon` (default
+  `trophy`).
+- `title` and `description` are the display text. A locale pack can override them through
+  `capabilityAchievements.<packageId>.<id>.title` and `.description`.
+- At most **32 badges per package**. A batch with one invalid entry registers nothing.
+- Deactivating or removing the package hides its badges. Unlocks are kept, as with the Engine's own
+  badges, and show again when the package returns.
+
+`api.registerAchievements` and `api.runtime.achievements` only exist on an Engine this new, so a
+package that uses them declares `capabilityApi` 1.36.
+
+### Capability API 1.35: agent Home widgets
+
+An agent package can offer up to three cards for the Home widget grid. The Engine never places them on
+its own: the user adds, hides, restores, and reorders them in the **Widget Manager**, where they are
+grouped under the agent. The Engine owns the grid, the frame, and the layout; the package owns what is
+inside the card.
+
+Declare the `home-widget` slot and the widget definitions together:
+
+```json
+{
+  "schemaVersion": 2,
+  "capabilityApi": { "major": 1, "minor": 35 },
+  "kind": ["agent"],
+  "permissions": ["ui"],
+  "entrypoints": { "client": "client.js" },
+  "contributions": {
+    "slots": ["home-widget"],
+    "homeWidgets": [
+      {
+        "id": "latest",
+        "label": "Latest Posts",
+        "description": "The newest posts from the feed.",
+        "size": "large",
+        "iconPath": "art/widget.png",
+        "accent": "violet",
+        "surface": "solid",
+        "header": "banner"
+      }
+    ]
+  }
+}
+```
+
+- `id` is lower-case kebab case, at most 64 characters, and unique within the package.
+- `label` (1–80 characters) and `description` (up to 200) are the Widget Manager text. A locale pack can
+  override them through `localizations.<locale>.homeWidgets.<id>.label` and `.description`.
+- `size` is `compact` or `large`. A large widget takes more room in the grid.
+- `icon` is one of the Engine's icon names (`activity`, `bell`, `calendar`, `chart`, `circle`, `clock`,
+  `file`, `flame`, `heart`, `image`, `list`, `message`, `sparkles`, `star`, `zap`). `iconPath` is package
+  art (`gif`, `jpg`, `jpeg`, `png`, `webp`) and must be listed in `files[]`.
+- `accent`, `surface`, and `header` pick from the Engine's presentation presets.
+
+The install is refused when the package is not an `agent` with the `ui` permission and a client
+entrypoint, when the slot and `homeWidgets` are not declared together, when two widgets share an id, or
+when `capabilityApi` is older than 1.35.
+
+The Engine mounts the package's client element with `view="widget"`. On top of the usual
+`packageId`, `packageVersion`, and `localization`, `capabilityProps` carries:
+
+- `widgetId`, `widgetLabel`, `widgetDescription`, `widgetIcon`, `widgetIconPath`, `widgetAccent`,
+  `widgetSurface`, and `widgetHeader`: the definition of the card being drawn, so one bundle can draw
+  every widget it declares.
+- `active`: `true` only while Home is showing and the card is visible. Pause polling and animation when
+  it is `false`.
+- `onOpenNoodle()`: opens the package's own Home browser tab. Despite the name, it works for any package
+  that also declares the `home-browser-tab` slot. Without that tab, it and `onOpenPost` do nothing.
+- `onOpenPost(id)`: opens the package's own Home browser tab at one item. `id` is a string of up to 128
+  characters; anything else is ignored. The tab's `view="browser"` element then receives
+  `focusPostId: id`. It should call `onFocusPostHandled()` once it has shown the item, so the focus does
+  not replay. Switching to any other tab drops a pending focus.
+
+A widget is a small view of the agent, not a second copy of it. Keep it light, and send the user to the
+browser tab for anything larger.
+
+### Capability API 1.34: a creature written in the ruleset's own terms
+
+A bestiary creature may carry a `sheet`: a character sheet in the ruleset's own terms, as partial as
+it likes. A fight builds it exactly as it builds a party member, so its health, defense, saves,
+initiative, speed and the abilities on its lists come from the ruleset's own declarations, and it
+pays for them out of its own pools. It then gives none of `health`, `defense`, `initiativeModifier`,
+`speed`, `abilities` or `saves` beside the sheet, and may have no block actions of its own:
+
+```json
+{
+  "capabilityApi": { "major": 1, "minor": 34 },
+  "kind": ["ruleset"],
+  "contributions": { "assets": { "paths": ["ruleset.json", "catalogs/creatures.json"] } }
+}
+```
+
+The gate reads the ruleset's own bytes and every catalog file the install holds, exactly as 1.27
+does. A row on a creature's sheet may carry `_catalog: "<catalog>/<entry>"` for an entry of a
+catalog that feeds that list, and the Engine loads those catalogs for the fight along with the
+bestiary. Not a soft seam, for the same reason as 1.20 through 1.33: an Engine that cannot read the
+key refuses the whole strict catalog file, so a package that ships one declares 1.34. No permission.
+
+### Capability API 1.33: the moment a reaction waits for
+
+A catalog entry's `mechanics.reaction` may be an object rather than `true`. `on` names the moment
+the Engine notices, `at` says whom what is taken is pointed at, and `cancels` stops what the window
+was holding from happening at all:
+
+```json
+{
+  "capabilityApi": { "major": 1, "minor": 33 },
+  "kind": ["ruleset"],
+  "contributions": { "assets": { "paths": ["ruleset.json", "catalogs/spells.json"] } }
+}
+```
+
+`on` is `aimed` (before something lands on the entry's holder) or `harmed` (after something has hurt
+them), and naming one is what puts the entry on that window's menu. `at` is `source`, which fills in
+whoever caused the moment, or `chosen`, which keeps the entry's own targets. Only an `aimed` entry
+may `cancel`, because a moment that has already happened cannot be called off, and what a cancelled
+action cost is still spent: it was paid for before anybody was asked.
+
+An entry that still says `"reaction": true` says only that it is not taken on a turn, which is not
+enough to offer it anywhere, so it stays on no menu and needs nothing newer. Not a soft seam, for
+the same reason as 1.20 through 1.32: an Engine that cannot read the object refuses the whole strict
+catalog file, so a package that ships one declares 1.33. No permission.
 
 ### Capability API 1.32: a weapon that caps its own strikes
 

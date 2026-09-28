@@ -1,13 +1,16 @@
-// Boot performance: the Windows writer-lease boot id no longer costs a
-// PowerShell CIM probe (about 1.5 to 2 s of blocked module load) on every
-// start. The probe's exact output is cached per OS boot, reused only while the
-// boot-time estimate still matches, and never cached when the probe fails.
+// Boot performance: with STORAGE_CACHE_WINDOWS_BOOT_ID on, the Windows
+// writer-lease boot id no longer costs a PowerShell CIM probe (about 1.5 to
+// 2 s of blocked module load) on every start. The probe's exact output is
+// cached per OS boot in DATA_DIR, reused only while the boot-time estimate
+// still matches, and never cached when the probe fails. With the setting
+// unset nothing is cached and every start probes, as before.
 // The end-to-end part boots a real file-native store on a synthetic temp
-// DATA_DIR in child processes (cold cache, then warm cache) and reports the
-// phase times; on Windows it proves the warm boot reused the cached id.
+// DATA_DIR in child processes (setting off, then cold and warm cache) and
+// reports the phase times; on Windows it proves the warm boot reused the
+// cached id and that nothing is written under LOCALAPPDATA.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, uptime } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -38,9 +41,21 @@ const tempRoot = mkdtempSync(join(tmpdir(), "marinara-boot-performance-"));
 process.env.LOG_LEVEL = "silent";
 
 try {
-  const { cachedBootId, BOOT_ID_CACHE_TOLERANCE_MS } = await import(
-    "../../packages/server/src/db/writer-host-identity.js"
-  );
+  const { cachedBootId, BOOT_ID_CACHE_TOLERANCE_MS } =
+    await import("../../packages/server/src/db/writer-boot-id-cache.js");
+
+  // 0. Every Windows identity probe runs hidden, so a server started without a
+  //    console never flashes a PowerShell or reg.exe window.
+  const storeSource = readFileSync(join(root, "packages/server/src/db/file-backed-store.ts"), "utf8");
+  // The Windows probes call execFileSync(executable, ...): machine id (reg.exe), boot id and
+  // lease owner start time (PowerShell).
+  const probeCalls = storeSource
+    .split("execFileSync(")
+    .slice(1)
+    .filter((rest) => rest.trimStart().startsWith("executable,"))
+    .map((rest) => rest.slice(0, rest.indexOf("},") + 2));
+  assert.ok(probeCalls.length >= 3, "every Windows identity probe is found");
+  for (const call of probeCalls) assert.match(call, /windowsHide: true/u, `probe must be hidden: ${call.slice(0, 80)}`);
 
   // 1. Cache semantics with a fake probe.
   const cachePath = join(tempRoot, "unit", "writer-boot-id.json");
@@ -54,12 +69,18 @@ try {
   assert.equal(probes, 1, "cold cache probes once");
   assert.ok(existsSync(cachePath), "successful probe is cached");
   assert.equal(cachedBootId(cachePath, boot + 350, probe("other")), "2026-09-19T13:10:31.2958810Z");
-  assert.equal(cachedBootId(cachePath, boot - BOOT_ID_CACHE_TOLERANCE_MS, probe("other")), "2026-09-19T13:10:31.2958810Z");
+  assert.equal(
+    cachedBootId(cachePath, boot - BOOT_ID_CACHE_TOLERANCE_MS, probe("other")),
+    "2026-09-19T13:10:31.2958810Z",
+  );
   assert.equal(probes, 1, "same boot within tolerance never probes again");
 
   // A later boot (estimate moved past the tolerance) re-probes and replaces the cache.
   const nextBoot = boot + 3_600_000;
-  assert.equal(cachedBootId(cachePath, nextBoot, probe("2026-09-19T14:10:31.0000000Z")), "2026-09-19T14:10:31.0000000Z");
+  assert.equal(
+    cachedBootId(cachePath, nextBoot, probe("2026-09-19T14:10:31.0000000Z")),
+    "2026-09-19T14:10:31.0000000Z",
+  );
   assert.equal(probes, 2);
   assert.equal(cachedBootId(cachePath, nextBoot + 10, probe("x")), "2026-09-19T14:10:31.0000000Z");
   assert.equal(probes, 2);
@@ -71,7 +92,12 @@ try {
   assert.equal(cachedBootId(nullPath, boot, probe("later")), "later", "next start probes again");
 
   // Corrupt or wrong-shape caches fall back to the probe and are repaired.
-  for (const junk of ["not json", "null", '{"version":2,"approxBootMs":1,"bootId":"x"}', '{"version":1,"approxBootMs":1,"bootId":""}']) {
+  for (const junk of [
+    "not json",
+    "null",
+    '{"version":2,"approxBootMs":1,"bootId":"x"}',
+    '{"version":1,"approxBootMs":1,"bootId":""}',
+  ]) {
     writeFileSync(cachePath, junk);
     const before = probes;
     assert.equal(cachedBootId(cachePath, boot, probe("fresh")), "fresh");
@@ -115,7 +141,7 @@ try {
 
   const localAppData = join(tempRoot, "localappdata");
   mkdirSync(localAppData, { recursive: true });
-  const runBoot = (label: string) => {
+  const runBoot = (label: string, cacheEnabled: boolean) => {
     const result = spawnSync(
       process.execPath,
       [join(root, "packages/server/node_modules/tsx/dist/cli.mjs"), import.meta.filename, CHILD_FLAG],
@@ -130,7 +156,9 @@ try {
           LOG_FILE_LEVEL: "silent",
           DATA_DIR: join(tempRoot, "data"),
           FILE_STORAGE_DIR: storageDir,
-          LOCALAPPDATA: localAppData,
+          // Exercise the opt-in DATA_DIR fallback; the private per-user cache is used when LOCALAPPDATA exists.
+          LOCALAPPDATA: "",
+          STORAGE_CACHE_WINDOWS_BOOT_ID: cacheEnabled ? "true" : "",
         },
       },
     );
@@ -141,10 +169,20 @@ try {
 
   // First run only warms the tsx transpile cache so the two timed runs compare
   // the boot path rather than TypeScript compilation.
-  runBoot("prime");
-  const bootCachePath = join(localAppData, "MarinaraEngine", "writer-boot-id.json");
+  runBoot("prime", false);
+  const bootCachePath = join(tempRoot, "data", ".writer-boot-id.json");
+  // Default (setting unset): no cache file anywhere, and a seeded cache is ignored.
+  assert.equal(existsSync(bootCachePath), false, "default: the boot id is never cached");
+  if (process.platform === "win32") {
+    writeFileSync(
+      bootCachePath,
+      JSON.stringify({ version: 1, approxBootMs: Date.now() - uptime() * 1000, bootId: "fixture-cached-boot" }),
+    );
+    const uncached = runBoot("default", false);
+    assert.notEqual(uncached.bootId, "fixture-cached-boot", "default: a cache file is never read");
+  }
   rmSync(bootCachePath, { force: true });
-  const cold = runBoot("cold");
+  const cold = runBoot("cold", true);
   if (process.platform === "win32") {
     if (cold.bootId !== null) {
       const written = JSON.parse(readFileSync(bootCachePath, "utf8")) as { bootId: string };
@@ -162,13 +200,14 @@ try {
       JSON.stringify({ version: 1, approxBootMs: Date.now() - uptime() * 1000, bootId: "fixture-cached-boot" }),
     );
   }
-  const warm = runBoot("warm");
+  const warm = runBoot("warm", true);
   if (process.platform === "win32") {
     assert.equal(warm.bootId, "fixture-cached-boot", "warm boot reused the cached boot id");
     if (cold.bootId !== null) {
       assert.match(cold.bootId, /^\d{4}-\d{2}-\d{2}T/, "cold boot recorded the real LastBootUpTime string");
     }
   }
+  assert.deepEqual(readdirSync(localAppData), [], "no boot writes anything under LOCALAPPDATA");
   console.info(
     `Boot performance: cache semantics passed; synthetic store ${chats} chats x ${perChat} messages. ` +
       `cold boot import ${cold.importMs} ms + store init ${cold.initMs} ms; ` +

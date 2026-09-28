@@ -1,9 +1,11 @@
 // Shared by Fastify and application code. File writes are synchronous so an
 // immediate process.exit after a fatal error does not discard the diagnostic.
 import pino from "pino";
+import { randomBytes } from "node:crypto";
 import type { EventEmitter } from "node:events";
 import { writeSync } from "node:fs";
-import { randomBytes } from "node:crypto";
+import { hostname } from "node:os";
+import { logContextMixin } from "./log-context.js";
 import { join } from "node:path";
 import { isatty } from "node:tty";
 import pretty from "pino-pretty";
@@ -57,7 +59,7 @@ function silenceTerminalStream(stream: TerminalLogStream) {
   stream.destroy = noop;
 }
 
-// Register BEFORE either Pino instance: shutdown can reach exit before an async
+// Register BEFORE the Pino instance below: shutdown can reach exit before an async
 // EIO arrives, and SonicBoom's exit-time flush otherwise retries the dead fd forever.
 if (stdoutWasTerminal) {
   process.once("exit", () => {
@@ -108,9 +110,13 @@ function combinedLevel(): pino.Level {
 export const logger = pino(
   {
     level: combinedLevel(),
-    base: { pid: process.pid, bootId },
+    base: { pid: process.pid, hostname: hostname(), bootId },
     serializers: { err: (value: unknown) => value },
-    mixin: () => sanitizeDiagnosticValue(getDiagnosticContext()) as Record<string, unknown>,
+    mixin: (mergeObject, level, log) =>
+      sanitizeDiagnosticValue({ ...logContextMixin(mergeObject, level, log), ...getDiagnosticContext() }) as Record<
+        string,
+        unknown
+      >,
     hooks: {
       logMethod(input, method, level) {
         const first = input[0];
@@ -232,4 +238,14 @@ export function logDebugOverride(overrideEnabled: boolean, message: string, ...a
   if (overrideEnabled && !logger.isLevelEnabled("debug")) {
     logger.warn({ debugPrompt: true }, message, ...args);
   } else logger.debug({ debugPrompt: true }, message, ...args);
+}
+
+/** Keep Fastify child loggers in step with the shared logger after LOG_LEVEL reloads. */
+export function followLogLevel(child: { level: string }): () => void {
+  child.level = logger.level;
+  const listener = (label: string, _value: number, _previous: string, _previousValue: number, from: unknown) => {
+    if (from === logger && child.level !== label) child.level = label;
+  };
+  logger.on("level-change", listener);
+  return () => logger.off("level-change", listener);
 }

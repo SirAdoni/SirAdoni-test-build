@@ -17,8 +17,7 @@ import { capabilityPackageManager } from "../capability-packages/package-manager
 
 /** One catalog's entries, or the author's own issue lines for a file the Engine will not read. */
 export type RulesetCatalogEntriesResult =
-  | { ok: true; entries: RulesetCatalogEntry[] }
-  | { ok: false; issues: string[] };
+  { ok: true; entries: RulesetCatalogEntry[] } | { ok: false; issues: string[] };
 
 /** Where a catalog's entries are. `sha256` is the pinned hash of the asset, which is what a caller
  *  builds a validator out of; `read` parses and checks the file against the ruleset. */
@@ -54,7 +53,8 @@ export async function openRulesetCatalog(
       } catch {
         return { ok: false, issues: ["(root): the catalog file is not valid JSON"] };
       }
-      const parsed = parseRulesetCatalogFile(definition, catalog.id, document);
+      // A game's definition may have its layers on, which can narrow a field a creature was written with.
+      const parsed = parseRulesetCatalogFile(definition, catalog.id, document, true);
       if (!parsed.ok) {
         logger.warn(
           "[capability/rulesets] Catalog %s of %s is unusable: %s",

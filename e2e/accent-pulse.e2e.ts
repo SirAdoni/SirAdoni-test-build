@@ -1,3 +1,4 @@
+import { clickTopbarPanel } from "./topbar-navigation.js";
 import { expect, test, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { seedUIState } from "./ui-state-fixture.js";
@@ -7,7 +8,7 @@ import { UI_PERSISTENCE } from "../packages/client/src/lib/ui-persistence.js";
 const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
 async function openAppearance(page: Page) {
-  await page.locator('[data-tour="panel-settings"]').click();
+  await clickTopbarPanel(page, "settings");
   await page.getByRole("tab", { name: "Appearance", exact: true }).click();
 }
 
@@ -257,7 +258,7 @@ for (const color of ["#a78bfa", "linear-gradient(90deg, #a78bfa, #ec4899, #22d3e
       // Keep another browser project's synced Appearance choices out of this fixture.
       await page.route("**/api/app-settings/ui", (route) => route.fulfill({ json: { value: null } }));
       await page.goto("/");
-      await page.locator('[data-tour="panel-settings"]').tap();
+      await clickTopbarPanel(page, "settings", "tap");
       await page.getByRole("tab", { name: "Appearance", exact: true }).tap();
       await expect(page.getByLabel("Accent Pulse", { exact: true })).toBeChecked();
       const root = page.locator("html");
@@ -292,7 +293,7 @@ for (const color of ["#a78bfa", "linear-gradient(90deg, #a78bfa, #ec4899, #22d3e
       await testInfo.attach("idle-appearance.png", { body: await page.screenshot(), contentType: "image/png" });
 
       // Returning to Home restores its visible ambient effects.
-      await page.locator('[data-tour="panel-settings"]').tap();
+      await clickTopbarPanel(page, "settings", "tap");
       await expect.poll(async () => (await runningHomeAnimations(page)).length).toBeGreaterThan(0);
       await page.emulateMedia({ reducedMotion: "reduce" });
       await expect(root).not.toHaveAttribute("data-marinara-accent-animation");
@@ -352,7 +353,7 @@ for (const theme of ["dark", "light"] as const) {
         await expect(bookmark).toHaveCSS("color", await renderedColor(color));
         await bookmark.tap();
       }
-      await page.locator('[data-tour="panel-settings"]').click();
+      await clickTopbarPanel(page, "settings");
       await page.getByRole("tab", { name: "Appearance", exact: true }).click();
       const settingsHeader = page.locator(".mari-right-panel-header:visible > div.absolute");
       await expect(settingsHeader).toHaveCSS(
@@ -387,7 +388,7 @@ for (const theme of ["dark", "light"] as const) {
         path: info.outputPath(`settings-borders-${theme}-${color.slice(1)}.png`),
         animations: "disabled",
       });
-      await page.locator('[data-tour="panel-settings"]').click();
+      await clickTopbarPanel(page, "settings");
     }
   });
 }

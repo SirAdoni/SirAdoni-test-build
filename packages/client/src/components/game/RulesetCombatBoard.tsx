@@ -45,6 +45,8 @@ export interface RulesetCombatBoardProps {
   /** The Engine's own combatants, for the portraits only: every number on screen is the view's. */
   units: Combatant[];
   budgetLabel: (id: string) => string;
+  /** What the ruleset calls its defense. */
+  defenseLabel?: string;
   /** The scene's terrain theme, which is the same string the board was generated from. */
   environment?: string;
   busy: boolean;
@@ -53,6 +55,7 @@ export interface RulesetCombatBoardProps {
     targetIds: string[],
     payWith?: string,
     cell?: { to?: RulesetCombatCell; at?: RulesetCombatCell },
+    style?: string,
   ) => void;
   onFlee: () => void;
   /** The per-member manual and automatic toggles, built by the caller so this file stays about the
@@ -64,6 +67,7 @@ export function RulesetCombatBoard({
   view,
   units,
   budgetLabel,
+  defenseLabel,
   environment,
   busy,
   onChoose,
@@ -139,12 +143,12 @@ export function RulesetCombatBoard({
     if (busy || !step) return;
     if (step.stage === "move" && cell.reach) {
       setStep(null);
-      onChoose(step.option.id, [], step.payWith, { to: { x: cell.x, y: cell.y } });
+      onChoose(step.option.id, [], step.payWith, { to: { x: cell.x, y: cell.y } }, step.style);
       return;
     }
     if (step.stage === "aim" && cell.aim) {
       setStep(null);
-      onChoose(step.option.id, [], step.payWith, { at: { x: cell.x, y: cell.y } });
+      onChoose(step.option.id, [], step.payWith, { at: { x: cell.x, y: cell.y } }, step.style);
       return;
     }
     // The same two rules the list in the menu picks by, so clicking a token and clicking its name
@@ -153,7 +157,7 @@ export function RulesetCombatBoard({
       const targets = rulesetPickTarget(step.option, step.targets, cell.occupant.id);
       if (rulesetSendsOnPick(step.option) && targets.length === 1) {
         setStep(null);
-        onChoose(step.option.id, targets, step.payWith);
+        onChoose(step.option.id, targets, step.payWith, undefined, step.style);
         return;
       }
       setStep({ ...step, targets });
@@ -458,6 +462,7 @@ export function RulesetCombatBoard({
         <RulesetCombatMenu
           view={view}
           budgetLabel={budgetLabel}
+          defenseLabel={defenseLabel}
           busy={busy}
           onChoose={onChoose}
           onFlee={onFlee}

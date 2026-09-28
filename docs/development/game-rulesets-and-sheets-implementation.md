@@ -232,8 +232,9 @@ menu) and C3b (the Classic shell on real numbers, `coverage.combat` true). C4 th
 positions, movement, reach and ranges, areas, cover, opportunity attacks, the picker and the view) and C4b (the board on
 screen, out of the Tactical style's own look). C5 what a turn can do and what interrupts one, split
 into C5a (the turn economy, riders and the condition vocabulary) and C5b (the window itself: a walk
-held open, and the one a signature action is bought in). C5c and later: what else opens a window,
-legendary actions, contests and the remaining conditions.
+held open, and the one a signature action is bought in). C5c what else opens a window (the moments
+an entry waits for), C5d contests, C5e the `used` moment and what a reaction answers, C5f the numbers
+a condition changes and levels of a track, and C5g the moment after a hit and creatures that react.
 
 ### What C1 settled
 
@@ -538,6 +539,151 @@ current actor.
   trigger yet, so it is still on no menu; the vocabulary that says what a reaction answers, and the
   nesting, cancellation and refunds that come with a counter, are the next slice's.
 
+### What C5c settled
+
+C5c is the MOMENT: which one a reaction waits for, so an entry marked `reaction` finally has a
+window it belongs in.
+
+- **`mechanics.reaction` may be an object instead of `true`.** `on` names the moment, `at` says whom
+  what is taken is pointed at, and `cancels` stops what the window was holding. `true` still means
+  what it always meant, which is only that something is not taken on a turn, and an entry that says
+  only that much is still on no menu. Capability API 1.33, read off the catalog asset's own bytes
+  exactly as 1.23, 1.26 through 1.30 are.
+- **Two moments, because the Engine has to be the one that notices.** `aimed` is before something
+  lands on the holder and `harmed` is after something has hurt them. The list is closed for the same
+  reason the effect list is: a moment nothing watches for is a moment nothing opens.
+- **`aimed` opens only for the other side; `harmed` opens for anybody.** Being aimed at is about what
+  somebody MEANS to do to you, and a friend healing you is not a threat to answer; had it opened, an
+  ally played by the Engine could cancel its own friend's healing. Being hurt is a fact about you
+  whoever did it, and a reaction pointed back at the source is still kept off a friend by ordinary
+  target legality.
+- **A resume says what it is.** A walk's carries `kind: "walk"` and an action's `kind: "action"`. A
+  fight saved mid-walk by C5b has a resume without one, and is read as the walk it can only be.
+- **The Engine may let a moment go by.** A window's menu carries "let the moment go by" as a
+  candidate weighed the way ending a turn is, so having a reaction to spend no longer means always
+  spending it; that includes C5b's strike at somebody walking away. An option that asks for nobody
+  but lands on somebody (the mover, or the source of a moment) is weighed by what it would do to
+  them (`rulesetWindowTargetOf`). A picker answer the rules refuse is let go and logged, because a
+  refusal is never recorded and that pass would otherwise look like a choice.
+- **What it costs is paid before anybody is asked.** An `aimed` window opens after the budget and
+  the pools have been spent, so an answer that cancels stops the action from HAPPENING rather than
+  from having been bought. That is the fight's own answer to "does a countered spell still cost the
+  slot", and a ruleset that wants the other answer needs a refund vocabulary this does not have.
+- **`harmed` is read off the damage the action itself wrote**, after it has all resolved, so nothing
+  inside the resolver has to know a window exists. An action that hurts three people opens one
+  window listing all three.
+- **`at: "source"` fills the target in rather than offering it.** Whoever caused the moment is the
+  only target most of these have, so the option carries no targets at all and the client shows no
+  picker. `at: "chosen"` keeps the entry's own targets.
+- **A cancelling `utility` entry does something.** Until now a `utility` entry with no `gives` and
+  no `standard` was dropped as having nothing to resolve; calling something off is resolving.
+- **One window at a time, still.** Nothing opened inside a window opens another, so a counter cannot
+  itself be countered and a reaction that hurts somebody opens no second moment. Marked in the
+  source as the ceiling it is, with the bounded stack the combat handoff describes as the way out.
+- **Proven** by the moment block in `scripts/regressions/game-ruleset-combat-core.regression.ts`
+  (on no turn's menu, the window and its trigger, the menu holding only what waits for THIS moment,
+  the cancel, the budget spent either way, the pass letting the held action through, the second
+  moment that being hurt opens, the answer aimed back at whoever caused it, and no third window).
+- **Paying out of a bigger pool, for a party member the Engine plays.** Folded in from
+  [issue #6528](https://github.com/Pasta-Devs/Marinara-Engine/issues/6528), because it is the same
+  seam: a player was offered the pools an ability could be paid from, and the Engine's own picker
+  only ever saw the base cost, so a character handed to the Engine never cast a spell that grows any
+  bigger. The candidate builder now emits one candidate per way of paying, each carrying
+  `choice.payWith`, the forecast the extra steps actually buy, a label naming the pool, and a price
+  that counts the rungs climbed as well as the amount so the bigger version is not mistaken for a
+  free one. **Opponents are untouched, because they have nothing to climb:** a stat block's actions
+  cost nothing off any pool, so neither an opponent the Engine plays nor a Game Master's boss has a
+  bigger way of paying. Giving blocks pools of their own would be a format change, not this one.
+  (That change came next: a creature written as a sheet has pools, and is offered the bigger ways
+  of paying like anybody else. See What creature sheets settled.)
+- **Left for later**: a reaction that changes a NUMBER on what it answers rather than stopping it.
+  The condition vocabulary is a closed list of names, not modifiers, so "harder to hit until your
+  next turn" is not something a ruleset can say yet, whether a reaction says it or anything else
+  does. That is a condition question rather than a reaction one.
+
+### What creature sheets settled
+
+[Issue #6610](https://github.com/Pasta-Devs/Marinara-Engine/issues/6610): a bestiary creature
+written in the ruleset's own terms. Not every ruleset's opponents fit one fixed set of plain numbers,
+and an opponent could not pay for anything out of a pool it did not have.
+
+- **A creature may carry a `sheet`**, the character sheet's own shape with every part optional and
+  no `live` part, strict because a bestiary is authored. Capability API 1.34, read off the ruleset's
+  and the catalog files' own bytes exactly as 1.27 is.
+- **One place for each number.** With a sheet, `health`, `defense`, `initiativeModifier`, `speed`,
+  `abilities` and `saves` are refused beside it, and it may have no block actions; without one, the
+  first three and an action are required as before. The published JSON Schema says both halves
+  (`oneSourceForCreature` in the generator).
+- **One builder.** `sheetCombatant` in `encounter.ts` builds a party member and a sheet-backed
+  opponent alike, so the two cannot drift apart. What the block adds (its own actions, signature
+  points, riders and the damage it shrugs off) is laid on top.
+- **Checked as authored data**: every id against the sheet's declarations, skills and saves against
+  the tiers offered for them, scores and bonuses as whole numbers in their ranges, rows against each
+  list's `maxItems`, fields and row cells through the shared `rulesetListRowIssues` (now also run
+  over fields), and `_catalog` against a catalog that feeds the list and, when it is inline, holds
+  the entry.
+- **The route loads what the sheets read.** `rulesetBestiarySheetCatalogIds` names the catalogs a
+  bestiary's sheets pick rows from, and they are loaded after the bestiaries, only when a sheet
+  names one.
+- **Pools and bigger payments come for free.** The candidate builder was never gated by side, only
+  by an action having a pool to climb, so an opponent with a sheet is offered the bigger ways of
+  paying by the Engine's picker and in the Game Master's decision, which already carried `payWith`.
+- **An opponent can be marked on a wound track now.** Its hide is read first and the track marked
+  after, so the old limit that resistances could not describe a track is gone for a creature with
+  a sheet; one in plain numbers still loses points.
+- **Still an opponent.** Defeat at zero is by side, and so is the death track. The live write-back is
+  keyed by side as well as by having a sheet: without that, a sheet-backed opponent that shared a
+  party member's name would have overwritten that member's stored sheet.
+- **A Game Master's invention may be a sheet too**, because an invented mage needs slots and
+  spells (the user's ruling on the PR). `rulesetProposedCreatureSchema` takes a lenient `sheet` (the
+  character build's schema) and drops the numbers written beside one rather than refusing the
+  proposal. `hold.ts` holds it in three steps: `readProposedRulesetSheet` drops what the ruleset
+  lacks by name, fits values, and turns a row named after a catalog entry into that entry (the
+  route loads every catalog feeding a list a proposed sheet fills); `holdRulesetSheetHealth` moves
+  health into the tier's band through the one field the health pool is read off, or a `sum` with
+  one field in it, and leaves anything else as written with a line; after the fight is built,
+  `holdRulesetCombatant` caps defense, to-hit and save difficulties and scales the best round,
+  counting the biggest affordable payment, on the combatant itself. Strikes bought by one spend wait
+  in hand and may go to any striking row, so a striking round is measured as the row spent on and
+  the rest of its strikes on the heaviest striking row. The block parts beside the sheet
+  still go through the plain clamp. The blueprint prompt carries an `EncounterSheetBrief`: the ids,
+  what each may hold, the lists a fight reads, the field each list's catalogs are opened by, and up
+  to 60 catalog names per list.
+- **An invented enemy that is not a boss follows its ruleset's own classes** (the user's ruling:
+  "so that Sorcerers don't have access to the entire spell list"). No format change was needed: a
+  catalog filter's `startFrom` already names the sheet field its entries are organised by, and
+  `restrictRulesetSheetEntries` keeps only entries whose filter matches the sheet's value, matched
+  by `sheetFieldMatchTexts` (moved to shared so the picker and the fight agree). Slot counts per
+  class level are NOT declared by any ruleset (5e types them into fields), so there is no class
+  table to hold them to; the tier hold bounds what they buy.
+- **Open choices are filled by temperament and competence, with no model call.**
+  `fillRulesetSheetChoices` fills every list a creature chooses from (an ability source with
+  `onlyWhen`) with entries open to it and payable from its own pools, up to a fixed count per pool
+  rung (1, 2, 2 and 3 from novice to master) and at will (2, 2, 3 and 3), an Engine-side limit until
+  a ruleset can declare how many choices a class has, weighted by
+  the entry's nature (harm, support, control, or what bends the turn) against the combat AI's own
+  temperament, with competence raising what bends the turn. The route gives the enemy its tactics
+  before the fight is built, from the same unit and seed the picker would, so the creature fills
+  and fights with one temperament. A boss is exempt from both: the Game Master writes it in full.
+- **A layer that narrows an enum field never costs a creature.** A creature's enum value may be one
+  a layer took out, read back from the definition's own `layers`, and nothing else undeclared:
+  `refineRulesetDefinition` passes `layersApplied`, and the game's catalog loader, which may hold a
+  layered definition, passes `narrowedByLayers`, so a layer is never silently dropped, a bestiary
+  file is never refused over a value a layer took out, and a typo is still refused. Package install
+  never parses catalog files, so there is no install-time path to set.
+- **`no-health`.** A sheet that adds up to no health is left out at fight time with a reason of its
+  own, rather than joining unkillable. A bestiary is already refused at import for a field outside
+  its range, so this is reached by a formula that adds up to zero or by a hand-built block.
+- **Every refusal has words on both sides.** C5b's `window-open` and `stale-window` had no sentence
+  in the English catalog or on the server, and C4a's four positioned reasons none on the server. All
+  of them do now, and the screen-client lane fails whenever a reason is added without both.
+- **Proven** by `scripts/regressions/game-ruleset-combat-creature-sheets.regression.ts` (one source,
+  the ids and references, the same numbers as a party member on the 5e draft and on Ember Roads,
+  the block kept beside the sheet, its own Luck, a bigger slot from the resolver, the Engine's picker
+  and the Game Master, a wound track and an immunity, defeat, the projection, the write-back, the
+  refusals, a proposal and the 1.34 gate), by the route lane's caster whose spell lives in another
+  catalog, and by the JSON Schema lane.
+
 ### What C4a settled
 
 C4a is the board, on the shared and server sides. C4b is the screen that draws it.
@@ -614,6 +760,543 @@ C4b is the board on screen. It draws what C4a resolves and decides nothing of it
   walk, the path, the target, the aims, the sentences, the "nothing in reach" rule, the distance
   formatter and the four refusals, on both example rulesets) and in a fourth mode of
   `e2e/game-combat-director.e2e.ts` that plays a positioned Ember Roads fight in a real browser.
+
+### What C5d settled
+
+Capability API 1.43, for #6707.
+
+- **Contests as data.** `combat.checks` are the numbers a contest reads, each a value off the sheet,
+  read once when the fight begins like defense and saves; a plain creature gives its own `checks`,
+  one with a sheet reads them off it (`checks` joined the keys a sheet replaces). `combat.contests`
+  each name a budget, the checks each side may use (the best is rolled), who takes a tie, an optional
+  `reach` and `strike`, an optional `from: { holding }`, and `onWin`: conditions it `applies` to the
+  loser (winner as the source, optional `rounds`), conditions it `ends` on either side, and a `push`.
+  `reach` and `push` need `combat.distance`. **Differs from the issue on purpose:** the issue gave the
+  attacker a single `check`; both sides take a list, because an escape rolls the better of two.
+- **The fight.** Every combatant gets one action per contest (`contest:<id>`, kind `contest`), added
+  only when the ruleset has contests, so a ruleset without them fights byte for byte as before. A
+  contest spends its budget (or a strike in hand) and is settled on the spot, opening no window. Both
+  sides throw `attackRoll.dice` and add their best check; the `contest` event carries both sides and
+  the winner. A push walks the loser straight away (`rulesetPushPath`), stopping short of anything
+  solid, anybody standing, the edge and a squeezed corner; it spends nothing and draws no strike.
+- **The menu and the picker.** The forecast is the exact chance to win (`rulesetContestChance`),
+  shown as "to win". Breaking free is offered only while held and aimed only at the holder. The
+  Engine's picker scores a contest as a modest setup (breaking free 1, a grab 0.3, a shove 0.15,
+  times the chance), so seeded fights still end; a Game Master's opponent picks it off the same menu.
+  Invented opponents have their checks held to the tier's to-hit, in the plain clamp and on a built
+  sheet.
+- **Examples.** The 5e reference grapples, shoves prone, shoves away 5 feet and escapes, with
+  Grappled now ending when its source goes down; Ember Roads grabs (a new Held condition), breaks
+  free and shoves back 4 paces.
+- **Proven** by `scripts/regressions/game-ruleset-combat-contests.regression.ts` (thirty-six deliberate
+  breaks, each caught), a seeded sweep in `scripts/regressions/ruleset-combat-director.regression.ts`
+  (contests taken, sometimes won, never refused, and a picker that never takes one is caught), and the Contests group in
+  `e2e/game-combat-director.e2e.ts`.
+
+### What C5e settled
+
+Capability API 1.44, for #6712.
+
+- **A third moment.** `mechanics.reaction.on` takes `used`: somebody on the other side uses
+  something. It opens BEFORE the use resolves, for everybody on the other side holding an entry for
+  it, whoever the use is aimed at, and `cancels` is allowed on it as on `aimed`. Only a real action
+  opens it (an attack, an ability, a block); a standard action and a contest do not.
+- **What a reaction answers.** `mechanics.reaction.against: { catalogs }`, on any moment, limits an
+  entry to actions that came from an entry of those catalogs. Ability actions built from a catalog
+  row carry `catalog`, and the `aimed`, `used` and `harmed` triggers carry the source action's
+  catalog; an action with no entry behind it (a weapon row, a stat block's own action) carries none
+  and never matches an entry that names catalogs. Catalog ids are checked at import.
+- **Reach.** A `used` answer is offered only when the holder's own reach or range covers the user
+  (`rulesetTargetRefusal`, so line of sight too), even when it cancels and points at nobody. Without
+  this an unpositioned rule would have let a counter answer from across the board.
+- **Order.** On a turn, `used` opens first; when it closes uncancelled, `aimed` opens for the
+  targets with the same held action, and it resolves once that closes too. One window at a time, as
+  before, so a counter cannot itself be countered.
+- **Examples.** Ember Roads gains Smother, a free knack that spends a point of Luck to stop a knack
+  used within eight paces. The 5e reference carries no spells; the 5e package's Counterspell adopts
+  `{ "on": "used", "against": { "catalogs": ["spells"] }, "cancels": true }` in its next release.
+- **Proven** by `scripts/regressions/game-ruleset-combat-moments.regression.ts` (the refusals, the
+  moment and its cancel, the catalog filter, reach on a board, `used` before `aimed`, no chain, the
+  log line and the 1.44 gate).
+
+### What C5f settled
+
+Capability API 1.45, for #6719.
+
+- **Modifiers.** `combat.conditions[].modifiers` (at most 6): `to` one of `defense`, `attacks`,
+  `saves`, `checks`, `speed`; a `flat` number (its own sign, never 0), `dice` rolled every use (only
+  on the three rolled numbers, `minus` takes them away), or `times` 0.5 or 2 (speed only, after the
+  flat changes). `saves` on a condition now narrows save modifiers too. Speed modifiers are read only
+  on a board and need no `distance` to be written, as `speed-zero` does not.
+- **Where they are read.** Nothing is written into the combatant: `rulesetConditionModifiers` is
+  asked where each number is used. Defense in `rulesetDefenseAgainst` (resolve and forecast both);
+  attack rolls, saves and contest sides roll their dice after the roll's own dice and carry
+  `bonuses` (defense carries `guards`) with the condition and, for a level, the level; the forecast's
+  chance to hit and chance to win convolve the bonus dice (`rulesetBonusDice`), and a contest side
+  rolls twice where `own-checks-advantage`/`-disadvantage` say so (`rulesetCheckMode`, only when
+  `attackRoll.advantage`). Speed in `rulesetMovementAllowance`, so Dash reads it too.
+- **Endings.** Applied `duration: { rounds, at: "turn-start" }` counts down as the holder's turns
+  begin; `endsAfter` (`own-attack`, `attacked`, `own-save`) removes it with reason `spent` after the
+  first of those. An attack notes the one-use conditions it used when it is rolled and spends exactly
+  those once the blow is over, so a one-attack ward still halves that blow's harm and a fresh mark
+  the same blow puts on is kept. The walk is read again after the turn-start clocks run, so a condition that ends as
+  a turn begins no longer holds that turn's walk (a change for existing save-ends at turn start too).
+- **Levels.** `combat.levels` (at most 20): `{ track, at, effects?, modifiers?, failsSaves?, saves? }`
+  on a plain live track (wound tracks refused, no two entries for one level). Every reached level is
+  synthesised into `rulesetActiveConditions` as an entry whose `condition` is the track id, so every
+  reader sees it. Refused on a level: `half-move-to-stand`, `ends-on-damage`, `cannot-target-source`,
+  `cannot-approach-source`. Only a sheet has tracks.
+- **Examples.** The 5e reference counts exhaustion's levels 1, 2, 3 and 5 (4 and 6 are Not yet), and
+  Poisoned and Frightened make checks harder. Ember Roads' Heat takes 1 off attacks from 3 and halves
+  speed at 5, and Wounded is 1 easier to hit and 2 paces slower.
+- **Proven** by `scripts/regressions/game-ruleset-combat-conditions.regression.ts` (refusals and the
+  published schema, defense, attacks with dice both ways, saves narrowed, checks leaning and adding,
+  speed halved and restored at turn start, the three one-use endings, levels on both examples, the log
+  and the 1.45 gate).
+
+### What C5g settled
+
+Capability API 1.46, for #6728.
+
+- **The moment.** `mechanics.reaction.on: "hit"` (the reaction object is now one shared schema,
+  `rulesetReactionMomentSchema`): an attack roll has hit the holder, before its damage. `cancels` is
+  refused on it. It opens only for the one hit (any side), only when they hold an answer, and never
+  while a window is already open, so opportunity strikes, signature actions and answers are never
+  held.
+- **Holding an attack.** `resolveAction` returns a hold instead of dealing the blow: the target, the
+  targets after it (`rest`), the roll (`mode`, `total`, `defense`, `critical`, `natural`), the
+  attacker's one-use conditions it used (`mine`, by id), and, through `resolveSequence`, the `part`
+  of an action made of others. `harmedBy` opens the `hit` window with the held attack on the action
+  resume (`resume.held`, plus `hurt`, whoever the action had already damaged) and asks about being
+  hurt only once the whole action is over. `resumeAction` passes `held` back in: the preamble (gives,
+  concentration) is skipped, earlier parts are skipped, the held part is not paid for again, and the
+  held roll is checked against the defense as it now stands. A changed defense logs a `recheck`
+  event; a natural face keeps its outcome. The target's one-use conditions are read at the recheck,
+  so a guard put on as the answer is spent by that attack.
+- **Creatures.** A creature action may carry `reaction` (same object) and `self: true` (targets its
+  own holder, no `targetCount` or `area`); a sequence may not carry either or name a reaction, and a
+  reaction is not also a signature action. `against` catalogs are checked on creatures too.
+- **The picker.** `rulesetAnswerDeflects(definition, state, actor, optionId)`: on a held hit, true
+  when the defense an answer's own conditions add would beat the roll, false when not (or on a
+  natural face), null when the answer changes no defense. The director skips a false answer and
+  scores a true one as `healing: 1`.
+- **Log and view.** The window event and the directed view carry `total` and `defense` for a hit;
+  "Snag hits Brenna with Scimitar: 20 against Armor Class 18. Brenna may answer." and "Against Armor
+  Class 23 (Shielded + 5), Snag's Scimitar now misses Brenna."
+- **Examples.** The 5e reference's Toll Sergeant parries (a `parrying` condition, +2 defense for one
+  attack). Ember Roads has no budget a reaction could spend, so it gains none.
+- **Proven** by `scripts/regressions/game-ruleset-combat-hit.regression.ts` (Shield turning a hit, a
+  roll that beats it, a natural 20, letting it go, Uncanny Dodge halving, a creature's Parry spent by
+  the attack, a two-part action held at each part, several targets with the rest rolled after the
+  answer and being hurt asked about at the end, a save and reload mid-window, nothing held inside a
+  window, the refusals, the log and the 1.46 gate) and a forty-seed case in
+  `scripts/regressions/ruleset-combat-director.regression.ts` (the Engine raises Shield only when it
+  turns the hit aside, and lets other blows land).
+
+### What the pool kind settled
+
+Capability API 1.47, for #6736. The Storyteller kind the gap report names (W10, with W9), in two
+slices: this one is the kind itself; the second (below) is initiative as a number attacks move.
+
+- **A second kind, and one principle.** `combat.kind: "dice-pool"` needs a `dice-pool` resolution and
+  reads the sheet the way its checks do: every number a roll ADDS is dice, and every number it MEETS
+  is successes. So no key is renamed. `toHit` is the pool, `defense` the successes a blow needs (never
+  fewer than one), a save's number its pool and its difficulty the successes it needs, a contest
+  check a pool, a condition's `flat` modifier dice (a rolled `dice` modifier is refused). Every pool
+  a combatant throws to act goes through `rollDicePoolCheck`, so the die, target, doubling,
+  exploding, cancelling and botch are the resolution's, and `resolution.penaltyFrom` takes its dice
+  off, which attack-vs-defense fights never did. A botch misses; there are no criticals.
+- **Damage.** Each success past the ones needed adds a damage die. An amount's `dice` are dice of the
+  ruleset's own die (refused otherwise, on entries and creatures) and its `flat` part automatic
+  successes; an attack row's dice column is read for its count, `damage.ability` adds dice and
+  `damage.bonus` automatic successes. Damage is thrown per target against `pool.damageTarget` (the
+  resolution's default target when absent) with nothing doubling, exploding, cancelling or botching.
+  Heal and temporary amounts stay sums; initiative is a sum unless thrown as a pool (1.48, below);
+  dying keeps its own dice.
+- **Soak.** `pool.soak` gives value references by kind of the health track (`byKind`, winning over
+  `all`), thrown against the damage target (`roll: true`, each success taking one off) or taken off
+  the damage dice first (`roll: false`). Never below zero, never thrown for a blow that counted
+  nothing, and applied before resistance. A creature gives its own `soak`; a sheet creature reads it
+  off its sheet; an invented opponent's is dropped by the clamp, since no tier bounds it.
+- **For either kind.** `initiative.each: "round"` throws everybody's initiative again as a round
+  begins, with the modifier read off the sheet as it stands then, and re-sorts the order.
+  `combat.spendLimits` caps what one combatant spends of a live pool per turn or round:
+  `planRulesetCombatCost` prices a cost past what is left as unaffordable, and every payment counts
+  against it, answers in a window included. `toHit.skill` lets an attack row throw a skill, with the
+  row's ability swapped in as a check's `with=` does.
+- **Not built.** Declaring actions in reverse order changes nothing any rule reads in a fight where
+  each combatant picks one action when their turn comes, so no key says it.
+- **Examples.** Gravewatch fights: a harm track with knocks and tears, an Arms list, two fight charms
+  (one on a quick budget, so its one-Resolve-a-turn limit binds), soak by kind, initiative every round,
+  and a two-creature bestiary. Its variants in the check lanes leave the fight out.
+- **Proven** by `scripts/regressions/game-ruleset-combat-pool.regression.ts` (the pools, cancel,
+  botch and explode, extra dice, automatic successes, defense, soak thrown and off the dice, the wound
+  penalty and condition dice, leaning throws, saves, contests, a held hit rechecked in successes,
+  initiative every round with the modifier now, spend limits, the exact forecast, bestiary soak, the
+  clamp, every refusal, the log and the 1.47 gate) and twenty seeded Gravewatch fights played by the
+  Engine in `scripts/regressions/ruleset-combat-director.regression.ts`.
+
+### What the moving initiative settled
+
+Capability API 1.48, for #6740. The second Storyteller slice: initiative as a number attacks move.
+
+- **The opening.** `initiative` is `dice` (with `modifier`) or `pool` (with `plus`), exactly one.
+  A pool is thrown through the check roller, its successes plus `plus` the number; a creature's
+  `initiativeModifier` is its pool. `pool` and `resource` are a `dice-pool` fight's only, `resource`
+  needs `pool` (summed dice are an order, not dice to spend), `each` is refused beside `resource`, and
+  `each: "round"` with a pool throws the pool again.
+- **Styles, beside the option.** `resource.styles` (one to four, each `takes` or `spends`, at least
+  one taking, so a crashed combatant always has one) are chosen by `choice.style`, not folded into the
+  option id, so everything that finds an action by its id is untouched. An attack is an action that
+  rolls to hit and does harm, or a sequence (every part in its style, and only a taking one, since a
+  number is spent on one blow); contests are never styled. A choice with no style takes the first,
+  one the option does not offer is refused `unknown-style`, and whatever is made out of a turn (an
+  opportunity strike, a signature move, a reaction) is made in the first, so a window menu offers
+  none. The style is fixed when the attack is made and carried on the resume with the number a
+  spending one throws, so an answer that moves its maker's number never changes either.
+- **Takes.** The blow's damage is thrown as ever, soak included, and routed to the target's number
+  through the same `land()` every part of a blow goes through, so clauses and riders take too. The
+  maker gains the total plus `gain`, then a crash is settled with the maker as its source and the
+  bonus paid. Health is untouched, so nothing after a blow (concentration, conditions that end on
+  damage) happens.
+- **Spends.** Offered only above the crash line. The blow throws the maker's number as they made it, with
+  `throwHarm`'s soak switched off and no extra dice, clauses or rider; after the whole action the
+  number resets to `base` if anything landed, or loses `onMiss` read at the number it was made with.
+- **Crashing** is kept in step with the number by one function: crossing to the line puts the
+  condition on (from the source, when there is one) and starts `crashedTurns`; rising above it takes
+  it off. `recoverAfter` counts the crashed one's own turn starts and resets them to `base`. An
+  opening at the line crashes before the first turn, and every crash is lifted when the fight ends
+  (`liftRulesetCrashes`, from `pushOutcome`, which every outcome goes through, and from fleeing), so a
+  sheet never keeps it.
+- **Order and windows.** As each round begins the order is re-sorted by the numbers, with no dice,
+  and the pause at the end of a round names nobody next, as a round that throws again does.
+- **Menu and picker.** `option.styles` carries each style's forecast: a taking style what it would
+  take (`shift`), a spending one what the maker's number is worth. The director's picker expands
+  every way of paying into one candidate per style. It weighs a taking blow one turn ahead (take then
+  spend, against spend now and again from the base, with a crash's bonus) and a spending blow as the
+  damage it does. The Game Master's decision options and the route's `ruleset` command carry `style`.
+- **Not built.** Anything that changes what a spending blow throws (a weapon's own, a floor of
+  dice), anything that shrinks a taking blow against a sturdy target, and a crash that lasts longer
+  the deeper it went.
+- **Example.** Gravewatch keeps its rethrown sum; the author guide shows a variant, and the lanes play it.
+- **Proven** by `scripts/regressions/game-ruleset-combat-moving-initiative.regression.ts` (the opening,
+  the menu and its words, taking and crashing with the log, spending with no soak or extra dice, the
+  miss table, a miss that crashes its maker, rising above the line, recovery by count, an opening
+  crash, the fight ending, a held hit keeping its style and its number through a crash, a reaction's
+  attack in the first style, a sequence only taking, the window at a round's end, a pool thrown every
+  round, every refusal and the 1.48 gate) and twenty
+  seeded fights, a Game Master's styled choice and a player's command in
+  `scripts/regressions/ruleset-combat-director.regression.ts`.
+
+### What the item format settled
+
+Capability API 1.49, for #6765. The first slice of the ruleset items plan: what an item is, and the
+words a ruleset declares for its items. No runtime reads it yet.
+
+- **The `items` block.** Categories (at least one), rarities, tags, stats declared like list columns
+  (with `promptVisible`), slots with counts, `binding` (a label and a maximum), `carry` (the weight
+  stat, `encumberedAbove` and an optional `limit`), currency families, `native` (default `true`) and
+  `freeform` (`"plain"` or `"refuse"`). Binding and carry values are value references read without
+  the live state, as a pool's maximum is. The weight stat is a number whose `min` is 0 or more.
+- **Currencies.** A family's `value`s count its smallest coin, so one coin is worth 1 and no two are
+  worth the same. Unit ids are unique across families, because a cost names a unit alone, and
+  `perWeight` needs `carry`. Two families never change into each other.
+- **A third catalog kind.** `holds: "items"` declares no `feeds` and needs the `items` block. An entry
+  has exactly one of `rows`, `creature` or `item`, and an item carries no `mechanics`. The kind check
+  generalises the bestiary's ("one catalog, one kind of entry"), and a header read without the
+  schema's default counts as rows. The sheet picker and the fight both choose catalogs by `feeds` or
+  by `holds`, so neither ever reads an item catalog; the Game Master's `op="use"` line is now taught
+  only for a catalog of rows.
+- **An item** names its category, rarity and tags from the block, fills declared stats with values
+  each stat could hold (the list-row check, reused with the noun "Stat"), takes no more of a slot
+  than a character has, stacks at most `GAME_INVENTORY_MAX_QUANTITY`, costs a whole amount of a
+  declared unit, and binds only where the ruleset declares binding.
+- **Kept for the slices that act on them:** worn and carried effects, requirements and `itemStat`
+  (I4), attacks (I5), use and charges (I6), rarity caps and invention (I3), loot tables and a layer
+  removing a unit (I7). Each arrives with the slice that acts on it.
+- **Examples.** Gravewatch binds tokens against Nerve and pays in one weightless coin; Ember Roads
+  carries by bulk against a new `load` derived value and pays in coin and salt.
+- **Proven** by `scripts/regressions/game-ruleset-items.regression.ts` (both examples, every refusal
+  of the block and of an item, a catalog file, the published schema, the `use` line and the 1.49
+  gate inline and in a file), with 39 deliberate breaks each caught.
+
+## Gaps a ruleset author found
+
+The author of [Marinara-RPG-Extension](https://github.com/Kenhito/Marinara-RPG-Extension), who
+has shipped tabletop systems for Marinara as an extension, measured the format against two of
+those systems written as `ruleset.json` files (a Storyteller-style Vampire and an Exalted). Both
+import and run on `staging`; what they could not say became this series. Every item was re-checked
+against `staging` at e15c9e558 (Capability API 1.36) before it was filed, and only the sheet
+block's rung label was already done.
+
+**Order, as ruled by the maintainer:** the 5e package update first
+([Marinara-Agents#1082](https://github.com/Pasta-Devs/Marinara-Agents/pull/1082), merged), then
+slices 1 to 6 below, then the remaining ruleset-combat slices, and a Storyteller combat kind last.
+The report's small sheet, prompt and docs items are
+[#6657](https://github.com/Pasta-Devs/Marinara-Engine/issues/6657). They were offered to the
+report's author first; with no answer, they were folded into slice 1, and anything not built to the
+author's liking can come back as a follow-up.
+Each slice is one Engine PR and one Capability API minor where it adds file keys, with its
+examples on Gravewatch (pool) and Ember Roads (sum), and none of it names one game's words.
+
+| Slice | Issue                                                                                                                                  | What it adds                                                                                                                                                                                                                            |
+| ----- | -------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1     | [#6651](https://github.com/Pasta-Devs/Marinara-Engine/issues/6651), [#6657](https://github.com/Pasta-Devs/Marinara-Engine/issues/6657) | A difficulty picked by name and a ladder step's target used at the table; a pool rule whose face a check may move; two abilities rolled together; a botch read off half the dice; and the small sheet, summary, reminder and docs items |
+| 2     | [#6652](https://github.com/Pasta-Devs/Marinara-Engine/issues/6652)                                                                     | A standing reroll and one bought with a spend; spend limits read off the sheet and more spend entries; a modifier that rides along from the sheet                                                                                       |
+| 3     | [#6653](https://github.com/Pasta-Devs/Marinara-Engine/issues/6653)                                                                     | Derived values that read a live track or pool, a cap on skills and saves, a list column summed, and `hideWhen` with "not equal" and "one of"                                                                                            |
+| 4     | [#6654](https://github.com/Pasta-Devs/Marinara-Engine/issues/6654)                                                                     | Wound tracks whose length is a formula with a penalty table over boxes, indexed boxes that refuse when full, healing by kind of harm, and extra levels per character                                                                    |
+| 5     | [#6655](https://github.com/Pasta-Devs/Marinara-Engine/issues/6655)                                                                     | Sections on abilities, skills and saves, and untrained rules by skill or section                                                                                                                                                        |
+| 6     | [#6656](https://github.com/Pasta-Devs/Marinara-Engine/issues/6656)                                                                     | A live state and numbers that follow it, reset by a rest (depends on 2 and 3)                                                                                                                                                           |
+
+### What slice 1 settled
+
+Capability API 1.37, for both issues the PR closes: #6651 and the small items of #6657.
+
+- **A difficulty by name, on both kinds.** `difficulty="Label"` on the tag picks a ladder step,
+  matched without case or punctuation, and only a name exactly ONE step answers to: two steps that
+  share a label pick neither. It supplies the number when the tag wrote no `dc=` (successes on a
+  pool, the difficulty on a sum) and, on a pool, the step's own target. A written `dc=` still wins
+  for the number and `threshold=` for the target. The record writes the numbers, never the name, so
+  no reader of a saved check changes.
+- **A ladder step's target is used at the table.** It used to be printed in the reminder and
+  ignored by the roll. A bare `dc=` now counts at the target of the one step needing exactly that
+  many successes; where several steps need the same number (a Storyteller difficulty table is seven
+  steps at one success), nothing says which was meant, so the default stands and the name is the
+  way to ask. This changes existing rolls on purpose: Gravewatch's `dc="1"` now counts at 6, which
+  its own ladder always said.
+- **A tag with a name and no number is an ask.** The reader keeps it (with `dc` absent, which the
+  shared type now allows), only a ruleset game can turn it into a number, a game without a ladder
+  leaves it exactly as written, and every sparse rewrite keeps the name. The skill-check endpoint
+  and the one-request branch arm read it too, once the ruleset is in hand; the endpoint answers a
+  name nothing can read with a 400 (`skill_check_difficulty_unknown`).
+- **A pool rule whose face a check may move.** `explode` and `double` may carry a `min`, the lowest
+  face a check may move them to; `from` becomes optional, and a rule with only a `min` fires only
+  when a check asks (a specialty that makes tens roll again on one skill). `explode="N"` and
+  `double="N"` on the tag, and `mechanics.check.explode` / `.double` on an entry the character
+  used, are clamped into `[min, sides]`; an entry outranks the tag the way a bought threshold does.
+  A rule with no `min` ignores the ask. An entry is refused at import where the ruleset lets no
+  check move that rule, or moves it further than a check may. The record says a face only where the
+  check moved it.
+- **Two abilities together.** `pool.abilityPlusAbility` lets `with=` on an ability check add a
+  second ability. Only the pool kind has `pool`, so a summed ruleset cannot declare it, and on a
+  skill or save `with=` still swaps the ability.
+- **A botch read off half the dice.** `botch.rule: "halfOrMore"` counts faces at or below `upTo` over
+  the dice first thrown, explosions not counted. With no die succeeding it is a critical failure;
+  otherwise the result stands and the record adds `complication="true"`, which the card and the
+  summary say alongside the outcome. The report's word for it was a game's own ("glitch"); the Engine's
+  is neutral. `"noSuccesses"` is the default and is today's rule.
+- **A track's top off the sheet (#6657).** A plain track's `max` may be a value reference, resolved
+  per character in the live state the way a pool's maximum is, and never below the track's `min`.
+  A wound track's top stays its number of levels. Every reader that took a track's top off the
+  definition now takes it off the character's resolved track, including the death-save count in a
+  fight and the director's view of it.
+- **Hidden and always shown.** A plain track may carry `hideWhen`, and a hidden track is left out of
+  the live state exactly as a hidden pool is, so the sheet command cannot reach it either. A wound
+  track may not: rolls read its penalty and fights read it as health whatever the sheet shows.
+  `alwaysShow` prints a track in the sheet block at its default.
+- **Summary lists say more.** A list's `nameColumn` may be an enum column (shown by its value label),
+  and `columns` prints up to three of the row's own columns after its name; a boolean prints its
+  column's label when set.
+- **The wound-track command is the Engine's to teach.** The reminder adds the `op="damage"` line and
+  a `Wound tracks:` line (best rung to worst, and the kinds of harm) when a ruleset has one, and the
+  `Tracks:` line now lists only the plain tracks `op="track"` moves. Gravewatch's own guidance no
+  longer repeats it.
+- **Docs.** The pool ceiling's comment now says a throw can reach twice `pool.max`, and the guide
+  says a rest heals a wound track only with a negative `by`.
+- **Proven** by `scripts/regressions/game-ruleset-check-rules.regression.ts` (thirteen deliberate
+  breaks of #6651's rules, and the sighted pool's late read, each caught) and
+  `scripts/regressions/game-ruleset-sheet-extras.regression.ts` (eleven breaks of #6657's, each
+  caught), with the death-track case in the combat-core lane.
+
+### What slice 2 settled
+
+Capability API 1.38, for #6652.
+
+- **A standing re-throw.** `resolution.reroll` lists up to six re-throws the system grants for
+  free, each `{ id, upTo, mode }`, pool kind only. The Game Master names one with `reroll="id"`
+  (matched without case, an unknown name ignored); none is thrown unasked. `upTo` is held below the
+  die's sides, because a re-throw of every face never stops, and `until` still stops at the Engine's
+  hundred re-throws on one check. The record names it (`reroll="id"`) only when it was the one
+  thrown and it threw something.
+- **One re-throw per roll.** A spend may buy a `reroll` now, beside an entry's `mechanics.check`
+  one. Where two would apply, the one that reaches more faces is thrown, and `until` over `once`
+  where they reach the same. Stacking two re-throws of the same dice is a rule in no system. A spend
+  buys its re-throw once, however many purchases the check makes.
+- **A spend's limit off the sheet.** `perCheck` may be a value reference, or `"pool"` for the check's
+  own dice: the sheet's number for it, before a wound, bonus dice or a modifier, so a hurt character
+  may still buy as many as their rating gives. It is worked out for whoever rolls, rounded down and
+  held to `[0, RULESET_POOL_MAX_DICE]`; a limit of nothing buys and pays nothing. Up to four spends,
+  still one per pool.
+- **Modifiers off the sheet.** `resolution.adjust` (up to eight, both kinds) adds a value off the
+  sheet to every check that rolls with one of its `abilities`, or to every check without them:
+  a skill or save through its own ability or `with=`, an ability check, or a pair that includes it.
+  It goes where the wound penalty goes (dice on a pool under the same floor, a flat number inside a
+  sum's modifier), the record writes it (`adjust="-2"`) and reads it back, the dice card says it,
+  and a summed record the Game Master wrote is vouched for only when its modifier includes it. A
+  stranger gets none.
+- **The reminder** offers `reroll=` with each id and its faces only where the ruleset has one, and
+  a spend's line says a re-throw it buys and how its limit is set ("up to as many times per check
+  as the check has dice", "as the sheet's Nerve").
+- **Examples.** Gravewatch's `careful` re-throw (six or less, once); Ember Roads' `burden` field,
+  turned negative by a derived value and taken off every Brawn roll.
+- **Proven** by `scripts/regressions/game-ruleset-rerolls-spends.regression.ts`: the report's own
+  numbers through the roller, every rule through the resolver, the branch arm, the sighted pool's
+  ask and the real endpoint, the reminder, every refusal and the 1.38 gate; twenty-seven deliberate
+  breaks, each caught.
+
+### What slice 3 settled
+
+Capability API 1.39, for #6653.
+
+- **Live reads.** Two new value-reference keys, `liveTrack` (with `read`: `value`, `filled`,
+  `remaining`, or `penalty` on a wound track) and `livePool` (what is left, never a list row's pool).
+  **Named differently from the issue on purpose:** the issue proposed `{ "track": … }` and
+  `{ "pool": … }`, but the combat block already uses exactly those shapes for its health and energy,
+  so neither the install gate nor a reader could tell them apart; "live" also says why a maximum may
+  not use one. A hidden pool or track reads 0.
+- **Where they may not go.** Anything worked out before a live state exists: a pool's or track's
+  maximum, the proficiency bonus, a catalog's scaled column or scaling. Refused directly, through a
+  derived value (transitively, which one pass finds because derived values only read the ones above
+  them) and through a skill or save a live value caps.
+- **Evaluation.** `evaluateRulesetSheet(definition, build, live?)` takes the RESOLVED live state as a
+  structural type, so sheet-math never imports live-state (which imports it). Without one a live read
+  is 0, right only where the format refuses them. `evaluateRulesetSheetLive(definition, build,
+stored?)` in live-state resolves the live state first (whose maximums cannot read it back) and is
+  what the check context, the Game Master's sheet block, the game's sheet screen, a fight's
+  combatants and the editor use; with nothing stored it reads the declared defaults. The evaluated
+  sheet carries the live values, so a reference resolved against it later (`adjust`, a spend's
+  `perCheck`, a fight's defense) reads the same snapshot.
+- **Caps.** `cap` on a skill or save; `skillMods`/`saveMods` hold the capped number and
+  `skillCaps`/`saveCaps` keep the uncapped one, so a `with=` swap works from it and is capped again.
+  A cap reads no skill or save, nor does any derived value up to the one it reads (the proficiency
+  bonus's rule), which keeps evaluation to one top-to-bottom pass.
+- **List sums.** `listSum: { list, column, onlyWhen? }`, a number column over the rows a boolean
+  marks; an empty cell is its column's default and a hidden list adds nothing. Build-only, so a
+  maximum may read one. A catalog's scaled column may not, directly or through anything: a list
+  may hold scaled cells the same recompute rewrites, and catalog files are checked one at a time, so
+  no narrower rule could see every loop between them.
+- **Wider hideWhen.** Exactly one of `equals`, `notEquals`, `in`, each value checked against the
+  field; layers cannot remove any value one of them compares with.
+- **Examples.** Ember Roads' Burden is now the bulk of the packed gear (`listSum`) and its Brawn
+  modifier a step table over it; Gravewatch caps Soothe at the Resolve left, shows "Harm still to
+  take" off the live track, and keeps lantern oil to the night watch with `notEquals`.
+- **Proven** by `scripts/regressions/game-ruleset-sheet-reads.regression.ts`: every refusal, every
+  read at its defaults and in play, caps with and without a swap, list sums, the three comparisons,
+  the check context, a fight, the reminder and the 1.39 gate (a catalog file included); forty
+  deliberate breaks, each caught.
+
+### What slice 4 settled
+
+Capability API 1.40, for #6654.
+
+- **Box tracks.** A wound track is `kinds` plus exactly one of `levels` or `boxes`. **Differs from
+  the issue on purpose:** the issue put the count in `boxes.count`, but a track already says how long
+  it is in `max`, which since 1.37 may be a value the sheet works out per character (and since 1.39
+  never a live one), so the count is `max` and `boxes` carries only the penalty table. Boxes are
+  numbered ("Box N" on the sheet; the Game Master's line says how many are marked), capped at 64,
+  and the penalty in force is the table read at boxes filled or remaining, always, including with
+  nothing marked.
+- **Per-character levels.** The resolved wound carries this character's levels (named ones plus any
+  `extra` adds, or the boxes), so every reader that took a length off the definition (combat health,
+  the bridge, the sheet block, the sheet screen) now reads the resolved track. The penalty reader
+  takes the build.
+- **Filling by box and refusing.** `fill: "indexed"` stores marks by position ("" for a clear box
+  between marked ones) and lands a mark on the box `box=` names or the next free one above;
+  `onFull: "refuse"` (required beside indexed) refuses the whole command when any mark cannot land,
+  with the new reason `no-box`. Resolved wounds gain `filled`, `lowest`, `numbered`, `indexed` and
+  `refusesWhenFull`, and every reader of `marks.length` moved to `filled`. The damage command
+  gained `box` rather than giving `amount` a second meaning, so the bridge and the sheet's Mark
+  button still mean "this many marks".
+- **A fight.** On an indexed track `per-point` damage is the box it lands on and `per-blow` aims at
+  the first. A blow no box can take puts a standing combatant down: that is being taken out in the
+  systems that keep such a track, and without it such a fight could never end.
+- **Healing by kind.** A negative `damage` naming a kind the track has clears only that kind,
+  overflow first; naming none (or one it does not have) keeps lightest-first. A rest step may name a
+  `kind`. Fights and the bridge heal with no kind, since their healing is any harm and every heal
+  used to carry the default kind.
+- **Extra levels.** `extra: { list, countColumn, penaltyColumn }` on a levels track; each row (at most
+  16 levels) goes after the last level at least as good, named after it when the penalty matches.
+  Marks past a track that shrank are kept as overflow rather than dropped.
+- **Examples.** Gravewatch's scars add levels to Harm, and "Catch your breath" clears only knocks;
+  Ember Roads' Strain is a box track that fills by box and refuses when full.
+- **Proven** by `scripts/regressions/game-ruleset-wound-boxes.regression.ts` (thirty-four deliberate
+  breaks, each caught) and a browser case in `e2e/ruleset-wound-sheet.e2e.ts` for the box track on
+  the sheet screen.
+
+### What slice 5 settled
+
+Capability API 1.41, for #6655.
+
+- **Sections on abilities, skills and saves.** The same optional `section` fields already had,
+  checked against `sheet.sections`. One shared helper, `rulesetSectionGroups`, orders them by the
+  sheet's sections and puts the unsectioned last under no heading, and returns one plain group when
+  nothing names a section, so the Game Master's sheet block (ability line and `Trained:` line, now
+  "Heading: a, b; Heading: c"), the sheet editor and the game's sheet screen read exactly as before
+  for every file without them.
+- **Untrained rules.** `untrained` on a skill, a save or a section (the entry's own wins), applying
+  when the entry is at the first proficiency tier. **Named differently from the issue on purpose:**
+  the issue's `{ "dice": -3 }` is a flat amount on a summed ruleset, so the key is `by`, the word
+  rests and track commands already use. `by` goes into the sheet's own number (before a cap), so the
+  sheet shows it and every check and vouching reads it. `harder` adds one to a pool's per-die target
+  after the ladder, the tag and the default are read (the roller clamps it); it is refused at import
+  on a summed ruleset or a target that cannot move. `refuse` throws `SkillCheckUntrainedError` in
+  the roll; the content resolver checks first and writes the ask back with `reason="untrained"`, the
+  endpoint answers 400 `skill_check_untrained`, and the branch arm keeps neither half and writes the
+  same record. The tag reads `reason`, and the client's fallback and the endpoint's record
+  replacement skip a tag carrying one, so nothing rolls a refused check later. The shared
+  `isEngineRollableSkillCheckTag` does NOT read it: the general dice pass runs after the resolver
+  and treats a skill check that is not rollable as foreign dice, which rewrote the settled ask
+  without its reason. The refusal comes first in the resolver's loop, before the vouching audit, the
+  rollability check and the difficulty read, so no record, dice or difficulty the Game Master
+  writes gets a refused check past it, and a reason the Game Master writes itself does not stop a
+  roll: the Engine decides again. The narration log says it was not attempted, and the sheet editor
+  shows a dash for it. A stranger (no sheet) has no rule.
+- **Reminder.** One `Untrained checks:` line naming each rule by section or entry, with the reason
+  sentence only where something is refused.
+- **Examples.** Gravewatch groups its skills into Labour (untrained -1 die), The watch and Company,
+  refuses an untrained Dig, and makes an untrained Listen harder; Ember Roads' untrained Tinker is -2.
+- **Proven** by `scripts/regressions/game-ruleset-sections.regression.ts` (twenty-five deliberate
+  breaks, each caught) and `e2e/ruleset-sheet-sections.e2e.ts` for the editor and the game's sheet.
+
+### What slice 6 settled
+
+Capability API 1.42, for #6656.
+
+- **Live states.** `sheet.live.states`: up to twelve, each two to forty `values` (held to the label
+  rule and never a double quote, because the command quotes them), optional `valueLabels`, a
+  `default` (else the first value) and `hideWhen`. Stored sparse in the live blob's new `states`
+  record, only when away from the default; a stored value the state no longer offers reads as the
+  default, and a hidden state is left out of the resolved live state altogether.
+- **The command.** `[sheet: op="state" state="State" value="Value"]`, the state by id or label and
+  the value by itself or its label, refused with `unknown-state` or `unknown-value`. The tag's
+  `state=` names the state on this op and stays on/off on a condition; the op decides. The sheet
+  block always says each state's value (a form is a fact every turn, where a track at its default
+  is none), and the reminder adds the command and a `States:` line with every value only when the
+  ruleset has one. The game's sheet screen shows a select per state.
+- **Numbers that follow.** A derived value `enumTable`: `from` names exactly one of `field` (an enum
+  field) or `liveState`, `table` a number per value (one to forty, each a value that one can hold)
+  and `default` the rest. **Named differently from the issue on purpose:** the issue's
+  `{ "state": … }` is `{ "liveState": … }`, because every read of the live state is named `live`,
+  which is how an author and the import tell what a maximum cannot use. A field's table is
+  build-only and may feed a maximum; a state's is a live reader for the transitive refusal slice 3
+  added. It reaches the dice through slice 2's `adjust`, limited to an ability. A layered definition
+  does not recheck a field table's rows, since a layer may remove a value it has a row for.
+- **Rests.** A restore step may name a `state`, with `to` `"default"` or one of its values (never a
+  `by`); `to` on any other step is still `"max"`, `"min"` or a number.
+- **Examples.** Ember Roads' Stance (Guarded, Steady, Reckless) adds -1 or +2 to Brawn rolls and
+  camp settles it; Gravewatch's Light (Lit, Shuttered, Out) costs one or two Nerve dice and the vigil
+  relights it, and a warden on the dawn watch has one more Resolve through a table on the `watch`
+  field.
+- **Folded in: #6678.** The combat picker's closing move measured "closer" in a straight line, so
+  two fighters either side of a wall of impassable ground (two cells apart, a long way round) both
+  stood still forever, which is what made the positioned Ember Roads browser case end without an
+  outcome now and then. It now measures by walking distance, `rulesetWalkingDistances` in the
+  shared grid module (the same steps, terrain costs and corner rule a walk pays), and reach and
+  range stay straight-line. Across 2000 seeds of that case every fight now ends within seven turns,
+  where about one in seventy-five used to stall.
+- **Proven** by `scripts/regressions/game-ruleset-live-states.regression.ts` (thirty-one deliberate
+  breaks, each caught), a hand-drawn ridge in `scripts/regressions/ruleset-combat-director.regression.ts`
+  that stands still for 200 rounds without the fix, and `e2e/ruleset-live-states.e2e.ts` for the picker and a rest on the game's sheet.
 
 ## Architecture
 

@@ -10,9 +10,10 @@ import type { TFunction } from "i18next";
 import { rulesetDistanceText, type RulesetBoardDistance } from "./ruleset-combat-board";
 
 /** The order a menu reads in: where you go, what you swing, what you cast, what a stat block can
- *  do, the moves the kind implements, and finally ending the turn. Walking comes first because a
- *  turn on a board usually starts with it, and it may be taken again after an action. */
-export const RULESET_MENU_KINDS = ["move", "attack", "ability", "block", "standard", "end-turn"] as const;
+ *  do, the contests it may start, the moves the kind implements, and finally ending the turn.
+ *  Walking comes first because a turn on a board usually starts with it, and it may be taken again
+ *  after an action. */
+export const RULESET_MENU_KINDS = ["move", "attack", "ability", "block", "contest", "standard", "end-turn"] as const;
 
 export type RulesetMenuKind = (typeof RULESET_MENU_KINDS)[number];
 
@@ -28,8 +29,10 @@ const MOVE_OPTION_WORDS: Record<string, "walk" | "stand"> = {
 };
 
 export interface RulesetMenuStep {
-  stage: "pay" | "move" | "target" | "aim";
+  stage: "style" | "pay" | "move" | "target" | "aim";
   option: DirectedRulesetOption;
+  /** The initiative style an attack is made in, where initiative is a number attacks move. */
+  style?: string;
   payWith?: string;
   targets: string[];
 }
@@ -118,14 +121,43 @@ export function rulesetOptionForecastText(option: DirectedRulesetOption, t: TFun
   const parts: string[] = [];
   const forecast = option.forecast;
   if (typeof forecast?.hitChance === "number") {
-    parts.push(t("game.combat.ruleset.option.forecastHit", { percent: Math.round(forecast.hitChance * 100) }));
+    // A contest is not rolled against a defense: its chance is the share it would win.
+    parts.push(
+      t(
+        option.kind === "contest" ? "game.combat.ruleset.option.forecastWin" : "game.combat.ruleset.option.forecastHit",
+        {
+          percent: Math.round(forecast.hitChance * 100),
+        },
+      ),
+    );
   }
-  if (typeof forecast?.averageDamage === "number") {
+  // An attack made in a style does what its style does, which the style step says: the weapon's
+  // own damage is neither what a taking style takes nor what a spending one throws.
+  if (typeof forecast?.averageDamage === "number" && !option.styles?.length) {
     parts.push(
       t(option.heals ? "game.combat.ruleset.option.forecastHeal" : "game.combat.ruleset.option.forecastDamage", {
         amount: Math.round(forecast.averageDamage),
       }),
     );
+  }
+  return parts.join(", ");
+}
+
+/** What one initiative style of an attack is expected to do, in words: its chance to hit, and what
+ *  it would take off the target's initiative or the harm it would do. The server computed each. */
+export function rulesetStyleForecastText(
+  style: NonNullable<DirectedRulesetOption["styles"]>[number],
+  t: TFunction,
+): string {
+  const parts: string[] = [];
+  const forecast = style.forecast;
+  if (typeof forecast?.hitChance === "number") {
+    parts.push(t("game.combat.ruleset.option.forecastHit", { percent: Math.round(forecast.hitChance * 100) }));
+  }
+  if (typeof forecast?.shift === "number") {
+    parts.push(t("game.combat.ruleset.option.forecastShift", { amount: Math.round(forecast.shift) }));
+  } else if (typeof forecast?.averageDamage === "number") {
+    parts.push(t("game.combat.ruleset.option.forecastDamage", { amount: Math.round(forecast.averageDamage) }));
   }
   return parts.join(", ");
 }

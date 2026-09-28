@@ -42,6 +42,8 @@ export type DirectedCommand =
       optionId: string;
       targetIds: string[];
       payWith?: string;
+      /** The initiative style an attack is made in, where initiative is a number attacks move. */
+      style?: string;
       to?: { x: number; y: number };
       at?: { x: number; y: number };
     }
@@ -66,6 +68,7 @@ export interface CombatDecisionOption {
   targetIds?: string[];
   label?: string;
   payWith?: string;
+  style?: string;
   /** Where a ruleset fight's own shape is aimed. `to` above is where the actor walks first, which
    *  a positioned candidate may carry too. */
   at?: { x: number; y: number };
@@ -155,6 +158,15 @@ export interface DirectedRulesetView {
   window?: {
     id: string;
     kind: "reaction" | "signature";
+    /** Which moment, for the ones a reaction waits for, and what is happening at it. */
+    moment?: "aimed" | "hit" | "harmed" | "used";
+    label?: string;
+    /** For a held hit: what the roll came to, and what it was made against. */
+    total?: number;
+    defense?: number;
+    /** Who caused the moment: whoever aimed the thing, or whoever dealt the damage. Its own field
+     *  rather than `moverId`, which is for the walk that opened a window by leaving a reach. */
+    sourceId?: string;
     /** Who is being asked. The rest of the queue is not named: a client shows one question at a
      *  time, and everybody after this one is answered after this one. */
     actorId: string;
@@ -183,7 +195,9 @@ export interface DirectedCombatView {
   actorId?: string;
   party: Combatant[];
   enemies: Combatant[];
-  inventory: Array<{ name: string; quantity: number; description?: string }>;
+  /** One line per item, shown by `name`. `ownName` is the item's own name when `name` is a nickname:
+   *  what a spend is taken by, so a nickname never spends another item. */
+  inventory: Array<{ name: string; quantity: number; description?: string; ownName?: string }>;
   tactical?: TacticalCombatState;
   /** Present exactly when the style is `ruleset`. */
   ruleset?: DirectedRulesetView;

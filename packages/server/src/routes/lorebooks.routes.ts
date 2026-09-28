@@ -55,6 +55,8 @@ import {
 } from "../services/lorebook/embeddings.js";
 import { resolveOwnerSpatialProjection } from "../services/spatial-context/projection.js";
 import { resolveLorebookScopeExclusions } from "../services/lorebook/game-lorebook-scope.js";
+import { lorebookTextRoutes } from "./lorebook-text.routes.js";
+import { resolveLibraryCampaignFilter } from "./library-campaigns.routes.js";
 import {
   buildPromptMacroContext,
   resolveMacrosWithVariableSnapshot,
@@ -80,8 +82,7 @@ import { normalizeTimestampOverrides } from "../services/import/import-timestamp
 import { DATA_DIR } from "../utils/data-dir.js";
 import { assertInsideDir, extensionFromImageMime, isAllowedImageBuffer } from "../utils/security.js";
 import { parseLibraryPageQuery } from "../utils/list-pagination.js";
-import { resolveLibraryCampaignFilter } from "./library-campaigns.routes.js";
-import { lorebookTextRoutes } from "./lorebook-text.routes.js";
+import { createSeededRandom } from "../services/lorebook/seeded-random.js";
 import AdmZip from "adm-zip";
 
 const LOREBOOK_IMAGES_DIR = join(DATA_DIR, "lorebooks", "images");
@@ -179,7 +180,7 @@ function resolveScanGenerationTriggers(mode: unknown): string[] {
 
 type CachedLorebookScanEntry = {
   id: string;
-  /** Absent on compacted scans (all but the newest message's row); the stored entry text is shown instead. */
+  /** Absent on scans compacted by the opt-in LOREBOOK_COMPACT_STORED_SCANS; the stored entry text is shown instead. */
   content?: string;
   matchedKeys: string[];
   activationSources: string[];
@@ -280,26 +281,6 @@ function selectMessagesForLastGenerationScan<T extends { role: string }>(message
   }
   if (lastGeneratedIndex < 0) return messages;
   return messages.slice(0, lastGeneratedIndex);
-}
-
-function stableHash(value: string): number {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index++) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-
-function createSeededRandom(seedText: string): () => number {
-  let state = stableHash(seedText) || 0x9e3779b9;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let value = state;
-    value = Math.imul(value ^ (value >>> 15), value | 1);
-    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
-    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
-  };
 }
 
 function stringifyForSeed(value: unknown): string {
@@ -1050,8 +1031,9 @@ export async function lorebooksRoutes(app: FastifyInstance) {
       cachedScan ??= messageScan;
 
       if (cachedScan) {
+        // Entries stored without text (opt-in LOREBOOK_COMPACT_STORED_SCANS) fall back to the entry's stored text.
         const resolvedContentById = new Map<string, string>();
-        for (const entry of [...(messageScan?.activatedEntries ?? []), ...cachedScan.activatedEntries])
+        for (const entry of cachedScan.activatedEntries)
           if (entry.content !== undefined) resolvedContentById.set(entry.id, entry.content);
         const matchedKeysById = new Map(cachedScan.activatedEntries.map((entry) => [entry.id, entry.matchedKeys]));
         const matchTypeById = new Map(cachedScan.activatedEntries.map((entry) => [entry.id, entry.matchType]));
@@ -1208,7 +1190,7 @@ export async function lorebooksRoutes(app: FastifyInstance) {
       excludedSourceAgentIds: lorebookScopeExclusions.excludedSourceAgentIds,
     };
     let chatEmbedding: number[] | null = null;
-    let semanticEmbeddingsByLorebookId: Map<string, number[] | null> | undefined;
+    let semanticEmbeddingsByLorebookId: Map<string, number[] | number[][] | null> | undefined;
     let semanticSimilarityBaseline = 0;
     let semanticEmbeddingSpaceId: string | null = null;
     try {

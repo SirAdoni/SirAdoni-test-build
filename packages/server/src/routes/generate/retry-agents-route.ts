@@ -150,6 +150,7 @@ import {
 import { createGameStateStorage } from "../../services/storage/game-state.storage.js";
 import { normalizeCharacterRpgStats } from "../../services/generation/character-prompt-context.js";
 import { createLorebooksStorage } from "../../services/storage/lorebooks.storage.js";
+import { storedContentForTextlessScanEntries } from "../../services/lorebook/lorebook-scan-compaction.js";
 import { createCustomToolsStorage } from "../../services/storage/custom-tools.storage.js";
 import { syncGameMapMetaPartyPosition } from "../../services/game/map-position.service.js";
 import { persistRetryQuestUpdate } from "../../services/game/quest-retry-persistence.js";
@@ -1025,33 +1026,17 @@ async function buildRetryAgentContext(args: {
     !Array.isArray(lastAssistantExtra.lorebookScan)
       ? (lastAssistantExtra.lorebookScan as Record<string, unknown>)
       : {};
-  // Compacted scans (every message but the newest generation's row) keep no entry text; use the stored entry text.
-  const storedLoreContentById = new Map<string, string>();
-  {
-    const missingIds = (
-      Array.isArray(rawLorebookScan.activatedEntries) ? rawLorebookScan.activatedEntries : []
-    ).flatMap((entry) => {
-      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
-      const row = entry as Record<string, unknown>;
-      return typeof row.id === "string" && typeof row.content !== "string" ? [row.id] : [];
-    });
-    if (missingIds.length > 0) {
-      const lorebooksStore = createLorebooksStorage(db);
-      for (const id of missingIds) {
-        const stored = (await orFallback(lorebooksStore.getEntry(id), null, {
-          event: "storage.read.fallback",
-          stage: "lorebook-entry",
-        })) as { content?: unknown } | null;
-        if (typeof stored?.content === "string") storedLoreContentById.set(id, stored.content);
-      }
-    }
-  }
-  const scanEntryContent = (row: Record<string, unknown>): string | undefined =>
-    typeof row.content === "string"
-      ? row.content
-      : typeof row.id === "string"
-        ? storedLoreContentById.get(row.id)
-        : undefined;
+  // Scans compacted by the opt-in LOREBOOK_COMPACT_STORED_SCANS keep no entry text; use the stored entry text.
+  const storedLoreContentById = await storedContentForTextlessScanEntries(rawLorebookScan, (id) =>
+    lorebooksStore.getEntry(id),
+  );
+  // Stored scan text was resolved when it was generated; the stored entry text still holds its macros.
+  const scanEntryContent = (row: Record<string, unknown>): string | undefined => {
+    if (typeof row.content === "string") return row.content;
+    const stored = typeof row.id === "string" ? storedLoreContentById.get(row.id) : undefined;
+    if (stored === undefined) return undefined;
+    return resolveHistoryMessageMacros([{ content: stored, characterId: null }])[0]?.content ?? stored;
+  };
   const activatedLorebookEntries = (
     Array.isArray(rawLorebookScan.activatedEntries) ? rawLorebookScan.activatedEntries : []
   ).flatMap((entry) => {
@@ -3967,6 +3952,7 @@ async function applyRetryResultEffects(args: {
               });
               assertRetryActive();
               await persistGeneratedImageToEntityGalleries({
+                enabled: imageSettings.autoSaveToGalleries,
                 sourceFilePath: filePath,
                 sourceChatImageId: galleryEntry?.id,
                 characterIds: referenceResolution.characterIds,
@@ -4132,9 +4118,13 @@ async function applyRetryResultEffects(args: {
       }
       try {
         const chatsDb = createChatsStorage(app.db);
-        if (Object.keys(exprMap).length > 0) {
+        if (Array.isArray(spriteData.expressions)) {
           assertRetryActive();
-          await chatsDb.updateMessageExtraForSwipe(retryMessageId, retrySwipeIndex, { spriteExpressions: exprMap });
+          // An empty result hides sprites via the owner list without resetting their retained appearances.
+          await chatsDb.updateMessageExtraForSwipe(retryMessageId, retrySwipeIndex, {
+            ...(Object.keys(exprMap).length > 0 ? { spriteExpressions: exprMap } : {}),
+            expressionSpriteIds: spriteData.expressions.map((entry) => entry.characterId),
+          });
           assertRetryActive();
         }
         if (Object.keys(personaExprMap).length > 0) {
@@ -4382,6 +4372,8 @@ export async function registerRetryAgentsRoute(
       illustratorPromptReviewOverride?: unknown;
       /** Limit an Illustrator retry to visual jobs that failed in the original run. */
       illustratorRetryTargets?: unknown;
+      /** Inclusive stored-message IDs selected by /illustrate range=N-M. */
+      illustratorMessageRange?: unknown;
       /** Force image generation for retried custom image agents' results (snapshot button, #4682). */
       forceImageGeneration?: boolean;
       lorebookKeeperBackfill?: boolean;
@@ -4414,6 +4406,7 @@ export async function registerRetryAgentsRoute(
       agentPromptTemplateIds,
       illustratorPromptReviewOverride: rawIllustratorPromptReviewOverride,
       illustratorRetryTargets: rawIllustratorRetryTargets,
+      illustratorMessageRange,
       forceImageGeneration = false,
       lorebookKeeperBackfill = false,
       customLorebookBackfill = false,
@@ -4453,6 +4446,21 @@ export async function registerRetryAgentsRoute(
       "background",
     );
     const isManualIllustratorImageRequest = isExclusiveIllustratorRetryTarget(illustratorRetryTargets, "illustration");
+
+    if (
+      illustratorMessageRange !== undefined &&
+      (!Array.isArray(illustratorMessageRange) ||
+        illustratorMessageRange.length !== 2 ||
+        !illustratorMessageRange.every((id) => typeof id === "string" && id.trim()) ||
+        agentTypes.length !== 1 ||
+        agentTypes[0] !== "illustrator" ||
+        !isManualIllustratorImageRequest ||
+        forMessageId ||
+        lorebookKeeperBackfill ||
+        customLorebookBackfill)
+    ) {
+      return reply.status(400).send({ error: "Invalid Illustrator message range" });
+    }
 
     startSseReply(reply, { "X-Accel-Buffering": "no" });
 
@@ -4533,6 +4541,17 @@ export async function registerRetryAgentsRoute(
             messageId: anchor.id,
             swipeIndex: anchor.activeSwipeIndex ?? 0,
           };
+        }
+
+        if (Array.isArray(illustratorMessageRange)) {
+          if (chat.mode !== "roleplay") throw new Error("Illustrator message ranges require Roleplay mode");
+          const first = allMessages.findIndex((message) => message.id === illustratorMessageRange[0]);
+          const last = allMessages.findIndex((message) => message.id === illustratorMessageRange[1]);
+          if (first < 0 || last < first || last - first >= 200) {
+            throw new Error("Choose an existing message or a range of up to 200 messages in this chat");
+          }
+          // An explicit historical range may precede the current conversation/Advanced Memory boundary.
+          recentMessages = allMessages.slice(first, last + 1);
         }
 
         const unfilteredRecentMessages = recentMessages;
@@ -5252,8 +5271,7 @@ export async function registerRetryAgentsRoute(
               }>;
             };
             const availableSprites = agentContext.memory._availableSprites as
-              | Array<{ characterId: string; characterName: string; expressions: string[] }>
-              | undefined;
+              Array<{ characterId: string; characterName: string; expressions: string[] }> | undefined;
             if (Array.isArray(availableSprites)) {
               const rawExpressions = Array.isArray(spriteData.expressions) ? spriteData.expressions : [];
               const validation = validateSpriteExpressionEntries(rawExpressions, availableSprites);

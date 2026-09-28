@@ -10,6 +10,7 @@ import { createDiagnostic } from "../lib/diagnostics.js";
 import { logEvent, logRecovered, logRepeated } from "../lib/log-events.js";
 import { z } from "zod";
 import { sidecarModelService } from "../services/sidecar/sidecar-model.service.js";
+import { validateLocalGgufPath } from "../services/sidecar/sidecar-model-files.js";
 import { sidecarSpeechService } from "../services/sidecar/sidecar-speech.service.js";
 import { mlxRuntimeService } from "../services/sidecar/mlx-runtime.service.js";
 import { sidecarRuntimeService } from "../services/sidecar/sidecar-runtime.service.js";
@@ -93,6 +94,7 @@ async function requireConversationCallsForSpeech(reply: FastifyReply): Promise<b
 }
 
 export const sidecarRoutes: FastifyPluginAsync = async (app) => {
+  let modelSwitchInProgress = false;
   registerSequentialGameTasks(app, ["/analyze-scene"]);
   app.get("/status", async () => {
     void sidecarProcessService.syncForCurrentConfig({ suppressKnownFailure: true, allowRuntimeInstall: false }).then(
@@ -117,6 +119,7 @@ export const sidecarRoutes: FastifyPluginAsync = async (app) => {
     return {
       ...status,
       inferenceReady: sidecarProcessService.isReady(),
+      gpuMemory: sidecarProcessService.getGpuMemory(),
       startupError: sidecarProcessService.getStartupError(),
       failedRuntimeVariant: sidecarProcessService.getFailedRuntimeVariant(),
     };
@@ -138,6 +141,7 @@ export const sidecarRoutes: FastifyPluginAsync = async (app) => {
     topK: z.number().int().min(0).max(500).optional(),
     maxParallelJobs: z.number().int().min(1).max(16).optional(),
     gpuLayers: z.number().int().min(-1).max(1024).optional(),
+    kvCacheType: z.enum(["f16", "q8_0", "q4_0"]).optional(),
     enableNativeToolCalls: z.boolean().optional(),
     embeddingPooling: z.enum(SIDECAR_EMBEDDING_POOLING_TYPES).optional(),
     embeddingBatchSize: z.number().int().min(128).max(32768).optional(),
@@ -262,12 +266,13 @@ export const sidecarRoutes: FastifyPluginAsync = async (app) => {
   let activeSetupStream: object | null = null;
 
   async function handleDownloadSse(reply: FastifyReply, task: () => Promise<void>): Promise<void> {
-    if (activeSetupStream) {
-      reply.status(409).send({ error: "Another sidecar download or runtime install is already in progress" });
+    if (activeSetupStream || modelSwitchInProgress) {
+      reply.status(409).send({ error: "Another sidecar download, runtime install, or model switch is in progress" });
       return;
     }
     const streamOwner = {};
     activeSetupStream = streamOwner;
+    modelSwitchInProgress = true;
     const releaseSetupStream = () => {
       if (activeSetupStream === streamOwner) activeSetupStream = null;
     };
@@ -348,6 +353,7 @@ export const sidecarRoutes: FastifyPluginAsync = async (app) => {
         code: ref.code,
       });
     } finally {
+      modelSwitchInProgress = false;
       sidecarModelService.removeProgressListener(listener);
       completed = true;
       releaseSetupStream();
@@ -493,6 +499,37 @@ export const sidecarRoutes: FastifyPluginAsync = async (app) => {
     });
   });
 
+  app.post("/model/local", async (req, reply) => {
+    if (!requirePrivilegedAccess(req, reply, { feature: "Local GGUF selection" })) return;
+    if (
+      modelSwitchInProgress ||
+      isInferenceBusy() ||
+      sidecarModelService.getStatus().status.startsWith("downloading")
+    ) {
+      return reply.status(409).send({ error: "Wait for the current inference or download before switching models" });
+    }
+    const { path } = z.object({ path: z.string().trim().min(1).max(4096) }).parse(req.body);
+    let selected: string;
+    try {
+      selected = validateLocalGgufPath(path);
+    } catch (error) {
+      return reply.status(400).send({ error: error instanceof Error ? error.message : "Cannot read this GGUF file" });
+    }
+    modelSwitchInProgress = true;
+    try {
+      await sidecarProcessService.stop();
+      sidecarModelService.selectLocalModel(selected);
+    } catch (error) {
+      return reply.status(400).send({ error: error instanceof Error ? error.message : "Cannot select this GGUF file" });
+    } finally {
+      modelSwitchInProgress = false;
+      void sidecarProcessService.syncForCurrentConfig({ allowRuntimeInstall: false }).catch((error) => {
+        logger.error(error, "[sidecar] Failed to synchronize local GGUF selection");
+      });
+    }
+    return sidecarModelService.getStatus();
+  });
+
   app.post("/download/cancel", async (req, reply) => {
     if (!requirePrivilegedAccess(req, reply, { feature: "Sidecar download cancel" })) return;
     sidecarModelService.cancelDownload();
@@ -504,12 +541,19 @@ export const sidecarRoutes: FastifyPluginAsync = async (app) => {
 
   app.delete("/model", async (_req, reply) => {
     if (!requirePrivilegedAccess(_req, reply, { feature: "Sidecar model deletion" })) return;
-    if (isInferenceBusy()) {
-      return reply.status(409).send({ error: "Cannot delete the sidecar model while inference is in progress" });
+    if (modelSwitchInProgress || isInferenceBusy()) {
+      return reply
+        .status(409)
+        .send({ error: "Cannot delete the sidecar model while inference or a model switch is in progress" });
     }
 
-    await sidecarProcessService.stop();
-    await sidecarModelService.deleteModel();
+    modelSwitchInProgress = true;
+    try {
+      await sidecarProcessService.stop();
+      await sidecarModelService.deleteModel();
+    } finally {
+      modelSwitchInProgress = false;
+    }
     return { ok: true };
   });
 

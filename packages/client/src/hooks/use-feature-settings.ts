@@ -21,13 +21,15 @@ export function useFeatureSettings() {
   return useQuery<FeatureSettingsResponse>({
     queryKey: featureSettingsKeys.all,
     queryFn: () => api.get<FeatureSettingsResponse>(FEATURES_PATH),
-    staleTime: 5 * 60_000,
+    // Refresh while Settings is open so environment locks are reflected promptly.
+    staleTime: 30_000,
   });
 }
 
 /** ON until the settings load, so nothing hides or changes before the server answers. */
 export function useFeatureEnabled(name: FeatureSwitchName): boolean {
-  return resolveFeatureEnabled(useFeatureSettings().data?.settings, name);
+  const data = useFeatureSettings().data;
+  return data?.effective?.[name] ?? resolveFeatureEnabled(data?.settings, name);
 }
 
 export function useFeatureNumber(name: FeatureNumberName): number {

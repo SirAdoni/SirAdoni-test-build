@@ -62,7 +62,11 @@ import { showConfirmDialog } from "../../lib/app-dialogs";
 import { openGameLog } from "../../lib/open-game-log";
 import { parseMessageExtraRecord } from "../../lib/chat-message-extra";
 import { trimInactiveMessagePageCaches } from "../../lib/message-page-cache";
-import { normalizeSpriteExpressionMap, resolveSpriteExpressionState } from "../../lib/sprite-expression-state";
+import {
+  normalizeSpriteExpressionMap,
+  resolveLatestSpriteExpressionTurn,
+  resolveSpriteExpressionState,
+} from "../../lib/sprite-expression-state";
 import { chatBackgroundMetadataToUrl, chatBackgroundUrlToMetadata } from "../../lib/backgrounds";
 import { useGameStateStore } from "../../stores/game-state.store";
 import { useGalleryStore } from "../../stores/gallery.store";
@@ -341,6 +345,7 @@ type AgentInjectionReviewRequest = {
 
 type IllustratorPromptReviewRequest = {
   chatId: string;
+  illustratorMessageRange?: [string, string];
   subjectOnly?: boolean;
   item: ImagePromptReviewItem;
   resultData: Record<string, unknown>;
@@ -883,6 +888,7 @@ const ChatAreaContent = memo(function ChatAreaContent() {
       if (!override?.prompt.trim()) return;
       setIllustratorPromptReviewSubmitting(true);
       const success = await retryAgents(illustratorPromptReview.chatId, ["illustrator"], {
+        illustratorMessageRange: illustratorPromptReview.illustratorMessageRange,
         illustratorPromptReviewOverride: {
           resultData: illustratorPromptReview.resultData,
           ...(illustratorPromptReview.subjectOnly ? { subjectOnly: true } : {}),
@@ -903,13 +909,14 @@ const ChatAreaContent = memo(function ChatAreaContent() {
   }, [illustratorPromptReviewSubmitting]);
 
   const handleIllustrate = useCallback(
-    (prompt?: string) => {
+    (prompt?: string, messageRange?: [string, string]) => {
       if (!activeChatId) return;
       const resultData = { prompt, characters: [] };
       if (prompt && useUIStore.getState().reviewImagePromptsBeforeSend) {
         setIllustratorPromptReview({
           chatId: activeChatId,
           subjectOnly: true,
+          illustratorMessageRange: messageRange,
           resultData,
           item: {
             id: "roleplay-scene-illustration",
@@ -922,6 +929,7 @@ const ChatAreaContent = memo(function ChatAreaContent() {
       }
       return retryAgents(activeChatId, ["illustrator"], {
         illustratorRetryTargets: ["illustration"],
+        illustratorMessageRange: messageRange,
         ...(prompt ? { illustratorPromptReviewOverride: { prompt, subjectOnly: true, resultData } } : {}),
       }).then(() => undefined);
     },
@@ -1011,8 +1019,7 @@ const ChatAreaContent = memo(function ChatAreaContent() {
     // generate. Prefer the live override/schedule-derived status (matching the presence pill, via
     // the shared resolver) over the generation-time snapshot, which only refreshes on generation.
     const chatStatuses = convoMeta.conversationCharacterStatuses as
-      | Record<string, { status?: string; activity?: string }>
-      | undefined;
+      Record<string, { status?: string; activity?: string }> | undefined;
     const presenceIds = new Set<string>([
       ...Object.keys(chatStatuses ?? {}),
       ...Object.keys((convoMeta.conversationStatusOverrides as Record<string, unknown> | undefined) ?? {}),
@@ -1273,6 +1280,28 @@ const ChatAreaContent = memo(function ChatAreaContent() {
     () => resolveSpriteExpressionState(messages, chatMeta.spriteExpressions),
     [messages, chatMeta.spriteExpressions],
   );
+  // Keep each scene across chat switches and temporary Roleplay surface unmounts while a chat loads.
+  const completedExpressionTurn = useMemo(() => resolveLatestSpriteExpressionTurn(messages), [messages]);
+  const [retainedExpressionSprites, setRetainedExpressionSprites] = useState<
+    Map<string, ReturnType<typeof resolveLatestSpriteExpressionTurn>>
+  >(() => new Map());
+  const retainedExpressionTurn = activeChatId ? retainedExpressionSprites.get(activeChatId) : undefined;
+  const retainedExpressionIndex =
+    messages?.findIndex((message) => message.id === retainedExpressionTurn?.messageId) ?? -1;
+  // Regeneration can replace the current swipe before its expressions finish. Don't rewind to an older scene.
+  const visibleExpressionTurn =
+    retainedExpressionTurn && (!messages || retainedExpressionIndex > (completedExpressionTurn?.messageIndex ?? -1))
+      ? retainedExpressionTurn
+      : completedExpressionTurn;
+  useEffect(() => {
+    if (!activeChatId || !messages) return;
+    setRetainedExpressionSprites((previous) => {
+      if (previous.get(activeChatId) === visibleExpressionTurn) return previous;
+      const next = new Map(previous);
+      next.set(activeChatId, visibleExpressionTurn);
+      return next;
+    });
+  }, [activeChatId, messages, visibleExpressionTurn]);
   const groupChatMode: string | undefined = chatCharIds.length > 1 ? (chatMeta.groupChatMode ?? "merged") : undefined;
 
   const updateMeta = useUpdateChatMetadata();
@@ -2299,7 +2328,7 @@ const ChatAreaContent = memo(function ChatAreaContent() {
     (messageId?: string) => {
       if (!activeChatId) return;
       peekPrompt.mutate(messageId ? { chatId: activeChatId, messageId } : activeChatId, {
-        onSuccess: (data) => setPeekPromptData(data),
+        onSuccess: (data) => setPeekPromptData({ ...data, chatId: activeChatId }),
         onError: (error) => {
           const message =
             error instanceof ApiError
@@ -3425,6 +3454,9 @@ const ChatAreaContent = memo(function ChatAreaContent() {
           spriteCharacterIds={spriteCharacterIds}
           spriteDisplayModes={visibleSpriteDisplayModes}
           spriteExpressions={spriteExpressions}
+          visibleExpressionSpriteIds={
+            chatMeta.expressionOnlyActiveSprites === true ? visibleExpressionTurn?.characterIds : undefined
+          }
           expressionAvatarResolver={expressionAvatarResolver}
           spritePlacements={spritePlacements}
           spriteScale={spriteScale}

@@ -29,6 +29,7 @@ import {
   isPatternSafe,
   normalizeChatSummaryEntries,
   normalizeChatSummaryPromptSettings,
+  normalizeSemanticSummaryRetrievalSettings,
   normalizeStoryboardAgentSettings,
   LONG_TERM_MEMORY_CHAT_SUMMARY_PROMPT_ID,
   DEFAULT_AGENT_TOOLS,
@@ -879,6 +880,7 @@ import {
   assemblePrompt,
   appendFallbackChatSummaryToSystemPrompt,
   resolveChoiceVariableValue,
+  resolveMacrosForPreview,
   resolvePromptMessageMacros,
   scopePromptMacroContextToCharacter,
   type AssemblerInput,
@@ -3290,6 +3292,53 @@ const cases: RegressionCase[] = [
         "",
         "another chat must not inherit local variables",
       );
+
+      // Chat variables: a name defined in Chat Settings, or set by an earlier
+      // message, resolves as a bare tag in the user's own typed message.
+      const typedMessageVariables: Record<string, string> = { char1: "Mary" };
+      const typedMessageContext = {
+        user: "Mari",
+        char: "Dottore",
+        characters: ["Dottore"],
+        variables: {},
+        localVariables: typedMessageVariables,
+      };
+      const resolvedTypedMessages = resolvePromptMessageMacros(
+        [
+          { id: "m1", role: "user" as const, content: "{{setvar::mood::tense}}{{char1}} walks in." },
+          { id: "m2", role: "user" as const, content: "{{char1}} looks {{getvar::mood}}." },
+        ],
+        typedMessageContext,
+      );
+      assert.equal(resolvedTypedMessages[0]!.content, "Mary walks in.");
+      assert.equal(
+        resolvedTypedMessages[1]!.content,
+        "Mary looks tense.",
+        "a value set in one message must reach a later one through the shared chat map",
+      );
+      assert.equal(typedMessageVariables.mood, "tense", "history writes must reach the persisted map");
+      assert.equal(
+        resolvePromptMessageMacros([{ id: "m3", role: "user" as const, content: "{{char1}}" }], {
+          ...typedMessageContext,
+          localVariables: {},
+        })[0]!.content,
+        "{{char1}}",
+        "another chat keeps the tag literal",
+      );
+
+      // Peek Prompt must never persist what a preview resolved.
+      const previewVariables: Record<string, string> = { char1: "Mary" };
+      assert.equal(
+        resolveMacrosForPreview("{{setvar::char1::Anna}}{{char1}}", {
+          user: "Mari",
+          char: "Dottore",
+          characters: ["Dottore"],
+          variables: {},
+          localVariables: previewVariables,
+        }),
+        "Anna",
+      );
+      assert.deepEqual(previewVariables, { char1: "Mary" }, "a preview must not write the chat's variables");
 
       const conditionalVariables = { score: "10" };
       resolveMacros("{{#if addnumvar::score::5}}unchanged{{/if}}", {
@@ -7527,6 +7576,89 @@ const cases: RegressionCase[] = [
     },
   },
   {
+    name: "Manual Illustrator preserves custom prompts with schema-first and inline instructions",
+    async run() {
+      for (const promptTemplate of [
+        "Respond with a valid JSON object.\nDraw a three-panel comic from {{user}} POV.",
+        "Decide whether to generate an image. Draw a three-panel comic from {{user}} POV.",
+        '<output_format>{"prompt":"Draw a three-panel comic from {{user}} POV."}</output_format>',
+        `${"Scene guidance. ".repeat(900)}Draw a three-panel comic from {{user}} POV.`,
+      ]) {
+        const capture = makeCapturingProvider('{"prompt":"A three-panel comic from Mari POV."}');
+        const selectedPrompt = resolveAgentPromptTemplate({
+          promptTemplate: "Draw an ordinary scene using the global default.",
+          settings: { promptTemplates: [{ id: "user-pov", name: "User POV", promptTemplate }] },
+          selectedPromptTemplateId: "user-pov",
+        });
+        await writeManualIllustratorPromptPlan({
+          illustratorAgent: {
+            ...makeRegressionAgentConfig({ type: "illustrator", promptTemplate: selectedPrompt }),
+            provider: capture.provider,
+            model: "regression-model",
+          } as any,
+          context: { ...makeRegressionAgentContext(), persona: { name: "Mari" } },
+        });
+        const system = capture.calls[0]![0]!.content;
+        assert.match(system, /Draw a three-panel comic from Mari POV\./u);
+        assert.doesNotMatch(system, /ordinary scene using the global default/u);
+        assert.doesNotMatch(system, /No selected Illustrator prompt mode supplied/u);
+        assert.match(system, /<\/selected_illustrator_prompt_mode>/u);
+        assert.ok(
+          system.indexOf("For this manual request, ignore") > system.indexOf("</selected_illustrator_prompt_mode>"),
+        );
+      }
+    },
+  },
+  {
+    name: "Manual Illustrator honors configured output tokens and connection/model caps before context fitting",
+    async run() {
+      for (const { maxTokens, connectionCap, modelCap, maxContext = 65_536, expected } of [
+        { maxTokens: 32_800, connectionCap: 32_800, modelCap: 131_072, expected: 32_800 },
+        { maxTokens: "32800", connectionCap: null, modelCap: undefined, expected: 32_800 },
+        { maxTokens: 32_800, connectionCap: 1024, modelCap: undefined, maxContext: 4096, expected: 1024 },
+        { maxTokens: 32_800, connectionCap: 16_384, modelCap: 8192, expected: 8192 },
+        { maxTokens: undefined, connectionCap: null, modelCap: undefined, expected: 1800 },
+        { maxTokens: undefined, connectionCap: 1024, modelCap: undefined, expected: 1024 },
+      ]) {
+        const capture = makeCapturingProvider('{"prompt":"A detailed comic page."}');
+        await writeManualIllustratorPromptPlan({
+          illustratorAgent: {
+            ...makeRegressionAgentConfig({ type: "illustrator", settings: { maxTokens } }),
+            provider: { ...capture.provider, maxTokensOverrideValue: connectionCap, maxContextValue: maxContext },
+            model: "regression-model",
+            maxOutputTokens: modelCap,
+          } as any,
+          context: makeRegressionAgentContext(),
+        });
+        assert.equal(capture.callOptions[0]?.maxTokens, expected);
+      }
+    },
+  },
+  {
+    name: "Manual Illustrator rejects oversized initial and retry requests without truncating prompts",
+    async run() {
+      for (const retry of [false, true]) {
+        const capture = makeCapturingProvider("!? ".repeat(2300));
+        await assert.rejects(
+          writeManualIllustratorPromptPlan({
+            illustratorAgent: {
+              ...makeRegressionAgentConfig({
+                type: "illustrator",
+                promptTemplate: retry ? "Draw a comic page." : "!? ".repeat(8000),
+                settings: { maxTokens: 256 },
+              }),
+              provider: { ...capture.provider, maxContextValue: 2048 },
+              model: "regression-model",
+            } as any,
+            context: makeRegressionAgentContext(),
+          }),
+          /Manual Illustrator request exceeds the connection context limit/u,
+        );
+        assert.equal(capture.calls.length, retry ? 1 : 0);
+      }
+    },
+  },
+  {
     name: "Roleplay Illustrator background decisions are gated and produce reusable library metadata",
     async run() {
       assert.equal(
@@ -7656,13 +7788,15 @@ const cases: RegressionCase[] = [
       assert.match(manualIllustrationPrompt, /Style target: colored comic page, 2-6 panels/u);
       assert.match(manualIllustrationPrompt, /Build the prompt as a complete comic page/u);
       assert.match(manualIllustrationPrompt, /Combine it with the selected Illustrator prompt mode/u);
-      assert.doesNotMatch(manualIllustrationPrompt, /Generate only for a visually important moment/u);
-      assert.doesNotMatch(manualIllustrationPrompt, /Decide whether the current turn deserves an illustration/u);
-      assert.doesNotMatch(manualIllustrationPrompt, /Only illustrate when the moment deserves a picture/u);
-      assert.doesNotMatch(manualIllustrationPrompt, /Respond with a valid JSON object/u);
+      assert.match(manualIllustrationPrompt, /Generate only for a visually important moment/u);
+      assert.match(manualIllustrationPrompt, /Decide whether the current turn deserves an illustration/u);
+      assert.match(manualIllustrationPrompt, /Only illustrate when the moment deserves a picture/u);
+      assert.match(manualIllustrationPrompt, /Respond with a valid JSON object/u);
       assert.match(manualIllustrationPrompt, /The Illustration button has already selected the output type/u);
-      assert.doesNotMatch(manualIllustrationPrompt, /"shouldGenerate"\s*:/u);
-      assert.doesNotMatch(manualIllustrationPrompt, /"generateBackground"\s*:/u);
+      const manualContract = manualIllustrationPrompt.split("</selected_illustrator_prompt_mode>")[1]!;
+      assert.match(manualContract, /ignore automatic-generation conditions, cadence, and response schemas/u);
+      assert.doesNotMatch(manualContract, /"shouldGenerate"\s*:/u);
+      assert.doesNotMatch(manualContract, /"generateBackground"\s*:/u);
 
       const macroCapture = makeCapturingProvider(
         JSON.stringify({
@@ -12488,6 +12622,29 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
     },
   },
   {
+    name: "group regexes preserve attachments when they remove all message text",
+    run() {
+      const images = ["data:image/png;base64,fixture"];
+      const files = [{ type: "application/pdf", data: "fixture", filename: "note.pdf" }];
+      const scoped = scopeIndividualGroupMessagesForTarget(
+        [
+          { role: "user", content: "*thought*", contextKind: "history", images },
+          { role: "user", content: "*thought*", contextKind: "history", files },
+          { role: "user", content: "*thought*", contextKind: "history" },
+        ],
+        "maukie",
+        [{ id: "maukie", name: "Maukie" }],
+        (history) =>
+          history.forEach((message) => {
+            message.content = "";
+          }),
+      );
+      assert.equal(scoped.length, 2);
+      assert.deepEqual(scoped[0]?.images, images);
+      assert.deepEqual(scoped[1]?.files, files);
+    },
+  },
+  {
     name: "individual Conversation turns attach only the responding character card",
     run() {
       const scoped = scopeIndividualGroupMessagesForTarget(
@@ -12556,6 +12713,16 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
   {
     name: "Conversation semantic summaries keep recent weeks and retrieve relevant older context",
     async run() {
+      assert.deepEqual(normalizeSemanticSummaryRetrievalSettings({}), {
+        semanticSummaryRecentCount: 2,
+        semanticSummaryOlderCount: 3,
+        semanticSummaryMinSimilarity: 0.15,
+      });
+      assert.deepEqual(
+        normalizeSemanticSummaryRetrievalSettings({ semanticSummaryRecentCount: 21 }),
+        { semanticSummaryRecentCount: 2, semanticSummaryOlderCount: 3, semanticSummaryMinSimilarity: 0.15 },
+        "out-of-range persisted summary settings must fall back to bounded defaults",
+      );
       const weekSummaries = {
         "01.06.2026": { summary: "The user hid a silver key under the observatory stairs.", keyDetails: [] },
         "08.06.2026": { summary: "They compared several tea blends in the kitchen.", keyDetails: [] },
@@ -12564,6 +12731,7 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       };
       const embeddingSource = {
         label: "semantic-summary regression embedder",
+        spaceId: "conversation-summary-regression-v1",
         async embed(texts: string[], _signal?: AbortSignal, inputType?: "document" | "query") {
           if (inputType === "query") {
             return texts.map((_, index) =>
@@ -12584,6 +12752,21 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       });
       assert.deepEqual(Object.keys(selected.weekSummaries), ["01.06.2026", "15.06.2026", "22.06.2026"]);
       assert.equal(selected.semanticApplied, true);
+
+      const limited = await selectConversationSummariesForPrompt({
+        daySummaries: {},
+        weekSummaries,
+        query: "Where did I leave the silver key?",
+        enabled: true,
+        vectorizerAvailable: true,
+        settings: {
+          semanticSummaryRecentCount: 1,
+          semanticSummaryOlderCount: 0,
+          semanticSummaryMinSimilarity: 1,
+        },
+        embeddingOptions: { embeddingSource },
+      });
+      assert.deepEqual(Object.keys(limited.weekSummaries), ["22.06.2026"]);
 
       const unavailable = await selectConversationSummariesForPrompt({
         daySummaries: {},
@@ -14870,6 +15053,81 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         semanticThreshold: 0.3,
       });
       assert.equal(unknownProvenance.length, 0, "legacy vectors without provenance must be re-vectorized");
+
+      const characterContent = "Alex steps into the shade because the sunlight hurts his eyes.";
+      const mixedMessages = [
+        { role: "assistant", content: "An older unrelated character reply." },
+        { role: "user", content: "An older unrelated user reply." },
+        { role: "assistant", content: characterContent },
+        { role: "user", content: "Are you okay?" },
+      ];
+      const characterEntry = { ...entry, id: "character-context", embedding: [0, 1] };
+      const defaultEntry = { ...characterEntry, id: "default-context", lorebookId: "default-book" };
+      let embeddingCalls = 0;
+      const withCharacter = await buildLorebookSemanticEmbeddingsById({
+        lorebooks: [
+          {
+            id: entry.lorebookId,
+            excludeFromVectorization: false,
+            vectorQueryDepth: 1,
+            vectorIncludeAssistant: true,
+          } as any,
+          { id: defaultEntry.lorebookId, excludeFromVectorization: false, vectorQueryDepth: 1 } as any,
+        ],
+        entries: [entry, characterEntry, defaultEntry] as any,
+        scanMessages: mixedMessages,
+        embeddingSource: {
+          ...embeddingSource,
+          async embed(texts: string[], _signal?: AbortSignal, inputType?: "document" | "query") {
+            embeddingCalls++;
+            assert.equal(inputType, "query");
+            assert.deepEqual(
+              texts.slice(0, 2),
+              ["Are you okay?", characterContent],
+              "roles stay separate at the same depth",
+            );
+            assert.ok(texts.every((text) => !text.includes("older unrelated")));
+            return texts.map((_, index) =>
+              index === 0 ? [1, 0] : index === 1 ? [0, 1] : index === 2 ? [0, -1] : [-1, 0],
+            );
+          },
+        },
+      });
+      assert.equal(embeddingCalls, 1, "user, character and calibration queries share one embedding call");
+      assert.equal(withCharacter.similarityBaseline, 1 / 3, "only the three calibration vectors set the baseline");
+      const withoutCharacter = await buildLorebookSemanticEmbeddingsById({
+        lorebooks: [{ id: entry.lorebookId, vectorQueryDepth: 1, vectorIncludeAssistant: true } as any],
+        entries: [entry as any],
+        scanMessages: [{ role: "user", content: "Rocks stones mountain ore" }],
+        embeddingSource,
+      });
+      assert.deepEqual(
+        withoutCharacter.embeddingsByLorebookId?.get(entry.lorebookId),
+        [1, 0],
+        "an opted-in book with no character messages keeps the single user vector",
+      );
+      const matches = scanForActivatedEntries(mixedMessages, [entry, characterEntry, defaultEntry] as any, {
+        chatEmbedding: withCharacter.defaultEmbedding,
+        semanticEmbeddingsByLorebookId: withCharacter.embeddingsByLorebookId,
+        semanticEmbeddingSpaceId: withCharacter.embeddingSpaceId,
+        semanticSimilarityBaseline: withCharacter.similarityBaseline,
+        semanticThreshold: 0.9,
+      });
+      assert.deepEqual(
+        new Set(matches.map((match) => match.entry.id)),
+        new Set([entry.id, characterEntry.id]),
+        "the stronger separate score preserves user matches and adds character matches only for the opted-in book",
+      );
+      const wrongDimensions = scanForActivatedEntries(mixedMessages, [characterEntry] as any, {
+        semanticEmbeddingsByLorebookId: new Map([[entry.lorebookId, [[1], [0, 1]]]]),
+        semanticEmbeddingSpaceId: "test-space",
+        semanticThreshold: 0.9,
+      });
+      assert.equal(
+        wrongDimensions[0]?.entry.id,
+        characterEntry.id,
+        "one incompatible vector does not hide a compatible query",
+      );
     },
   },
   {

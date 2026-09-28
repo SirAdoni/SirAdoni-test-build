@@ -1,16 +1,36 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { FastifyInstance } from "fastify";
 import { logger } from "./logger.js";
 
-/**
- * Fastify boots the whole instance on the first `inject()` call: after that no route, hook or plugin can be added.
- * Startup registers routes for minutes (capability packages activate one by one), and background work started early
- * in that window (continuity workers, package timers calling their internal routes) could call `inject()` and freeze
- * registration half way, so later packages failed with "Root plugin has already booted" and the next `addHook` threw
- * and killed the process. This holds every `inject()` made before registration ends and releases them afterwards.
- * Nothing awaited by the registration itself may inject (that would boot the app too early anyway), so holding them
- * cannot deadlock working code; a call still held after the warning delay is logged with its stack.
- */
-/** The first stack frame outside src/lib, so a held call names the code that made it. */
+/** An internal inject that would deadlock route registration was rejected immediately. */
+export class InjectDuringRegistrationError extends Error {
+  readonly code = "MARINARA_INJECT_DURING_REGISTRATION";
+  constructor(message: string) {
+    super(message);
+    this.name = "InjectDuringRegistrationError";
+  }
+}
+
+type FailFastScope = { active: boolean };
+const failFastScope = new AsyncLocalStorage<FailFastScope>();
+
+/** Registration-awaited operations must fail fast if they attempt an inject. */
+export async function failInjectFastDuring<T>(operation: () => Promise<T> | T): Promise<T> {
+  const scope: FailFastScope = { active: true };
+  try {
+    return await failFastScope.run(scope, operation);
+  } finally {
+    scope.active = false;
+  }
+}
+
+export type InjectGateOptions = {
+  /** Log a warning with the caller stack after this long. */
+  warnAfterMs?: number;
+  /** Reject an outstanding inject after this long so startup cannot hang forever. */
+  maxHoldMs?: number;
+};
+
 function callerFrame(stack: string | undefined): string | undefined {
   const frames = (stack ?? "").split("\n").slice(1);
   const frame = frames.find((line) => !/[\\/]lib[\\/]/.test(line) && !line.includes("node:"));
@@ -24,7 +44,9 @@ function describeInjectCall(args: unknown[]): { method: string; url: string | un
   return { method, url: raw?.split("?", 1)[0] };
 }
 
-export function holdInjectUntilRegistered(app: FastifyInstance, warnAfterMs = 60_000): () => void {
+export function holdInjectUntilRegistered(app: FastifyInstance, options: InjectGateOptions = {}): () => void {
+  const warnAfterMs = options.warnAfterMs ?? 60_000;
+  const maxHoldMs = options.maxHoldMs ?? 10 * 60_000;
   const originalInject = app.inject.bind(app) as (...args: unknown[]) => unknown;
   let released = false;
   let heldCount = 0;
@@ -37,6 +59,18 @@ export function holdInjectUntilRegistered(app: FastifyInstance, warnAfterMs = 60
 
   const gatedInject = (...args: unknown[]): unknown => {
     if (released || args.length === 0) return originalInject(...args);
+    const callback = typeof args[1] === "function" ? (args[1] as (error: unknown) => void) : null;
+    if (failFastScope.getStore()?.active) {
+      const error = new InjectDuringRegistrationError(
+        "app.inject() cannot run while startup is still registering routes; call internal routes after activate() and selfCheck() return",
+      );
+      if (callback) {
+        queueMicrotask(() => callback(error));
+        return undefined;
+      }
+      return Promise.reject(error);
+    }
+
     const stack = new Error("inject() called before startup registration finished").stack;
     const { method, url } = describeInjectCall(args);
     const heldAt = Date.now();
@@ -46,24 +80,53 @@ export function holdInjectUntilRegistered(app: FastifyInstance, warnAfterMs = 60
       { event: "startup.inject_held", method, url, heldCount, caller: callerFrame(stack) },
       "[startup] Holding an internal request until route registration finishes",
     );
-    const warning = setTimeout(() => {
-      logger.warn(
-        { event: "startup.inject_held", method, url, heldMs: Date.now() - heldAt, stack },
-        "[startup] An internal request is still waiting for route registration to finish",
-      );
-    }, warnAfterMs);
-    warning.unref?.();
-    const run = () => {
+    let warning: NodeJS.Timeout | undefined;
+    let limit: NodeJS.Timeout | undefined;
+    const finishWait = () => {
       clearTimeout(warning);
+      clearTimeout(limit);
       maxHeldMs = Math.max(maxHeldMs, Date.now() - heldAt);
+    };
+    const held = new Promise<void>((resolve, reject) => {
+      warning = setTimeout(() => {
+        logger.warn(
+          { event: "startup.inject_held", method, url, heldMs: Date.now() - heldAt, stack },
+          "[startup] An internal request is still waiting for route registration to finish",
+        );
+      }, warnAfterMs);
+      limit = setTimeout(() => {
+        finishWait();
+        reject(
+          new InjectDuringRegistrationError(
+            `app.inject() waited ${maxHoldMs} ms for startup registration to finish and was cancelled`,
+          ),
+        );
+      }, maxHoldMs);
+      warning.unref?.();
+      limit.unref?.();
+      void registered.then(() => {
+        finishWait();
+        resolve();
+      });
+    });
+    const run = () => {
+      finishWait();
       return originalInject(...args);
     };
-    const callback = args[1];
-    if (typeof callback === "function") {
-      void registered.then(run);
+    if (callback) {
+      held.then(
+        () => {
+          try {
+            run();
+          } catch (error) {
+            callback(error);
+          }
+        },
+        (error: unknown) => callback(error),
+      );
       return undefined;
     }
-    return registered.then(run);
+    return held.then(run);
   };
   (app as unknown as { inject: typeof gatedInject }).inject = gatedInject;
 
@@ -72,7 +135,6 @@ export function holdInjectUntilRegistered(app: FastifyInstance, warnAfterMs = 60
     released = true;
     release();
     if (heldCount > 0) {
-      // Held calls run on the next microtasks; report after they are dispatched so maxHeldMs is final.
       queueMicrotask(() => {
         logger.info(
           { event: "startup.inject_released", heldCount, maxHeldMs, urls: [...urls] },

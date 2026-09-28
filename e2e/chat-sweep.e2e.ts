@@ -1,3 +1,4 @@
+import { clickTopbarPanel } from "./topbar-navigation.js";
 import { prepareViteFixtureDependencies } from "./vite-fixture-dependencies.js";
 import { test, expect, type Route } from "@playwright/test";
 import { readFileSync } from "node:fs";
@@ -201,7 +202,7 @@ test("Personas are chosen per chat and Conversation names match that choice", as
     await page.screenshot({ path: info.outputPath("conversation-persona-identity.png") });
     const renderedGreeting = await messageRow.innerText();
 
-    await page.locator('[data-tour="panel-personas"]').click();
+    await clickTopbarPanel(page, "personas");
     const panel = page.locator('[data-component="RightPanel"]');
     const aliceRow = page.locator('[data-touch-drag-card="persona"]').filter({ hasText: "Alice Persona" });
     await expect(aliceRow).toBeVisible();
@@ -222,7 +223,7 @@ test("Personas are chosen per chat and Conversation names match that choice", as
     expect.soft(activeBadges).toBe(0);
     expect(renderedGreeting).toContain("Hello Alice Persona. I am Bob Character.");
     await library.getByTitle("Close library").click();
-    if (await aliceRow.isVisible()) await page.locator('[data-tour="panel-personas"]').click();
+    if (await aliceRow.isVisible()) await clickTopbarPanel(page, "personas");
     const composer = page.locator("textarea[data-chat-composer]");
     await expect(composer).toBeVisible();
     const openPersonas = async (currentName: string) => {

@@ -1,25 +1,43 @@
 # Technical changelog
 
+## 2026-09-28 - Validate the combined private and staging integration
+
+- Merged private build `2f4fcbd42` into the isolated integration branch after proving its original base tree matched the private snapshot joined by the ancestry bridge. The production cache and connection fixes were already present; the private merge retained focused regression and browser fixture updates without duplicating runtime code.
+- Applied repository Prettier formatting to the inherited package source debt as a separate mechanical cleanup. With a temporary checkout-local junction for the tracked Windows skills symlink, `pnpm check` passed: Impeccable context, localization, formatting, lint, E2E and token-estimation types, and shared/server/client production builds. The original symlink placeholder was restored afterward. Lint retains one pre-existing `GameCalendarTool` warning. No live runtime switch or publication occurred here.
+
+## 2026-09-28 - Integrate Professor Mari package actions from staging
+
+- Merged pinned upstream staging `3355c3227..e75e5ff61` into the isolated private integration branch. Capability API 1.50 adds the `mari-actions` permission and a bounded `package_service` discovery/run path in Professor Mari; the existing private package activation, build-provenance, and workspace listing protections remain in place.
+- Package deactivation, replacement, and Stop invalidate pending discovery or execution so stale actions cannot start later. A retained activation context also rejects service registration after deactivation or rollback; the regression exercises the real runtime callback and confirms no stale Mari action can be listed or run. The focused Mari package-service and capability lifecycle regressions passed, as did the shared and server builds; no live package or provider action was run during verification.
+
+## 2026-09-28 - Integrate staging inventory identity and ruleset item book
+
+- Merged upstream staging `e28d46240..3355c3227` into the isolated private integration branch. Composed the new ruleset item picker and server-authoritative inventory operations with the private inventory UI, preserving search, sorting, reordering, selection, and guarded cache updates.
+- Inventory stacks now retain separate stack IDs, semantic item IDs, canonical names, and optional display nicknames. Legacy name-only stacks acquire stable `plain:` IDs on normalization; catalog items retain `<catalog>/<entry>` IDs across renames, gifts, carrying, combat spending, and detailed inventory updates. An already-held item hidden by a later ruleset layer remains identifiable, while new item offers still honor current visibility.
+- Kept the existing Game prompt and cache-held-turn behavior alongside the upstream item facts, holder/bag handling, and atomic inventory persistence. Focused inventory, ruleset, combat, cache, prompt, and desktop browser checks passed in the isolated checkout. The aggregate `pnpm check` remains blocked by the checkout's missing Impeccable skill link; `format:check` reports pre-existing formatting debt and was not applied broadly.
+
 ## 2026-09-28 - Preserve replay with authorial continuity
 
-- `generate.routes.ts` marks the Engine-owned authorial-continuity injection as a prompt-history snapshot producer alongside its existing runtime-context marker. The prompt text, system role and correction precedence are preserved; arbitrary unmarked system injections remain ineligible for replay.
-- Two saved prompts, independently reconstructed to their actual outgoing request hashes, both failed replay descriptor creation. Adding only the producer marker in memory made both succeed. The missing marker prevented new replay chains even after the separate cache-warning acknowledgement repair. This explains an application-side failure in the recent roughly 31-percent cache turns; it does not prove the cause of every provider cache miss or guarantee a cache percentage.
-- Verification: the mocked `/api/generate` regression reproduced the missing-descriptor failure before the marker and passed afterward, including immediate newer-correction injection, next-turn reference to the updated snapshot, and an unchanged prior prompt. All four existing prompt-history replay regressions, server TypeScript and whitespace checks passed; independent GPT-6 Luna review found no blockers. No live provider request or campaign mutation was used by these tests.
+- `generate.routes.ts` marks the Engine-owned authorial-continuity injection as a prompt-history snapshot producer alongside its existing runtime-context marker. Prompt text, system role, correction precedence, and the rule excluding arbitrary unmarked system injections are unchanged.
+- Two saved prompts reconstructed to their actual outgoing request hashes failed replay-descriptor creation before the marker and succeeded with only that marker added in memory. This establishes an application-side cause for recent cache misses, without proving every provider miss or guaranteeing a percentage.
+- The isolated mocked `/api/generate` regression and server TypeScript check passed after porting the frozen patch. The frozen live patch also passed the four existing prompt-history replay regressions and independent Luna review. No real provider request or campaign mutation was used by these tests.
 
-## 2026-09-28 - Verify bounded cache diagnostic hashes
+## 2026-09-28 - Exact-wire cache diagnostics regression
 
-- Strengthened `openai-cache-diagnostics.regression.ts` to compare emitted sanitized item and rolling-prefix hashes with the exact mocked serialized request, including a first difference at index 40 across the 24-item batch boundary. Existing 512-item cap and raw-content/credential sentinel checks remain.
-- Existing `MARINARA_CACHE_DIAGNOSTICS=1` supplies the needed bounded INFO-level metadata capture without a production source change or raw prompt logging. Focused regression and independent GPT-6 Luna review passed; no live provider calls were used. These diagnostics cannot recover omitted historical batches or expose provider-internal cache eviction/routing.
+- Extended `openai-cache-diagnostics.regression.ts` to compare every emitted sanitized item and rolling-prefix SHA-256 hash with the exact serialized mocked transport input, including a changed item after the 24-item logging batch boundary. The existing 512-item cap and credential/content redaction assertions remain; `MARINARA_CACHE_DIAGNOSTICS=1` continues to use the existing info-level metadata path. No production caching or provider-source behavior changed.
+- The focused regression passed (1/1) in the isolated checkout; no real provider request, runtime switch, or Git publication occurred.
 
+## 2026-09-28 - Private build and upstream staging integration checkpoint
 
-## 2026-09-28 - Preserve held turns across cache-warning acknowledgement
+- Integrated private revision `d57b09ecb` with upstream staging `e28d46240` in an isolated checkout. Reconciled shared feature switches and defaults, the client inventory/search and image/lightbox behavior, server diagnostics and lifecycle wiring, branch transcript/inventory metadata remapping, and lorebook scan compaction. Upstream and private behaviors were composed at conflict sites rather than taking either side wholesale.
+- Verification at this checkpoint: shared/server/client production build, lint, localization, root E2E and token-estimation TypeScript lanes, 21 cache regressions, three prompt regressions, 22 lorebook regressions, seven robustness regressions, seven desktop browser smoke cases, and the Story memory connection browser fixture passed. `git diff --check` passed. Lint retains one unrelated existing `GameCalendarTool` warning.
+- Aggregate `pnpm check` stops at a Windows checkout placeholder for the tracked `.agents/skills` symlink; its underlying context loader passed when called directly. `pnpm format:check` reports 58 files, including unchanged private-baseline files; no unrelated blanket formatting was applied. These are explicit limits on the aggregate validation claim. This is a local integration checkpoint, not a live deployment or Git publication.
 
-- `use-generate.ts` forwards a server-issued held-turn descriptor when the user accepts a cache warning. The request still omits one-shot user text, attachments and spatial commands to avoid duplicate persistence or repeated side effects.
-- `cache-held-turn.ts` binds the descriptor to the saved chat/user row, selected content and swipe, submission identity, attachments and reply reference. `generate.routes.ts` revalidates the row and generation ownership after storage awaits, refuses changed/deleted/superseded or mixed-operation retries, and restores the current-turn context only after the insertion branch. Warning acknowledgements without a new held user turn retain their existing path.
-- Incident evidence: request `514c9b12` cached 94,976/104,739 tokens; after cache hold `658f4c0c`, acknowledgement `da50045a` omitted turn context and cached 18,560/57,103. Model, connection, main instructions and cache-key fingerprints were unchanged. This repair addresses that application-side replay reset; it does not establish a cause or fix for the earlier zero-cache response.
-- Verification: the synthetic actual-route cache-send-guard regression passed, including descriptor-only acknowledgement, no duplicate user row, retained replay metadata and replay on the following normal ChatGPT Game turn. All four prompt-history-replay regressions, shared/server/client TypeScript checks, targeted client ESLint and diff checks passed; independent Luna review reported no material findings. Tests used temporary storage and mocked providers, not live campaign data or generation quota. Runtime deployment is handled separately by Command; this evidence does not establish live cache percentages.
+## 2026-09-28 - Cache-warning held-turn acknowledgement
 
-
+- `chat.schema.ts`, `use-generate.ts`, and `cache-guard-warning.ts` carry a bounded descriptor of the player message already saved before a low-cache warning. The retry omits one-shot turn fields and acknowledges that exact saved turn; regeneration/continuation without a saved new turn retain the descriptorless path.
+- `cache-held-turn.ts` and `generate.routes.ts` verify the descriptor against the latest eligible saved message and reject mismatched chats, stale later turns, changed content/attachments/replies/swipes, missing acknowledgement, and mixed acknowledgement/new-turn payloads. The restored message ID and Game history replay metadata flow into the original generation path without another write.
+- `cache-send-guard-route.regression.ts` covers duplicate prevention, descriptor validation, stale and malformed retry cases, and ChatGPT Game history metadata. Focused regression, shared compile, and direct server/client TypeScript checks passed in the isolated integration checkout. No runtime switch or Git publication occurred for this entry.
 
 ## 2026-09-28 - Story memory connection navigation
 

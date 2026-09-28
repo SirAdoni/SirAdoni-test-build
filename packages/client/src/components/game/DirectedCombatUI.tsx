@@ -7,6 +7,7 @@ import { useDirectedCombat } from "../../hooks/use-directed-combat";
 import { GameCombatUI } from "./GameCombatUI";
 import { RulesetCombatBoard } from "./RulesetCombatBoard";
 import { RulesetCombatStatus } from "./RulesetCombatStatus";
+import { rulesetValueLabel } from "../../lib/ruleset-combat-log";
 import { TacticalCombatUI } from "./TacticalCombatUI";
 import { cn } from "../../lib/utils";
 
@@ -55,6 +56,8 @@ export function DirectedCombatUI(props: Props) {
     const labels = new Map((definition?.combat?.economy.budgets ?? []).map((budget) => [budget.id, budget.label]));
     return (id: string) => labels.get(id) ?? id;
   }, [definition]);
+  // What the ruleset calls the number an attack is rolled against, for the one prompt that shows it.
+  const defenseLabel = definition ? rulesetValueLabel(definition, definition.combat?.defense) : "";
   if (loading || !s)
     return (
       <div className="flex h-full items-center justify-center p-4 text-[var(--foreground)]" role="status">
@@ -95,12 +98,14 @@ export function DirectedCombatUI(props: Props) {
     targetIds: string[],
     payWith?: string,
     cell?: { to?: { x: number; y: number }; at?: { x: number; y: number } },
+    style?: string,
   ) =>
     send({
       type: "ruleset",
       optionId,
       targetIds,
       ...(payWith ? { payWith } : {}),
+      ...(style ? { style } : {}),
       ...(cell?.to ? { to: cell.to } : {}),
       ...(cell?.at ? { at: cell.at } : {}),
     });
@@ -138,6 +143,7 @@ export function DirectedCombatUI(props: Props) {
             view={board}
             units={[...s.party, ...s.enemies]}
             budgetLabel={budgetLabel}
+            defenseLabel={defenseLabel}
             environment={props.environment}
             busy={busy}
             onChoose={choose}
@@ -171,6 +177,7 @@ export function DirectedCombatUI(props: Props) {
                     ruleset: {
                       view: fight,
                       budgetLabel,
+                      defenseLabel,
                       busy,
                       onChoose: choose,
                       onFlee: () => send({ type: "flee" }),

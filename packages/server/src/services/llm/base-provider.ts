@@ -490,6 +490,7 @@ export function fitMessagesToContext(
       messages,
       maxContext,
       maxTokens,
+      requestedMaxTokens,
       inputBudget,
       reservedTokens,
       estimatedTokensBefore,
@@ -614,6 +615,7 @@ export function fitMessagesToContext(
     messages: fittedMessages,
     maxContext,
     maxTokens,
+    requestedMaxTokens,
     inputBudget,
     reservedTokens,
     estimatedTokensBefore,
@@ -692,21 +694,30 @@ export abstract class BaseLLMProvider {
   }
 
   protected logContextTrim(result: ContextFitResult, model: string): void {
-    if (!result.trimmed || !result.inputBudget) return;
-    const droppedTokens = Math.max(0, result.estimatedTokensBefore - result.estimatedTokensAfter);
-    const heavy = result.estimatedTokensBefore > 0 && droppedTokens / result.estimatedTokensBefore > 0.3;
-    logger[heavy ? "warn" : "info"](
-      {
-        event: "llm.context.trim",
-        model,
-        estimatedTokensBefore: result.estimatedTokensBefore,
-        estimatedTokensAfter: result.estimatedTokensAfter,
-        inputBudget: result.inputBudget,
-        maxContext: result.maxContext,
-        droppedTokens,
-      },
-      "Trimmed the prompt to fit the context window",
-    );
+    if (result.trimmed && result.inputBudget) {
+      const droppedTokens = Math.max(0, result.estimatedTokensBefore - result.estimatedTokensAfter);
+      const heavy = result.estimatedTokensBefore > 0 && droppedTokens / result.estimatedTokensBefore > 0.3;
+      logger[heavy ? "warn" : "info"](
+        {
+          event: "llm.context.trim",
+          model,
+          estimatedTokensBefore: result.estimatedTokensBefore,
+          estimatedTokensAfter: result.estimatedTokensAfter,
+          inputBudget: result.inputBudget,
+          maxContext: result.maxContext,
+          droppedTokens,
+        },
+        "Trimmed the prompt to fit the context window",
+      );
+    }
+    // Single-shot prompts give the reply budget back by design. Warn only at the floor,
+    // where the model can no longer write a useful reply; mention ordinary reductions at debug.
+    const { requestedMaxTokens, maxTokens } = result;
+    if (requestedMaxTokens === undefined || maxTokens === undefined || maxTokens >= requestedMaxTokens) return;
+    const message =
+      "[LLM context] Reply budget for %s reduced from %d to %d tokens to fit the prompt (~%d tokens, maxContext=%d)";
+    const report = maxTokens <= MIN_OUTPUT_BUDGET_TOKENS ? logger.warn : logger.debug;
+    report.call(logger, message, model, requestedMaxTokens, maxTokens, result.estimatedTokensAfter, result.maxContext!);
   }
 
   protected resolveOpenrouterProvider(openrouterProvider?: string | null): string | null | undefined {

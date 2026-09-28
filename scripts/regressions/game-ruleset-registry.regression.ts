@@ -52,7 +52,8 @@ function assertRefused(input: unknown, pattern: RegExp, message: string) {
   assert.deepEqual(parsed.definition.resolution.dice, { count: 1, sides: 20 });
   assert.equal(parsed.definition.sheet.skills.length, 18);
   assert.equal(parsed.definition.sheet.saves.length, 6);
-  assert.equal(parsed.definition.sheet.live.conditions.length, 14);
+  // The fourteen SRD conditions, and Parrying, which is what the Toll Sergeant's Parry leaves.
+  assert.equal(parsed.definition.sheet.live.conditions.length, 15);
   // `$comment` is an author's note, allowed on any object and never seen by the strict schema.
   assert.equal("$comment" in parsed.definition, false);
 }

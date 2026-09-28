@@ -29,7 +29,9 @@ function record(value: unknown): Record<string, unknown> | null {
   if (typeof value === "string") {
     try {
       const parsed: unknown = JSON.parse(value);
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
     } catch {
       return null;
     }
@@ -80,11 +82,11 @@ export function resolveCampaignPortraitRoster<TNpc extends GameNpcRow, TCard ext
   }
   const setup = record(meta.gameSetupConfig);
   const gmCharacterId = text(setup?.gmCharacterId);
-  const activeIds = new Set([
-    ...chatCharacterIds,
-    ...stringIds(meta.gamePartyCharacterIds),
-    ...stringIds(setup?.partyCharacterIds),
-  ].filter((id) => id !== gmCharacterId));
+  const activeIds = new Set(
+    [...chatCharacterIds, ...stringIds(meta.gamePartyCharacterIds), ...stringIds(setup?.partyCharacterIds)].filter(
+      (id) => id !== gmCharacterId,
+    ),
+  );
   const cardById = new Map(cards.map((card) => [card.id, card]));
   const linkedNpcByCardId = new Map<string, TNpc>();
   for (const npc of npcById.values()) {
@@ -112,14 +114,18 @@ export function resolveCampaignPortraitRoster<TNpc extends GameNpcRow, TCard ext
         npcId: requestedNpc.id,
         characterId: requestedNpc.characterId ?? null,
         name: requestedNpc.name,
-        description: requestedNpc.description ?? requestedNpc.observedAppearance ?? requestedNpc.observedDescription ?? "",
+        description:
+          requestedNpc.description ?? requestedNpc.observedAppearance ?? requestedNpc.observedDescription ?? "",
         gender: requestedNpc.gender ?? null,
         pronouns: requestedNpc.pronouns ?? null,
       });
       continue;
     }
     if (characterId) {
-      if (!activeIds.has(characterId) || (requestId && requestId !== `party:${characterId}` && linkedNpcByCardId.get(characterId)?.id !== requestId)) {
+      if (
+        !activeIds.has(characterId) ||
+        (requestId && requestId !== `party:${characterId}` && linkedNpcByCardId.get(characterId)?.id !== requestId)
+      ) {
         throw new Error("Portrait character is not part of the current campaign");
       }
       const card = cardById.get(characterId);

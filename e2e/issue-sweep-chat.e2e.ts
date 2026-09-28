@@ -1,3 +1,4 @@
+import { clickTopbarPanel } from "./topbar-navigation.js";
 import { prepareViteFixtureDependencies } from "./vite-fixture-dependencies.js";
 import { expect, test } from "@playwright/test";
 import { readFileSync } from "node:fs";
@@ -239,7 +240,7 @@ for (const mode of ["conversation", "roleplay"] as const) {
       }
       await testInfo.attach(`${mode}-goto-history`, { body: await page.screenshot(), contentType: "image/png" });
 
-      await page.locator('[data-tour="panel-settings"]').click();
+      await clickTopbarPanel(page, "settings");
       const pageSize = page.locator("#settings-control-messages-per-page input");
       const refetched = page.waitForResponse(
         (response) => response.url().includes(`/chats/${chatId}/messages?limit=100`) && response.ok(),
@@ -248,17 +249,17 @@ for (const mode of ["conversation", "roleplay"] as const) {
       await pageSize.pressSequentially("100");
       await pageSize.press("Tab");
       await refetched;
-      await page.locator('[data-tour="panel-settings"]').click();
+      await clickTopbarPanel(page, "settings");
       await expect(messages).toHaveCount(100);
-      await page.locator('[data-tour="panel-settings"]').click();
+      await clickTopbarPanel(page, "settings");
       await pageSize.fill("0");
       await pageSize.press("Tab");
-      await page.locator('[data-tour="panel-settings"]').click();
+      await clickTopbarPanel(page, "settings");
       await expect(messages).toHaveCount(120);
-      await page.locator('[data-tour="panel-settings"]').click();
+      await clickTopbarPanel(page, "settings");
       await pageSize.fill("20");
       await pageSize.press("Tab");
-      await page.locator('[data-tour="panel-settings"]').click();
+      await clickTopbarPanel(page, "settings");
       await expect(messages).toHaveCount(20);
       await expect(page.getByText(/^Sweep transcript message 120\./)).toBeVisible();
     } finally {

@@ -42,6 +42,7 @@ let closeLatestScene = false;
 let mainInputTokens = 40;
 let mainOutputTokens = 20;
 let mainToolCall = false;
+const decisionRequests: Array<{ state: Record<string, any>; questions: Record<string, { instructions: string }> }> = [];
 const sceneDecision = (transcript: Array<{ messageNumber: number; content: string }>) => ({
   ends: closeLatestScene
     ? [{ messageNumber: transcript.at(-1)!.messageNumber }]
@@ -56,6 +57,26 @@ const provider = createServer(async (req, res) => {
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(Buffer.from(chunk));
   const body = JSON.parse(Buffer.concat(chunks).toString());
+  if (req.url?.endsWith("/systemone")) {
+    decisionRequests.push(body);
+    calls.push({ kind: "decision", messages: [] });
+    const lastId = body.state.transcript?.at(-1)?.messageId;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(
+      JSON.stringify({
+        answers: Object.fromEntries(
+          Object.keys(body.questions).map((id) => [
+            id,
+            {
+              type: "noul",
+              noul: body.state.memories || (closeLatestScene && id === lastId) ? 0.99 : 0.01,
+            },
+          ]),
+        ),
+      }),
+    );
+    return;
+  }
   if (req.url?.endsWith("/embeddings")) {
     calls.push({ kind: "embedding", messages: [] });
     const input = Array.isArray(body.input) ? body.input : [body.input];
@@ -614,6 +635,83 @@ try {
     });
     assert.equal(prepared.recalledScenes, null, "closed scenes still in the live context are excluded from retrieval");
   }
+  const decisionConnection = await createConnectionsStorage(db).create({
+    name: "Dedicated memory decisions",
+    provider: "decision",
+    decisionSource: "custom",
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    model: "jev-fixture",
+    apiKey: "",
+  });
+  await memory.updateSettings(batchChat.id, {
+    decisionEnabled: true,
+    decisionConnectionId: decisionConnection.id,
+    sceneCheckInterval: 1,
+    retrieveMinMessages: 0,
+    retrieveMaxMessages: 0,
+  });
+  await chats.createMessage({
+    chatId: batchChat.id,
+    role: "user",
+    content: "Remember the silver compass?",
+    extra: { isConversationStart: true },
+  });
+  calls.length = 0;
+  const jevReply = await app.inject({
+    method: "POST",
+    url: "/api/generate/",
+    payload: { chatId: batchChat.id, forCharacterId: character.id, streaming: true },
+  });
+  assert(!jevReply.body.includes('"type":"error"'), jevReply.body);
+  await memory.checkScenesAfterGeneration(batchChat.id);
+  assert(
+    decisionRequests.some((request) => request.state.memories),
+    "recall uses the selected Jev connection",
+  );
+  assert(
+    decisionRequests.some((request) => request.state.transcript),
+    "scene endings get a separate Jev request",
+  );
+  for (const request of decisionRequests.filter((request) => request.state.transcript)) {
+    assert(
+      Object.values(request.questions).every((question) =>
+        question.instructions.includes("clearly finish a roleplay scene"),
+      ),
+    );
+    assert.doesNotMatch(JSON.stringify(request), /TRACKER_SCENE_FIXTURE/u);
+  }
+  assert.doesNotMatch(JSON.stringify(calls.find((call) => call.kind === "tracker")!.messages), /__scene_check/u);
+  assert.equal(calls.filter((call) => call.kind === "scene").length, 0);
+  assert(
+    calls.some((call) => call.kind === "summary"),
+    "summaries still use the summary model",
+  );
+  const savedJev = await memory.status(batchChat.id);
+  assert(savedJev.latestReceipt?.decisionRecall?.results.some((row) => row.selected));
+  assert(savedJev.job.decisionSceneCheck?.results.some((row) => row.selected));
+  await chats.patchMetadata(batchChat.id, (metadata) => ({
+    summary: "An automatically refreshed continuity summary.",
+    advancedMemoryState: {
+      ...(metadata.advancedMemoryState as Record<string, unknown>),
+      resetRevision: "diagnostic-policy-change",
+    },
+  }));
+  assert.equal(
+    (await memory.status(batchChat.id)).latestReceipt,
+    undefined,
+    "the old preparation policy is no longer reusable",
+  );
+  const callsBeforeInspection = calls.length;
+  const inspectedJev = await app.inject({
+    method: "POST",
+    url: "/api/generate/dryRun",
+    payload: { chatId: batchChat.id, forCharacterId: character.id, returnPrompt: true, decisionDebug: "inspect" },
+  });
+  assert.equal(inspectedJev.statusCode, 200, inspectedJev.body);
+  const savedDiagnostics = inspectedJev.json().prompt.decisionDebug.advancedMemory;
+  assert.deepEqual(savedDiagnostics.recall, savedJev.latestReceipt!.decisionRecall);
+  assert.deepEqual(savedDiagnostics.sceneCheck, savedJev.job.decisionSceneCheck);
+  assert.equal(calls.length, callsBeforeInspection, "viewing saved memory decisions cannot call any provider");
   closeLatestScene = false;
 
   const actualUsageChat = await chats.create({

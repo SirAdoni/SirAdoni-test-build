@@ -23,6 +23,21 @@ export const FEATURE_SWITCH_NAMES = [
 ] as const;
 export type FeatureSwitchName = (typeof FEATURE_SWITCH_NAMES)[number];
 
+/** Personal-build defaults. Upstream's newer two-switch registry defaults off; existing personal settings default on. */
+export const FEATURE_SWITCH_DEFAULTS: Readonly<Record<FeatureSwitchName, boolean>> = {
+  chatgptHistoryReplay: true,
+  cacheFriendlyPromptLayout: true,
+  gameCacheStableLayout: true,
+  gameFreezeNpcCardsPerSession: true,
+  stableLorebookGroupPicks: true,
+  stableLoreOrder: true,
+  providerRetry: true,
+  backgroundCallCap: true,
+  messageTrash: true,
+  usageAndActivationStats: true,
+  consoleTray: true,
+};
+
 export const FEATURE_NUMBER_SETTINGS = {
   backgroundCallsPerHour: { defaultValue: 600, min: 1, max: 100_000 },
   messageTrashDays: { defaultValue: MESSAGE_TRASH_RETENTION_DAYS, min: 1, max: 365 },
@@ -74,7 +89,7 @@ export function normalizeFeatureSettings(value: unknown): FeatureSettings {
 }
 
 export function resolveFeatureEnabled(settings: FeatureSettings | null | undefined, name: FeatureSwitchName): boolean {
-  return settings?.[name] !== false;
+  return settings?.[name] ?? FEATURE_SWITCH_DEFAULTS[name];
 }
 
 export function resolveFeatureNumber(settings: FeatureSettings | null | undefined, name: FeatureNumberName): number {

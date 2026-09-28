@@ -52,22 +52,9 @@ export interface GameContinuityProviderSnapshot {
 }
 
 export type GameContinuityRecordKind =
-  | "decision"
-  | "promise"
-  | "condition"
-  | "event"
-  | "learning"
-  | "reaction"
-  | "correction"
-  | "other";
+  "decision" | "promise" | "condition" | "event" | "learning" | "reaction" | "correction" | "other";
 export type GameContinuityRecordStatus =
-  | "proposed"
-  | "accepted"
-  | "completed"
-  | "declined"
-  | "cancelled"
-  | "unresolved"
-  | "asserted";
+  "proposed" | "accepted" | "completed" | "declined" | "cancelled" | "unresolved" | "asserted";
 
 export interface GameContinuityEvidence {
   messageId: string;
@@ -108,13 +95,7 @@ export interface GameContinuityExtraction {
 }
 
 export type GameContinuityFindingKind =
-  | "omission"
-  | "attribution"
-  | "condition"
-  | "unsupported"
-  | "contradiction"
-  | "knowledge"
-  | "other";
+  "omission" | "attribution" | "condition" | "unsupported" | "contradiction" | "knowledge" | "other";
 export interface GameContinuityReviewFinding {
   kind: GameContinuityFindingKind;
   messageId: string;
@@ -133,15 +114,7 @@ export interface GameContinuityReview {
 }
 
 export type GameContinuityReceiptStatus =
-  | "queued"
-  | "extracting"
-  | "reviewing"
-  | "repairing"
-  | "verified"
-  | "published"
-  | "unresolved"
-  | "failed"
-  | "stale";
+  "queued" | "extracting" | "reviewing" | "repairing" | "verified" | "published" | "unresolved" | "failed" | "stale";
 export interface GameContinuityReceipt {
   id: string;
   chatId: string;

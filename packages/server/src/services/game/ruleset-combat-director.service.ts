@@ -21,7 +21,11 @@ import {
   currentRulesetActor,
   deterministicRng,
   findRulesetCreature,
+  fillRulesetSheetChoices,
   generateTacticalBattlefield,
+  holdRulesetCombatant,
+  holdRulesetSheetHealth,
+  liftRulesetCrashes,
   normalizeCharacterLookupName,
   normalizeGameDifficulty,
   normalizeTacticalEnvironment,
@@ -29,21 +33,33 @@ import {
   placeSpawns,
   readRulesetLive,
   rulesetAimCells,
+  rulesetAnswerDeflects,
   rulesetCellDistance,
   rulesetCombatant,
   rulesetCombatConditions,
   rulesetCombatHealth,
   rulesetCombatOptions,
+  rulesetCostSteps,
+  rulesetAverageAmount,
+  rulesetDamageAverage,
+  planRulesetCombatCost,
   rulesetCombatRoller,
   rulesetCombatStanding,
-  rulesetCreatureSchema,
+  rulesetContestChance,
+  rulesetProposedCreatureSchema,
   rulesetEncounterOutcome,
   rulesetEncounterSummary,
   rulesetOptionTargets,
+  rulesetReactionPointsAtSource,
   rulesetPositionOf,
+  rulesetWalkingDistances,
   rulesetSheetBuildsByName,
-  rulesetStatBlockFromCreature,
+  readProposedRulesetSheet,
+  restrictRulesetSheetEntries,
+  RULESET_PROPOSED_SHEET_REPLACES,
+  rulesetProposedStatBlock,
   rulesetTierStatBlock,
+  rulesetWindowMoment,
   rulesetWindowOptions,
   RULESET_MOVE_OPTION,
   RULESET_PASS_OPTION,
@@ -67,6 +83,7 @@ import {
   type RulesetLiveStates,
   type TacticalBattlefieldBrief,
   type TacticalGrid,
+  type CombatTactics,
 } from "@marinara-engine/shared";
 import { logger } from "../../lib/logger.js";
 import { combatDirectorView, type CombatDirectorState } from "./combat-director.service.js";
@@ -141,6 +158,9 @@ export interface RulesetFightOpponent {
   /** A stat block the Game Master proposed, in the shared creature form. Clamped onto the scale. */
   proposed?: unknown;
   boss?: boolean;
+  /** How it fights: the same competence and temperament its choices in the fight are made with,
+   *  which is also what fills an invented sheet's open choices. Assigned here when not given. */
+  tactics?: Pick<CombatTactics, "proficiency" | "adjective">;
 }
 
 export interface RulesetFightSeed {
@@ -182,6 +202,8 @@ export function createRulesetFight(input: RulesetFightSeed): RulesetFightSeedRes
   if (!combat) return { ok: false, error: "This game's ruleset does not resolve its own fights." };
 
   const adjustments: string[] = [];
+  /** Invented opponents written as sheets, and the tier each is held to once it is built. */
+  const heldToTier = new Map<string, NonNullable<typeof combat.threat>["tiers"][number]>();
   const builds = rulesetSheetBuildsByName(input.cards, input.playerName);
   const combatants: RulesetCombatantInput[] = [];
   for (const member of input.party) {
@@ -221,9 +243,77 @@ export function createRulesetFight(input: RulesetFightSeed): RulesetFightSeedRes
       });
       continue;
     }
-    const proposed = opponent.proposed === undefined ? null : rulesetCreatureSchema.safeParse(opponent.proposed);
+    const proposed =
+      opponent.proposed === undefined ? null : rulesetProposedCreatureSchema.safeParse(opponent.proposed);
+    // A creature invented for this fight in the ruleset's own terms: a mage with slots and spells.
+    // Read leniently, held to its tier the way a plain invention is, and held again once it is built.
+    if (proposed?.success && proposed.data.sheet) {
+      const said = (line: string) => adjustments.push(`${opponent.name}: ${line}`);
+      const beside = RULESET_PROPOSED_SHEET_REPLACES.filter(
+        (key) => (opponent.proposed as Record<string, unknown>)[key] !== undefined,
+      );
+      if (beside.length > 0)
+        said(`its sheet says its ${beside.join(", ")}, so the numbers written beside it were not used.`);
+      const read = readProposedRulesetSheet(definition, proposed.data.sheet, input.bestiary);
+      read.adjusted.forEach(said);
+      // A boss is the Game Master's to write in full, as the exception it may be. Anything else keeps
+      // only what the ruleset opens to its sheet (a Sorcerer's spells, not every spell) and has the
+      // choices it left open filled by its temperament and competence, without another model call.
+      let sheet = read.sheet;
+      if (!opponent.boss) {
+        const open = restrictRulesetSheetEntries(definition, sheet, input.bestiary);
+        open.adjusted.forEach(said);
+        const tactics =
+          opponent.tactics ??
+          assignCombatTactics(
+            { id: opponent.id, hp: 1, maxHp: 1, attack: 0, defense: 0, speed: 0, level: 1 },
+            input.seed,
+          );
+        const filled = fillRulesetSheetChoices(
+          definition,
+          open.sheet,
+          input.bestiary,
+          tactics,
+          `choices:${input.seed}:${opponent.id}`,
+        );
+        filled.adjusted.forEach(said);
+        sheet = filled.sheet;
+      }
+      const tiers = combat.threat?.tiers ?? [];
+      const wanted = opponent.tier ?? proposed.data.tier;
+      const tier = tiers.find((entry) => entry.id === wanted) ?? tiers[0];
+      const held = tier ? holdRulesetSheetHealth(definition, sheet, tier) : { sheet, adjusted: [] };
+      held.adjusted.forEach(said);
+      // What the entry adds beside the sheet (its own actions, riders, the damage it shrugs off) is
+      // held by the plain clamp, on a block that borrows the tier's own numbers for the ones the
+      // sheet will give, so only the lines about those parts are said.
+      const { sheet: _sheet, ...parts } = proposed.data;
+      const plain = rulesetProposedStatBlock(definition, {
+        ...parts,
+        health: tier?.health[0] ?? 1,
+        defense: 0,
+        initiativeModifier: 0,
+      });
+      const clamped = plain ? clampRulesetStatBlock(definition, plain, wanted) : null;
+      clamped?.adjusted.forEach(said);
+      const {
+        health: _health,
+        healthDice: _dice,
+        defense: _defense,
+        initiativeModifier: _initiative,
+        ...extras
+      } = clamped?.block ?? { actions: [] };
+      combatants.push({
+        id: opponent.id,
+        name: opponent.name,
+        side: "enemy",
+        block: { ...extras, sheet: held.sheet, ...(tier ? { tier: tier.id } : {}) },
+      });
+      if (tier) heldToTier.set(opponent.id, tier);
+      continue;
+    }
     if (proposed?.success) {
-      const block = rulesetStatBlockFromCreature(definition, proposed.data);
+      const block = rulesetProposedStatBlock(definition, proposed.data);
       if (block) {
         const clamped = clampRulesetStatBlock(definition, block, opponent.tier ?? proposed.data.tier);
         for (const line of clamped.adjusted) adjustments.push(`${opponent.name}: ${line}`);
@@ -257,6 +347,11 @@ export function createRulesetFight(input: RulesetFightSeed): RulesetFightSeedRes
     bestiary: input.bestiary,
     ...(board ? { board } : {}),
   });
+  for (const [id, tier] of heldToTier) {
+    const built = rulesetCombatant(encounter, id);
+    if (!built) continue;
+    for (const line of holdRulesetCombatant(definition, built, tier)) adjustments.push(`${built.name}: ${line}`);
+  }
   const fight: RulesetFightState = {
     encounter,
     eventSeq: 0,
@@ -350,7 +445,10 @@ const rollerFor = (fight: RulesetFightState) => rulesetCombatRoller(fight.encoun
 export function rulesetFightLiveStates(fight: RulesetFightState): RulesetLiveStates {
   const live: RulesetLiveStates = {};
   for (const combatant of fight.encounter.combatants) {
-    if (!combatant.sheet) continue;
+    // The PARTY, and only the party. An opponent may carry a sheet too, but it exists for the fight
+    // alone: writing it back would store it as a character's, keyed by the opponent's name, and a
+    // character who happened to share that name would have their sheet overwritten.
+    if (combatant.side !== "party" || !combatant.sheet) continue;
     live[normalizeCharacterLookupName(combatant.name)] = combatant.sheet.live as RulesetLiveState;
   }
   return live;
@@ -407,10 +505,12 @@ function conditionsOf(
 
 function deathTrackOf(definition: RulesetDefinition, combatant: RulesetCombatant) {
   const dying = definition.combat?.dying;
-  if (!dying || !combatant.sheet) return undefined;
+  // Only the party rolls against death; an opponent at zero is out, sheet or no sheet.
+  if (!dying || combatant.side !== "party" || !combatant.sheet) return undefined;
   const live = readRulesetLive(definition, combatant.sheet.build, combatant.sheet.live);
   const value = (track: string) => live.tracks.find((entry) => entry.id === track)?.value ?? 0;
-  const max = (track: string) => definition.sheet.live.tracks.find((entry) => entry.id === track)?.max ?? 0;
+  // The member's own top, since a plain track's maximum may be a value their sheet works out.
+  const max = (track: string) => live.tracks.find((entry) => entry.id === track)?.max ?? 0;
   return {
     successes: value(dying.successes),
     failures: value(dying.failures),
@@ -525,6 +625,12 @@ export function directedRulesetView(
             actorId: held.actorId,
             waiting: Math.max(0, held.window.waiting.length - 1),
             ...(held.window.trigger.kind === "leaves-reach" ? { moverId: held.window.trigger.moverId } : {}),
+            ...("sourceId" in held.window.trigger ? { sourceId: held.window.trigger.sourceId } : {}),
+            ...(rulesetWindowMoment(held.window.trigger) ? { moment: rulesetWindowMoment(held.window.trigger)! } : {}),
+            ...("label" in held.window.trigger ? { label: held.window.trigger.label } : {}),
+            ...(held.window.trigger.kind === "hit"
+              ? { total: held.window.trigger.total, defense: held.window.trigger.defense }
+              : {}),
             controller: held.controller,
           },
           ...(held.controller === "manual" && !state.window
@@ -666,6 +772,144 @@ function rulesetCandidatesAfterMoving(
   return candidates;
 }
 
+/** What a window's answer of "nothing" is called when the Game Master is the one answering. Plain
+ *  text like the resolver's own "Move" and "Stand up": it is written for the model that reads the
+ *  menu, and the client draws its own words over the same choice. */
+const RULESET_PASS_LABEL = "Let the moment go by";
+
+/** The pool an answer is paid from and the initiative style it is made in, each left out entirely
+ *  when it is the option's own. */
+const paying = (way: { payWith?: string; style?: string }) => ({
+  ...(way.payWith === undefined ? {} : { payWith: way.payWith }),
+  ...(way.style === undefined ? {} : { style: way.style }),
+});
+
+/** One way of doing something off the menu: the option, the pool it is paid from and the style it
+ *  is made in when those are not the option's own, and what that way costs. A style that takes also
+ *  says what it is expected to take off a target and what its maker gains on top. */
+interface PricedOption {
+  option: RulesetCombatOption;
+  payWith?: string;
+  style?: string;
+  takes?: { shift: number; gain: number };
+  price: number;
+}
+
+/**
+ * Every option on a menu, and every BIGGER way of paying for one, each with what that costs.
+ *
+ * A player is offered the pools an ability could be paid from and picks one. A party member the
+ * Engine plays was not: the picker only ever saw the base cost, so a character handed to the Engine
+ * never cast a spell that grows any bigger, on a turn or in a window. Each way of paying is its own
+ * candidate now, so casting it bigger is weighed against casting it at all.
+ *
+ * Only somebody with a SHEET has pools to pay out of. A plain stat block's actions cost nothing off
+ * any pool (see `planRulesetCombatCost`), so an opponent without a sheet, a Game Master's invented
+ * one included, has no bigger way of paying to be offered. A bestiary creature that carries a sheet
+ * does, and is offered them exactly as a party member is, whoever is deciding for it.
+ *
+ * The price counts the steps as well as the amount, because one pool of a higher rung is worth more
+ * than one of a lower: without that the bigger version reads as free and nothing would ever cast
+ * the small one.
+ */
+function priced(
+  definition: RulesetDefinition,
+  encounter: RulesetEncounterState,
+  actor: RulesetCombatant,
+  menu?: RulesetCombatOption[],
+): PricedOption[] {
+  const out: PricedOption[] = [];
+  for (const option of menu ?? rulesetCombatOptions(definition, encounter, actor.id)) {
+    const base = (option.cost ?? []).reduce((total, entry) => total + entry.amount, 0) + (option.signature?.cost ?? 0);
+    const ways: PricedOption[] = [{ option, price: base }, ...biggerWays(definition, actor, option)];
+    out.push(...ways.flatMap((way) => styledWays(definition, way)));
+  }
+  return out;
+}
+
+/** The bigger ways of paying for one option: once per pool it could be paid from, each with its
+ *  own label, cost and forecast. None for something that grows no bigger. */
+function biggerWays(
+  definition: RulesetDefinition,
+  actor: RulesetCombatant,
+  option: RulesetCombatOption,
+): PricedOption[] {
+  const action = actor.actions.find((entry) => entry.id === option.id);
+  if (!action?.use?.perCostStep) return [];
+  const ways: PricedOption[] = [];
+  for (const pool of option.payWith ?? []) {
+    const steps = rulesetCostSteps(definition, action, pool);
+    if (steps < 1) continue;
+    const paid = planRulesetCombatCost(definition, actor, action, pool);
+    if (!paid) continue;
+    const extra = steps * rulesetAverageAmount(action.use.perCostStep);
+    const forecast = option.forecast ? { ...option.forecast } : undefined;
+    if (forecast?.averageDamage !== undefined) {
+      forecast.averageDamage = Math.round((forecast.averageDamage + extra) * 100) / 100;
+    }
+    ways.push({
+      option: {
+        ...option,
+        // Named for the pool it spends, so a Game Master reading the menu can tell the two apart.
+        label: `${option.label} (${paid.cost[0]?.label ?? pool})`,
+        cost: paid.cost.map((entry) => ({ pool: entry.pool, label: entry.label, amount: entry.amount })),
+        ...(forecast ? { forecast } : {}),
+      },
+      payWith: pool,
+      price: paid.cost.reduce((total, entry) => total + entry.amount, 0) + steps,
+    });
+  }
+  return ways;
+}
+
+/**
+ * Every way of paying, once per initiative style the attack may be made in, where initiative is a
+ * number attacks move. A style that spends forecasts the harm its maker's number would do; one that
+ * takes forecasts no harm at all and carries what it would take instead, which the picker weighs as
+ * what those dice would be worth to spend later.
+ */
+function styledWays(definition: RulesetDefinition, way: PricedOption): PricedOption[] {
+  const styles = way.option.styles;
+  const resource = definition.combat?.initiative.resource;
+  if (!styles?.length || !resource) return [way];
+  const option = { ...way.option };
+  delete option.styles;
+  return styles.map((style) => {
+    const takes = resource.styles.find((entry) => entry.id === style.id)?.takes;
+    const hitChance = way.option.forecast?.hitChance ?? style.forecast?.hitChance;
+    const averageDamage = takes ? 0 : (style.forecast?.averageDamage ?? 0);
+    return {
+      ...way,
+      option: {
+        ...option,
+        // Named for its style as well, so a Game Master reading the menu can tell them apart.
+        label: `${option.label}, ${style.label}`,
+        forecast: { ...(hitChance !== undefined ? { hitChance } : {}), averageDamage },
+      },
+      style: style.id,
+      ...(takes ? { takes: { shift: way.option.forecast?.averageDamage ?? 0, gain: takes.gain } } : {}),
+    };
+  });
+}
+
+/** Whom a window option really lands on when the option itself asks for nobody: the one walking
+ *  away from a reach, or whoever caused a moment, for a reaction pointed back at them. Undefined for
+ *  something its holder does to themselves, which is weighed as what it is. */
+export function rulesetWindowTargetOf(
+  encounter: RulesetEncounterState,
+  actor: RulesetCombatant,
+  option: RulesetCombatOption,
+): string | undefined {
+  const trigger = encounter.window?.trigger;
+  if (!trigger || option.targets.count > 0 || option.id === RULESET_PASS_OPTION) return undefined;
+  if (trigger.kind === "leaves-reach") return trigger.moverId;
+  if (trigger.kind !== "aimed" && trigger.kind !== "hit" && trigger.kind !== "harmed" && trigger.kind !== "used") {
+    return undefined;
+  }
+  const action = actor.actions.find((entry) => entry.id === option.id);
+  return action && rulesetReactionPointsAtSource(action) ? trigger.sourceId : undefined;
+}
+
 function rulesetCandidatesFrom(
   definition: RulesetDefinition,
   encounter: RulesetEncounterState,
@@ -680,23 +924,81 @@ function rulesetCandidatesFrom(
   const actor = rulesetCombatant(encounter, actorId);
   if (!combat || !actor) return [];
   const candidates: Array<CombatAiCandidate<RulesetCandidate>> = [];
-  for (const option of menu ?? rulesetCombatOptions(definition, encounter, actorId)) {
+  // A window's menu may always be declined. Without this the picker would spend a reaction every
+  // time one was on offer, and availability alone should never force a spend: letting the moment go
+  // by is weighed exactly as ending a turn is.
+  if (menu) {
+    const letGo: RulesetCombatOption = {
+      id: RULESET_PASS_OPTION,
+      kind: "end-turn",
+      label: RULESET_PASS_LABEL,
+      targets: { side: "self", count: 0 },
+    };
+    candidates.push({ action: { choice: { actorId, optionId: letGo.id, targetIds: [] }, option: letGo }, hold: true });
+  }
+  for (const way of priced(definition, encounter, actor, menu)) {
+    const { option, price } = way;
     // Walking is not a candidate of its own: it is what a candidate does before it acts, and a turn
     // with nothing to act on closes the distance instead (see `rulesetClosingMove`).
     if (option.kind === "move") continue;
     // From another cell, only what the actor would do THERE is worth enumerating: everything it
     // could do without moving is already on the list.
     if (standing && option.targets.count <= 0 && !option.area) continue;
-    const price = (option.cost ?? []).reduce((total, entry) => total + entry.amount, 0) + (option.signature?.cost ?? 0);
     if (option.kind === "end-turn") {
       candidates.push({ action: { choice: { actorId, optionId: option.id, targetIds: [] }, option }, hold: true });
       continue;
     }
-    if (option.targets.count <= 0) {
+    // A guard taken after being hit is worth the blow it turns aside, and nothing at all when the
+    // roll beats it anyway: spending it then would only waste it. Read before any other weighing,
+    // since a guard aimed at its own holder would otherwise be scored as help for a friend.
+    const deflects = menu ? rulesetAnswerDeflects(definition, encounter, actor, option.id) : null;
+    if (deflects === false) continue;
+    if (deflects) {
+      candidates.push({
+        action: { choice: { actorId, optionId: option.id, targetIds: [], ...paying(way) }, option },
+        healing: 1,
+        cost: price,
+      });
+      continue;
+    }
+    // A contest is weighed by what winning it would do, times the chance of winning against THAT
+    // target, and kept modest: a grab or a shove sets something up, and an opponent that wrestled
+    // instead of fighting would be played badly. Breaking free is worth most, and only while held.
+    if (option.kind === "contest") {
+      const contest = actor.actions.find((entry) => entry.id === option.id)?.contest;
+      if (!contest) continue;
+      for (const targetId of rulesetOptionTargets(definition, encounter, actorId, option)) {
+        const target = rulesetCombatant(encounter, targetId);
+        if (!target || target.down) continue;
+        const chance = rulesetContestChance(definition, combat, actor, target, contest, encounter) ?? 0.5;
+        const held = new Set(rulesetCombatConditions(definition, actor));
+        const theirs = new Set(rulesetCombatConditions(definition, target));
+        const frees = (contest.ends ?? []).some((entry) => entry.on === "actor" && held.has(entry.condition));
+        const holds = (contest.applies ?? []).some((entry) => !theirs.has(entry.condition));
+        const worth = frees ? 1 : holds ? 0.3 : contest.push !== undefined && encounter.board ? 0.15 : 0;
+        if (worth <= 0) continue;
+        candidates.push({
+          action: {
+            choice: { actorId, optionId: option.id, targetIds: [targetId], ...paying(way) },
+            option,
+            targetId,
+          },
+          targetId,
+          setup: worth * chance,
+          cost: price,
+        });
+      }
+      continue;
+    }
+    // In a window, an option that asks for nobody may still land on somebody: whoever is walking
+    // away, or whoever caused the moment. It is weighed by what it would do to THEM, and its answer
+    // still names nobody, because the rules fill that target in.
+    const lands = menu ? rulesetWindowTargetOf(encounter, actor, option) : undefined;
+    if (option.targets.count <= 0 && !lands) {
       // Holding the thing it is already holding would end it and start it again for the same price.
       if (actor.concentrating?.actionId === option.id) continue;
       candidates.push({
-        action: { choice: { actorId, optionId: option.id, targetIds: [] }, option },
+        action: { choice: { actorId, optionId: option.id, targetIds: [], ...paying(way) }, option },
         setup: option.kind === "standard" ? 0.05 : 0.4,
         cost: price,
       });
@@ -711,10 +1013,10 @@ function rulesetCandidatesFrom(
       // really stands, which costs a creature a cleverer walk and never costs the server a turn.
       const grid = encounter.board?.grid;
       if (standing && grid && grid.width * grid.height > RULESET_AREA_WALK_BOARD_CELLS) continue;
-      candidates.push(...areaCandidates(definition, combat, encounter, actor, option, standing));
+      candidates.push(...areaCandidates(definition, combat, encounter, actor, option, standing, way, price));
       continue;
     }
-    const legal = rulesetOptionTargets(definition, encounter, actorId, option);
+    const legal = lands ? [lands] : rulesetOptionTargets(definition, encounter, actorId, option);
     // An action made of other actions sends all of them at one opponent. Anything else that may
     // take several targets takes as many as it is allowed: a breath that could catch three people
     // and is pointed at one is an opponent played badly, not an opponent played kindly.
@@ -731,10 +1033,31 @@ function rulesetCandidatesFrom(
       const chance = option.forecast?.hitChance ?? 1;
       const average = option.forecast?.averageDamage ?? 0;
       const candidate: CombatAiCandidate<RulesetCandidate> = {
-        action: { choice: { actorId, optionId: option.id, targetIds: [targetId] }, option, targetId },
+        action: {
+          choice: { actorId, optionId: option.id, targetIds: lands ? [] : [targetId], ...paying(way) },
+          option,
+          targetId,
+        },
         targetId,
         cost: price,
       };
+      if (way.takes) {
+        // A blow that takes is weighed a turn ahead, against spending now and spending again from
+        // the base: taking and then spending throws the number plus what was taken and gained,
+        // which beats that only when the taking is worth more than the base. A crash it would cause
+        // adds its bonus. Never on its own side or on somebody already down, and worth a little as
+        // a setup either way, since a crashed maker has nothing else to attack with.
+        if (ally || target.down) continue;
+        const resource = combat.initiative.resource;
+        const crash = resource?.crash;
+        const crashes = !!crash && target.initiative > crash.at && target.initiative - way.takes.shift <= crash.at;
+        const gained = chance * (way.takes.shift + way.takes.gain + (crashes ? crash.bonus : 0));
+        const ahead = Math.max(0, actor.initiative + gained - (resource?.base ?? 0));
+        candidate.damage = Math.min(2, (rulesetDamageAverage(definition, combat, ahead) / pool) * chance);
+        candidate.setup = Math.min(1, gained / 6);
+        candidates.push(candidate);
+        continue;
+      }
       if (option.heals) {
         // Never on the other side, and never on somebody with nothing to gain by it.
         if (!ally || (health.value >= health.max && !target.down)) continue;
@@ -752,7 +1075,7 @@ function rulesetCandidatesFrom(
               .filter((other): other is RulesetCombatant => !!other && other.side !== actor.side && !other.down)
               .slice(0, option.targets.count - 1)
           : [];
-        candidate.action.choice.targetIds = [targetId, ...others.map((other) => other.id)];
+        if (!lands) candidate.action.choice.targetIds = [targetId, ...others.map((other) => other.id)];
         candidate.damage = Math.min(2, (average / pool) * (1 + others.length)) * chance;
         if (average >= pool) candidate.finish = chance;
       } else if (ally) candidate.support = 0.4;
@@ -777,8 +1100,10 @@ function areaCandidates(
   actor: RulesetCombatant,
   option: RulesetCombatOption,
   standing: { x: number; y: number } | null,
+  /** The pool this way of paying spends and the style it is made in, and what that way costs. */
+  way: { payWith?: string; style?: string },
+  price: number,
 ): Array<CombatAiCandidate<RulesetCandidate>> {
-  const price = (option.cost ?? []).reduce((total, entry) => total + entry.amount, 0) + (option.signature?.cost ?? 0);
   const average = option.forecast?.averageDamage ?? 0;
   const chance = option.forecast?.hitChance ?? 1;
   const candidates: Array<CombatAiCandidate<RulesetCandidate>> = [];
@@ -799,7 +1124,13 @@ function areaCandidates(
     const friends = caught.filter((target) => target.side === actor.side);
     const candidate: CombatAiCandidate<RulesetCandidate> = {
       action: {
-        choice: { actorId: actor.id, optionId: option.id, targetIds: [], at: { x: aim.x, y: aim.y } },
+        choice: {
+          actorId: actor.id,
+          optionId: option.id,
+          targetIds: [],
+          at: { x: aim.x, y: aim.y },
+          ...paying(way),
+        },
         option,
         ...(foes[0] ? { targetId: foes[0].id } : {}),
         ...(standing ? { to: { ...standing } } : {}),
@@ -839,8 +1170,10 @@ function areaCandidates(
 /**
  * The walk a turn with nothing in reach takes: the reachable cell that ends up nearest an opponent,
  * cheapest first, and never one that would be struck at on the way when a quieter cell gets as
- * close. Null when nothing is worth walking to, which is what keeps a cornered creature from
- * shuffling on the spot for the rest of the fight.
+ * close. Nearest is measured by the walk still left to get there, not in a straight line: a wall
+ * between two fighters makes every straight-line-closer cell solid, and both would stand and look
+ * at each other for the rest of the fight. Null when nothing is worth walking to, which is what
+ * keeps a cornered creature from shuffling on the spot for the rest of the fight.
  */
 function rulesetClosingMove(
   definition: RulesetDefinition,
@@ -855,8 +1188,8 @@ function rulesetClosingMove(
     .map((combatant) => rulesetPositionOf(combatant))
     .filter((cell): cell is { x: number; y: number } => !!cell);
   if (foes.length === 0) return null;
-  const nearest = (cell: { x: number; y: number }) =>
-    foes.reduce((closest, foe) => Math.min(closest, rulesetCellDistance(cell, foe)), Infinity);
+  const walking = rulesetWalkingDistances(encounter.board.grid, foes);
+  const nearest = (cell: { x: number; y: number }) => walking.get(`${cell.x},${cell.y}`) ?? Infinity;
   const already = nearest(from);
   let best: { cell: { x: number; y: number; cost: number; provokes: string[] }; away: number } | null = null;
   // Every cell it may walk to, not a sample of them: closing the distance is one comparison a cell.
@@ -978,8 +1311,15 @@ function answerRulesetWindows(
       ? { ...picked.choice, window: window.id }
       : { actorId: asking, optionId: RULESET_PASS_OPTION, targetIds: [], window: window.id };
     // A refusal inside a window would ask the same question again with the same state, so the
-    // moment is let go instead and the fight moves on.
+    // moment is let go instead and the fight moves on. It is an Engine bug rather than anybody's
+    // choice, so it is said out loud: a refusal is never recorded, and this pass would otherwise
+    // look exactly like the picker deciding to let it go.
     if (applyChoiceOnly(definition, state, fight, choice).refused) {
+      logger.warn(
+        "[game/combat:ruleset] The picker's answer to window %s for %s was refused by the rules and the moment was let go",
+        window.id,
+        asking,
+      );
       applyChoiceOnly(definition, state, fight, {
         actorId: asking,
         optionId: RULESET_PASS_OPTION,
@@ -1141,13 +1481,13 @@ function windowOptions(
     label: candidate.action.option.label,
     ...(candidate.action.to ? { to: { ...candidate.action.to } } : {}),
     ...(candidate.action.choice.at ? { at: { ...candidate.action.choice.at } } : {}),
+    // Which pool this way of paying spends. Two entries of the same ability differ only by this and
+    // by the label that names it, so dropping it would offer a choice and then ignore it. A boss
+    // whose bestiary entry carries a sheet pays out of its own pools, and is cast as big as it chose.
+    ...(candidate.action.choice.payWith !== undefined ? { payWith: candidate.action.choice.payWith } : {}),
+    ...(candidate.action.choice.style !== undefined ? { style: candidate.action.choice.style } : {}),
   }));
 }
-
-/** What a window's answer of "nothing" is called when the Game Master is the one answering. Plain
- *  text like the resolver's own "Move" and "Stand up": it is written for the model that reads the
- *  menu, and the client draws its own words over the same choice. */
-const RULESET_PASS_LABEL = "Let the moment go by";
 
 /**
  * The Game Master's decision over a ruleset WINDOW's menu rather than a turn's. Its boss is asked
@@ -1167,18 +1507,9 @@ function openRulesetWindowDecision(
   if (state.window) return true;
   const menu = rulesetWindowOptions(definition, fight.encounter, actorId);
   if (menu.length === 0) return false;
+  // Letting the moment go by is one of the candidates, so it is one of the answers.
   const options = windowOptions(definition, fight.encounter, actorId, menu);
-  if (options.length === 0) return false;
-  options.push({
-    id: String(options.length),
-    kind: "wait",
-    actorId,
-    mpCost: 0,
-    legendaryCost: 0,
-    optionId: RULESET_PASS_OPTION,
-    targetIds: [],
-    label: RULESET_PASS_LABEL,
-  });
+  if (options.length <= 1) return false;
   state.choices = options;
   state.window = {
     id: `${state.id}:${++state.serial}`,
@@ -1261,6 +1592,7 @@ export function commandRulesetCombatDirector(
 
   if (command.type === "flee") {
     state.outcome = "flee";
+    liftRulesetCrashes(definition, fight.encounter);
     return settled(state);
   }
 
@@ -1297,6 +1629,7 @@ export function commandRulesetCombatDirector(
       targetIds: command.targetIds,
       ...(held ? { window: held.id } : {}),
       ...(command.payWith !== undefined ? { payWith: command.payWith } : {}),
+      ...(command.style !== undefined ? { style: command.style } : {}),
       ...(command.to ? { to: command.to } : {}),
       ...(command.at ? { at: command.at } : {}),
     });
@@ -1329,8 +1662,7 @@ export function commandRulesetCombatDirector(
               targetIds: [...(chosen.targetIds ?? [])],
               // Everything the picked option came with. An area is aimed at a CELL, and dropping
               // it would have the rules refuse the answer and the moment let go instead. The pool
-              // an upcast is paid from is carried too, for the day a candidate names one: no
-              // candidate does yet, which is a gap of the picker's rather than of the window's.
+              // is carried for the same reason: a boss with a sheet pays out of one.
               ...(chosen.at ? { at: { ...chosen.at } } : {}),
               ...(chosen.payWith !== undefined ? { payWith: chosen.payWith } : {}),
             }
@@ -1354,6 +1686,7 @@ export function commandRulesetCombatDirector(
           optionId: chosen.optionId ?? "end-turn",
           targetIds: [...(chosen.targetIds ?? [])],
           ...(chosen.payWith !== undefined ? { payWith: chosen.payWith } : {}),
+          ...(chosen.style !== undefined ? { style: chosen.style } : {}),
           ...(chosen.at ? { at: { ...chosen.at } } : {}),
         }
       : // The local picker is the fallback, so a Game Master that answered nothing usable costs the
@@ -1415,7 +1748,15 @@ function rulesetRefusalMessage(reason: string): string {
     "no-budget": "They have nothing left to spend on it this turn.",
     insufficient: "They cannot pay for it.",
     "bad-pool": "That is not a pool this can be paid from.",
+    "unknown-style": "That attack cannot be made that way right now.",
     "unknown-creature": "That opponent is not in any bestiary this game can read.",
+    "no-health": "That opponent's sheet gives it no health, so it was left out of the fight.",
+    unreachable: "They cannot walk to that square.",
+    "out-of-reach": "That is further off than this reaches.",
+    "no-line-of-sight": "Something solid stands in the way.",
+    "bad-cell": "That is not a square this can be aimed at.",
+    "window-open": "The fight is waiting on somebody else's answer first.",
+    "stale-window": "That moment has already passed.",
   };
   return said[reason] ?? "The rules refused that choice.";
 }

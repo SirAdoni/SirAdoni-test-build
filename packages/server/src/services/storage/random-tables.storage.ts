@@ -60,8 +60,7 @@ function byName(left: RandomTableRecord, right: RandomTableRecord) {
 export function createRandomTablesStorage(db: DB) {
   async function getById(id: string): Promise<RandomTableRecord | null> {
     const row = (await db.select().from(randomTables).where(eq(randomTables.id, id)))[0] as
-      | RandomTableDbRow
-      | undefined;
+      RandomTableDbRow | undefined;
     return row ? recordFrom(row) : null;
   }
 

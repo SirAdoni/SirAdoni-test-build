@@ -693,7 +693,7 @@ export function sanitizeProfileTableRows(tableName: string, rows: Array<Record<s
     });
   }
   if (tableName === "api_connections") {
-    return rows.map((row) => ({ ...row, apiKeyEncrypted: "" }));
+    return rows.map((row) => ({ ...row, apiKeyEncrypted: "", managementTokenEncrypted: "" }));
   }
   if (tableName === "agent_configs") {
     return rows.map((row) => redactAgentSecrets(row));
@@ -803,10 +803,13 @@ export function quarantineProfileApiConnectionRow(
   existing?: Record<string, unknown>,
 ): ProfileApiConnectionImportPlan {
   const existingCredential = typeof existing?.apiKeyEncrypted === "string" ? existing.apiKeyEncrypted : "";
+  const existingManagementToken =
+    typeof existing?.managementTokenEncrypted === "string" ? existing.managementTokenEncrypted : "";
   const trustedIdentity = !!existing && profileConnectionCredentialIdentityMatches(existing, row);
   const secured: Record<string, unknown> = {
     ...row,
     apiKeyEncrypted: trustedIdentity ? existingCredential : "",
+    managementTokenEncrypted: trustedIdentity ? existingManagementToken : "",
     profileImportReviewRequired: trustedIdentity ? "false" : "true",
   };
   if (trustedIdentity) return { row: secured, trustedIdentity };
@@ -4593,6 +4596,7 @@ export async function backupRoutes(app: FastifyInstance) {
                   maxRecursionDepth: lb.maxRecursionDepth,
                   excludeFromVectorization: lb.excludeFromVectorization ?? false,
                   vectorQueryDepth: lb.vectorQueryDepth ?? 10,
+                  vectorIncludeAssistant: lb.vectorIncludeAssistant === true,
                   vectorScoreThreshold: lb.vectorScoreThreshold ?? 0.3,
                   vectorMaxResults: lb.vectorMaxResults ?? 10,
                   enabled: lb.enabled ?? true,

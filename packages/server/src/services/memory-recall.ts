@@ -19,6 +19,14 @@ const CHUNK_SIZE = 5;
 /** Keep embedding requests comfortably below common 8k-token embedding ceilings. */
 const MAX_EMBEDDING_CHUNK_CHARS = 18_000;
 
+// Providers commonly cap both input count and aggregate token count. Keep the
+// latter bounded with a character budget as well: a fixed item count can still
+// exceed a provider's context window when chunks contain long or multilingual
+// text. A singleton longer than this budget is kept intact so its vector still
+// corresponds to the original input.
+const MAX_EMBEDDING_BATCH_TEXTS = 64;
+const MAX_EMBEDDING_BATCH_CHARS = 100_000;
+
 /** Minimum similarity score to include a memory in results. */
 const SIMILARITY_THRESHOLD = 0.25;
 
@@ -94,6 +102,8 @@ export interface RecalledMemory {
 export interface MemoryRecallEmbeddingSource {
   /** Stable identity for the provider/model vector space, when known. */
   spaceId?: string;
+  /** Opaque request identity for process-local caches; may vary with credentials or routing headers. */
+  cacheIdentity?: string;
   label: string;
   embed(texts: string[], signal?: AbortSignal, inputType?: MemoryRecallEmbeddingInputType): Promise<number[][] | null>;
 }
@@ -134,30 +144,85 @@ export async function embedMemoryRecallTexts(
   texts: string[],
   options: MemoryRecallEmbeddingOptions = {},
 ): Promise<number[][]> {
-  if (options.embeddingSource) {
-    const configuredEmbeddings = await options.embeddingSource.embed(
-      texts,
-      options.signal,
-      options.inputType ?? "document",
-    );
-    if (configuredEmbeddings) {
-      logger.debug("[memory-recall] Used configured embedding source %s", options.embeddingSource.label);
-      return configuredEmbeddings;
+  if (texts.length === 0) return [];
+
+  const batches: string[][] = [];
+  let current: string[] = [];
+  let currentChars = 0;
+  for (const text of texts) {
+    const wouldExceedChars = current.length > 0 && currentChars + text.length > MAX_EMBEDDING_BATCH_CHARS;
+    const wouldExceedCount = current.length >= MAX_EMBEDDING_BATCH_TEXTS;
+    if (wouldExceedChars || wouldExceedCount) {
+      batches.push(current);
+      current = [];
+      currentChars = 0;
     }
-    return [];
+    current.push(text);
+    currentChars += text.length;
+  }
+  if (current.length > 0) batches.push(current);
+
+  const allEmbeddings: number[][] = [];
+  let expectedDimension: number | null = null;
+  for (const batch of batches) {
+    if (options.signal?.aborted) {
+      throw options.signal.reason ?? new DOMException("Embedding was aborted", "AbortError");
+    }
+
+    const embeddings = options.embeddingSource
+      ? await options.embeddingSource.embed(batch, options.signal, options.inputType ?? "document")
+      : await (options.localEmbedder ?? localEmbed)(batch, options.signal);
+    if (options.signal?.aborted) {
+      throw options.signal.reason ?? new DOMException("Embedding was aborted", "AbortError");
+    }
+    if (!embeddings) {
+      if (!options.embeddingSource && !warnedUnavailableEmbeddingSource) {
+        warnedUnavailableEmbeddingSource = true;
+        logger.warn(
+          "[memory-recall] No embedder configured; memory recall is disabled until an embedding source is available",
+        );
+      }
+      return [];
+    }
+    if (embeddings.length !== batch.length) {
+      logger.warn(
+        "[memory-recall] Embedding source returned %d/%d vectors; discarding incomplete embedding results",
+        embeddings.length,
+        batch.length,
+      );
+      return [];
+    }
+
+    for (const embedding of embeddings) {
+      if (
+        !Array.isArray(embedding) ||
+        embedding.length === 0 ||
+        embedding.some((value) => typeof value !== "number" || !Number.isFinite(value))
+      ) {
+        logger.warn("[memory-recall] Embedding source returned an invalid vector; preserving existing memory chunks");
+        return [];
+      }
+      expectedDimension ??= embedding.length;
+      if (embedding.length !== expectedDimension) {
+        logger.warn(
+          "[memory-recall] Embedding source returned mixed dimensions (%d and %d); preserving existing memory chunks",
+          expectedDimension,
+          embedding.length,
+        );
+        return [];
+      }
+      allEmbeddings.push(embedding);
+    }
   }
 
-  const localEmbedder = options.localEmbedder ?? localEmbed;
-  const localEmbeddings = await localEmbedder(texts, options.signal);
-  if (localEmbeddings) return localEmbeddings;
-
-  if (!warnedUnavailableEmbeddingSource) {
-    warnedUnavailableEmbeddingSource = true;
-    logger.warn(
-      "[memory-recall] No embedder configured; memory recall is disabled until an embedding source is available",
+  if (options.embeddingSource) {
+    logger.debug(
+      "[memory-recall] Used configured embedding source %s in %d bounded batch(es)",
+      options.embeddingSource.label,
+      batches.length,
     );
   }
-  return [];
+  return allEmbeddings;
 }
 
 function normalizeReadBehindMessageCount(value: number | null | undefined): number {
@@ -310,12 +375,13 @@ async function chunkAndEmbedMessagesUnlocked(
   /** Map from role → display name. Used to format "Name: content" lines. */
   nameMap: { userName: string; characterNames: Record<string, string> },
   options: ChunkAndEmbedMessagesOptions = {},
-): Promise<void> {
-  if (isLite) return;
+  forceReplace = false,
+): Promise<boolean> {
+  if (isLite) return true;
   const embeddingSpaceId = resolveMemoryEmbeddingSpaceId(options);
   if (!embeddingSpaceId) {
     logger.warn("[memory-recall] Skipping memory chunking because the active embedding source has no space ID");
-    return;
+    return false;
   }
 
   const existingEmbeddingSpaces = await db
@@ -333,10 +399,10 @@ async function chunkAndEmbedMessagesUnlocked(
   const hasEmbeddingSpaceMismatch = existingEmbeddingSpaces.some(
     (chunk) => chunk.embedding !== null && chunk.embeddingSpaceId !== embeddingSpaceId,
   );
-  if (hasEmbeddingSpaceMismatch || hasLegacyGameChunks) {
-    await db.delete(memoryChunks).where(and(eq(memoryChunks.chatId, chatId), isNull(memoryChunks.sourceChatId)));
-    logger.warn(
-      "[memory-recall] Rebuilding native memory chunks for chat %s because %s",
+  const replaceExisting = forceReplace || hasEmbeddingSpaceMismatch || hasLegacyGameChunks;
+  if (replaceExisting && existingEmbeddingSpaces.length > 0) {
+    logger.debug(
+      "[memory-recall] Preparing a replacement native memory index for chat %s because %s",
       chatId,
       hasLegacyGameChunks
         ? "the Game transcript index uses a legacy speaker format"
@@ -356,7 +422,7 @@ async function chunkAndEmbedMessagesUnlocked(
     .where(and(eq(messages.chatId, chatId), jsonFlagsNotTrue(messages.extra, ["hiddenFromAI"])))
     .orderBy(messages.createdAt);
 
-  await pruneStaleNativeMemoryChunks(db, chatId, allMessages);
+  if (!replaceExisting) await pruneStaleNativeMemoryChunks(db, chatId, allMessages);
 
   const readBehindMessageCount = normalizeReadBehindMessageCount(options.readBehindMessageCount);
   const eligibleMessages =
@@ -364,7 +430,7 @@ async function chunkAndEmbedMessagesUnlocked(
       ? allMessages.slice(0, Math.max(0, allMessages.length - readBehindMessageCount))
       : allMessages;
 
-  if (readBehindMessageCount > 0) {
+  if (readBehindMessageCount > 0 && !replaceExisting) {
     await pruneNativeMemoryChunksAfter(db, chatId, eligibleMessages.at(-1)?.createdAt ?? null);
   }
 
@@ -376,12 +442,23 @@ async function chunkAndEmbedMessagesUnlocked(
     .orderBy(desc(memoryChunks.lastMessageAt))
     .limit(1);
 
-  const after = lastChunk[0]?.lastMessageAt ?? null;
+  const after = replaceExisting ? null : (lastChunk[0]?.lastMessageAt ?? null);
 
   // Get eligible messages that haven't been chunked yet.
   const unchunked = after ? eligibleMessages.filter((message) => message.createdAt > after) : eligibleMessages;
 
-  if (unchunked.length < CHUNK_SIZE) return; // not enough to form a chunk yet
+  if (unchunked.length < CHUNK_SIZE) {
+    if (replaceExisting) {
+      await db.transaction(async (tx) => {
+        if (options.signal?.aborted)
+          throw options.signal.reason ?? new DOMException("Embedding was aborted", "AbortError");
+        await tx.delete(memoryChunks).where(and(eq(memoryChunks.chatId, chatId), isNull(memoryChunks.sourceChatId)));
+        if (options.signal?.aborted)
+          throw options.signal.reason ?? new DOMException("Embedding was aborted", "AbortError");
+      });
+    }
+    return true;
+  } // not enough to form a chunk yet
 
   // Group into chunks of CHUNK_SIZE
   const chunksToCreate: Array<{
@@ -414,11 +491,11 @@ async function chunkAndEmbedMessagesUnlocked(
     });
   }
 
-  if (chunksToCreate.length === 0) return;
+  if (chunksToCreate.length === 0) return true;
   const embeddableChunks = splitMemoryChunksForEmbedding(chunksToCreate).map((chunk) =>
     isGameChat ? { ...chunk, content: `${GAME_MEMORY_TRANSCRIPT_PREFIX}${chunk.content}` } : chunk,
   );
-  if (embeddableChunks.length === 0) return;
+  if (embeddableChunks.length === 0) return true;
 
   // Embed all chunks using local model
   const texts = embeddableChunks.map((c) => c.content);
@@ -434,7 +511,7 @@ async function chunkAndEmbedMessagesUnlocked(
       embeddings.filter((embedding) => Array.isArray(embedding) && embedding.length > 0).length,
       embeddableChunks.length,
     );
-    return;
+    return false;
   }
 
   const embeddingDimension = embeddings[0]!.length;
@@ -444,21 +521,27 @@ async function chunkAndEmbedMessagesUnlocked(
     .where(and(eq(memoryChunks.chatId, chatId), isNull(memoryChunks.sourceChatId), isNotNull(memoryChunks.embedding)))
     .limit(1);
   const existingEmbedding = parseStoredEmbedding(existingEmbeddedChunk[0]?.embedding ?? null);
-  if (existingEmbedding !== null && existingEmbedding.length > 0 && existingEmbedding.length !== embeddingDimension) {
+  if (
+    !replaceExisting &&
+    existingEmbedding !== null &&
+    existingEmbedding.length > 0 &&
+    existingEmbedding.length !== embeddingDimension
+  ) {
     logger.warn(
       "[memory-recall] Skipping memory chunk insert for chat %s because embedding dimension changed from %d to %d. Rebuild memories before mixing embedding models.",
       chatId,
       existingEmbedding.length,
       embeddingDimension,
     );
-    return;
+    return false;
   }
 
-  // Store chunks
+  // Stage every replacement row before touching the current index.
   const timestamp = now();
+  const rows: (typeof memoryChunks.$inferInsert)[] = [];
   for (let i = 0; i < embeddableChunks.length; i++) {
     const chunk = embeddableChunks[i]!;
-    await db.insert(memoryChunks).values({
+    rows.push({
       id: newId(),
       chatId,
       content: chunk.content,
@@ -471,7 +554,18 @@ async function chunkAndEmbedMessagesUnlocked(
     });
   }
 
+  if (options.signal?.aborted) throw options.signal.reason ?? new DOMException("Embedding was aborted", "AbortError");
+  await db.transaction(async (tx) => {
+    if (options.signal?.aborted) throw options.signal.reason ?? new DOMException("Embedding was aborted", "AbortError");
+    if (replaceExisting) {
+      await tx.delete(memoryChunks).where(and(eq(memoryChunks.chatId, chatId), isNull(memoryChunks.sourceChatId)));
+    }
+    if (rows.length > 0) await tx.insert(memoryChunks).values(rows);
+    if (options.signal?.aborted) throw options.signal.reason ?? new DOMException("Embedding was aborted", "AbortError");
+  });
+
   logger.debug("[memory-recall] Created %d chunk(s) for chat %s", embeddableChunks.length, chatId);
+  return true;
 }
 
 export async function chunkAndEmbedMessages(
@@ -480,7 +574,7 @@ export async function chunkAndEmbedMessages(
   nameMap: { userName: string; characterNames: Record<string, string> },
   options: ChunkAndEmbedMessagesOptions = {},
 ): Promise<void> {
-  return serializeMemoryMutation(chatId, () => chunkAndEmbedMessagesUnlocked(db, chatId, nameMap, options));
+  await serializeMemoryMutation(chatId, () => chunkAndEmbedMessagesUnlocked(db, chatId, nameMap, options));
 }
 
 /**
@@ -495,8 +589,11 @@ export async function rebuildMemoryChunks(
   if (isLite) return 0;
 
   return serializeMemoryMutation(chatId, async () => {
-    await db.delete(memoryChunks).where(and(eq(memoryChunks.chatId, chatId), isNull(memoryChunks.sourceChatId)));
-    await chunkAndEmbedMessagesUnlocked(db, chatId, nameMap, options);
+    const completed = await chunkAndEmbedMessagesUnlocked(db, chatId, nameMap, options, true);
+    if (!completed)
+      throw new Error(
+        "Memory rebuild failed because embeddings were unavailable or invalid; the previous index was preserved",
+      );
 
     const rebuilt = await db
       .select({ id: memoryChunks.id })

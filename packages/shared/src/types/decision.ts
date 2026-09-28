@@ -140,9 +140,17 @@ export const DECISION_TIMEOUT_MS = {
  */
 export const DECISION_CONNECTION_TIMEOUT_BOUNDS_MS = { min: 500, max: 30_000 } as const;
 
-/** A Decision connection's time limit: its own when set, otherwise the default. */
-export function resolveDecisionConnectionTimeoutMs(value: unknown): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) return DECISION_TIMEOUT_MS.systemOne;
+/**
+ * A Decision connection's default time limit. A chat model on the user's own server
+ * answers one question per request, like a local slot, so it starts from that budget.
+ */
+export function defaultDecisionTimeoutMs(source: string | null | undefined): number {
+  return source === "openai_compatible" ? DECISION_TIMEOUT_MS.sidecar : DECISION_TIMEOUT_MS.systemOne;
+}
+
+/** A Decision connection's time limit: its own when set, otherwise its source's default. */
+export function resolveDecisionConnectionTimeoutMs(value: unknown, source?: string | null): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return defaultDecisionTimeoutMs(source);
   const { min, max } = DECISION_CONNECTION_TIMEOUT_BOUNDS_MS;
   return Math.min(max, Math.max(min, Math.round(value)));
 }
@@ -170,12 +178,7 @@ export const DECISION_AUTO_THINKING_FAILURES = 2;
 
 /** Why an entry in the Decision model dropdown cannot serve right now. */
 export type DecisionUnavailableReason =
-  | "no_model"
-  | "not_enabled"
-  | "not_installed"
-  | "unsupported_platform"
-  | "needs_relinking"
-  | "stopped";
+  "no_model" | "not_enabled" | "not_installed" | "unsupported_platform" | "needs_relinking" | "stopped";
 
 /** One row of the Decision model dropdown. Unavailable entries are shown, never hidden. */
 export interface DecisionModelOption {
@@ -188,7 +191,11 @@ export interface DecisionModelOption {
   unavailable: DecisionUnavailableReason | null;
   /** Extra detail for a reason that names something specific, e.g. a platform requirement. */
   detail?: string;
-  /** For local slots: the Thinking setting and what the last probe concluded. */
+  /**
+   * Only for the two local chat slots, the ones with a Thinking setting: that setting
+   * and what the last probe concluded. The decision sidecar never has them, and the
+   * panel shows its Thinking controls only when `thinking` is present.
+   */
   thinking?: DecisionThinkingMode;
   answerStyle?: DecisionAnswerStyle;
   /**

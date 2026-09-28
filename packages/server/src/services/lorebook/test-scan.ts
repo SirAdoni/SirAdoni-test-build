@@ -28,13 +28,7 @@ import {
 import { vmRegexExecutor } from "./regex-timeout.js";
 
 export type LorebookTestBlockReason =
-  | "secondary_keys"
-  | "filters"
-  | "conditions"
-  | "group"
-  | "probability"
-  | "recursion_only"
-  | "folder_disabled";
+  "secondary_keys" | "filters" | "conditions" | "group" | "probability" | "recursion_only" | "folder_disabled";
 
 export interface LorebookTestActivatedEntry {
   entryId: string;

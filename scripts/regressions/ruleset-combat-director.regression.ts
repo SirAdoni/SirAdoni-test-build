@@ -25,6 +25,7 @@ import { fileURLToPath } from "node:url";
 import {
   currentRulesetActor,
   parseRulesetDefinition,
+  planRulesetCombatCost,
   rowsFromCatalogEntry,
   RULESET_MOVE_OPTION,
   rulesetCombatant,
@@ -32,6 +33,7 @@ import {
   rulesetCombatStanding,
   rulesetReachableCells,
   rulesetSheetBuildSchema,
+  rulesetWindowOptions,
   type RulesetCatalogEntriesById,
   type RulesetLiveStates,
   type RulesetCatalogEntry,
@@ -48,6 +50,7 @@ import {
   directedRulesetView,
   rulesetDirectorStage,
   rulesetFightLiveStates,
+  rulesetWindowTargetOf,
   syncRulesetCombatants,
   type RulesetFightOpponent,
 } from "../../packages/server/src/services/game/ruleset-combat-director.service.js";
@@ -94,6 +97,20 @@ const spellEntries = [
       cost: [{ pool: "slots_1", amount: 1 }],
     },
   },
+  {
+    // Written at its lowest rung and bigger out of a higher one, which is what `perCostStep` says.
+    id: "ember-lance",
+    label: "Ember Lance",
+    rows: [{ list: "spells", values: { name: "Ember Lance", level: 1, prepared: true } }],
+    mechanics: {
+      kind: "attack",
+      attackRoll: true,
+      amount: { dice: "2d6" },
+      damageType: "fire",
+      cost: [{ pool: "slots_2", amount: 1 }],
+      perCostStep: { dice: "2d6" },
+    },
+  },
 ] as unknown as RulesetCatalogEntry[];
 const spellRows = spellEntries.flatMap((entry) => rowsFromCatalogEntry("spells", entry).map((row) => row.row));
 const spellCatalogs: RulesetCatalogEntriesById = { spells: spellEntries };
@@ -113,7 +130,16 @@ const wizardBuild = () =>
   build({
     abilities: { str: 8, dex: 14, con: 12, int: 18, wis: 12, cha: 10 },
     saves: { int_save: "proficient", wis_save: "proficient" },
-    fields: { level: 7, ac: 12, speed: 30, hp_max: 38, spellcasting_ability: "int", slots_max_1: 4 },
+    fields: {
+      level: 7,
+      ac: 12,
+      speed: 30,
+      hp_max: 38,
+      spellcasting_ability: "int",
+      slots_max_1: 4,
+      slots_max_2: 3,
+      slots_max_3: 3,
+    },
     lists: { spells: spellRows },
   });
 const fiveECards = [card("Brenna", fighterBuild()), card("Corwin", wizardBuild()), card("Tam", null)];
@@ -121,7 +147,10 @@ const fiveECards = [card("Brenna", fighterBuild()), card("Corwin", wizardBuild()
 const emberKnacks = ember.catalogs!.find((catalog) => catalog.id === "knacks")!.entries!;
 const emberRowsFor = (list: string, ids: string[]) =>
   ids.flatMap((id) =>
-    rowsFromCatalogEntry("knacks", emberKnacks.find((entry) => entry.id === id)!)
+    rowsFromCatalogEntry(
+      "knacks",
+      emberKnacks.find((entry) => entry.id === id)!,
+    )
       .filter((row) => row.list === list)
       .map((row) => row.row),
   );
@@ -354,7 +383,12 @@ const emberParty = [
   });
   const thing = rulesetCombatant(tiered.rulesetFight!.encounter, "a")!;
   assert.equal(thing.block!.tier, "cr_2");
-  assert.equal(thing.actions.length, 1, "a tier gives one attack and nothing else");
+  // The ruleset's contests are everybody's, so they are not what a tier gave it.
+  assert.equal(
+    thing.actions.filter((action) => action.kind !== "contest").length,
+    1,
+    "a tier gives one attack and nothing else",
+  );
   assert.ok(
     tiered.rulesetFight!.adjustments.some((line) => line.includes("was built from the numbers of")),
     "an opponent nobody wrote says where its numbers came from",
@@ -604,6 +638,8 @@ for (const setup of [
   },
 ]) {
   let resolved = 0;
+  /** Which pools the picker actually paid out of, over the whole sweep. */
+  const spentPools = new Set<string>();
   for (let seed = 1; seed <= 40; seed++) {
     const state = started({
       definition: setup.definition,
@@ -626,6 +662,7 @@ for (const setup of [
       assert.ok(commandRulesetCombatDirector(setup.definition, state, { type: "continue" }).ok);
       resolved++;
       const events = state.rulesetFight!.events.slice(-40).map((entry) => entry.event);
+      for (const event of events) if (event.type === "spend") spentPools.add(event.pool);
       assert.ok(
         !events.some((event) => event.type === "refused"),
         `${setup.what} seed ${seed}: the picker chose something the rules refused`,
@@ -640,6 +677,50 @@ for (const setup of [
     }
   }
   assert.ok(resolved >= 100, `${setup.what}: ${resolved} seeded turns were resolved`);
+  // Paying out of a BIGGER pool is a candidate of its own, so the picker weighs casting something
+  // bigger against casting it at all. Only the 5e draft has a pool family to climb.
+  //
+  // The party's two paid spells are written one rung apart and only one of them grows, so each pool
+  // names exactly one thing: `slots_1` is Mending Light, `slots_2` is Ember Lance as written, and
+  // `slots_3` can only be Ember Lance cast out of a bigger slot.
+  if (setup.what === "5e") {
+    assert.ok(
+      spentPools.has("slots_3"),
+      `${setup.what}: nothing was ever paid for out of a higher pool, it spent ${[...spentPools].join(", ")}`,
+    );
+    // An opponent built from a plain stat block has nothing to climb. A block's actions cost nothing
+    // off any pool, so there is no bigger way for it to pay, whoever plays it, the Engine or a Game
+    // Master. (One whose bestiary entry carries a sheet does; that is pinned in the creatures lane.)
+    {
+      const encounter = started({
+        definition: setup.definition,
+        cards: setup.cards,
+        partyCatalogs: setup.catalogs,
+        party: setup.party,
+        enemies: [{ id: "a", name: setup.enemy }],
+        seed: 1,
+      }).rulesetFight!.encounter;
+      const opponent = rulesetCombatant(encounter, "a")!;
+      for (const action of opponent.actions) {
+        for (const pool of ["slots_1", "slots_2", "slots_3"]) {
+          assert.equal(
+            planRulesetCombatCost(setup.definition, opponent, action, pool),
+            null,
+            `${setup.what}: an opponent's ${action.label} cannot be paid out of ${pool}`,
+          );
+        }
+      }
+    }
+    // And the base way of paying is still there beside it: the bigger ways are candidates ADDED to
+    // it, not candidates that replaced it. (What the extra rungs are worth against what they buy is
+    // the picker's own weighing, and is not pinned here: with the price taken out entirely this
+    // sweep still casts it as written somewhere, because a caster out of third-level slots has
+    // nothing else to spend.)
+    assert.ok(
+      spentPools.has("slots_2"),
+      `${setup.what}: the base way of paying vanished, it spent only ${[...spentPools].join(", ")}`,
+    );
+  }
 }
 
 // ── The picker leaves the dying alone, and points an ability at everybody it may take ──
@@ -992,6 +1073,8 @@ for (const setup of [
         delete source.reach;
         delete source.range;
       }
+      // A push is measured in cells too, so the contest that only pushes goes with them.
+      doc.combat.contests = doc.combat.contests.filter((contest: { onWin: { push?: number } }) => !contest.onWin.push);
     }),
     "a 5e draft that says nothing about cells",
   );
@@ -1205,6 +1288,60 @@ for (const setup of [
     );
   }
 
+  // A ridge between them (#6678): two cells apart in a straight line, with every cell that is closer
+  // in a straight line solid, and a way round to the south. Walked by the straight line, both stood
+  // and looked at each other for the rest of the fight; walked by the route, it ends.
+  {
+    // Only an axe, as in the browser case that found it: nothing thrown, so walking is the only way
+    // to close the gap.
+    const axeOnly = build({
+      abilities: { brawn: 3, wits: 0, heart: 0 },
+      fields: { toughness: 6 },
+      lists: { gear: [{ name: "Road axe", swing: "brawn", damage: "1d6", harm: "cut" }] },
+    });
+    const state = started({
+      definition: ember,
+      cards: [card("Juno", axeOnly)],
+      partyCatalogs: {},
+      party: [emberParty[0]!],
+      enemies: [{ id: "moth", name: "Cinder Moth" }],
+      seed: 1,
+      positioned: true,
+    });
+    const encounter = state.rulesetFight!.encounter;
+    const grid = encounter.board!.grid;
+    const drawn = [
+      "...m........",
+      "...m........",
+      "...mww......",
+      ".....w......",
+      "...www......",
+      "............",
+      "............",
+      "............",
+    ];
+    const terrain = { ".": "plains", m: "mountain", w: "water" } as const;
+    grid.width = 12;
+    grid.height = 8;
+    grid.tiles = drawn.map((row) => [...row].map((cell) => terrain[cell as keyof typeof terrain]));
+    Object.assign(rulesetCombatant(encounter, "juno")!, { x: 2, y: 2 });
+    Object.assign(rulesetCombatant(encounter, "moth")!, { x: 4, y: 0 });
+    for (const [id, foe] of [
+      ["juno", { x: 4, y: 0 }],
+      ["moth", { x: 2, y: 2 }],
+    ] as const) {
+      const actor = rulesetCombatant(encounter, id)!;
+      actor.movementLeft = actor.movement;
+      assert.ok(
+        !rulesetReachableCells(ember, encounter, id).some(
+          (cell) => Math.max(Math.abs(cell.x - foe.x), Math.abs(cell.y - foe.y)) < 2,
+        ),
+        `${id} can reach no cell that is closer in a straight line, which is the board this case is about`,
+      );
+    }
+    runToTheEnd(ember, state, [emberParty[0]!], "a fight across a ridge");
+  }
+
   // Nobody ends a turn with movement left and an attack they could have reached: the picker walks
   // to the trouble rather than standing in the open.
   const state = started({
@@ -1245,3 +1382,464 @@ for (const setup of [
 console.log(
   "Ruleset combat director: sheets, bestiaries, clamps, tiers, refusals, one turn per continue, the picker, the board, summaries and a JSON round trip passed.",
 );
+
+// ── The picker weighs a contest like anything else, and the rules never refuse the one it picks ──
+{
+  let taken = 0;
+  let won = 0;
+  let actions = 0;
+  for (let seed = 1; seed <= 60; seed++) {
+    const state = started({
+      definition: ember,
+      cards: emberCards,
+      partyCatalogs: emberCatalogs,
+      party: emberParty,
+      enemies: [
+        { id: "moth", name: "Cinder Moth" },
+        { id: "jackal", name: "Rust Jackal" },
+      ],
+      seed,
+      positioned: true,
+    });
+    for (const member of emberParty) {
+      commandRulesetCombatDirector(ember, state, { type: "control", unitId: member.id, controller: "ai" });
+    }
+    for (let turn = 0; turn < 60 && !state.outcome; turn++) {
+      assert.ok(commandRulesetCombatDirector(ember, state, { type: "continue" }).ok);
+    }
+    const events = state.rulesetFight!.events.map((entry) => entry.event);
+    assert.ok(!events.some((event) => event.type === "refused"), `seed ${seed}: the rules refused a pick`);
+    for (const event of events) {
+      if (event.type === "attack" || event.type === "contest") actions++;
+      if (event.type !== "contest") continue;
+      taken++;
+      if (event.winner === "actor") won++;
+    }
+  }
+  // A contest is a setup, and kept modest: taken now and then across sixty fights, never the whole plan
+  // (about one action in fifteen when this was written, held under one in four).
+  assert.ok(taken > 0, "nobody the Engine plays ever tried a contest");
+  assert.ok(won > 0, "and none of them ever came off");
+  assert.ok(taken * 4 < actions, `contests became the plan rather than a part of it: ${taken} of ${actions} actions`);
+}
+
+// ── A party member the Engine plays answers its own windows, and may let one go ──
+{
+  // Sear waits for its holder to be hurt and is pointed back at whoever did it. It lives in this
+  // fight alone: a party member the PLAYER plays who holds it is asked, and the fight waits, which
+  // is right, and would hold up every other case in this file that is not about reactions.
+  const sear = {
+    id: "sear",
+    label: "Sear",
+    rows: [{ list: "spells", values: { name: "Sear", level: 1, prepared: true } }],
+    mechanics: {
+      kind: "attack",
+      reaction: { on: "harmed" },
+      budget: "reaction",
+      amount: { dice: "2d10" },
+      damageType: "fire",
+      save: { save: "dex_save", onSuccess: "half" },
+      cost: [{ pool: "slots_1", amount: 1 }],
+    },
+  } as unknown as RulesetCatalogEntry;
+  const searRows = rowsFromCatalogEntry("spells", sear).map((row) => row.row);
+  const base = wizardBuild();
+  const reactive = { ...base, lists: { ...base.lists, spells: [...(base.lists?.spells ?? []), ...searRows] } };
+  const moments = { opened: 0, taken: 0, letGo: 0 };
+  for (let seed = 1; seed <= 40; seed++) {
+    const state = started({
+      definition: fiveE,
+      cards: [card("Corwin", reactive)],
+      partyCatalogs: { spells: [...spellEntries, sear] },
+      party: [{ id: "corwin", name: "Corwin" }],
+      enemies: [
+        { id: "a", name: "Thorn Lurker" },
+        { id: "b", name: "Thorn Lurker" },
+      ],
+      seed,
+    });
+    commandRulesetCombatDirector(fiveE, state, { type: "control", unitId: "corwin", controller: "ai" });
+    for (let turn = 0; turn < 10 && !state.outcome; turn++) {
+      const before = state.rulesetFight!.events.length;
+      assert.ok(commandRulesetCombatDirector(fiveE, state, { type: "continue" }).ok);
+      assert.equal(
+        state.rulesetFight!.encounter.window,
+        undefined,
+        `seed ${seed}: nobody the Engine plays leaves a window open`,
+      );
+      const events = state.rulesetFight!.events.slice(before).map((entry) => entry.event);
+      assert.ok(!events.some((event) => event.type === "refused"), `seed ${seed}: an answer the rules refused`);
+      for (const event of events) {
+        if (event.type === "window" && event.moment === "harmed") moments.opened++;
+        if (event.type === "pass") moments.letGo++;
+        if (event.type === "budget" && event.budget === "reaction" && event.actorId === "corwin") moments.taken++;
+      }
+    }
+  }
+  // Whom an option that asks for nobody really lands on, which is what it is weighed against: the
+  // one who hurt its holder, for a reaction pointed back at them, and the one walking away, for a
+  // strike at a passer-by. Held open by hand here, so the answer is read rather than guessed at.
+  {
+    const state = started({
+      definition: fiveE,
+      cards: [card("Corwin", reactive)],
+      partyCatalogs: { spells: [...spellEntries, sear] },
+      party: [{ id: "corwin", name: "Corwin" }],
+      enemies: [{ id: "a", name: "Thorn Lurker" }],
+      seed: 1,
+    });
+    const held = structuredClone(state.rulesetFight!.encounter);
+    held.window = {
+      id: "w1",
+      kind: "reaction",
+      trigger: { kind: "harmed", sourceId: "a", label: "Bite" },
+      waiting: ["corwin"],
+    };
+    const corwin = rulesetCombatant(held, "corwin")!;
+    const answer = rulesetWindowOptions(fiveE, held, "corwin").find((option) => option.label === "Sear");
+    assert.ok(answer, "Sear is offered at the moment it waits for");
+    assert.deepEqual(answer.targets, { side: "self", count: 0 }, "and asks nobody whom to point at");
+    assert.equal(rulesetWindowTargetOf(held, corwin, answer), "a", "because it lands on whoever hurt its holder");
+    held.window = {
+      ...held.window,
+      trigger: { kind: "leaves-reach", moverId: "a", from: { x: 0, y: 0 }, to: { x: 1, y: 0 } },
+    };
+    assert.equal(rulesetWindowTargetOf(held, corwin, answer), "a", "a strike at a passer-by lands on the passer-by");
+    held.window = { ...held.window, trigger: { kind: "between-turns", nextActorId: "a" } };
+    assert.equal(rulesetWindowTargetOf(held, corwin, answer), undefined, "and a pause between turns points at nobody");
+  }
+
+  // Shield, on the moment after a hit: the Engine takes it only when it turns the hit into a miss,
+  // and never spends it on a blow it could not stop.
+  {
+    const shielding = parsedOrThrow(
+      variant(fiveEText, (doc) => {
+        doc.sheet.live.conditions.push({ id: "shielded", label: "Shielded" });
+        doc.combat.conditions.push({ condition: "shielded", modifiers: [{ to: "defense", flat: 5 }] });
+      }),
+      "the 5e example with Shield's condition",
+    );
+    const shield = {
+      id: "shield",
+      label: "Shield",
+      rows: [{ list: "spells", values: { name: "Shield", level: 1, prepared: true } }],
+      mechanics: {
+        kind: "buff",
+        targets: "self",
+        budget: "reaction",
+        reaction: { on: "hit" },
+        applies: [{ condition: "shielded", duration: { rounds: 1, at: "turn-start" } }],
+      },
+    } as unknown as RulesetCatalogEntry;
+    const shieldRows = rowsFromCatalogEntry("spells", shield).map((row) => row.row);
+    const guarded = { ...base, lists: { ...base.lists, spells: [...(base.lists?.spells ?? []), ...shieldRows] } };
+    const hits = { opened: 0, deflected: 0, letGo: 0 };
+    for (let seed = 1; seed <= 40; seed++) {
+      const state = started({
+        definition: shielding,
+        cards: [card("Corwin", guarded)],
+        partyCatalogs: { spells: [...spellEntries, shield] },
+        party: [{ id: "corwin", name: "Corwin" }],
+        enemies: [
+          { id: "a", name: "Thorn Lurker" },
+          { id: "b", name: "Thorn Lurker" },
+        ],
+        seed,
+      });
+      commandRulesetCombatDirector(shielding, state, { type: "control", unitId: "corwin", controller: "ai" });
+      for (let turn = 0; turn < 10 && !state.outcome; turn++) {
+        const before = state.rulesetFight!.events.length;
+        assert.ok(commandRulesetCombatDirector(shielding, state, { type: "continue" }).ok);
+        assert.equal(state.rulesetFight!.encounter.window, undefined, `seed ${seed}: a held hit left open`);
+        const events = state.rulesetFight!.events.slice(before).map((entry) => entry.event);
+        assert.ok(!events.some((event) => event.type === "refused"), `seed ${seed}: an answer the rules refused`);
+        for (const [index, event] of events.entries()) {
+          if (event.type !== "window" || event.moment !== "hit") continue;
+          hits.opened++;
+          const shielded = events
+            .slice(index + 1)
+            .some((later) => later.type === "condition" && later.condition === "shielded" && later.active);
+          if (!shielded) {
+            hits.letGo++;
+            continue;
+          }
+          hits.deflected++;
+          const recheck = events.slice(index + 1).find((later) => later.type === "recheck");
+          assert.equal(
+            recheck?.type === "recheck" && recheck.outcome,
+            "miss",
+            `seed ${seed}: a Shield spent for nothing`,
+          );
+        }
+      }
+    }
+    assert.ok(hits.opened > 0, "hits on a Shield holder the Engine plays were held");
+    assert.ok(hits.deflected > 0, "the Engine raised it when it turned the hit aside");
+    assert.ok(hits.letGo > 0, "and let a blow it could not stop land");
+  }
+
+  assert.ok(moments.opened > 0, "being hurt opened windows for a party member the Engine plays");
+  assert.ok(moments.taken > 0, "and the Engine answered them, pointed back at whoever did it");
+  // Availability alone never forces a spend: letting the moment go by is a candidate like any other,
+  // weighed the way ending a turn is, and over forty seeded fights the picker does choose it.
+  assert.ok(moments.letGo > 0, "and at least once it let the moment go by");
+  assert.equal(
+    moments.taken + moments.letGo,
+    moments.opened,
+    "every window answered exactly once, one way or the other",
+  );
+}
+
+// ── A fight thrown in pools, played out by the Engine on both sides ──
+// Gravewatch's own fight, twenty seeds, everybody on the Engine's picker: every fight ends, pools are
+// thrown and soaked, and nobody the Engine plays spends past the one point of Resolve a turn allows.
+{
+  const gravewatch = parsedOrThrow(variant(read("../../docs/examples/rulesets/gravewatch.json")), "the pool example");
+  const charms = gravewatch.catalogs!.find((catalog) => catalog.id === "charms")!.entries!;
+  const charmRows = ["lantern-flare", "stern-word"].flatMap((id) =>
+    rowsFromCatalogEntry(
+      "charms",
+      charms.find((entry) => entry.id === id)!,
+    ).map((row) => row.row),
+  );
+  const warden = (sinew: number, nerve: number) =>
+    build({
+      abilities: { sinew, nerve, warmth: 2 },
+      skills: { dig: "rating_1", wrestle: "rating_2", ward: "rating_2" },
+      lists: {
+        arms: [{ name: "Spade", rating: "sinew", trade: "dig", dice: "2d10", harm: "tearing" }],
+        charms: charmRows,
+      },
+    });
+  const party = [
+    { id: "ada", name: "Ada" },
+    { id: "bram", name: "Bram" },
+  ];
+  const seen = { pools: 0, soaked: 0, rethrown: 0, overspent: 0 };
+  for (let seed = 1; seed <= 20; seed++) {
+    const state = started({
+      definition: gravewatch,
+      cards: [card("Ada", warden(3, 2)), card("Bram", warden(2, 3))],
+      partyCatalogs: { charms },
+      party,
+      enemies: [
+        { id: "rats", name: "Grave-rat swarm", creature: "night/grave-rats" },
+        { id: "hollow", name: "Hollow warden", creature: "night/hollow-warden" },
+      ],
+      seed,
+    });
+    for (const member of party) {
+      commandRulesetCombatDirector(gravewatch, state, { type: "control", unitId: member.id, controller: "ai" });
+    }
+    // What each combatant has spent of Resolve since their own turn last began.
+    const spent = new Map<string, number>();
+    let lastSeq = state.rulesetFight!.eventSeq;
+    let guard = 0;
+    while (!state.outcome && guard++ < 600) {
+      commandRulesetCombatDirector(gravewatch, state, { type: "continue" });
+      for (const { seq, event } of state.rulesetFight!.events.filter((entry) => entry.seq > lastSeq)) {
+        lastSeq = seq;
+        if (event.type === "turn") spent.set(event.actorId, 0);
+        if (event.type === "initiative") seen.rethrown++;
+        if (event.type === "attack" && event.pool) seen.pools++;
+        if (event.type === "damage" && event.pool?.soak) seen.soaked++;
+        if (event.type === "spend" && event.pool === "resolve") {
+          const total = (spent.get(event.actorId) ?? 0) + event.amount;
+          spent.set(event.actorId, total);
+          if (total > 1) seen.overspent++;
+        }
+      }
+    }
+    assert.ok(state.outcome === "victory" || state.outcome === "defeat", `seed ${seed}: the pool fight ended`);
+  }
+  assert.ok(seen.pools > 0, "attacks were thrown as pools");
+  assert.ok(seen.soaked > 0, "and soaked by kind");
+  assert.ok(seen.rethrown > 0, "initiative was thrown again as rounds began");
+  assert.equal(seen.overspent, 0, "nobody spent past the limit");
+}
+
+// ── Initiative as a number attacks move, played out by the Engine on both sides ──
+// The same fight with the number taken and spent: every fight ends, both styles are used, somebody
+// crashes, and the picker never asks for a style the rules refuse. Then a Game Master's boss is offered
+// each style as its own choice, a player's command carries one, and fleeing leaves nobody crashed.
+{
+  const moveInitiative = (doc: Record<string, any>) => {
+    doc.sheet.live.conditions.push({ id: "reeling", label: "Reeling" });
+    doc.combat.initiative = {
+      pool: { abilityMod: "nerve" },
+      plus: 3,
+      resource: {
+        base: 3,
+        styles: [
+          { id: "press", label: "Press", takes: { gain: 1 } },
+          {
+            id: "telling",
+            label: "Telling blow",
+            spends: {
+              onMiss: [
+                [0, 1],
+                [6, 2],
+                [11, 3],
+              ],
+            },
+          },
+        ],
+        crash: { at: 0, condition: "reeling", bonus: 5, recoverAfter: 3 },
+      },
+    };
+  };
+  const gravewatchText = read("../../docs/examples/rulesets/gravewatch.json");
+  const moving = parsedOrThrow(variant(gravewatchText, moveInitiative), "the moving-initiative Gravewatch");
+  const charms = moving.catalogs!.find((catalog) => catalog.id === "charms")!.entries!;
+  const warden = (sinew: number, nerve: number) =>
+    build({
+      abilities: { sinew, nerve, warmth: 2 },
+      skills: { dig: "rating_1", wrestle: "rating_2", ward: "rating_2" },
+      lists: { arms: [{ name: "Spade", rating: "sinew", trade: "dig", dice: "2d10", harm: "tearing" }] },
+    });
+  const party = [
+    { id: "ada", name: "Ada" },
+    { id: "bram", name: "Bram" },
+  ];
+  const enemies = [
+    { id: "rats", name: "Grave-rat swarm", creature: "night/grave-rats" },
+    { id: "hollow", name: "Hollow warden", creature: "night/hollow-warden" },
+  ];
+  const seen = { press: 0, telling: 0, taken: 0, spent: 0, crashes: 0, refused: 0 };
+  for (let seed = 1; seed <= 20; seed++) {
+    const state = started({
+      definition: moving,
+      cards: [card("Ada", warden(3, 2)), card("Bram", warden(2, 3))],
+      partyCatalogs: { charms },
+      party,
+      enemies,
+      seed,
+    });
+    for (const member of party) {
+      commandRulesetCombatDirector(moving, state, { type: "control", unitId: member.id, controller: "ai" });
+    }
+    let lastSeq = state.rulesetFight!.eventSeq;
+    let guard = 0;
+    while (!state.outcome && guard++ < 800) {
+      commandRulesetCombatDirector(moving, state, { type: "continue" });
+      for (const { seq, event } of state.rulesetFight!.events.filter((entry) => entry.seq > lastSeq)) {
+        lastSeq = seq;
+        if (event.type === "attack" && event.style === "press") seen.press++;
+        if (event.type === "attack" && event.style === "telling") seen.telling++;
+        if (event.type === "shift" && event.reason === "taken") seen.taken++;
+        if (event.type === "shift" && event.reason === "spent") seen.spent++;
+        if (event.type === "condition" && event.condition === "reeling" && event.active) seen.crashes++;
+        if (event.type === "refused") seen.refused++;
+      }
+    }
+    assert.ok(state.outcome === "victory" || state.outcome === "defeat", `seed ${seed}: the fight ended`);
+    // Nobody leaves a finished fight crashed.
+    for (const combatant of state.rulesetFight!.encounter.combatants) {
+      assert.equal(combatant.crashedTurns, undefined, `seed ${seed}: ${combatant.id} is not left crashed`);
+    }
+  }
+  assert.ok(seen.press > 0 && seen.taken > 0, `blows took initiative: ${JSON.stringify(seen)}`);
+  assert.ok(seen.telling > 0 && seen.spent > 0, `and spent it: ${JSON.stringify(seen)}`);
+  assert.ok(seen.crashes > 0, `somebody crashed: ${JSON.stringify(seen)}`);
+  assert.equal(seen.refused, 0, "the picker only asks for what the rules allow");
+
+  // A Game Master's boss: each style is its own choice, carried through to the rules.
+  const bossed = started({
+    definition: moving,
+    cards: [card("Ada", warden(3, 2))],
+    partyCatalogs: { charms },
+    party: [party[0]!],
+    enemies: [{ ...enemies[1]!, boss: true }],
+    gm: true,
+    seed: 5,
+  });
+  commandRulesetCombatDirector(moving, bossed, { type: "control", unitId: "ada", controller: "ai" });
+  for (let guard = 0; guard < 6 && !bossed.window; guard++) {
+    assert.ok(commandRulesetCombatDirector(moving, bossed, { type: "continue" }).ok);
+  }
+  assert.equal(bossed.window?.actorId, "hollow", "the boss's turn is a decision");
+  const grips = bossed.window!.options.filter((option) => option.optionId === "grip");
+  assert.deepEqual(
+    [...new Set(grips.map((option) => option.style))].sort(),
+    ["press", "telling"],
+    "the grip is offered once per style",
+  );
+  assert.ok(
+    grips.some((option) => option.label === "Cold grip, Telling blow"),
+    "and named for it",
+  );
+  const telling = grips.find((option) => option.style === "telling")!;
+  const before = bossed.rulesetFight!.eventSeq;
+  assert.ok(commandRulesetCombatDirector(moving, bossed, { type: "choose", candidateId: telling.id }).ok);
+  const attack = bossed.rulesetFight!.events.find((entry) => entry.seq > before && entry.event.type === "attack");
+  assert.equal(attack?.event.type === "attack" ? attack.event.style : undefined, "telling");
+
+  // A player's command carries its style, and one the attack is not offered in is refused.
+  const played = started({
+    definition: moving,
+    cards: [card("Ada", warden(3, 2))],
+    partyCatalogs: { charms },
+    party: [party[0]!],
+    enemies: [enemies[0]!],
+    seed: 2,
+  });
+  for (let guard = 0; guard < 6 && view(moving, played).actorId !== "ada"; guard++) {
+    assert.ok(commandRulesetCombatDirector(moving, played, { type: "continue" }).ok);
+  }
+  const spade = view(moving, played).options!.find((option) => option.label === "Spade")!;
+  assert.deepEqual(
+    spade.styles?.map((style) => style.id),
+    ["press", "telling"],
+    "the player's menu offers the styles",
+  );
+  const frozen = JSON.stringify(played.rulesetFight);
+  const refused = commandRulesetCombatDirector(moving, played, {
+    type: "ruleset",
+    optionId: spade.id,
+    targetIds: ["rats"],
+    style: "sneak",
+  });
+  assert.ok(!refused.ok && refused.code === "ruleset_combat_unknown-style", JSON.stringify(refused));
+  assert.equal(JSON.stringify(played.rulesetFight), frozen);
+  const seq = played.rulesetFight!.eventSeq;
+  assert.ok(
+    commandRulesetCombatDirector(moving, played, {
+      type: "ruleset",
+      optionId: spade.id,
+      targetIds: ["rats"],
+      style: "press",
+    }).ok,
+  );
+  const pressed = played.rulesetFight!.events.find((entry) => entry.seq > seq && entry.event.type === "attack");
+  assert.equal(pressed?.event.type === "attack" ? pressed.event.style : undefined, "press");
+
+  // Walking away from a fight leaves nobody crashed, on the sheet or off it. With no `plus`, a warden
+  // whose opening pool finds nothing starts crashed; the first seed where Ada does is the fight.
+  const bare = parsedOrThrow(
+    variant(gravewatchText, (doc) => {
+      moveInitiative(doc);
+      delete doc.combat.initiative.plus;
+    }),
+    "the moving Gravewatch with no plus",
+  );
+  let fled: CombatDirectorState | undefined;
+  for (let seed = 1; seed <= 40 && !fled; seed++) {
+    const state = started({
+      definition: bare,
+      cards: [card("Ada", warden(3, 2))],
+      partyCatalogs: { charms },
+      party: [party[0]!],
+      enemies: [enemies[0]!],
+      seed,
+    });
+    if (rulesetCombatant(state.rulesetFight!.encounter, "ada")!.crashedTurns !== undefined) fled = state;
+  }
+  assert.ok(fled, "some seed opens Ada crashed");
+  assert.ok(JSON.stringify(rulesetFightLiveStates(fled.rulesetFight!)).includes("reeling"), "on her sheet");
+  assert.ok(commandRulesetCombatDirector(bare, fled, { type: "flee" }).ok);
+  assert.equal(rulesetCombatant(fled.rulesetFight!.encounter, "ada")!.crashedTurns, undefined);
+  assert.ok(
+    !JSON.stringify(rulesetFightLiveStates(fled.rulesetFight!)).includes("reeling"),
+    "and off it after fleeing",
+  );
+}

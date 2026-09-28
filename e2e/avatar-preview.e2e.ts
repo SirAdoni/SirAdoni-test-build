@@ -1,3 +1,4 @@
+import { clickTopbarPanel } from "./topbar-navigation.js";
 import { expect, test } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { seedUIState } from "./ui-state-fixture.js";
@@ -48,7 +49,7 @@ test("library portraits keep their proportions in compact and full layouts", asy
     await page.goto("/");
     for (const layout of ["compact", "full"]) {
       if (layout === "full") {
-        await page.locator('[data-tour="panel-characters"]').click();
+        await clickTopbarPanel(page, "characters");
         await page.getByRole("button", { name: "Open Library", exact: true }).click();
       }
       const card = page.locator(`[data-card-library-card="${character.id}"]`).filter({ visible: true }).first();

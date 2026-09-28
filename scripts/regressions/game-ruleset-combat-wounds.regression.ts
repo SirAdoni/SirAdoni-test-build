@@ -14,7 +14,8 @@
  *   - An immune target takes no mark, and a resisted blow that halves to nothing takes none either.
  *   - Filling the track puts the combatant down, and the ruleset's dying rule reads that.
  *   - Healing clears one mark and brings a downed member back, exactly as restoring a pool does.
- *   - An opponent is still written in plain numbers: a stat block has no sheet to mark.
+ *   - An opponent built from a plain stat block is still written in plain numbers: it has no sheet
+ *     to mark. (One whose bestiary entry carries a sheet is marked; see the creature-sheets lane.)
  *   - The recap and the summary read a track without knowing it is one.
  *   - The `battle` bridge carries a share of the track's LENGTH, and writes back marks.
  *   - Temporary points are refused at import, because there is nothing on a track they could mean.
@@ -198,7 +199,7 @@ const marksOf = (definition: RulesetDefinition, state: RulesetEncounterState, id
   });
   assert.deepEqual(rulesetCombatHealth(wounded, wounded.combat!, who(hurt, "juno")), { value: 1, max: 3, temp: 0 });
 
-  // An opponent is still plain numbers: a stat block has no sheet to mark.
+  // An opponent built from a plain stat block is still plain numbers: it has no sheet to mark.
   assert.deepEqual(rulesetCombatHealth(wounded, wounded.combat!, who(state, "ash")), { value: 20, max: 20, temp: 0 });
 }
 
@@ -492,7 +493,8 @@ for (const marks of ["per-blow", "per-point"] as const) {
 
   // And healing past where it started comes back as marks cleared.
   const healed = sheetOpsFromCombatResult(bridged, hurt, { hp: 60 });
-  assert.deepEqual(healed, [{ op: "damage", track: "harm", kind: "bruise", amount: -1 }]);
+  // A heal names no kind, so it clears the lightest mark there is rather than only bruises.
+  assert.deepEqual(healed, [{ op: "damage", track: "harm", kind: "", amount: -1 }]);
 
   // A battle that did not move the bar writes nothing at all, exactly as on a pool.
   assert.deepEqual(sheetOpsFromCombatResult(bridged, fresh, { hp: 60 }), []);

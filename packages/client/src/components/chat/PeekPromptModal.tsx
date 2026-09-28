@@ -18,8 +18,9 @@ import {
 import { NEUTRAL_PANEL_SCROLL_AREA } from "../ui/neutral-surface-styles";
 import { Modal } from "../ui/Modal";
 import { useTranslation as useUiTranslation } from "react-i18next";
-import { estimateTextTokens, type GameToolPlanningInfo } from "@marinara-engine/shared";
+import { estimateTextTokens, type GameToolPlanningInfo, type DecisionDebugPreview } from "@marinara-engine/shared";
 import { GenerationTokenUsage } from "./GenerationTokenUsage";
+import { DecisionDebugPanel } from "./DecisionDebugPanel";
 
 const PROMPT_TAG_CLASS =
   "border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-highlight-text)]";
@@ -93,6 +94,7 @@ interface PromptMessageMetadata {
 
 interface PeekPromptModalProps {
   data: {
+    chatId?: string;
     messages: Array<{ role: string; content: string; metadata?: PromptMessageMetadata }>;
     chatMode?: string;
     parameters: unknown;
@@ -102,7 +104,7 @@ interface PeekPromptModalProps {
     gameToolPlanning?: GameToolPlanningInfo | null;
     agentNote?: string;
     promptRequests?: PromptRequest[];
-    decisions?: { unanswered: string[]; decisionModelSet: boolean };
+    decisions?: { unanswered: string[]; dropped?: string[]; decisionModelSet: boolean };
   };
   onClose: () => void;
 }
@@ -878,8 +880,22 @@ function PromptMessageMetadataPanel({
 //  Main Modal
 // ═══════════════════════════════════════════════
 
-export function PeekPromptModal({ data, onClose }: PeekPromptModalProps) {
+export function PeekPromptModal({ data: originalData, onClose }: PeekPromptModalProps) {
   const { t: localizeUi } = useUiTranslation();
+  const [tested, setTested] = useState<DecisionDebugPreview | null>(null);
+  const [showTest, setShowTest] = useState(false);
+  const data: PeekPromptModalProps["data"] =
+    showTest && tested
+      ? {
+          ...originalData,
+          messages: tested.prompt.messages,
+          parameters: tested.parameters,
+          decisions: tested.prompt.decisions,
+          source: "live_preview",
+          exact: false,
+          promptRequests: undefined,
+        }
+      : originalData;
   const [searchQuery, setSearchQuery] = useState("");
   const [scope, setScope] = useState<PromptInspectorScope>("all");
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
@@ -921,13 +937,15 @@ export function PeekPromptModal({ data, onClose }: PeekPromptModalProps) {
   const resultCount = useMemo(() => countPromptInspectorResults(filteredSections), [filteredSections]);
   const totalTokens = useMemo(() => estimateTokens(visibleMessages.map((m) => m.content).join("")), [visibleMessages]);
   const searchActive = searchQuery.trim().length > 0;
-  const promptSourceLabel = data.exact
-    ? localizeUi("ui.chat.peekpromptmodal.exactTextModelRequest")
-    : data.source === "live_preview"
-      ? localizeUi("ui.chat.peekpromptmodal.livePreview")
-      : data.source === "raw_messages"
-        ? localizeUi("ui.chat.peekpromptmodal.rawMessages")
-        : localizeUi("ui.chat.peekpromptmodal.promptPreview");
+  const promptSourceLabel = showTest
+    ? localizeUi("decisionDebug.testedPrompt")
+    : data.exact
+      ? localizeUi("ui.chat.peekpromptmodal.exactTextModelRequest")
+      : data.source === "live_preview"
+        ? localizeUi("ui.chat.peekpromptmodal.livePreview")
+        : data.source === "raw_messages"
+          ? localizeUi("ui.chat.peekpromptmodal.rawMessages")
+          : localizeUi("ui.chat.peekpromptmodal.promptPreview");
 
   const handleCopyAll = async () => {
     const copied = await copyToClipboard(serializePromptMessages(visibleMessages));
@@ -1197,8 +1215,36 @@ export function PeekPromptModal({ data, onClose }: PeekPromptModalProps) {
             </ul>
           </div>
         )}
+        {data.chatId && (
+          <DecisionDebugPanel
+            key={data.chatId}
+            chatId={data.chatId}
+            onPreview={(preview) => {
+              setTested(preview);
+              setShowTest(preview !== null);
+            }}
+          />
+        )}
+        {tested && (
+          <button
+            type="button"
+            className="mari-chrome-control min-h-10 px-3"
+            onClick={() => setShowTest((value) => !value)}
+          >
+            {localizeUi(showTest ? "decisionDebug.showOriginal" : "decisionDebug.showTest")}
+          </button>
+        )}
+        {data.decisions?.dropped && data.decisions.dropped.length > 0 && (
+          <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs">
+            <p>{localizeUi("ui.chat.peekpromptmodal.decisionsDropped", { count: data.decisions.dropped.length })}</p>
+            <ul className="mt-1 list-disc pl-4 text-[var(--muted-foreground)]">
+              {data.decisions.dropped.slice(0, 12).map((statement) => (
+                <li key={statement}>{statement}</li>
+              ))}
+            </ul>
+          </div>
+        )}{" "}
         <PromptDiagnostics diagnostics={diagnostics} />
-
         {/* Generation info panel */}
         {(gen || planner || paramPills.length > 0) && (
           <div className="rounded-lg border border-[var(--border)] bg-[var(--secondary)]/30 px-4 py-3 space-y-2">

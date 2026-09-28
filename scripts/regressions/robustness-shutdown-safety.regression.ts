@@ -1,7 +1,10 @@
-// Shutdown safety: every console stop request reaches the graceful path, a
-// deliberate keypress repeat forces exit while duplicate delivery and repeated
-// SIGHUP/SIGTERM do not, and a hung runtime stop can no longer keep the file
-// store close (flush plus writer lease release) from running.
+// Shutdown safety. By default every signal, repeat and runtime stop behaves
+// exactly as before. Opt-in: SHUTDOWN_WINDOWS_CONSOLE_SIGNALS routes every
+// Windows console stop request to the graceful path, SHUTDOWN_FORCE_EXIT_ON_REPEAT
+// lets a deliberate keypress repeat force exit while duplicate delivery and
+// repeated SIGHUP/SIGTERM do not, and SHUTDOWN_RUNTIME_STOP_BUDGET_MS keeps a
+// hung runtime stop from holding the file store close (flush plus writer lease
+// release) back.
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,9 +24,54 @@ const signals = await import("../../packages/server/src/lib/shutdown-signals.js"
 const steps = await import("../../packages/server/src/lib/shutdown-steps.js");
 const deadline = await import("../../packages/server/src/lib/shutdown-deadline.js");
 
-// 1. Windows console events map to SIGINT, SIGBREAK and SIGHUP (window close).
-assert.deepEqual(signals.shutdownSignalsFor("win32").sort(), ["SIGBREAK", "SIGHUP", "SIGINT", "SIGTERM"]);
+for (const name of [
+  "SHUTDOWN_WINDOWS_CONSOLE_SIGNALS",
+  "SHUTDOWN_FORCE_EXIT_ON_REPEAT",
+  "SHUTDOWN_RUNTIME_STOP_BUDGET_MS",
+  "SHUTDOWN_EARLY_FLUSH",
+]) {
+  delete process.env[name];
+}
+
+// 0. Defaults are the signals index.ts always handled and no runtime stop budget.
+assert.deepEqual(signals.shutdownSignalsFor("win32").sort(), ["SIGINT", "SIGTERM"], "default Windows signals");
 assert.deepEqual(signals.shutdownSignalsFor("linux").sort(), ["SIGHUP", "SIGINT", "SIGTERM"]);
+assert.equal(signals.runtimeStopBudgetFor("SIGINT", "win32"), Number.POSITIVE_INFINITY, "default waits for stops");
+assert.equal(signals.runtimeStopBudgetFor("SIGTERM", "linux"), Number.POSITIVE_INFINITY);
+assert.equal(steps.getRuntimeStopBudgetMs(), Number.POSITIVE_INFINITY);
+process.env.SHUTDOWN_WINDOWS_CONSOLE_SIGNALS = "true";
+assert.deepEqual(signals.shutdownSignalsFor("win32").sort(), ["SIGBREAK", "SIGHUP", "SIGINT", "SIGTERM"]);
+delete process.env.SHUTDOWN_WINDOWS_CONSOLE_SIGNALS;
+process.env.SHUTDOWN_RUNTIME_STOP_BUDGET_MS = "99999";
+assert.equal(signals.runtimeStopBudgetFor("SIGTERM", "linux"), 2_500, "the configured budget is capped");
+delete process.env.SHUTDOWN_RUNTIME_STOP_BUDGET_MS;
+{
+  // Default controller: every repeat is ignored, however late, as before.
+  let clock = 0;
+  const forced: string[] = [];
+  const controller = signals.createShutdownSignalController({
+    onShutdown: () => undefined,
+    forceExit: (signal) => forced.push(signal),
+    now: () => clock,
+  });
+  assert.equal(controller.handle("SIGINT"), "shutdown");
+  clock += 10_000;
+  assert.equal(controller.handle("SIGINT"), "duplicate", "default: a late second Ctrl+C does not force");
+  assert.deepEqual(forced, []);
+}
+{
+  // Unbounded (default) runtime stops are awaited in full.
+  const result = await steps.runShutdownStepsWithin(
+    [{ name: "slow", run: () => new Promise((done) => setTimeout(done, 150)) }],
+    Number.POSITIVE_INFINITY,
+  );
+  assert.deepEqual(result.timedOut, [], "default: a slow stop is waited for");
+  assert.equal(result.records[0]?.outcome, "ok");
+}
+
+// 1. Opt-in: Windows console events map to SIGINT, SIGBREAK and SIGHUP (window close).
+assert.deepEqual(signals.shutdownSignalsFor("win32", true).sort(), ["SIGBREAK", "SIGHUP", "SIGINT", "SIGTERM"]);
+assert.deepEqual(signals.shutdownSignalsFor("linux", true).sort(), ["SIGHUP", "SIGINT", "SIGTERM"]);
 assert.deepEqual(signals.shutdownDeadlinesFor("SIGHUP", "win32"), signals.WINDOWS_CONSOLE_CLOSE_DEADLINES);
 assert.deepEqual(signals.shutdownDeadlinesFor("SIGHUP", "linux"), {});
 assert.deepEqual(signals.shutdownDeadlinesFor("SIGINT", "win32"), {});
@@ -31,8 +79,10 @@ assert.ok(
   signals.WINDOWS_CONSOLE_CLOSE_DEADLINES.forceExitDeadlineMs < 5_000,
   "console close must finish inside the Windows termination window",
 );
-// Every stop path leaves the store close its reserve after the connection cut
-// and the runtime stop budget, before the forced exit.
+// With a budget configured (the maximum the setting allows), every stop path
+// leaves the store close its reserve after the connection cut and the runtime
+// stop budget, before the forced exit.
+process.env.SHUTDOWN_RUNTIME_STOP_BUDGET_MS = "99999";
 for (const [signal, platform] of [
   ["SIGHUP", "win32"],
   ["SIGINT", "win32"],
@@ -49,21 +99,27 @@ for (const [signal, platform] of [
   );
 }
 assert.ok(signals.runtimeStopBudgetFor("SIGHUP", "win32") < steps.RUNTIME_STOP_BUDGET_MS, "console close is tighter");
-assert.equal(signals.runtimeStopBudgetFor("SIGINT", "win32"), steps.RUNTIME_STOP_BUDGET_MS);
+assert.equal(signals.runtimeStopBudgetFor("SIGINT", "win32"), 2_500, "the configured maximum applies to ordinary stops");
+delete process.env.SHUTDOWN_RUNTIME_STOP_BUDGET_MS;
 // index.ts applies the per-signal budget before closing.
 assert.match(
   readFileSync(join(root, "packages/server/src/index.ts"), "utf8"),
   /setRuntimeStopBudgetMs\(runtimeStopBudgetFor\(signal\)\);[^]*?await app\.close\(\);/u,
 );
-// The launcher must survive Ctrl+Break long enough to report the server's exit.
-assert.match(readFileSync(join(root, "scripts/run-server.mjs"), "utf8"), /"SIGBREAK"/);
+// The early flush is opt-in, and a failure is not logged a second time (the
+// store already logged it at error level and the store close retries it).
+assert.match(
+  readFileSync(join(root, "packages/server/src/index.ts"), "utf8"),
+  /if \(isShutdownEarlyFlushEnabled\(\)\) \{(?:\s*\/\/[^\n]*\n)*\s*void flushDB\(\)\.catch\(\(\) => \{\}\);/u,
+);
 
-// 2. Signal controller: duplicates ignored, deliberate repeat forces exit once.
+// 2. Opt-in signal controller: duplicates ignored, deliberate repeat forces exit once.
 {
   let clock = 1_000;
   const started: string[] = [];
   const forced: string[] = [];
   const controller = signals.createShutdownSignalController({
+    forceExitOnRepeat: true,
     onShutdown: (signal) => started.push(signal),
     forceExit: (signal) => forced.push(signal),
     now: () => clock,
@@ -88,6 +144,7 @@ assert.match(readFileSync(join(root, "scripts/run-server.mjs"), "utf8"), /"SIGBR
   let clock = 0;
   const forced: string[] = [];
   const controller = signals.createShutdownSignalController({
+    forceExitOnRepeat: true,
     onShutdown: () => undefined,
     forceExit: (signal) => forced.push(signal),
     now: () => clock,
@@ -106,6 +163,7 @@ assert.match(readFileSync(join(root, "scripts/run-server.mjs"), "utf8"), /"SIGBR
   const started: string[] = [];
   const forced: string[] = [];
   const controller = signals.createShutdownSignalController({
+    forceExitOnRepeat: true,
     alreadyStopping: () => crashClosing,
     onShutdown: (signal) => started.push(signal),
     forceExit: (signal) => forced.push(signal),
@@ -137,10 +195,12 @@ assert.match(readFileSync(join(root, "scripts/run-server.mjs"), "utf8"), /"SIGBR
 {
   const seen: string[] = [];
   const before = process.listenerCount("SIGBREAK");
+  process.env.SHUTDOWN_WINDOWS_CONSOLE_SIGNALS = "true";
   const uninstall = signals.installShutdownSignalHandlers(
     { handle: (signal) => (seen.push(signal), "shutdown"), shuttingDown: false },
     "win32",
   );
+  delete process.env.SHUTDOWN_WINDOWS_CONSOLE_SIGNALS;
   assert.equal(process.listenerCount("SIGBREAK"), before + 1);
   process.emit("SIGBREAK" as NodeJS.Signals);
   process.emit("SIGHUP" as NodeJS.Signals);
@@ -229,12 +289,30 @@ assert.match(readFileSync(join(root, "scripts/run-server.mjs"), "utf8"), /"SIGBR
   }
 }
 
-// 5. Behavioural: a real app whose worker stop hangs still runs closeDB on close.
+// 4c. Every managed child process is a named, budgeted shutdown step, not only the main
+// sidecar: the decision and utility sidecars are separate processes with their own stops.
+{
+  const appSource = readFileSync(new URL("../../packages/server/src/app.ts", import.meta.url), "utf8");
+  for (const [name, stop] of [
+    ["sidecar", "sidecarProcessService.stop()"],
+    ["decisionSidecar", "decisionProcessService.stop()"],
+    ["utilitySidecar", "utilitySidecarService.stop()"],
+  ]) {
+    assert.ok(
+      appSource.includes(`{ name: "${name}", run: () => ${stop} }`),
+      `app.ts stops ${name} as a named shutdown step`,
+    );
+  }
+}
+
+// 5. Behavioural: a real app whose runtime stop hangs still runs closeDB on close.
 try {
   const { buildApp } = await import("../../packages/server/src/app.js");
   const { getDB, getFileStoreStats } = await import("../../packages/server/src/db/connection.js");
   const { STORAGE_WRITER_LEASE_FILENAME } = await import("../../packages/server/src/db/file-backed-store.js");
   const { appSettings } = await import("../../packages/server/src/db/schema/index.js");
+  const { capabilityModuleRuntime } =
+    await import("../../packages/server/src/services/capability-packages/capability-module-runtime.service.js");
 
   const app = await buildApp();
   await app.ready();

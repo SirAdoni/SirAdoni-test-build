@@ -10,8 +10,11 @@ import {
   RULESET_POOL_MAX_DICE,
   rulesetSheetEnvelopeSchema,
   type RulesetDefinition,
+  type RulesetDifficultyLadderStep,
+  type RulesetHideWhen,
   type RulesetSheetBuild,
   type RulesetSheetEnvelope,
+  type RulesetUntrained,
   type RulesetValueRef,
 } from "../../schemas/ruleset.schema.js";
 
@@ -85,6 +88,25 @@ export interface EvaluatedRulesetSheet {
   derived: Record<string, number>;
   /** Number fields as read (default applied), which value references resolve against. */
   numbers: Record<string, number>;
+  /** The skills and saves a `cap` holds down: the cap in force and the number before it. `skillMods`
+   *  and `saveMods` already hold the capped number; a `with=` swap works from the uncapped one and
+   *  caps again, so swapping an ability can never lift a check past its cap. */
+  skillCaps: Record<string, { cap: number; uncapped: number }>;
+  saveCaps: Record<string, { cap: number; uncapped: number }>;
+  /** The live state this sheet was worked out with, so a reference resolved against it later (a
+   *  modifier off the sheet, a spend's limit, a fight's defense) reads the same values. */
+  live?: RulesetSheetLiveValues;
+}
+
+/** What a `liveTrack` or `livePool` reference, or an enum table keyed on a live state, reads: one
+ *  character's live state as `readRulesetLive` resolves it (a pool at its value, a track with its
+ *  bounds and, on a wound track, the penalty in force, a state at its value). Described here rather
+ *  than imported, so the arithmetic never depends on the live state's own module, which depends on
+ *  it. A state the sheet hides is not in `states`. */
+export interface RulesetSheetLiveValues {
+  pools: ReadonlyArray<{ key: string; value: number }>;
+  tracks: ReadonlyArray<{ id: string; min: number; max: number; value: number; wound?: { penalty: number } }>;
+  states?: ReadonlyArray<{ id: string; value: string }>;
 }
 
 export function rulesetAbilityModifier(definition: RulesetDefinition, score: number): number {
@@ -104,6 +126,46 @@ interface RulesetValueRefTables {
   derived: Record<string, number>;
   skillMod: (id: string) => number;
   saveMod: (id: string) => number;
+  /** Absent where the sheet is worked out without a live state, and then a live read is 0. The
+   *  format refuses one in every such place (a maximum, the proficiency bonus, a catalog's scaling). */
+  live?: RulesetSheetLiveValues;
+}
+
+/** One number off a live track: where it stands, how far above its floor, how far below its top,
+ *  or the penalty in force on a wound track. A track the character does not have reads 0. */
+function readLiveTrack(live: RulesetSheetLiveValues | undefined, id: string, read: string): number {
+  const track = live?.tracks.find((entry) => entry.id === id);
+  if (!track) return 0;
+  if (read === "filled") return track.value - track.min;
+  if (read === "remaining") return track.max - track.value;
+  if (read === "penalty") return track.wound?.penalty ?? 0;
+  return track.value;
+}
+
+/** One number column of a list added up over its rows, only the rows a boolean column marks where
+ *  `onlyWhen` names one. An empty cell reads as its column's default, and a list the sheet hides
+ *  is not on it, so it adds nothing. */
+function sumListColumn(
+  definition: RulesetDefinition,
+  build: RulesetSheetBuild,
+  sum: NonNullable<RulesetValueRef["listSum"]>,
+): number {
+  const list = definition.sheet.lists.find((entry) => entry.id === sum.list);
+  const rows = build.lists?.[sum.list];
+  if (!list || !Array.isArray(rows) || isRulesetItemHidden(list, build, definition)) return 0;
+  const column = list.columns.find((entry) => entry.id === sum.column);
+  const marker = sum.onlyWhen === undefined ? undefined : list.columns.find((entry) => entry.id === sum.onlyWhen);
+  const cell = (row: unknown, id: string) =>
+    row && typeof row === "object" && Object.prototype.hasOwnProperty.call(row, id)
+      ? (row as Record<string, unknown>)[id]
+      : undefined;
+  let total = 0;
+  for (const row of rows) {
+    if (marker && (cell(row, marker.id) ?? marker.default) !== true) continue;
+    const value = cell(row, sum.column);
+    total += finite(value) ?? (column?.type === "number" ? (column.default ?? 0) : 0);
+  }
+  return total;
 }
 
 function resolveValueRef(
@@ -128,11 +190,54 @@ function resolveValueRef(
   }
   if (ref.skillMod !== undefined) return tables.skillMod(ref.skillMod);
   if (ref.saveMod !== undefined) return tables.saveMod(ref.saveMod);
+  if (ref.liveTrack !== undefined) return readLiveTrack(tables.live, ref.liveTrack, ref.read ?? "value");
+  if (ref.livePool !== undefined) return tables.live?.pools.find((pool) => pool.key === ref.livePool)?.value ?? 0;
+  if (ref.listSum !== undefined) return sumListColumn(definition, build, ref.listSum);
   return 0;
 }
 
-/** Every number the sheet yields, computed once, top to bottom. */
-export function evaluateRulesetSheet(definition: RulesetDefinition, build: RulesetSheetBuild): EvaluatedRulesetSheet {
+/** What a check on this skill or save does when the character has no training in it: its own rule,
+ *  else its section's, else the ordinary one. */
+export function rulesetUntrainedRule(
+  definition: RulesetDefinition,
+  entry: { section?: string; untrained?: RulesetUntrained },
+): RulesetUntrained {
+  if (entry.untrained !== undefined) return entry.untrained;
+  const section = entry.section
+    ? definition.sheet.sections.find((candidate) => candidate.id === entry.section)
+    : undefined;
+  return section?.untrained ?? "normal";
+}
+
+/** Abilities, skills or saves under the section headings they sit in: the sheet's sections in their
+ *  own order, then the ones that name none under no heading. When nothing names a section there is
+ *  one group with no heading, so a sheet with no sections reads exactly as it always has. */
+export function rulesetSectionGroups<T extends { section?: string }>(
+  definition: RulesetDefinition,
+  entries: readonly T[],
+): Array<{ section: { id: string; label: string } | null; entries: T[] }> {
+  if (!entries.some((entry) => entry.section))
+    return entries.length > 0 ? [{ section: null, entries: [...entries] }] : [];
+  const groups = definition.sheet.sections
+    .map((section) => ({
+      section: { id: section.id, label: section.label },
+      entries: entries.filter((entry) => entry.section === section.id),
+    }))
+    .filter((group) => group.entries.length > 0);
+  const known = new Set(definition.sheet.sections.map((section) => section.id));
+  const loose = entries.filter((entry) => !entry.section || !known.has(entry.section));
+  return loose.length > 0 ? [...groups, { section: null, entries: loose }] : groups;
+}
+
+/** Every number the sheet yields, computed once, top to bottom. `live` is what a live track or pool
+ *  reads; without it they read 0, which is right only where the format refuses them (a maximum, the
+ *  proficiency bonus, a catalog's scaling). Anything a player or the Game Master sees, and anything a
+ *  check or a fight reads, goes through `evaluateRulesetSheetLive`, which supplies it. */
+export function evaluateRulesetSheet(
+  definition: RulesetDefinition,
+  build: RulesetSheetBuild,
+  live?: RulesetSheetLiveValues,
+): EvaluatedRulesetSheet {
   const { sheet, resolution } = definition;
   const abilityScores: Record<string, number> = {};
   const abilityMods: Record<string, number> = {};
@@ -165,13 +270,29 @@ export function evaluateRulesetSheet(definition: RulesetDefinition, build: Rules
     }
     return proficiencyBonus;
   };
+  const skillCaps: Record<string, { cap: number; uncapped: number }> = {};
+  const saveCaps: Record<string, { cap: number; uncapped: number }> = {};
+  // A cap reads no skill or save, and neither does any derived value up to the one it reads (both
+  // refused at import), so working it out here, whenever a modifier is first asked for, cannot loop.
   const trainedModifier = (
-    entry: { id: string; ability?: string },
+    entry: { id: string; ability?: string; cap?: RulesetValueRef; section?: string; untrained?: RulesetUntrained },
     tiers: Record<string, string> | undefined,
+    caps: Record<string, { cap: number; uncapped: number }>,
   ): number => {
     const tier = tierById.get(tiers?.[entry.id] ?? "") ?? firstTier;
     const trained = roundRulesetNumber(tier.multiplier * readProficiencyBonus(), tier.round) + tier.flat;
-    return (entry.ability ? (abilityMods[entry.ability] ?? 0) : 0) + trained + (finite(build.bonuses?.[entry.id]) ?? 0);
+    // Untrained, the ruleset may add to or take from the number itself, before any cap holds it.
+    const rule = tier.id === firstTier.id ? rulesetUntrainedRule(definition, entry) : "normal";
+    const untrainedBy = typeof rule === "object" ? rule.by : 0;
+    const uncapped =
+      (entry.ability ? (abilityMods[entry.ability] ?? 0) : 0) +
+      trained +
+      (finite(build.bonuses?.[entry.id]) ?? 0) +
+      untrainedBy;
+    if (!entry.cap) return uncapped;
+    const cap = Math.floor(resolveRef(entry.cap));
+    caps[entry.id] = { cap, uncapped };
+    return Math.min(uncapped, cap);
   };
   function resolveRef(ref: RulesetValueRef): number {
     return resolveValueRef(definition, build, ref, {
@@ -181,12 +302,13 @@ export function evaluateRulesetSheet(definition: RulesetDefinition, build: Rules
       derived,
       skillMod: (id) => {
         const skill = sheet.skills.find((entry) => entry.id === id);
-        return skill ? trainedModifier(skill, build.skills) : 0;
+        return skill ? trainedModifier(skill, build.skills, skillCaps) : 0;
       },
       saveMod: (id) => {
         const save = sheet.saves.find((entry) => entry.id === id);
-        return save ? trainedModifier(save, build.saves) : 0;
+        return save ? trainedModifier(save, build.saves, saveCaps) : 0;
       },
+      live,
     });
   }
 
@@ -196,18 +318,29 @@ export function evaluateRulesetSheet(definition: RulesetDefinition, build: Rules
     else if (entry.op === "scale") {
       derived[entry.id] = roundRulesetNumber(resolveRef(entry.of) * entry.multiplier, entry.round);
     } else if (entry.op === "min") derived[entry.id] = Math.min(...entry.of.map(resolveRef));
-    else derived[entry.id] = Math.max(...entry.of.map(resolveRef));
+    else if (entry.op === "enumTable") {
+      // The value it is keyed on: a field as the sheet shows it, or a live state as it stands. With no
+      // live state at all (only where the format refuses such a read) there is no value to key on.
+      const key =
+        entry.from.field !== undefined
+          ? effectiveFieldValue(definition, build, entry.from.field)
+          : live?.states?.find((state) => state.id === entry.from.liveState)?.value;
+      derived[entry.id] =
+        typeof key === "string" && Object.prototype.hasOwnProperty.call(entry.table, key)
+          ? entry.table[key]!
+          : entry.default;
+    } else derived[entry.id] = Math.max(...entry.of.map(resolveRef));
   }
 
   const skillTiers: Record<string, string> = {};
   const saveTiers: Record<string, string> = {};
   for (const skill of sheet.skills) {
     skillTiers[skill.id] = tierById.has(build.skills?.[skill.id] ?? "") ? build.skills[skill.id]! : firstTier.id;
-    skillMods[skill.id] = trainedModifier(skill, build.skills);
+    skillMods[skill.id] = trainedModifier(skill, build.skills, skillCaps);
   }
   for (const save of sheet.saves) {
     saveTiers[save.id] = tierById.has(build.saves?.[save.id] ?? "") ? build.saves[save.id]! : firstTier.id;
-    saveMods[save.id] = trainedModifier(save, build.saves);
+    saveMods[save.id] = trainedModifier(save, build.saves, saveCaps);
   }
 
   return {
@@ -220,6 +353,9 @@ export function evaluateRulesetSheet(definition: RulesetDefinition, build: Rules
     saveMods,
     derived,
     numbers,
+    skillCaps,
+    saveCaps,
+    ...(live ? { live } : {}),
   };
 }
 
@@ -239,19 +375,40 @@ export function resolveRulesetValueRef(
     derived: evaluated.derived,
     skillMod: (id) => evaluated.skillMods[id] ?? 0,
     saveMod: (id) => evaluated.saveMods[id] ?? 0,
+    live: evaluated.live,
   });
 }
 
-/** Whether a field, derived value, list or pool is hidden by its `hideWhen`. */
+/** The value a field holds as the sheet editor shows it: what is stored, else the value a blank sheet
+ *  starts with; an enum value the ruleset no longer offers reads as the field's default, as it does
+ *  everywhere the sheet is worked out. A rule that hides by the field then reads what the player sees. */
+function effectiveFieldValue(
+  definition: RulesetDefinition,
+  build: RulesetSheetBuild,
+  id: string,
+): string | number | boolean | undefined {
+  const field = definition.sheet.fields.find((entry) => entry.id === id);
+  const stored = build.fields?.[id];
+  if (!field) return stored;
+  if (field.type === "enum") {
+    return typeof stored === "string" && field.values.includes(stored) ? stored : (field.default ?? field.values[0]);
+  }
+  return stored ?? defaultRulesetSheetBuild(definition).fields[id];
+}
+
+/** Whether a field, derived value, list, pool or track is hidden by its `hideWhen`: the field
+ *  holds that one value, holds anything but it, or holds one of a few. */
 export function isRulesetItemHidden(
-  item: { hideWhen?: { field: string; equals: string | number | boolean } },
+  item: { hideWhen?: RulesetHideWhen },
   build: RulesetSheetBuild,
   definition: RulesetDefinition,
 ): boolean {
-  if (!item.hideWhen) return false;
-  const field = definition.sheet.fields.find((entry) => entry.id === item.hideWhen!.field);
-  const value = build.fields?.[item.hideWhen.field] ?? field?.default;
-  return value === item.hideWhen.equals;
+  const hide = item.hideWhen;
+  if (!hide) return false;
+  const value = effectiveFieldValue(definition, build, hide.field);
+  if (hide.in) return value !== undefined && hide.in.includes(value);
+  if (hide.notEquals !== undefined) return value !== hide.notEquals;
+  return value === hide.equals;
 }
 
 // ── Checks ──
@@ -268,7 +425,16 @@ interface RulesetTrainedCheckTarget {
   withAbility?: string;
 }
 
-export type RulesetCheckTarget = RulesetTrainedCheckTarget | { type: "ability"; id: string; label: string };
+/** A raw ability check. `withAbility` is the second ability a pool ruleset with
+ *  `pool.abilityPlusAbility` adds to it, and is never set anywhere else. */
+interface RulesetAbilityCheckTarget {
+  type: "ability";
+  id: string;
+  label: string;
+  withAbility?: string;
+}
+
+export type RulesetCheckTarget = RulesetTrainedCheckTarget | RulesetAbilityCheckTarget;
 
 function normalizeCheckName(value: string): string {
   return value
@@ -305,8 +471,10 @@ function matchAbilityId(definition: RulesetDefinition, requested: string): strin
  *
  *  `withAbility` is the tag's `with=`: roll this skill or save with another ability than its own.
  *  A name no ability answers to is IGNORED rather than refused, so the entry keeps its own
- *  ability; the resolver notices the unset `withAbility` and says so in the log. It means nothing
- *  on a raw ability check, which already names the ability it rolls. */
+ *  ability; the resolver notices the unset `withAbility` and says so in the log. On a raw ability
+ *  check it names a SECOND ability to add, and only where a pool ruleset declares
+ *  `pool.abilityPlusAbility`; anywhere else it means nothing there, because the check already
+ *  names the ability it rolls. */
 export function matchRulesetCheckTarget(
   definition: RulesetDefinition,
   requested: string,
@@ -341,20 +509,64 @@ export function matchRulesetCheckTarget(
   const skill = sheet.skills.find((entry) => names(entry).includes(name) || names(entry).includes(base));
   if (skill) return trained("skill", skill);
   const ability = sheet.abilities.find((entry) => names(entry).includes(base));
-  if (ability) return { type: "ability", id: ability.id, label: ability.label };
-  return null;
+  if (!ability) return null;
+  const resolution = definition.resolution;
+  const pairs = resolution.kind === "dice-pool" && resolution.pool.abilityPlusAbility === true;
+  return {
+    type: "ability",
+    id: ability.id,
+    label: ability.label,
+    ...(pairs && override ? { withAbility: override } : {}),
+  };
 }
 
 export function rulesetCheckModifier(evaluated: EvaluatedRulesetSheet, target: RulesetCheckTarget | null): number {
   if (!target) return 0;
-  if (target.type === "ability") return evaluated.abilityMods[target.id] ?? 0;
+  if (target.type === "ability") {
+    // Two abilities rolled together are simply both of them.
+    const second = target.withAbility ? (evaluated.abilityMods[target.withAbility] ?? 0) : 0;
+    return (evaluated.abilityMods[target.id] ?? 0) + second;
+  }
   const own = target.type === "skill" ? evaluated.skillMods[target.id] : evaluated.saveMods[target.id];
   const base = own ?? 0;
   if (!target.withAbility) return base;
   // `with=`: the entry's own ability modifier steps aside for the named one. The training tier and
   // the sheet's own free bonus are untouched, which is what makes this one number, not a new check.
+  // A capped entry swaps on the number before its cap, and the cap then holds the result.
+  const capped = (target.type === "skill" ? evaluated.skillCaps : evaluated.saveCaps)?.[target.id];
   const replaced = target.ability ? (evaluated.abilityMods[target.ability] ?? 0) : 0;
-  return base - replaced + (evaluated.abilityMods[target.withAbility] ?? 0);
+  const swapped = (capped ? capped.uncapped : base) - replaced + (evaluated.abilityMods[target.withAbility] ?? 0);
+  return capped ? Math.min(swapped, capped.cap) : swapped;
+}
+
+/** The abilities a check rolls with: a skill or save's own, or the one `with=` swapped in; an ability
+ *  check's own, and the second one where a pool adds two together. */
+function rollingAbilities(target: RulesetCheckTarget | null): string[] {
+  if (!target) return [];
+  if (target.type === "ability") return target.withAbility ? [target.id, target.withAbility] : [target.id];
+  const ability = target.withAbility ?? target.ability;
+  return ability ? [ability] : [];
+}
+
+/** What `resolution.adjust` adds to or takes off this check: every entry that applies to all checks,
+ *  and every one limited to abilities the check rolls with. Whole numbers, rounded toward zero, so a
+ *  half never turns into a die. A check the ruleset cannot name still takes the unlimited ones, the
+ *  way it still takes a wound penalty. */
+export function rulesetCheckAdjust(
+  definition: RulesetDefinition,
+  build: RulesetSheetBuild,
+  evaluated: EvaluatedRulesetSheet,
+  target: RulesetCheckTarget | null,
+): number {
+  const entries = definition.resolution.adjust ?? [];
+  if (entries.length === 0) return 0;
+  const rolling = rollingAbilities(target);
+  let total = 0;
+  for (const entry of entries) {
+    if (entry.abilities && !entry.abilities.some((id) => rolling.includes(id))) continue;
+    total += resolveRulesetValueRef(definition, build, entry.value, evaluated);
+  }
+  return Math.trunc(total);
 }
 
 /** One check number, spelled the way its kind means it: a modifier added to the dice, or how many
@@ -465,6 +677,14 @@ export interface RulesetPoolRoll extends RulesetCheckRoll {
   /** How many dice a bought re-throw actually replaced, so a record can say the pool was re-thrown
    *  rather than leaving a reader to wonder why the faces beat the odds. */
   rerolled: number;
+  /** The faces this roll exploded and doubled from, after the ruleset's limits, or undefined where
+   *  the rule was not in play. A reader compares them with the file's own `from` to say whether the
+   *  check moved them. */
+  explodeFrom?: number;
+  doubleFrom?: number;
+  /** Something went wrong on the side of a roll that did not botch outright: `botch.rule` is
+   *  `halfOrMore` and low faces showed on half the dice or more, but a die still succeeded. */
+  complication: boolean;
 }
 
 /** The hard ceiling on how many dice ONE check may throw again, whatever a ruleset asks for. An
@@ -497,6 +717,9 @@ export function rollDicePoolCheck(
     threshold?: number;
     /** `bonus=`, honoured only where the ruleset declares situational dice. */
     bonusDice?: number;
+    /** `explode=` and `double=`, honoured only where the ruleset gives that rule a `min`. */
+    explode?: number;
+    double?: number;
     /** What a purchase bought for this one check, already validated and paid for by the caller:
      *  dice thrown on top of the pool, successes added after the dice are counted, a per-die target
      *  for this one roll, and a re-throw of the low faces. The roller never decides whether a spend
@@ -506,13 +729,15 @@ export function rollDicePoolCheck(
       successes?: number;
       threshold?: number;
       reroll?: { upTo: number; mode: "once" | "until" };
+      explode?: number;
+      double?: number;
     };
   },
   rollDie: (sides: number) => number,
 ): RulesetPoolRoll {
   const resolution = definition.resolution;
   if (resolution.kind !== "dice-pool") {
-    return { ...noRoll(), threshold: 0, bonusDice: 0, autoSuccesses: 0, rerolled: 0 };
+    return { ...noRoll(), threshold: 0, bonusDice: 0, autoSuccesses: 0, rerolled: 0, complication: false };
   }
   const { die, pool, target, double, explode, cancel, botch, exceptional, situationalDice } = resolution;
 
@@ -526,6 +751,16 @@ export function rollDicePoolCheck(
     situationalDice && Number.isFinite(input.bonusDice)
       ? clampInteger(input.bonusDice!, situationalDice.min, situationalDice.max)
       : 0;
+  // The face each moving rule fires on for this one roll: what an entry bought, else what the Game
+  // Master asked for, pulled into the range the ruleset gives it, and the file's own `from` when
+  // nobody asked or the ruleset lets no check move it. Undefined is a rule that does not fire.
+  const faceFor = (rule: typeof explode, bought: number | undefined, asked: number | undefined) => {
+    if (!rule) return undefined;
+    const wanted = Number.isFinite(bought) ? bought : asked;
+    return rule.min !== undefined && Number.isFinite(wanted) ? clampInteger(wanted!, rule.min, die.sides) : rule.from;
+  };
+  const explodeFrom = faceFor(explode, input.bought?.explode, input.explode);
+  const doubleFrom = faceFor(double, input.bought?.double, input.double);
 
   // Bought dice go in with the sheet's own and the situational ones, so the pool's declared range
   // is the one ceiling: buying dice can never throw more than the ruleset allows a pool to be.
@@ -558,13 +793,16 @@ export function rollDicePoolCheck(
     }
   }
 
-  if (explode) {
+  // The dice first thrown, re-throws included and explosions not yet added: what "half the dice" of a
+  // botch is counted over.
+  const thrown = rolls.slice();
+  if (explodeFrom !== undefined) {
     // Chained, by walking the array as it grows: a die added at the end is itself examined. The
     // extra dice are capped so a low `from` on a big pool cannot roll for the rest of the turn.
     const cap = Math.min(pool.max, RULESET_POOL_MAX_DICE);
     let extra = 0;
     for (let i = 0; i < rolls.length && extra < cap; i++) {
-      if (rolls[i]! >= explode.from) {
+      if (rolls[i]! >= explodeFrom) {
         rolls.push(rollDie(die.sides));
         extra += 1;
       }
@@ -574,7 +812,7 @@ export function rollDicePoolCheck(
   let successes = 0;
   let cancelled = 0;
   for (const roll of rolls) {
-    if (roll >= threshold) successes += double && roll >= double.from ? 2 : 1;
+    if (roll >= threshold) successes += doubleFrom !== undefined && roll >= doubleFrom ? 2 : 1;
     if (cancel && roll <= cancel.upTo) cancelled += 1;
   }
   // Bought successes are added after the dice are counted and after cancelling, because they were
@@ -584,7 +822,20 @@ export function rollDicePoolCheck(
   // A botch is "nothing worked AND something went wrong", read BEFORE cancelling: a pool whose one
   // success was cancelled away failed, it did not botch. A bought success is not a die that worked,
   // so it does not take a botch away either; it is added to a total that is already 0.
-  const criticalFailure = !!botch && successes === 0 && rolls.some((roll) => roll <= botch.upTo);
+  //
+  // `halfOrMore` reads it the other way round: low faces on at least half the dice first thrown are
+  // the thing going wrong, and it is a critical failure only when no die succeeded as well. On a
+  // roll a die DID succeed on, the result stands as it is and the roll says it went wrong on the side.
+  const lowOnHalf =
+    botch?.rule === "halfOrMore" &&
+    thrown.length > 0 &&
+    thrown.filter((roll) => roll <= botch.upTo).length >= Math.ceil(thrown.length / 2);
+  const criticalFailure = !botch
+    ? false
+    : botch.rule === "halfOrMore"
+      ? lowOnHalf && successes === 0
+      : successes === 0 && rolls.some((roll) => roll <= botch.upTo);
+  const complication = lowOnHalf && !criticalFailure;
   const success = !criticalFailure && total >= input.required;
   return {
     rolls,
@@ -599,5 +850,37 @@ export function rollDicePoolCheck(
     bonusDice,
     autoSuccesses,
     rerolled,
+    ...(explodeFrom !== undefined ? { explodeFrom } : {}),
+    ...(doubleFrom !== undefined ? { doubleFrom } : {}),
+    complication,
   };
+}
+
+/** The difficulty ladder step a name picks, or null. Matched without case or punctuation, and only
+ *  when exactly one step answers to it, so a name two steps share picks neither of them. */
+export function rulesetDifficultyStep(
+  definition: RulesetDefinition,
+  name: string | undefined,
+): RulesetDifficultyLadderStep | null {
+  const wanted = normalizeCheckName(name ?? "");
+  if (!wanted) return null;
+  const steps: RulesetDifficultyLadderStep[] = definition.resolution.difficultyLadder;
+  const found = steps.filter((step) => normalizeCheckName(step.label) === wanted);
+  return found.length === 1 ? found[0]! : null;
+}
+
+/** What a step asks for, in its kind's own terms: successes on a pool, a difficulty on a sum. */
+export function rulesetDifficultyStepDc(step: RulesetDifficultyLadderStep): number {
+  return "successes" in step ? step.successes : step.dc;
+}
+
+/** The per-die target of the one pool ladder step that needs exactly `successes`, or undefined: when
+ *  no step or several need that many, when the one that does names no target, or on a summed ruleset.
+ *  A ladder that prints "Plain work 1 success (target 6)" then means it at the table, and one whose
+ *  steps all need one success says nothing about which of them a bare `dc="1"` meant. */
+export function rulesetLadderTargetFor(definition: RulesetDefinition, successes: number): number | undefined {
+  const resolution = definition.resolution;
+  if (resolution.kind !== "dice-pool") return undefined;
+  const found = resolution.difficultyLadder.filter((step) => step.successes === successes);
+  return found.length === 1 ? found[0]!.target : undefined;
 }

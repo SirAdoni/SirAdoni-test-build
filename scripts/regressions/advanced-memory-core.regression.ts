@@ -1111,10 +1111,13 @@ try {
     "later preparation also preserves the corrected scene",
   );
   await chats.updateMessageExtra(accessSource[0]!.id, { hiddenFromAICharacterIds: ["pantalone"] });
+  await memory.updateRecord(accessCorrectionChat.id, accessScene.id, { content: accessScene.content });
+  for (const messageId of accessScene.messageIds)
+    await chats.updateMessageExtra(messageId, { hiddenFromAICharacterIds: ["pantalone"] });
   await assert.rejects(
     memory.updateRecord(accessCorrectionChat.id, accessScene.id, { content: accessScene.content }),
     /no longer available to its selected characters/,
-    "saving an unchanged correction cannot grant access to hidden messages",
+    "saving a correction cannot grant access to an entirely hidden scene",
   );
 
   const dependencyTarget = await chats.create({
@@ -1460,9 +1463,9 @@ try {
   );
   assert(!(await memory.status(joinedChat.id)).records.some((record) => record.id === editableScene.id));
   assert.equal(
-    (await memory.status(joinedChat.id)).unpreparedScenes?.length,
-    0,
-    "deleted scene summaries are not offered for recovery",
+    (await memory.status(joinedChat.id)).unpreparedScenes?.filter((scene) => scene.deleted).length,
+    1,
+    "deleted scene summaries are offered only for explicit recovery",
   );
 
   const requireServer = createRequire(new URL("../../packages/server/package.json", import.meta.url));
@@ -1780,7 +1783,7 @@ try {
     "a discontiguous scoped partial result can checkpoint before cancellation",
   );
   const firstPrivateBatch = requests.slice(beforePrivateCache).find((request) => request.kind === "summary");
-  assert(firstPrivateBatch && !firstPrivateBatch.text.includes("HIDDEN_MIDDLE_SECRET"));
+  assert(firstPrivateBatch?.text.includes("HIDDEN_MIDDLE_SECRET"), "global hides stay in resumable summary batches");
   const privateResumeStart = requests.length;
   await memory.initialize(hiddenMiddleChat.id);
   assert.notEqual(

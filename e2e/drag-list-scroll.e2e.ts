@@ -1,3 +1,4 @@
+import { clickTopbarPanel } from "./topbar-navigation.js";
 import { expect, test, type Locator } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { seedUIState } from "./ui-state-fixture.js";
@@ -63,7 +64,7 @@ for (const kind of ["chat", "character", "persona"] as const) {
         { version, id: chat.id },
       );
       await page.goto("/");
-      if (kind !== "chat") await page.locator(`[data-tour="panel-${kind}s"]`).click();
+      if (kind !== "chat") await clickTopbarPanel(page, `${kind}s`);
       const panel = page.locator(
         kind === "chat"
           ? '[data-component="ChatSidebar"]'

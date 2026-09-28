@@ -13,13 +13,13 @@ export const messageReplySchema = z.object({
   name: z.string().min(1).max(200),
   content: z.string().min(1).max(16000),
 });
-
 export const cacheGuardHeldTurnSchema = z.object({
   messageId: z.string().min(1).max(200),
   activeSwipeIndex: z.number().int().nonnegative(),
   contentHash: z.string().regex(/^[a-f0-9]{64}$/i),
   submissionId: z.string().min(1).max(100).optional(),
 });
+
 export type CacheGuardHeldTurn = z.infer<typeof cacheGuardHeldTurnSchema>;
 
 export const createChatSchema = z.object({

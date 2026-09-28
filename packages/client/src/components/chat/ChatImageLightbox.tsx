@@ -12,9 +12,10 @@ import {
   shouldUseIosImageShare,
   type PreparedImageSave,
 } from "../../lib/file-download";
+import { toast } from "sonner";
+
 import { ImagePromptPanel } from "./ImagePromptPanel";
 import { useTranslation as useUiTranslation } from "react-i18next";
-import { toast } from "sonner";
 
 export function formatChatImageMeta(image: Pick<ChatImage, "model" | "provider" | "width" | "height">) {
   const details: string[] = [];

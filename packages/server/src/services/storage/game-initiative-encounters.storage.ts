@@ -48,8 +48,7 @@ function cleanName(name: string): string {
 export function createInitiativeEncountersStorage(db: DB) {
   async function getById(id: string): Promise<InitiativeEncounterRecord | null> {
     const row = (await db.select().from(gameInitiativeEncounters).where(eq(gameInitiativeEncounters.id, id)))[0] as
-      | EncounterDbRow
-      | undefined;
+      EncounterDbRow | undefined;
     return row ? recordFrom(row) : null;
   }
 

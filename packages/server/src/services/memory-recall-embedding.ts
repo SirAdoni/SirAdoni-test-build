@@ -1,4 +1,9 @@
-import { LOCAL_SIDECAR_CONNECTION_ID, PROVIDERS, localAuthProviderBaseUrl } from "@marinara-engine/shared";
+import {
+  generationParametersSchema,
+  LOCAL_SIDECAR_CONNECTION_ID,
+  PROVIDERS,
+  localAuthProviderBaseUrl,
+} from "@marinara-engine/shared";
 import { createHash } from "node:crypto";
 import type { DB } from "../db/connection.js";
 import { logRecovered, logRepeated } from "../lib/log-events.js";
@@ -58,6 +63,25 @@ function resolveBaseUrl(connection: { baseUrl: string | null; provider: string }
 
 function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function canonicalCustomHeaders(defaultParameters: unknown): string {
+  let parsed = defaultParameters;
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return "{}";
+    }
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "{}";
+  const result = generationParametersSchema.shape.customHeaders.safeParse(
+    (parsed as Record<string, unknown>).customHeaders,
+  );
+  if (!result.success) return "{}";
+  return JSON.stringify(
+    Object.fromEntries(Object.entries(result.data ?? {}).sort(([left], [right]) => left.localeCompare(right))),
+  );
 }
 
 export interface MemoryRecallEmbeddingInputProfile {
@@ -271,6 +295,15 @@ export async function resolveMemoryRecallEmbeddingSource(
 
   return {
     spaceId,
+    cacheIdentity: createMemoryRecallEmbeddingSpaceId(
+      "remote-cache",
+      embeddingModel,
+      embeddingConnection.provider,
+      embeddingBaseUrl,
+      embeddingConnection.id,
+      embeddingConnection.apiKey,
+      canonicalCustomHeaders(embeddingConnection.defaultParameters),
+    ),
     label,
     async embed(texts: string[], signal?: AbortSignal, inputType: MemoryRecallEmbeddingInputType = "document") {
       try {

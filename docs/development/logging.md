@@ -259,3 +259,11 @@ All helpers live under `packages/server/src`. Import them; do not copy them.
 | `lib/child-process-diagnostics.ts` | `describeChildFailure(err, { command, timeoutMs, startedAt, stderr })`                                                                                                                                                                                 | ME_CHILD_TIMEOUT, ME_CHILD_EXIT or ME_CHILD_SPAWN with exit code, signal and a sanitized stderr tail. |
 | `lib/build-integrity.ts`           | `checkBuildIntegrity()`, `verifyDistAgainstMeta(serverRoot, targetCommit?)`                                                                                                                                                                            | Stale or partial dist detection.                                                                      |
 | `services/llm/provider-error.ts`   | `llmHttpErrorFromResponseBody(label, response)`, `providerRequestIdFrom(headers)`, `safeHost(url)`, `parseToolArgumentsLogged(value, toolName, provider)`, `SseFrameStats`                                                                             | Provider failures without bodies or prompts.                                                          |
+
+## Checks
+
+The regressions `logging-request-trail`, `logging-failure-lines` and `logging-startup-timeline` cover this page:
+
+```sh
+node scripts/run-regressions.mjs --filter logging-
+```

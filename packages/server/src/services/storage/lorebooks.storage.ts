@@ -157,6 +157,7 @@ function parseLorebookRow(row: Record<string, unknown>) {
     maxRecursionDepth: normalizeLorebookMaxRecursionDepth(row.maxRecursionDepth),
     excludeFromVectorization: row.excludeFromVectorization === "true",
     vectorQueryDepth: normalizeLorebookVectorQueryDepth(row.vectorQueryDepth),
+    vectorIncludeAssistant: row.vectorIncludeAssistant === "true",
     vectorScoreThreshold: normalizeLorebookVectorScoreThreshold(row.vectorScoreThreshold),
     vectorMaxResults: normalizeLorebookVectorMaxResults(row.vectorMaxResults),
     isGlobal: row.isGlobal === "true",
@@ -548,6 +549,7 @@ export function createLorebooksStorage(db: DB) {
           maxRecursionDepth: input.maxRecursionDepth ?? 3,
           excludeFromVectorization: String(input.excludeFromVectorization ?? true),
           vectorQueryDepth: normalizeLorebookVectorQueryDepth(input.vectorQueryDepth),
+          vectorIncludeAssistant: String(input.vectorIncludeAssistant ?? false),
           vectorScoreThreshold: normalizeLorebookVectorScoreThreshold(input.vectorScoreThreshold),
           vectorMaxResults: normalizeLorebookVectorMaxResults(input.vectorMaxResults),
           characterId: characterIds[0] ?? null,
@@ -583,6 +585,8 @@ export function createLorebooksStorage(db: DB) {
         updates.excludeFromVectorization = String(input.excludeFromVectorization);
       if (input.vectorQueryDepth !== undefined)
         updates.vectorQueryDepth = normalizeLorebookVectorQueryDepth(input.vectorQueryDepth);
+      if (input.vectorIncludeAssistant !== undefined)
+        updates.vectorIncludeAssistant = String(input.vectorIncludeAssistant);
       if (input.vectorScoreThreshold !== undefined)
         updates.vectorScoreThreshold = normalizeLorebookVectorScoreThreshold(input.vectorScoreThreshold);
       if (input.vectorMaxResults !== undefined)

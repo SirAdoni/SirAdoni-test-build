@@ -7,14 +7,7 @@ import { prepareContinuitySources, type ContinuityRawMessage } from "./continuit
 export const SESSION_SUMMARY_REFRESHES_VERSION = 1 as const;
 
 export type SessionSummaryRefreshStatus =
-  | "pending"
-  | "provisional"
-  | "ready"
-  | "queued"
-  | "completed"
-  | "stale"
-  | "conflict"
-  | "failed";
+  "pending" | "provisional" | "ready" | "queued" | "completed" | "stale" | "conflict" | "failed";
 
 export type SessionSummarySourceManifest = {
   messageId: string;

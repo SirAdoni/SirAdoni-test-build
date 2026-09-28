@@ -40,7 +40,28 @@ import {
 } from "../../packages/shared/src/index.js";
 
 const read = (path: string) => readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
-const emberText = read("../../docs/examples/rulesets/ember-roads.json");
+/** The example less the sheet keys 1.37 added (a track always shown, a summary list's columns),
+ *  1.38's modifier off the sheet, 1.39's list sum, 1.40's box track, 1.41's untrained rule and
+ *  1.42's live state: every gate this lane proves is older, so it is proven on a file that trips
+ *  nothing newer. */
+const emberText = (() => {
+  const doc = JSON.parse(read("../../docs/examples/rulesets/ember-roads.json"));
+  for (const track of doc.sheet.live.tracks) delete track.alwaysShow;
+  for (const list of doc.gm.sheetSummary?.lists ?? []) delete list.columns;
+  delete doc.resolution.adjust;
+  doc.sheet.derived = doc.sheet.derived.filter((entry: { id: string }) => !["burden", "burdened"].includes(entry.id));
+  doc.sheet.live.tracks = doc.sheet.live.tracks.filter((track: { id: string }) => track.id !== "strain");
+  for (const skill of doc.sheet.skills) delete skill.untrained;
+  // And 1.42's live Stance, the table that follows it and the camp step that settles it.
+  doc.sheet.derived = doc.sheet.derived.filter((entry: { id: string }) => entry.id !== "stance_brawn");
+  delete doc.sheet.live.states;
+  for (const rest of doc.rests)
+    rest.restore = rest.restore.filter((step: { state?: string }) => step.state === undefined);
+  // And 1.49's items block, with the catalog written in it.
+  delete doc.items;
+  doc.catalogs = doc.catalogs.filter((catalog: { holds?: string }) => catalog.holds !== "items");
+  return JSON.stringify(doc);
+})();
 const gravewatchText = read("../../docs/examples/rulesets/gravewatch.json");
 const fiveEText = read("../../docs/development/ruleset-5e-2014.example.json");
 
@@ -286,7 +307,12 @@ const on = (...ids: string[]) => Object.fromEntries(ids.map((id) => [rulesetLaye
   // The picker is what hides an entry, per game, out of the catalog the ruleset shipped.
   const entries = ember.catalogs![0]!.entries!;
   const hidden = (id: string, options: Record<string, boolean>) =>
-    catalogEntryHiddenByLayers(ember, options, "knacks", entries.find((entry) => entry.id === id)!);
+    catalogEntryHiddenByLayers(
+      ember,
+      options,
+      "knacks",
+      entries.find((entry) => entry.id === id)!,
+    );
   assert.equal(hidden("last-ember", on("hard_winter")), true, "1 Grit is more than a hard winter can spare");
   assert.equal(hidden("hold-the-line", on("hard_winter")), false, "a free knack stays");
   assert.equal(hidden("last-ember", {}), false, "and with the layer off nothing is hidden at all");
@@ -684,7 +710,8 @@ try {
       doc.catalogs = (doc.catalogs ?? []).filter((catalog: Record<string, any>) => catalog.holds !== "creatures");
       for (const catalog of doc.catalogs ?? []) {
         catalog.entries = (catalog.entries ?? []).filter(
-          (entry: Record<string, any>) => entry.mechanics?.kind !== "rider",
+          (entry: Record<string, any>) =>
+            entry.mechanics?.kind !== "rider" && typeof entry.mechanics?.reaction !== "object",
         );
       }
       for (const entry of doc.catalogs?.[0]?.entries ?? []) {

@@ -67,6 +67,8 @@ interface SpriteOverlayProps {
   spriteScaleMultiplier?: number;
   /** When supplied, sprites outside this turn's expression results are dimmed. */
   activeCharacterIds?: readonly string[];
+  /** When supplied, only these owners are visible; an empty completed result hides all sprites. */
+  visibleCharacterIds?: readonly string[];
 }
 
 interface CharacterExpressionState {
@@ -156,6 +158,7 @@ export function SpriteOverlay({
   fullBodySpriteOpacity,
   spriteScaleMultiplier = 1,
   activeCharacterIds,
+  visibleCharacterIds,
 }: SpriteOverlayProps) {
   const { t: localizeUi } = useUiTranslation();
   const stageRef = useRef<HTMLDivElement>(null);
@@ -283,6 +286,7 @@ export function SpriteOverlay({
     const hasPairedSprites = renderModes.length > 1;
 
     for (const [index, charId] of characterIds.entries()) {
+      if (visibleCharacterIds && !visibleCharacterIds.includes(charId)) continue;
       const characterSettings = characterVisualSettings?.[charId];
       const characterSide = characterSettings?.spritePosition ?? side;
       const basePlacement = clampSpritePlacement(
@@ -322,6 +326,7 @@ export function SpriteOverlay({
     resolvedFullBodySpriteScale,
     side,
     spritePlacements,
+    visibleCharacterIds,
   ]);
 
   if (visibleSpriteEntries.length === 0) return null;

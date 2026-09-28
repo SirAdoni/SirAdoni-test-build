@@ -645,13 +645,7 @@ export interface LorebookTestScanResult {
     name: string;
     matchedKeys: string[];
     reason:
-      | "secondary_keys"
-      | "filters"
-      | "conditions"
-      | "group"
-      | "probability"
-      | "recursion_only"
-      | "folder_disabled";
+      "secondary_keys" | "filters" | "conditions" | "group" | "probability" | "recursion_only" | "folder_disabled";
   }>;
   recursive: boolean;
   scannedMessages: number;

@@ -20,16 +20,22 @@
 import type { ChatCompletionResult, ChatMessage, ChatOptions, LLMUsage } from "./base-provider.js";
 import { BaseLLMProvider, LLMHttpError, isRateLimitError, withLlmResolvedAddressOffset } from "./base-provider.js";
 import { getConnectionRateLimit } from "./connection-rate-limit-registry.js";
+import { isFeatureEnabled } from "../features/feature-settings.js";
 import { logger } from "../../lib/logger.js";
 import { withDiagnosticContext } from "../../lib/diagnostics.js";
-import { isFeatureEnabled } from "../features/feature-settings.js";
 
 export const MAX_RATE_LIMIT_RETRIES = 6;
 /** Transient transport / gateway failures get a much smaller budget than rate limits. */
 export const MAX_TRANSIENT_RETRIES = 2;
 const BACKOFF_BASE_MS = 2_000;
 const TRANSIENT_BACKOFF_BASE_MS = 1_000;
+const TRANSIENT_BACKOFF_CAP_MS = 5_000;
 const BACKOFF_CAP_MS = 60_000;
+
+export interface RateLimitAwareProviderOptions {
+  /** Disable transient retries for a connection primary leg that has a fallback. */
+  transientRetry?: boolean;
+}
 
 /**
  * Connect-phase failure codes: the connection could not be opened, so the request body was never
@@ -186,11 +192,12 @@ export function computeRetryDelayMs(
   kind: RetryKind = "rate_limit",
   random: () => number = Math.random,
 ): number {
+  const cap = kind === "transient" ? TRANSIENT_BACKOFF_CAP_MS : BACKOFF_CAP_MS;
   if (typeof retryAfterMs === "number" && Number.isFinite(retryAfterMs) && retryAfterMs >= 0) {
-    return Math.min(retryAfterMs, BACKOFF_CAP_MS);
+    return Math.min(retryAfterMs, cap);
   }
   const base = kind === "transient" ? TRANSIENT_BACKOFF_BASE_MS : BACKOFF_BASE_MS;
-  const ceiling = Math.min(base * 2 ** attempt, BACKOFF_CAP_MS);
+  const ceiling = Math.min(base * 2 ** attempt, cap);
   const jitter = Math.min(Math.max(random(), 0), 1);
   return Math.round(ceiling / 2 + (ceiling / 2) * jitter);
 }
@@ -267,11 +274,15 @@ function trackStreamedOutput(options: ChatOptions): { options: ChatOptions; emit
 }
 
 export class RateLimitAwareProvider extends BaseLLMProvider {
+  private readonly transientRetryAllowed: boolean;
+
   constructor(
     readonly provider: BaseLLMProvider,
     private readonly connectionId: string,
+    options: RateLimitAwareProviderOptions = {},
   ) {
     super("", "", provider.maxContextValue ?? undefined, null, provider.maxTokensOverrideValue);
+    this.transientRetryAllowed = options.transientRetry !== false;
   }
 
   /**
@@ -279,10 +290,19 @@ export class RateLimitAwareProvider extends BaseLLMProvider {
    * must propagate: not retryable, aborted, or the budget for that kind is spent. Budgets are
    * counted per kind so a transient blip cannot consume the rate-limit budget and vice versa.
    */
+  withoutTransientRetry(): RateLimitAwareProvider {
+    if (!this.transientRetryAllowed) return this;
+    return new RateLimitAwareProvider(this.provider, this.connectionId, { transientRetry: false });
+  }
+
+  private transientRetryActive(): boolean {
+    return this.transientRetryAllowed && isFeatureEnabled("providerRetry");
+  }
+
   private nextRetry(error: unknown, counts: RetryCounts, signal: AbortSignal | undefined): RetryKind | null {
     if (signal?.aborted) return null;
     const kind = classifyRetry(error);
-    if (!kind) return null;
+    if (!kind || (kind === "transient" && !this.transientRetryActive())) return null;
     const budget = kind === "rate_limit" ? MAX_RATE_LIMIT_RETRIES : MAX_TRANSIENT_RETRIES;
     return counts[kind] < budget ? kind : null;
   }
@@ -458,9 +478,16 @@ export class RateLimitAwareProvider extends BaseLLMProvider {
   }
 }
 
-export function withRateLimitAwareProvider(provider: BaseLLMProvider, connectionId: string): BaseLLMProvider {
+export function withRateLimitAwareProvider(
+  provider: BaseLLMProvider,
+  connectionId: string,
+  options?: RateLimitAwareProviderOptions,
+): BaseLLMProvider {
   // Idempotent: never nest two retry layers (which would multiply retries), since the decorator is
-  // installed both in createLLMProvider and around the connection-fallback legs.
-  if (provider instanceof RateLimitAwareProvider) return provider;
-  return new RateLimitAwareProvider(provider, connectionId);
+  // installed both in createLLMProvider and around the connection-fallback legs. An existing wrapper
+  // still honours transientRetry: false, so the caller's opt-out is never silently dropped.
+  if (provider instanceof RateLimitAwareProvider) {
+    return options?.transientRetry === false ? provider.withoutTransientRetry() : provider;
+  }
+  return new RateLimitAwareProvider(provider, connectionId, options);
 }

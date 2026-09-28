@@ -24,17 +24,28 @@ export type APIProvider =
   | "audio"
   | "decision";
 
-export const DECISION_SOURCES = ["typesafe", "openrouter", "custom"] as const;
+/**
+ * `custom` is a System One server; `openai_compatible` is an ordinary chat model on a
+ * server the user already runs (Ollama, LM Studio, llama.cpp), asked for one yes/no
+ * token and read from its log-probabilities, the way the local slots are.
+ */
+export const DECISION_SOURCES = ["typesafe", "openrouter", "custom", "openai_compatible"] as const;
 export type DecisionSource = (typeof DECISION_SOURCES)[number];
 
 export const DECISION_SOURCE_BASE_URLS = {
   typesafe: "https://api.typesafe.ai",
   openrouter: "https://openrouter.ai/api",
   custom: "",
+  openai_compatible: "",
 } as const;
 
+/** Sources whose base URL the user enters, rather than a fixed hosted one. */
+export function decisionSourceTakesUrl(source: string | null | undefined): boolean {
+  return source === "custom" || source === "openai_compatible";
+}
+
 export function defaultDecisionStateTokens(source: string | null | undefined): number {
-  return source === "custom" ? 3500 : 30000;
+  return decisionSourceTakesUrl(source) ? 3500 : 30000;
 }
 
 /** Audio backends an audio connection can target (the former TTS sources). */
@@ -130,6 +141,8 @@ export interface APIConnection {
   treatAsLocalEndpoint: boolean;
   /** Folder this connection belongs to (null = root/unfiled). */
   folderId: string | null;
+  /** NanoGPT only: whether the subscription usage widget is shown. */
+  showUsageWidget: boolean;
   /** Manual sort order within a folder (lower = higher). 0 = use default sort. */
   sortOrder: number;
   createdAt: string;
@@ -176,4 +189,8 @@ export interface ConnectionTestResult {
   timeLimitMs?: number;
   /** How long this Decision test waited before giving up. */
   testTimeoutMs?: number;
+  /** A chat-model Decision connection: whether the server returned log-probabilities. */
+  logprobs?: boolean;
+  /** A chat-model Decision connection: whether the model answered without thinking first. */
+  answersDirectly?: boolean;
 }

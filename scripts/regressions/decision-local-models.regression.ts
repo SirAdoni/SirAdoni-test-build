@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs";
 import {
   buildDecisionInstructions,
   DECISION_ARTIFACT_RUNTIMES,
+  DECISION_TIMEOUT_MS,
   DEFAULT_DECISION_CALIBRATION,
   findDecisionModel,
   isSafeGitRef,
@@ -139,6 +140,13 @@ assert.ok(
 );
 assert.equal(openJev9b.calibration.questionShape, "task_object");
 assert.ok(openJev9b.perQuestionMs! > 0, "9B answers questions one after another, so its budget grows per question");
+// 2B, measured 2026-09-26 on a full-length scene (3,479 tokens): 10.6 s for 32
+// questions, about 0.33 s each. With no per-question budget every request got a flat
+// 4 s, so anything past about twelve questions timed out and read as no.
+assert.ok(
+  DECISION_TIMEOUT_MS.sidecar + openJev.perQuestionMs! * 31 >= 10_600,
+  "a full default turn of 32 statements must fit the 2B budget on a full-length scene",
+);
 assert.ok(openJev9b.vramBytes > 20e9, "the measured peak, not a guess from the file size");
 assert.equal(
   sanitizeCustomDecisionModel({ ...openJev9b, id: "byo:x", label: "x", perQuestionMs: 60_000 })?.perQuestionMs,
@@ -692,6 +700,25 @@ assert.equal(assessSidecarLoad({ slots: [slot({ estimatedBytes: 99 * GB })], dev
 assert.equal(hasThinkingSetting("primary"), true);
 assert.equal(hasThinkingSetting("utility"), true);
 assert.equal(hasThinkingSetting("decision_sidecar"), false);
+// The panel follows the same rule. The options route leaves `thinking` off an entry
+// without the setting, and the Thinking controls render only when it is present. They
+// used to render for the decision sidecar too, where every change came back 409 and
+// the select snapped back to Auto under a "Needs to think" line.
+{
+  const panel = readFileSync(
+    new URL("../../packages/client/src/components/connections/DecisionDefaultControl.tsx", import.meta.url),
+    "utf8",
+  );
+  const mount = panel.slice(0, panel.indexOf("<LocalSlotControls"));
+  assert.ok(mount.length < panel.length, "the panel must still mount the local slot controls");
+  assert.match(
+    mount.slice(mount.lastIndexOf("{selected?.slot")),
+    /selected\.thinking && \(\s*$/u,
+    "the Thinking controls must render only for an entry that carries a Thinking value",
+  );
+  const route = readFileSync(new URL("../../packages/server/src/routes/decision.routes.ts", import.meta.url), "utf8");
+  assert.match(route, /if \(!hasThinkingSetting\(slot\)\) return base;/u, "the options route leaves it off otherwise");
+}
 
 // A rejected selection must not change stored state. The 404 and 409 branches in
 // /select sit above the line that clears the local slot, so a stale request cannot

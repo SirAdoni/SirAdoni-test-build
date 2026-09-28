@@ -60,6 +60,7 @@ import {
   compactStoryboardCharacterIdentity,
   uniqueStoryboardCards,
 } from "../services/game/storyboard-character-identity.js";
+import { carryGameInventory } from "@marinara-engine/shared";
 import { eq } from "../db/file-query.js";
 import { IMPORTED_GAME_ENGINE_ANCHOR_PREFIX } from "../db/file-backed-store.js";
 import { chats as chatsTable } from "../db/schema/index.js";
@@ -269,7 +270,11 @@ import {
   resolveGameRuleset,
 } from "../services/game/ruleset-registry.service.js";
 import { getCustomAgentImportPolicy } from "../services/agents/custom-agent-import-policy.service.js";
-import { resolveChatSkillCheck } from "../services/game/skill-check-resolution.service.js";
+import {
+  resolveChatSkillCheck,
+  SkillCheckDifficultyError,
+  SkillCheckUntrainedError,
+} from "../services/game/skill-check-resolution.service.js";
 import { applyAllSegmentEdits, stripGmCommandTags } from "../services/game/segment-edits.js";
 import {
   batchLorebookKeeperTranscript,
@@ -536,6 +541,7 @@ import {
   getGameSpotifyErrorStatus,
   playGameSpotifyTrack,
 } from "../services/spotify/game-spotify-music.service.js";
+import { loadGameInventoryItemBook } from "../services/game/game-inventory.service.js";
 import {
   readIllustratorAppearance,
   readPreferredCharacterReferenceImage,
@@ -3342,8 +3348,6 @@ export function applySessionConclusionPayload(
   };
 }
 
-type ChatInventoryItem = { name: string; quantity: number };
-
 function parseJsonField<T>(raw: unknown, fallback: T): T {
   if (raw == null) return fallback;
   if (typeof raw !== "string") return raw as T;
@@ -3366,38 +3370,6 @@ async function updateLatestGameStateWithTrackerLocks(
     parseGameStateRow(latest as Record<string, unknown>),
   );
   return gameStateStore.updateLatest(chatId, lockedPatch as any);
-}
-
-function normalizeGameInventoryItems(raw: unknown): ChatInventoryItem[] {
-  if (!Array.isArray(raw)) return [];
-
-  return raw.flatMap((item) => {
-    if (!item || typeof item !== "object") return [];
-    const source = item as Record<string, unknown>;
-    const name = typeof source.name === "string" ? source.name.trim() : "";
-    const parsedQuantity =
-      typeof source.quantity === "number" ? source.quantity : Number.parseInt(String(source.quantity ?? ""), 10);
-    const quantity = Number.isFinite(parsedQuantity) && parsedQuantity > 0 ? Math.floor(parsedQuantity) : 1;
-    return name ? [{ name, quantity }] : [];
-  });
-}
-
-function inventoryFromPlayerStats(playerStats: Record<string, unknown> | null): ChatInventoryItem[] {
-  if (!playerStats) return [];
-  return normalizeGameInventoryItems(playerStats.inventory);
-}
-
-function mergeGameInventoryItems(...sources: ChatInventoryItem[][]): ChatInventoryItem[] {
-  const merged = new Map<string, ChatInventoryItem>();
-  for (const source of sources) {
-    for (const item of source) {
-      const key = item.name.toLowerCase();
-      if (!merged.has(key)) {
-        merged.set(key, { ...item });
-      }
-    }
-  }
-  return [...merged.values()];
 }
 
 async function resolveConnection(
@@ -6135,9 +6107,14 @@ function reconcileJournal(
  */
 function replaceFirstUnresolvedSkillCheckTag(
   content: string,
-  request: { skill: string; dc: number },
+  request: { skill: string; dc?: number; difficulty?: string },
   result: SkillCheckResult,
 ): string {
+  const sameDifficulty = (tag: { dc?: number; difficulty?: string }) =>
+    request.dc !== undefined
+      ? tag.dc === request.dc
+      : tag.dc === undefined &&
+        (tag.difficulty ?? "").trim().toLowerCase() === (request.difficulty ?? "").trim().toLowerCase();
   let replaced = false;
   return content.replace(createSkillCheckTagRegex(), (fullTag, body: string) => {
     if (replaced) return fullTag;
@@ -6145,8 +6122,11 @@ function replaceFirstUnresolvedSkillCheckTag(
     const tag = parseSkillCheckTagBody(body);
     if (!tag || tag.resolvedResult) return fullTag;
     if (!isEngineRollableSkillCheckTag(tag)) return fullTag;
+    // Settled: the character could not attempt it, and a later roll of the same skill is a new check.
+    if (tag.reason) return fullTag;
     if (tag.skill.trim().toLowerCase() !== request.skill.trim().toLowerCase()) return fullTag;
-    if (tag.dc !== request.dc) return fullTag;
+    // The same ask: the same number, or, for a check that named only its ladder step, the same step.
+    if (!sameDifficulty(tag)) return fullTag;
     // Set by a ruleset game only: the tag must then be that character's own.
     if (result.who && (tag.who ?? "").trim().toLowerCase() !== result.who.trim().toLowerCase()) return fullTag;
 
@@ -8866,8 +8846,7 @@ export async function gameRoutes(app: FastifyInstance) {
         forcedEntryIds: setupConfig.activeLorebookEntryIds,
         ignoreForcedEntryProbability: true,
         entryStateOverrides: (meta.entryStateOverrides ?? meta.lorebookEntryStateOverrides) as
-          | Record<string, { ephemeral?: number | null; enabled?: boolean }>
-          | undefined,
+          Record<string, { ephemeral?: number | null; enabled?: boolean }> | undefined,
         excludedLorebookIds: setupLorebookScopeExclusions.excludedLorebookIds,
         excludedSourceAgentIds: setupLorebookScopeExclusions.excludedSourceAgentIds,
         generationTriggers: ["game_setup", "game"],
@@ -9418,10 +9397,9 @@ export async function gameRoutes(app: FastifyInstance) {
       const previousPlayerStats = parseJsonField<Record<string, unknown> | null>(previousState?.playerStats, null);
       const previousPersonaStats = parseJsonField<any[] | null>(previousState?.personaStats, null);
       const previousHiddenTrackerFields = parseTrackerHiddenFields(previousState?.hiddenTrackerFields);
-      const carriedInventory = mergeGameInventoryItems(
-        normalizeGameInventoryItems(prevMeta.gameInventory),
-        inventoryFromPlayerStats(previousPlayerStats),
-      );
+      // The ruleset's items, so what comes back from the detailed inventory is stacked as its item allows.
+      const carryRules = await loadGameInventoryItemBook(app.db, { metadata: prevMeta }, "game-master");
+      const carriedInventory = carryGameInventory(prevMeta.gameInventory, previousPlayerStats?.inventory, carryRules);
       const {
         gameLastIllustrationTurn: _previousIllustrationTurn,
         gameLastIllustrationSessionNumber: _previousIllustrationSessionNumber,
@@ -9442,6 +9420,9 @@ export async function gameRoutes(app: FastifyInstance) {
         // previous chat; a new session keeps only the continuity settings and starts its own boundary.
         gameContinuityBackfills: _previousContinuityBackfills,
         gameContinuity: previousContinuity,
+        // The tellings of one of the previous session's turns: the stacks carry over, the record
+        // of how that turn was told does not.
+        gameInventoryTurn: _previousInventoryTurn,
         ...carryMeta
       } = prevMeta;
       const carriedContinuity = continuitySettingsForNewSession(previousContinuity);
@@ -11733,41 +11714,68 @@ export async function gameRoutes(app: FastifyInstance) {
 
   // ── POST /game/skill-check ──
   // Resolve a d20 skill check using player stats.
-  const skillCheckSchema = z.object({
-    chatId: z.string().min(1),
-    skill: z.string().min(1).max(100),
-    dc: z.number().int().min(1).max(40),
-    advantage: z.boolean().optional(),
-    disadvantage: z.boolean().optional(),
-    preRolledD20: z.number().int().min(1).max(20).optional(),
-    /** The party member to roll for in a game with a pinned ruleset; ignored without one. */
-    who: z.string().trim().min(1).max(100).optional(),
-    /** `with=`, `threshold=` and `bonus=` off the tag, so this fallback asks the ruleset the same
-     *  question generation would have. Each is ignored where the ruleset does not take it. */
-    withAbility: z.string().trim().min(1).max(100).optional(),
-    threshold: z.number().int().min(1).max(1000).optional(),
-    bonusDice: z.number().int().min(-20).max(20).optional(),
-    messageId: z.string().min(1).optional(),
-  });
+  const skillCheckSchema = z
+    .object({
+      chatId: z.string().min(1),
+      skill: z.string().min(1).max(100),
+      /** Optional only beside `difficulty`, which a ruleset game reads off its own ladder instead. */
+      dc: z.number().int().min(1).max(40).optional(),
+      advantage: z.boolean().optional(),
+      disadvantage: z.boolean().optional(),
+      preRolledD20: z.number().int().min(1).max(20).optional(),
+      /** The party member to roll for in a game with a pinned ruleset; ignored without one. */
+      who: z.string().trim().min(1).max(100).optional(),
+      /** `with=`, `threshold=`, `bonus=`, `difficulty=`, `explode=`, `double=` and `reroll=` off the tag, so this
+       *  fallback asks the ruleset the same question generation would have. Each is ignored where the
+       *  ruleset does not take it. */
+      withAbility: z.string().trim().min(1).max(100).optional(),
+      threshold: z.number().int().min(1).max(1000).optional(),
+      bonusDice: z.number().int().min(-20).max(20).optional(),
+      difficulty: z.string().trim().min(1).max(80).optional(),
+      explode: z.number().int().min(2).max(1000).optional(),
+      double: z.number().int().min(2).max(1000).optional(),
+      reroll: z.string().trim().min(1).max(40).optional(),
+      messageId: z.string().min(1).optional(),
+    })
+    .refine((input) => input.dc !== undefined || input.difficulty !== undefined, {
+      message: "A check needs a dc or a difficulty",
+    });
 
   // ponytail: dc stays capped at 40 here even when a ruleset's ladder reaches further. Generation
   // post-processing already honours the ladder; widen this when a ruleset needs the fallback too.
-  app.post("/skill-check", async (req) => {
+  app.post("/skill-check", async (req, reply) => {
     const input = skillCheckSchema.parse(req.body);
 
     // The modifier lookup this endpoint used to inline lives in the shared
     // service now, so generation post-processing rolls checks the same way.
-    const result = await resolveChatSkillCheck(app.db, input.chatId, {
-      skill: input.skill,
-      dc: input.dc,
-      advantage: input.advantage,
-      disadvantage: input.disadvantage,
-      preRolledD20: input.preRolledD20,
-      who: input.who,
-      withAbility: input.withAbility,
-      threshold: input.threshold,
-      bonusDice: input.bonusDice,
-    });
+    let result: SkillCheckResult;
+    try {
+      result = await resolveChatSkillCheck(app.db, input.chatId, {
+        skill: input.skill,
+        dc: input.dc,
+        advantage: input.advantage,
+        disadvantage: input.disadvantage,
+        preRolledD20: input.preRolledD20,
+        who: input.who,
+        withAbility: input.withAbility,
+        threshold: input.threshold,
+        bonusDice: input.bonusDice,
+        difficulty: input.difficulty,
+        explode: input.explode,
+        double: input.double,
+        reroll: input.reroll,
+      });
+    } catch (err) {
+      // A step no ladder in this game has, or a game with no ladder at all: nothing to roll against.
+      if (err instanceof SkillCheckDifficultyError) {
+        return reply.status(400).send({ error: err.message, code: "skill_check_difficulty_unknown" });
+      }
+      // A check the character cannot attempt untrained is not there to roll.
+      if (err instanceof SkillCheckUntrainedError) {
+        return reply.status(400).send({ error: err.message, code: "skill_check_untrained" });
+      }
+      throw err;
+    }
 
     let updatedContent: string | undefined;
     if (input.messageId) {
@@ -11776,7 +11784,7 @@ export async function gameRoutes(app: FastifyInstance) {
       if (message?.chatId === input.chatId && (message.role === "assistant" || message.role === "narrator")) {
         const nextContent = replaceFirstUnresolvedSkillCheckTag(
           message.content,
-          { skill: input.skill, dc: input.dc },
+          { skill: input.skill, dc: input.dc, difficulty: input.difficulty },
           result,
         );
         if (nextContent !== message.content) {
@@ -13760,8 +13768,7 @@ export async function gameRoutes(app: FastifyInstance) {
           excludedLorebookIds: loreScopeExclusions.excludedLorebookIds,
           excludedSourceAgentIds: loreScopeExclusions.excludedSourceAgentIds,
           entryStateOverrides: (meta.entryStateOverrides ?? meta.lorebookEntryStateOverrides) as
-            | Record<string, { ephemeral?: number | null; enabled?: boolean }>
-            | undefined,
+            Record<string, { ephemeral?: number | null; enabled?: boolean }> | undefined,
           forcedEntryIds: input.lorebookEntryIds,
           // The selection is exact. Without this the ordinary scope-based scan runs
           // beside it and every global book — plus anything bound to the party, the
@@ -15076,7 +15083,13 @@ export async function gameRoutes(app: FastifyInstance) {
 
       return { result: parsed };
     } catch (err) {
-      logger.warn(err, "[game/scene-wrap] Failed to parse LLM response as JSON: %s", raw.slice(0, 200));
+      // Model output stays out of non-debug lines, and a JSON parse message can quote it, so warn gets
+      // only the error type and the length; the error and the text itself are at debug.
+      logger.warn(
+        { errorType: err instanceof Error ? err.name : typeof err, rawLength: raw.length },
+        "[game/scene-wrap] Failed to parse LLM response as JSON",
+      );
+      logger.debug({ err }, "[game/scene-wrap] Unparsed LLM response: %s", raw.slice(0, 200));
       return { result: null, raw };
     }
   });

@@ -78,6 +78,12 @@ const RESTART_REQUIRED_KEYS = new Set<string>([
   "LOG_FILE_KEEP",
   // The watcher mode itself is decided once at startup.
   "MARINARA_ENV_WATCH",
+  // Robustness settings read once at startup: the boot id cache flag is read at
+  // module load (file-backed-store.ts), and the two shutdown flags when the
+  // signal handlers are installed (lib/shutdown-signals.ts).
+  "STORAGE_CACHE_WINDOWS_BOOT_ID",
+  "SHUTDOWN_WINDOWS_CONSOLE_SIGNALS",
+  "SHUTDOWN_FORCE_EXIT_ON_REPEAT",
 ]);
 
 // The only keys whose values may appear in a log line. Every other key is logged

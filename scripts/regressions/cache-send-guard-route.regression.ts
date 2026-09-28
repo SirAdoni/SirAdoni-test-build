@@ -60,11 +60,7 @@ try {
   };
   const heldTurnDescriptor = heldTurns.createCacheGuardHeldTurnDescriptor(heldTurnFixture)!;
   assert.ok(heldTurns.resolveCacheGuardHeldTurn([heldTurnFixture], "held-chat", heldTurnDescriptor));
-  assert.equal(
-    heldTurns.resolveCacheGuardHeldTurn([], "held-chat", heldTurnDescriptor),
-    null,
-    "deleted turns are rejected",
-  );
+  assert.equal(heldTurns.resolveCacheGuardHeldTurn([], "held-chat", heldTurnDescriptor), null);
   assert.equal(heldTurns.resolveCacheGuardHeldTurn([heldTurnFixture], "other-chat", heldTurnDescriptor), null);
   assert.equal(
     heldTurns.resolveCacheGuardHeldTurn(
@@ -91,10 +87,12 @@ try {
       heldTurnDescriptor,
     ),
     null,
+    "edited held content invalidates acknowledgement",
   );
   assert.equal(
     heldTurns.resolveCacheGuardHeldTurn([{ ...heldTurnFixture, activeSwipeIndex: 0 }], "held-chat", heldTurnDescriptor),
     null,
+    "a changed active swipe invalidates acknowledgement",
   );
   assert.equal(
     heldTurns.resolveCacheGuardHeldTurn(
@@ -107,12 +105,7 @@ try {
   );
   assert.equal(
     heldTurns.resolveCacheGuardHeldTurn(
-      [
-        {
-          ...heldTurnFixture,
-          extra: JSON.stringify({ ...JSON.parse(heldTurnFixture.extra), attachments: [] }),
-        },
-      ],
+      [{ ...heldTurnFixture, extra: JSON.stringify({ ...JSON.parse(heldTurnFixture.extra), attachments: [] }) }],
       "held-chat",
       heldTurnDescriptor,
     ),
@@ -222,7 +215,7 @@ try {
     .filter((line: string) => line.startsWith("data: "))
     .map((line: string) => JSON.parse(line.slice(6)))
     .find((event: { type?: string }) => event.type === "cache_warning");
-  assert.ok(heldWarning?.data?.heldTurn, "warning carries the server-resolved held turn descriptor");
+  assert.ok(heldWarning?.data?.heldTurn, "warning carries the saved-turn descriptor");
 
   const acknowledged = await app.inject({
     method: "POST",
@@ -239,6 +232,14 @@ try {
   assert.match(acknowledged.body, /isolated scene continues/u);
   assert.equal(providerCalls, 1, "acknowledgement must release the send to the provider");
   const resumedMessages = (await app.inject({ method: "GET", url: `/api/chats/${chat.id}/messages` })).json();
+  assert.equal(
+    resumedMessages.filter(
+      (message: { role: string; content: string }) =>
+        message.role === "user" && message.content === "ordinary narrator request",
+    ).length,
+    1,
+    "acknowledgement reuses the saved row without inserting a duplicate",
+  );
   const resumedAssistant = resumedMessages.find((message: { role: string }) => message.role === "assistant");
   const mixedReplay = await app.inject({
     method: "POST",
@@ -253,13 +254,46 @@ try {
     },
   });
   assert.equal(mixedReplay.statusCode, 400, "a held-turn descriptor cannot authorize a regenerate request");
+  const descriptorlessRegenerate = await app.inject({
+    method: "POST",
+    url: "/api/generate",
+    payload: {
+      chatId: chat.id,
+      connectionId: connection.id,
+      regenerateMessageId: resumedAssistant?.id,
+      cacheGuardAcknowledged: true,
+      streaming: true,
+    },
+  });
+  assert.equal(descriptorlessRegenerate.statusCode, 200, "descriptorless acknowledgement still permits regeneration");
+  assert.match(descriptorlessRegenerate.body, /isolated scene continues/u);
+  assert.equal(providerCalls, 2, "descriptorless regeneration reaches the provider");
+  const unacknowledgedDescriptor = await app.inject({
+    method: "POST",
+    url: "/api/generate",
+    payload: {
+      chatId: chat.id,
+      connectionId: connection.id,
+      cacheGuardHeldTurn: heldWarning.data.heldTurn,
+      streaming: true,
+    },
+  });
+  assert.equal(unacknowledgedDescriptor.statusCode, 400, "a held-turn descriptor requires explicit acknowledgement");
+  const duplicateWithoutDescriptor = await app.inject({
+    method: "POST",
+    url: "/api/generate",
+    payload: {
+      chatId: chat.id,
+      connectionId: connection.id,
+      userMessage: "ordinary narrator request",
+      cacheGuardAcknowledged: true,
+      streaming: true,
+    },
+  });
   assert.equal(
-    resumedMessages.filter(
-      (message: { role: string; content: string }) =>
-        message.role === "user" && message.content === "ordinary narrator request",
-    ).length,
-    1,
-    "acknowledging a held turn reuses its saved row without inserting a duplicate",
+    duplicateWithoutDescriptor.statusCode,
+    400,
+    "an acknowledged new user turn cannot be resent without its saved-turn descriptor",
   );
   const recorded = await guard.readLastSentPrompt(chat.id, scope);
   assert.ok((recorded?.entries.length ?? 0) > 0, "accepted send records a non-empty sent fingerprint");
@@ -307,7 +341,7 @@ try {
     .filter((line: string) => line.startsWith("data: "))
     .map((line: string) => JSON.parse(line.slice(6)))
     .find((event: { type?: string }) => event.type === "cache_warning");
-  assert.ok(isolatedWarning?.data?.heldTurn, "Game planner warning carries the saved-turn descriptor");
+  assert.ok(isolatedWarning?.data?.heldTurn, "isolated planner warning carries the saved-turn descriptor");
   assert.equal(
     providerCalls,
     isolatedProviderCallsBefore,
@@ -333,14 +367,14 @@ try {
   assert.equal(isolatedAccepted.statusCode, 200);
   assert.match(isolatedAccepted.body, /The isolated scene continues/u);
   assert.ok(providerCalls > isolatedProviderCallsBefore, "isolated acknowledgement releases the planner provider call");
-  const isolatedMessages = (await app.inject({ method: "GET", url: `/api/chats/${isolatedChat.id}/messages` })).json();
+  const isolatedResumedMessages = (await app.inject({ method: "GET", url: `/api/chats/${isolatedChat.id}/messages` })).json();
   assert.equal(
-    isolatedMessages.filter(
+    isolatedResumedMessages.filter(
       (message: { role: string; content: string }) =>
         message.role === "user" && message.content === "I enter the isolated scene.",
     ).length,
     1,
-    "Game acknowledgement resumes the original turn without creating a duplicate",
+    "isolated acknowledgement reuses the original user row",
   );
   assert.ok(await guard.readLastSentPrompt(isolatedChat.id, isolatedScope), "isolated planner success is recorded");
 
@@ -472,10 +506,7 @@ try {
     .filter((line: string) => line.startsWith("data: "))
     .map((line: string) => JSON.parse(line.slice(6)))
     .find((event: { type?: string }) => event.type === "cache_warning");
-  assert.ok(
-    chatGptWarning?.data?.heldTurn,
-    `ChatGPT Game hold returns the saved-turn descriptor: ${heldChatGptGameSend.body.slice(-2200)}`,
-  );
+  assert.ok(chatGptWarning?.data?.heldTurn, "ChatGPT Game hold returns the saved-turn descriptor");
   assert.equal(chatGptProviderCalls, 1, "the held ChatGPT Game turn is stopped before the stub provider");
   const acknowledgedChatGptGameSend = await app.inject({
     method: "POST",
@@ -489,15 +520,13 @@ try {
     },
   });
   assert.equal(acknowledgedChatGptGameSend.statusCode, 200);
-  assert.equal(chatGptProviderCalls, 2, "the descriptor-only acknowledgement reaches the stub ChatGPT provider");
+  assert.equal(chatGptProviderCalls, 2, "descriptor-only acknowledgement reaches the stub ChatGPT provider");
   assert.equal(
-    chatGptPrompts
-      .at(-1)
-      ?.filter(
-        (message) =>
-          message.role === "user" &&
-          message.content === "The held ChatGPT Game action must appear in the resumed prompt.",
-      ).length,
+    chatGptPrompts.at(-1)?.filter(
+      (message) =>
+        message.role === "user" &&
+        message.content === "The held ChatGPT Game action must appear in the resumed prompt.",
+    ).length,
     1,
     "the ChatGPT Game provider prompt contains the held user turn exactly once",
   );
@@ -511,20 +540,16 @@ try {
     "acknowledgement retains exactly one original saved user row",
   );
   assert.equal(chatGptMessages.filter((message: { role: string }) => message.role === "user").length, 2);
-  const chatGptAssistant = [...chatGptMessages]
-    .reverse()
-    .find((message: { role: string }) => message.role === "assistant");
+  const chatGptAssistant = [...chatGptMessages].reverse().find((message: { role: string }) => message.role === "assistant");
   const chatGptAssistantExtra =
-    typeof chatGptAssistant?.extra === "string" ? JSON.parse(chatGptAssistant.extra) : (chatGptAssistant?.extra ?? {});
-  assert.ok(
-    chatGptAssistantExtra.promptHistoryReplay?.helper,
-    "acknowledgement persists the restored Game replay descriptor",
-  );
+    typeof chatGptAssistant?.extra === "string"
+      ? JSON.parse(chatGptAssistant.extra)
+      : (chatGptAssistant?.extra ?? {});
+  assert.ok(chatGptAssistantExtra.promptHistoryReplay?.helper, "acknowledgement persists the restored Game replay descriptor");
   assert.equal(chatGptAssistantExtra.promptHistoryReplay?.sourceCount, 3);
   assert.equal(chatGptAssistantExtra.promptHistoryReplay?.responseId, chatGptAssistant.id);
   assert.equal(chatGptAssistantExtra.promptHistoryReplay?.scope?.provider, "openai_chatgpt");
 
-  // Prove the resumed descriptor supports actual replay on the following ordinary turn.
   const nextGameSend = await app.inject({
     method: "POST",
     url: "/api/generate",
@@ -539,14 +564,13 @@ try {
   assert.equal(nextGameSend.statusCode, 200);
   assert.equal(chatGptProviderCalls, 3, "following normal turn reaches the mocked provider");
   const afterMessages = await chats.listMessages(chatGptGame.id);
-  const afterAssistant = afterMessages.filter((m) => m.role === "assistant").at(-1)!;
+  const afterAssistant = afterMessages.filter((message) => message.role === "assistant").at(-1)!;
   const afterExtra = typeof afterAssistant.extra === "string" ? JSON.parse(afterAssistant.extra) : afterAssistant.extra;
   assert.equal(
     afterExtra.promptHistoryReplay?.replayed,
     true,
     "the next real Game route reuses the acknowledged replay descriptor",
   );
-  // Verify the corrected snapshot remains available to the next turn without rewriting history.
   const correctionFollowUp = await app.inject({
     method: "POST",
     url: "/api/generate",

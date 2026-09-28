@@ -35,7 +35,9 @@ import { fileURLToPath } from "url";
 import { getBuildCommit, getBuildLabel } from "./config/build-info.js";
 import { getNodeEnv, isAutoCreateDefaultConnectionDisabled, getFileStorageDir } from "./config/runtime-config.js";
 import { corsDelegate } from "./config/cors-config.js";
+import { decisionProcessService } from "./services/sidecar/decision-process.service.js";
 import { sidecarProcessService } from "./services/sidecar/sidecar-process.service.js";
+import { utilitySidecarService } from "./services/utility-sidecar/utility-sidecar.service.js";
 import { startServerAutonomousScheduler } from "./services/conversation/server-autonomous-scheduler.service.js";
 import { preparePersonalExtensionTrust } from "./services/setup/personal-extension-trust.js";
 import { personalServerExtensionRuntime } from "./services/extensions/personal-server-extension-runtime.js";
@@ -55,20 +57,15 @@ import { getRuntimeMemorySnapshot } from "./utils/runtime-memory.js";
 import { getLastFreeze } from "./lib/freeze-detector.js";
 import { buildSidecarHealthSection } from "./services/sidecar/sidecar-slot-report.js";
 import { getPreviousSessionStatus, getUncleanExitHistory } from "./lib/session-postmortem.js";
-import { protectTerminalLogger } from "./lib/logger.js";
+import { followLogLevel, logger, protectTerminalLogger } from "./lib/logger.js";
+import { logRateLimited } from "./lib/log-rate-limit.js";
+import { genRequestId, registerRequestLogging } from "./lib/request-logging.js";
+import { startup } from "./lib/startup-timeline.js";
 import { openCodeSessionHook } from "./utils/opencode-session.js";
-import { logger } from "./lib/logger.js";
 import { runWithRootDiagnosticContext, sanitizeDiagnosticText, type DiagnosticContext } from "./lib/diagnostics.js";
 import { reportDiagnosticError } from "./lib/diagnostic-operation.js";
 import { logSuppressed } from "./lib/best-effort.js";
-import {
-  kDiagnosticContext,
-  MarinaraLogController,
-  routeLabel,
-  sanitizeIncomingRequestId,
-} from "./lib/http-diagnostics.js";
-import { startup } from "./lib/startup-timeline.js";
-import { randomUUID } from "node:crypto";
+import { kDiagnosticContext, MarinaraLogController, routeLabel } from "./lib/http-diagnostics.js";
 import { flushLorebookActivationStats } from "./services/lorebook/activation-stats.js";
 import { createGameContinuityRuntime, type ContinuityRuntime } from "./services/game/continuity-runtime.js";
 
@@ -126,13 +123,6 @@ export function registerDiagnosticHttpHooks(app: FastifyInstance): void {
       () => done(),
     );
   });
-  app.addHook("onRequestAbort", (request, done) => {
-    logger.info(
-      { event: "request.aborted", requestId: request.id, method: request.method, route: routeLabel(request) },
-      "Client aborted request",
-    );
-    done();
-  });
   app.addHook("onSend", async (req, reply, payload) => {
     reply.header("x-request-id", req.id);
     if (req.url.startsWith("/api/") && !reply.hasHeader("Cache-Control")) {
@@ -184,21 +174,18 @@ export function registerDiagnosticHttpHooks(app: FastifyInstance): void {
 
 export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
   const hadUserStateBeforeStartup = existsSync(join(getFileStorageDir(), "manifest.json"));
+  const logController = new MarinaraLogController();
   const app = Fastify({
     // Restart has its own bounded fallback; normal shutdown must not interrupt active generations.
     forceCloseConnections: false,
-    // Keep Fastify and application records on the same Pino instance so
-    // request context, sinks, and runtime level changes stay correlated.
+    // Request lines share Pino's stream and the private diagnostic completion summary.
     loggerInstance: logger as FastifyBaseLogger,
-    // One request.end line per request, labelled `requestId`; LOG_DISABLE_REQUEST_LOGGING moves it from info to debug.
-    logController: new MarinaraLogController(),
-    // UUIDs never collide across boots. A well-formed client x-request-id is honoured for end-to-end tracing.
-    genReqId: (req) => sanitizeIncomingRequestId(req.headers["x-request-id"]) ?? randomUUID(),
-    bodyLimit: MAX_UPLOAD_BYTES, // General-route default; transfer routes opt into streamed or unbounded imports.
+    logController,
+    genReqId: genRequestId,
+    bodyLimit: MAX_UPLOAD_BYTES, // Transfer routes opt into streamed or unbounded imports.
     ...(https && { https }),
   });
-  // Early-boot detector: anything that boots Fastify (inject, ready) before registration
-  // finishes makes every later plugin fail with "Root plugin has already booted".
+  // Detect a premature Fastify boot before all routes and packages are registered.
   let registrationDone = false;
   app.addHook("onReady", function (done) {
     if (!registrationDone) {
@@ -217,9 +204,10 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
     done();
   });
   protectTerminalLogger(app.log, getNodeEnv() !== "production");
-  // Hold internal inject() calls until every route, hook and package is registered (see fastify-inject-gate.ts).
   const releaseInjectGate = holdInjectUntilRegistered(app);
-
+  const stopFollowingLogLevel = followLogLevel(app.log);
+  app.addHook("onClose", async () => stopFollowingLogLevel());
+  registerRequestLogging(app);
   registerDiagnosticHttpHooks(app);
 
   // Reject attacker-controlled DNS names before CORS or loopback trust can
@@ -275,15 +263,16 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
     const closeStarted = performance.now();
     const services: ShutdownServiceRecord[] = [];
     try {
-      // Bounded: a runtime whose stop() hangs must not keep closeDB() from
-      // flushing before the shutdown force-exit deadline.
+      // Every runtime has a bounded stop so storage can close before the force-exit deadline.
       const { failed, timedOut, records } = await runShutdownStepsWithin([
         { name: "sessionSummaryRefresh", run: () => app.sessionSummaryRefresh?.stop() },
         { name: "gameContinuity", run: () => gameContinuity.stop() },
         { name: "capabilityModuleRuntime", run: () => capabilityModuleRuntime.stop() },
         { name: "personalExtensions", run: () => personalServerExtensionRuntime.stop() },
         { name: "sidecar", run: () => sidecarProcessService.stop() },
-        // Write the last batched lorebook activation counts while the database is still open.
+        { name: "decisionSidecar", run: () => decisionProcessService.stop() },
+        { name: "utilitySidecar", run: () => utilitySidecarService.stop() },
+        // Flush while the database remains open.
         { name: "lorebookActivationStats", run: () => flushLorebookActivationStats() },
       ]);
       services.push(...records);
@@ -450,7 +439,7 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
   await startup.phase("workers.start", async () => {
     await Promise.all([app.sessionSummaryRefresh?.start(), gameContinuity.start()]);
   });
-  // Hash earlier session transcripts once in the background, so the first GM turn after a restart stays fast.
+  // Warm earlier session transcripts in the background to keep the first GM turn responsive.
   const campaignWarmTimer = setTimeout(() => {
     void warmCampaignMemoryCache(db).catch((error) =>
       logSuppressed(error, { event: "continuity.stage", stage: "campaign-memory.warm" }),
@@ -461,7 +450,7 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
 
   // Trusted downloaded server capabilities register while Fastify is still mutable.
   await startup.phase("capability.runtime", () => capabilityModuleRuntime.start(app));
-  // Optional: a single malformed legacy chat must never prevent the host from booting.
+  // A malformed legacy chat must not prevent boot.
   await startup.phase("migration.legacy-game-maps", () => migrateLegacyGameMapsAtBoot(db), { optional: true });
   // A package can install its own art during activate(), which runs AFTER the boot-time scan above, so
   // without this its assets stay invisible to everything reading the manifest until the NEXT restart.
@@ -469,9 +458,7 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
   // just wrote: a stale manifest costs that package its art, failing to boot costs the user everything.
   await startup.phase("assets.rescan-after-packages", () => buildAssetManifest(), { optional: true });
   await startup.phase("extensions.runtime", () => personalServerExtensionRuntime.start(db));
-  // Server-backed agent definitions are visible only after their runtime reaches
-  // functional readiness. Packages without a server entrypoint remain available
-  // as soon as their verified files are installed.
+  // Server-backed agent definitions become visible after runtime readiness.
   await startup.phase("agents.registry", () => initializeCapabilityAgentRegistry());
 
   // ── Server-side autonomous conversation scheduler ──
@@ -511,7 +498,8 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
     try {
       capabilityPackages = await capabilityPackageManager.diagnostics();
     } catch (error) {
-      app.log.warn(error, "Capability package diagnostics are unavailable");
+      // The client polls health; one line a minute is enough for a lasting failure.
+      logRateLimited("warn", "health.capability-packages", error, "Capability package diagnostics are unavailable");
     }
     // A slot service that throws must not take the health endpoint down with it: this
     // response is also the freeze detector's signal and an uptime check's target.
@@ -519,7 +507,7 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
     try {
       sidecars = buildSidecarHealthSection();
     } catch (error) {
-      app.log.warn(error, "Sidecar health diagnostics are unavailable");
+      logRateLimited("warn", "health.sidecars", error, "Sidecar health diagnostics are unavailable");
     }
     return {
       status: "ok",

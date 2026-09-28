@@ -20,9 +20,8 @@ export function useDialogFocusScope(
   restoreFocusRef?: RefObject<HTMLElement | null>,
   ownedPortalSelector?: string,
   /**
-   * When provided, Tab is only trapped while this returns true. Stacked dialogs
-   * pass "am I the topmost overlay" so a parent dialog does not pull focus out
-   * of a child dialog portaled outside its panel.
+   * When provided, Tab is trapped only while this focus scope owns the topmost overlay.
+   * This keeps a parent dialog from pulling focus out of a child dialog portal.
    */
   isActive?: () => boolean,
 ) {
@@ -87,9 +86,11 @@ export function useDialogFocusScope(
     return () => {
       window.cancelAnimationFrame(focusInitial);
       document.removeEventListener("keydown", trapFocus);
-      restoreDialogFocus(restoreFocusRef, opener);
+      // Closing an underlying dialog must not move focus out of the topmost
+      // dialog that was opened above it.
+      if (!isActive || isActive()) restoreDialogFocus(restoreFocusRef, opener);
     };
-    // isActive is read at event time; callers pass a stable reader over a ref.
+    // isActive is read at event time through a ref-backed callback.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [containerRef, initialFocusRef, open, ownedPortalSelector, restoreFocusRef]);
 }

@@ -1,5 +1,6 @@
 import { resolveDecisionConnection } from "../services/decision/decision-connection.js";
 import { askNoulQuestions } from "../services/decision/system-one.client.js";
+import { connectionChatTarget, probeDecisionSlot } from "../services/decision/sidecar-decision.backend.js";
 // ──────────────────────────────────────────────
 // Routes: Connections
 // ──────────────────────────────────────────────
@@ -64,6 +65,11 @@ import {
   safeFetch,
 } from "../utils/security.js";
 import { DATA_DIR } from "../utils/data-dir.js";
+import { decryptApiKey } from "../utils/crypto.js";
+import {
+  fetchNanoGptSubscriptionUsage,
+  readNanoGptModelSubscriptionMetadata,
+} from "../services/nanogpt/subscription-usage.js";
 import {
   buildAtlasCloudModelSchemaUrl,
   buildAtlasCloudTestReferenceImage,
@@ -468,8 +474,16 @@ function knownStabilityImageModels() {
 
 export async function connectionsRoutes(app: FastifyInstance) {
   const storage = createConnectionsStorage(app.db);
-  const maskConnection = <T extends { apiKeyEncrypted?: unknown } | null>(conn: T): T =>
-    conn ? ({ ...conn, apiKeyEncrypted: conn.apiKeyEncrypted ? "••••••••" : "" } as T) : conn;
+  const maskConnection = <T extends { apiKeyEncrypted?: unknown; managementTokenEncrypted?: unknown } | null>(
+    conn: T,
+  ): T =>
+    conn
+      ? ({
+          ...conn,
+          apiKeyEncrypted: conn.apiKeyEncrypted ? "••••••••" : "",
+          managementTokenEncrypted: conn.managementTokenEncrypted ? "••••••••" : "",
+        } as T)
+      : conn;
 
   app.get("/", async () => {
     return storage.list();
@@ -652,6 +666,25 @@ export async function connectionsRoutes(app: FastifyInstance) {
         // real time. The client compares that time with `timeLimitMs`, the limit chats use.
         const timeLimitMs = resolved.connection.timeoutMs;
         const testTimeoutMs = decisionTestTimeoutMs(timeLimitMs ?? 0);
+        if (resolved.connection.protocol === "chat_logprobs") {
+          // The same probe as a local model's Test, so it also reports whether the
+          // server returned log-probabilities and whether the model had to think.
+          const probe = await probeDecisionSlot(
+            connectionChatTarget(conn.id, conn.name, { ...resolved.connection, timeoutMs: testTimeoutMs }),
+          );
+          return {
+            success: probe.probability !== null,
+            message: probe.error ?? "Decision model answered.",
+            errorCode: probe.probability === null ? (probe.error ?? "no_answer") : undefined,
+            decisionProbability: probe.probability ?? undefined,
+            latencyMs: probe.latencyMs,
+            timeLimitMs,
+            testTimeoutMs,
+            logprobs: probe.logprobs,
+            answersDirectly: probe.answersDirectly,
+            modelName: resolved.connection.model,
+          };
+        }
         const result = await askNoulQuestions({
           connection: resolved.connection,
           state: { recent_messages: [{ role: "user", name: "User", content: "The door is open." }] },
@@ -935,12 +968,46 @@ export async function connectionsRoutes(app: FastifyInstance) {
   });
 
   // ── Fetch available models from the provider API ──
+  /**
+   * NanoGPT subscription usage for the connection editor widget.
+   * Prefers the connection's management token (`usage:read`, cannot spend
+   * balance) and falls back to the inference API key.
+   */
+  app.get<{ Params: { id: string } }>("/:id/subscription-usage", async (req, reply) => {
+    const conn = await storage.getById(req.params.id);
+    if (!conn) return reply.status(404).send({ error: "Connection not found" });
+    if (conn.provider !== "nanogpt") {
+      return reply.status(400).send({ error: "Subscription usage is only available for NanoGPT connections" });
+    }
+    if (conn.profileImportReviewRequired === "true") {
+      return reply.status(409).send({ error: "Review and save this imported connection before reading its usage" });
+    }
+
+    try {
+      const managementToken = await storage.getManagementToken(req.params.id);
+      const apiKey = managementToken ? "" : decryptApiKey(conn.apiKeyEncrypted ?? "");
+      if (!managementToken && !apiKey) {
+        return reply.status(400).send({ error: "Add an API key or management token to read NanoGPT usage" });
+      }
+      const usage = await fetchNanoGptSubscriptionUsage({ managementToken, apiKey });
+      if (!usage) return reply.status(400).send({ error: "No NanoGPT credential available for usage lookup" });
+      return usage;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to read NanoGPT usage";
+      return reply.status(502).send({ error: message });
+    }
+  });
+
   app.get<{ Params: { id: string } }>("/:id/models", async (req, reply) => {
     const conn = await storage.getWithKey(req.params.id);
     if (!conn) return reply.status(404).send({ error: "Connection not found" });
 
-    if (conn.provider === "decision")
-      return { models: [{ id: conn.model || "jev-latest", name: conn.model || "jev-latest" }] };
+    if (conn.provider === "decision") {
+      // Jev is only the default of the System One sources; a chat server needs the
+      // model name the user entered.
+      const model = conn.model || (conn.decisionSource === "openai_compatible" ? "" : "jev-latest");
+      return { models: model ? [{ id: model, name: model }] : [] };
+    }
     try {
       // Claude (Subscription) has no remote /models endpoint — return the
       // curated static list for the subscription path.
@@ -1824,6 +1891,10 @@ interface RemoteModel {
   context?: number;
   maxOutput?: number;
   capabilities?: ModelParameterCapabilities;
+  /** Aggregator subscription metadata (NanoGPT `detailed=true`). */
+  subscriptionIncluded?: boolean;
+  /** How many input tokens this model consumes per token of quota. */
+  inputTokenMultiplier?: number;
 }
 
 /** OpenRouter names each model's accepted request fields; map the ones the parameter panel controls. */
@@ -1851,6 +1922,16 @@ export function readOpenRouterModelCapabilities(
   }
   // An empty or missing list says nothing; it must not hide every control.
   return keys.size > 0 ? { supportedParameters: [...keys] } : undefined;
+}
+
+/**
+ * Read NanoGPT's `subscription` block from a detailed model record.
+ * See `readNanoGptModelSubscriptionMetadata` for the parsing rules.
+ */
+function readSubscriptionMetadata(
+  model: Record<string, unknown>,
+): Pick<RemoteModel, "subscriptionIncluded" | "inputTokenMultiplier"> {
+  return readNanoGptModelSubscriptionMetadata(model);
 }
 
 function readProviderMetadataRecord(value: unknown): Record<string, unknown> | null {
@@ -1992,7 +2073,7 @@ function normalizeModelsResponse(provider: string, json: Record<string, unknown>
 
     default: {
       // OpenAI-compatible: { data: [{ id: "gpt-4o", ... }] }
-      // This covers openai, mistral, openrouter, custom
+      // This covers openai, mistral, openrouter, custom, nanogpt
       const data = (json.data ?? []) as Array<Record<string, unknown> & { id?: string; name?: string }>;
       return data
         .map((m) => {
@@ -2002,6 +2083,7 @@ function normalizeModelsResponse(provider: string, json: Record<string, unknown>
             name: m.name ?? m.id ?? "",
             ...readOpenAICompatibleModelLimits(m),
             ...(capabilities ? { capabilities } : {}),
+            ...readSubscriptionMetadata(m),
           };
         })
         .filter((m) => m.id);

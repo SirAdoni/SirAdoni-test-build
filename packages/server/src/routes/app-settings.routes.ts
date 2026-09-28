@@ -46,7 +46,7 @@ export async function appSettingsRoutes(app: FastifyInstance) {
 
   app.get(`/${FEATURE_SETTINGS_KEY}`, (): FeatureSettingsResponse => featureSettingsResponse());
 
-  // Replaces the whole object: omit a key to return it to its default (on).
+  // Replaces the whole object: omitted keys use the defaults from the shared registry.
   app.put(`/${FEATURE_SETTINGS_KEY}`, async (req): Promise<FeatureSettingsResponse> => {
     const settings = featureSettingsSchema.parse(req.body ?? {});
     await storage.set(FEATURE_SETTINGS_KEY, JSON.stringify(settings));

@@ -69,9 +69,22 @@ try {
     return parsed.definition;
   };
   /** The shipped example, optionally edited first. */
-  const pool = (edit: (doc: Record<string, any>) => void = () => {}): RulesetDefinition => {
+  const pool = (edit?: (doc: Record<string, any>) => void): RulesetDefinition => {
     const doc = JSON.parse(gravewatchText) as Record<string, any>;
-    edit(doc);
+    if (edit) {
+      // The example's fight is written for its own ten-sided pool, three ratings and six trades, so a
+      // variant of the CHECKS leaves it out, with the bestiary written in its numbers.
+      delete doc.combat;
+      doc.catalogs = (doc.catalogs ?? []).filter((catalog: { holds?: string }) => catalog.holds !== "creatures");
+      edit(doc);
+    }
+    // The example's Grave Sight charm moves the exploding face, which a ruleset may only let a check
+    // do while its explode rule has a min; a variant that takes the min away takes the charm too.
+    if (doc.resolution.explode?.min === undefined) {
+      for (const catalog of doc.catalogs ?? []) {
+        catalog.entries = (catalog.entries ?? []).filter((entry: any) => entry.mechanics?.check?.explode === undefined);
+      }
+    }
     return parsedOrThrow(doc, "the pool example");
   };
   const gravewatch = pool();
@@ -81,6 +94,7 @@ try {
    *  edits always travel together. */
   const fixTarget = (doc: Record<string, any>) => {
     doc.resolution.target = { default: 7, min: 7, max: 7 };
+    for (const skill of doc.sheet.skills) if (skill.untrained === "harder") delete skill.untrained;
     // Every ladder in the file, the layers' own included: a step names a target only where the
     // Game Master can move it, and a layer's ladder is held to the same rule as the base one.
     const ladders = [
@@ -122,7 +136,7 @@ try {
     assert.equal(gravewatch.sheet.saves.length, 1);
     assert.equal(gravewatch.resolution.difficultyLadder.length, 4);
     assert.equal(gravewatch.sheet.live.pools.length, 1);
-    assert.equal(gravewatch.rests.length, 1);
+    assert.equal(gravewatch.rests.length, 2);
     assert.equal(gravewatch.resolution.abilityModifier.op, "identity");
   }
 
@@ -163,6 +177,7 @@ try {
     refuses(
       (doc) => {
         doc.resolution.target = { default: 7, min: 7, max: 7 };
+        for (const skill of doc.sheet.skills) if (skill.untrained === "harder") delete skill.untrained;
         doc.resolution.cancel.upTo = 1;
       },
       /^resolution\.difficultyLadder\.0\.target: .*target\.min is below target\.max/,
@@ -232,7 +247,7 @@ try {
     // And the chain is capped, so a low exploding face cannot roll for the rest of the turn.
     const capped = roll(
       pool((doc) => {
-        doc.resolution.explode.from = 2;
+        doc.resolution.explode = { from: 2 };
         doc.resolution.pool = { min: 1, max: 3 };
       }),
       { modifier: 3, required: 1 },
@@ -357,7 +372,8 @@ try {
     const block = renderRulesetSheetBlock(gravewatch, { name: "Bram the Quiet", build: wardenBuild }, null);
     assert.match(block, /^Bram the Quiet\n/);
     assert.match(block, /SIN 3 dice, NRV 4 dice, WRM 2 dice/);
-    assert.match(block, /Trained: Ward 8 dice, Steel 6 dice/);
+    // Ward sits in The watch; Steel is in no section, so it follows the grouped ones with no heading.
+    assert.match(block, /Trained: The watch: Ward 8 dice; Steel 6 dice/);
     assert.doesNotMatch(block, /\+\d/, "nothing on a pool sheet reads as a bonus added to a roll");
 
     // The summed example still reads exactly as it always has.
@@ -391,8 +407,11 @@ try {
     const unknown = matchRulesetCheckTarget(gravewatch, "Ward", "Luck");
     assert.equal(unknown && "withAbility" in unknown, false);
     assert.equal(rulesetCheckModifier(warden, unknown), 8);
-    // A raw ability check already names the ability it rolls.
-    assert.deepEqual(matchRulesetCheckTarget(gravewatch, "Sinew", "Nerve"), {
+    // A raw ability check already names the ability it rolls, so on a pool that does not add two
+    // abilities together `with=` means nothing there. Gravewatch does add them (proven in the
+    // check-rules regression), so the plain case runs on a copy without the switch.
+    const unpaired = pool((doc) => delete doc.resolution.pool.abilityPlusAbility);
+    assert.deepEqual(matchRulesetCheckTarget(unpaired, "Sinew", "Nerve"), {
       type: "ability",
       id: "sinew",
       label: "Sinew",
@@ -724,6 +743,52 @@ try {
     delete document.resolution.spend;
     for (const catalog of document.catalogs ?? []) {
       for (const entry of catalog.entries ?? []) delete entry.mechanics?.check;
+    }
+    // And the rules a check may move, two abilities together and a botch rule, which are 1.37's.
+    delete document.resolution.explode.min;
+    delete document.resolution.pool.abilityPlusAbility;
+    // And 1.38's standing re-throw.
+    delete document.resolution.reroll;
+    // And 1.39's: a cap off the live Resolve, a value off the live Harm track, and a hide rule
+    // that compares with notEquals.
+    for (const skill of document.sheet.skills) delete skill.cap;
+    document.sheet.derived = document.sheet.derived.filter((entry: { id: string }) => entry.id !== "harm_left");
+    for (const field of document.sheet.fields) delete field.hideWhen;
+    // And 1.40's: the levels a list adds to Harm, and the rest that clears one kind of harm.
+    for (const track of document.sheet.live.tracks) delete track.extra;
+    document.rests = document.rests.filter((rest: { id: string }) => rest.id !== "breather");
+    // And 1.41's: sections on skills, and what a check does untrained.
+    for (const skill of document.sheet.skills) {
+      delete skill.section;
+      delete skill.untrained;
+    }
+    for (const section of document.sheet.sections) delete section.untrained;
+    // And 1.42's: the live Light, the tables that follow it and the watch, the modifier that carries
+    // the light to Nerve, and the vigil step that relights it.
+    document.sheet.derived = document.sheet.derived.filter(
+      (entry: { id: string }) => !["dawn_resolve", "light_nerve"].includes(entry.id),
+    );
+    for (const entry of document.sheet.derived) {
+      if (Array.isArray(entry.of))
+        entry.of = entry.of.filter((ref: { derived?: string }) => ref.derived !== "dawn_resolve");
+    }
+    delete document.resolution.adjust;
+    delete document.sheet.live.states;
+    for (const rest of document.rests) {
+      rest.restore = rest.restore.filter((step: { state?: string }) => step.state === undefined);
+    }
+    // And 1.49's items block, with the catalog written in it.
+    delete document.items;
+    document.catalogs = document.catalogs.filter((catalog: { holds?: string }) => catalog.holds !== "items");
+    // And 1.47's fight, with the bestiary written in its numbers and the charms it offers.
+    delete document.combat;
+    document.catalogs = (document.catalogs ?? []).filter(
+      (catalog: { holds?: string }) => catalog.holds !== "creatures",
+    );
+    for (const catalog of document.catalogs) {
+      catalog.entries = (catalog.entries ?? []).filter(
+        (entry: { mechanics?: { check?: unknown } }) => !entry.mechanics || entry.mechanics.check !== undefined,
+      );
     }
     assert.match(
       getCapabilityPackageInstallIssue(manifest(23) as any, document) ?? "",

@@ -10,7 +10,13 @@ import { api, isRequestTimeoutError, requestTimeoutSignal } from "../lib/api-cli
 import { useUIStore } from "../stores/ui.store";
 import { useChatStore } from "../stores/chat.store";
 import { captureChatMetadataVersion, chatKeys, guardServerChatSnapshot } from "./use-chats";
-import type { APIProvider, Chat, ConnectionTestResult, ImageGenerationQuality } from "@marinara-engine/shared";
+import type {
+  APIProvider,
+  Chat,
+  ConnectionTestResult,
+  DecisionSource,
+  ImageGenerationQuality,
+} from "@marinara-engine/shared";
 
 export const connectionKeys = {
   all: ["connections"] as const,
@@ -85,7 +91,7 @@ export type CreateConnectionPayload = {
   videoGenerationSource?: string | null;
   videoService?: string | null;
   audioSource?: string | null;
-  decisionSource?: "typesafe" | "openrouter" | "custom" | null;
+  decisionSource?: DecisionSource | null;
   credentialsFromConnectionId?: string | null;
   maxStateTokens?: number | null;
   decisionTimeoutMs?: number | null;
@@ -252,6 +258,10 @@ export type RemoteConnectionModel = {
   context?: number;
   maxOutput?: number;
   capabilities?: ModelCapabilities;
+  /** NanoGPT: whether the model is covered by the subscription. */
+  subscriptionIncluded?: boolean;
+  /** NanoGPT: input tokens charged per token of subscription quota (2 = 2x). */
+  inputTokenMultiplier?: number;
 };
 
 /** Providers whose model list reports what each model accepts. Other providers get no background fetch. */
@@ -284,6 +294,46 @@ export function useFetchModels() {
   return useMutation({
     mutationFn: (id: string) =>
       api.get<{ models: RemoteConnectionModel[]; loras?: RemoteConnectionModel[] }>(`/connections/${id}/models`),
+  });
+}
+
+/** One NanoGPT quota window; counters are null when the lookup was unavailable. */
+export type NanoGptQuotaWindow = {
+  used: number | null;
+  remaining: number | null;
+  /** A fraction, not a percentage; may exceed 1. */
+  percentUsed: number | null;
+  /** UNIX epoch milliseconds. */
+  resetAt: number | null;
+  degraded: boolean;
+};
+
+export type NanoGptSubscriptionUsage = {
+  active: boolean;
+  state: string;
+  limits: {
+    dailyInputTokens: number | null;
+    weeklyInputTokens: number | null;
+    dailyImages: number | null;
+  };
+  dailyInputTokens: NanoGptQuotaWindow | null;
+  weeklyInputTokens: NanoGptQuotaWindow | null;
+  dailyImages: NanoGptQuotaWindow | null;
+  currentPeriodEnd: string | null;
+  credential: "management_token" | "api_key";
+  /** Provider id the reading belongs to, so the meter is labelled from data. */
+  provider: string;
+};
+
+/** Read the NanoGPT subscription quotas for the usage widget. */
+export function useNanoGptSubscriptionUsage(connectionId: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: [...connectionKeys.detail(connectionId ?? ""), "subscription-usage"],
+    queryFn: () => api.get<NanoGptSubscriptionUsage>(`/connections/${connectionId}/subscription-usage`),
+    enabled: enabled && !!connectionId,
+    // Quotas move slowly and NanoGPT may rate limit reads; keep it calm.
+    staleTime: 60_000,
+    retry: false,
   });
 }
 

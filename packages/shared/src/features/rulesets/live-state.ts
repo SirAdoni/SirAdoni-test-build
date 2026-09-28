@@ -14,7 +14,8 @@
 import { z } from "zod";
 import {
   RULESET_CATALOG_ROW_KEY,
-  RULESET_TRACK_LEVELS_MAX,
+  RULESET_WOUND_EXTRA_PER_ROW,
+  RULESET_WOUND_LEVELS_MAX,
   type RulesetCatalogEntriesById,
   type RulesetCatalogEntry,
   type RulesetDefinition,
@@ -25,7 +26,13 @@ import {
   type RulesetTrackLevel,
 } from "../../schemas/ruleset.schema.js";
 import { rulesetCatalogEntriesByRef } from "./scaled-rows.js";
-import { evaluateRulesetSheet, isRulesetItemHidden, resolveRulesetValueRef, roundRulesetNumber } from "./sheet-math.js";
+import {
+  evaluateRulesetSheet,
+  isRulesetItemHidden,
+  lookupStepTable,
+  resolveRulesetValueRef,
+  roundRulesetNumber,
+} from "./sheet-math.js";
 
 export interface RulesetLivePoolValue {
   value: number;
@@ -49,6 +56,8 @@ export interface RulesetLiveState {
   wounds?: Record<string, RulesetLiveWounds>;
   text?: Record<string, string>;
   conditions?: string[];
+  /** Live states away from their default, keyed by state id: the value they are at. */
+  states?: Record<string, string>;
 }
 
 /** Live state of every card in one game, keyed by normalizeCharacterLookupName(card name). */
@@ -67,6 +76,8 @@ const MAX_LIVE_TEXTS = 12;
 const MAX_LIVE_TEXT_LENGTH = 500;
 const MAX_LIVE_CONDITIONS = 80;
 const MAX_LIVE_CONDITION_LENGTH = 80;
+const MAX_LIVE_STATES = 30;
+const MAX_LIVE_STATE_VALUE_LENGTH = 80;
 /** Every stored number is an integer in this range, so no arithmetic here can reach an unsafe one. */
 const MAX_LIVE_NUMBER = 1_000_000;
 /** What one command may move at once. A bigger number is a typo or a model inventing damage. */
@@ -76,11 +87,12 @@ const liveNumber = z.number().int().min(-MAX_LIVE_NUMBER).max(MAX_LIVE_NUMBER);
 
 export const rulesetLivePoolValueSchema = z.object({ value: liveNumber, temp: liveNumber.min(0).optional() }).strict();
 
-/** A track holds at most one mark per level, and the format caps levels, so a longer list is a
- *  corrupt or hostile blob rather than a sheet. Kind ids are sheet ids, so they are short. */
+/** A track holds at most one mark per level, and the format caps how long one character's track may
+ *  come to, so a longer list is a corrupt or hostile blob rather than a sheet. Kind ids are sheet
+ *  ids, so they are short; an indexed track stores "" for an empty box between marked ones. */
 export const rulesetLiveWoundsSchema = z
   .object({
-    marks: z.array(z.string().max(MAX_LIVE_KEY_LENGTH)).max(RULESET_TRACK_LEVELS_MAX),
+    marks: z.array(z.string().max(MAX_LIVE_KEY_LENGTH)).max(RULESET_WOUND_LEVELS_MAX),
     overflow: liveNumber.min(0).optional(),
   })
   .strict();
@@ -108,6 +120,7 @@ export const rulesetLiveStateSchema = z
     wounds: boundedRecord(rulesetLiveWoundsSchema, MAX_LIVE_TRACKS, "wound tracks").optional(),
     text: boundedRecord(z.string().max(MAX_LIVE_TEXT_LENGTH), MAX_LIVE_TEXTS, "text fields").optional(),
     conditions: z.array(z.string().max(MAX_LIVE_CONDITION_LENGTH)).max(MAX_LIVE_CONDITIONS).optional(),
+    states: boundedRecord(z.string().max(MAX_LIVE_STATE_VALUE_LENGTH), MAX_LIVE_STATES, "states").optional(),
   })
   .strip();
 
@@ -220,16 +233,29 @@ export function listRulesetLivePools(definition: RulesetDefinition, build: Rules
 // ── Reading stored state ──
 
 /** A wound track as it stands. Present on a resolved track only when the definition gave it
- *  `levels`; a plain track has none of this and behaves exactly as it always has. */
+ *  `levels` or `boxes`; a plain track has none of this and behaves exactly as it always has. */
 export interface ResolvedRulesetWounds {
+  /** This character's levels: the named ones with any a list adds, or the numbered boxes. */
   levels: readonly RulesetTrackLevel[];
   kinds: readonly RulesetTrackKind[];
-  /** Kind ids, most severe first. `marks[i]` sits on `levels[i]`. */
+  /** `marks[i]` sits on `levels[i]`. Most severe first on a sequential track; on an indexed one each
+   *  mark stays on its box and an empty box between marked ones is "". */
   marks: string[];
+  /** How many boxes are marked, which on an indexed track is not how long `marks` is. */
+  filled: number;
+  /** The worst marked level, or -1 when the track is clear. */
+  lowest: number;
   /** Marks that could not land at all, because the track was full at its worst kind. */
   overflow: number;
-  /** The penalty in force: the one on the LOWEST marked level, never a sum. 0 when unmarked. */
+  /** The penalty in force: on named levels the one on the LOWEST marked level, never a sum (0 when
+   *  unmarked); on boxes, the track's table read at the boxes filled or remaining. */
   penalty: number;
+  /** Boxes rather than named levels, so a level's label is only its number. */
+  numbered: boolean;
+  /** A mark lands on the box a command names and the marks never move. */
+  indexed: boolean;
+  /** A mark with no box free is refused rather than upgrading the lightest one. */
+  refusesWhenFull: boolean;
 }
 
 export interface ResolvedRulesetLive {
@@ -237,29 +263,48 @@ export interface ResolvedRulesetLive {
   tracks: Array<{ id: string; label: string; min: number; max: number; value: number; wound?: ResolvedRulesetWounds }>;
   text: Array<{ id: string; label: string; maxLength: number; value: string }>;
   conditions: Array<{ id: string; label: string; active: boolean }>;
+  /** Every state the sheet shows, at its value: what is stored when the state still offers it, else
+   *  its default. A state the sheet hides is left out. */
+  states: Array<{
+    id: string;
+    label: string;
+    values: string[];
+    valueLabels?: Record<string, string>;
+    value: string;
+    /** The value's display text. */
+    valueLabel: string;
+  }>;
 }
 
 // ── Wound tracks ──
 //
 // The rules, written down here because a vague implementation produces the wrong track:
 //
-// - Marks are held SORTED, MOST SEVERE FIRST. A track of 7 levels holds at most 7 marks.
-// - A mark is PLACED IN SEVERITY ORDER among the marks already there, never appended: it takes the
-//   highest level its severity earns and pushes lighter marks down.
-// - The PENALTY IN FORCE is the one on the LOWEST MARKED LEVEL, not the sum of the marked ones.
-//   No marks means no penalty.
+// - A SEQUENTIAL track (the default) holds its marks SORTED, MOST SEVERE FIRST. A track of 7 levels
+//   holds at most 7 marks. A mark is PLACED IN SEVERITY ORDER among the marks already there, never
+//   appended: it takes the highest level its severity earns and pushes lighter marks down.
+// - An INDEXED track puts a mark on the box the command names, or the next free one above it, and
+//   never moves a mark once it is down. With no such box free the whole command is refused.
+// - The PENALTY IN FORCE on named levels is the one on the LOWEST MARKED LEVEL, not the sum of the
+//   marked ones, and no marks means no penalty. On boxes it is the track's table read at the number
+//   of boxes filled or remaining, whatever that number is.
 // - An `amount` is a number of marks of one kind, APPLIED ONE AT A TIME, so a track that fills
 //   partway through is handled by the same rule as one that was already full.
 // - Marking a FULL track UPGRADES ITS LOWEST-SEVERITY MARK by one step instead of adding a mark.
 //   The incoming kind is not what it upgrades to: one step up the declared ladder is. A mark that
 //   would upgrade past the highest severity is kept at the highest, and the one that could not land
-//   is counted as an OVERFLOW, which is persisted.
-// - HEALING is the same op with a negative amount, clearing the LIGHTEST marks first. Overflow
-//   clears before marks do.
+//   is counted as an OVERFLOW, which is persisted. A track that says `onFull: "refuse"` refuses the
+//   whole command instead, and an indexed track always does.
+// - HEALING is the same op with a negative amount, clearing the LIGHTEST marks first (on an indexed
+//   track, the highest box among equally light ones). Naming a kind clears only marks of that kind.
+//   Overflow clears before marks do, either way.
+// - A track may be shorter for this character than the marks stored on it (a row that added levels
+//   was deleted). The marks that no longer fit are overflow, not forgotten: harm is not undone by
+//   editing the sheet.
 
 /** Whether this track is a wound track rather than a bounded integer. */
 export function isRulesetWoundTrack(track: RulesetLiveTrack): boolean {
-  return !!track.levels && !!track.kinds;
+  return (!!track.levels || !!track.boxes) && !!track.kinds;
 }
 
 /** The declared kinds, sorted least severe first, which is the ladder an upgrade climbs. */
@@ -267,40 +312,106 @@ function kindLadder(track: RulesetLiveTrack): RulesetTrackKind[] {
   return [...(track.kinds ?? [])].sort((a, b) => a.severity - b.severity);
 }
 
-/** A working wound track: the marks as severities, so every rule below is plain number work. */
+/**
+ * The levels this character's wound track has. Named levels come with any a list adds: each row of
+ * `extra` inserts its count of levels after the last level whose penalty is as good, named after
+ * that level when the penalty is the same and by the penalty otherwise. Boxes are as many as the
+ * track's own `max` works out to, numbered, each carrying the penalty the table gives when it is the
+ * last box marked. Never longer than RULESET_WOUND_LEVELS_MAX.
+ */
+function woundLevels(
+  definition: RulesetDefinition,
+  build: RulesetSheetBuild,
+  track: RulesetLiveTrack,
+  maxOf: (track: RulesetLiveTrack) => number,
+): RulesetTrackLevel[] {
+  if (track.boxes) {
+    const count = clamp(maxOf(track), 0, RULESET_WOUND_LEVELS_MAX);
+    const { by, table } = track.boxes.penalty;
+    return Array.from({ length: count }, (_, index) => ({
+      label: String(index + 1),
+      penalty: lookupStepTable(table, by === "filled" ? index + 1 : count - index - 1),
+    }));
+  }
+  const levels = [...(track.levels ?? [])];
+  const extra = track.extra;
+  const list = extra ? definition.sheet.lists.find((entry) => entry.id === extra.list) : undefined;
+  const rows = extra ? build.lists?.[extra.list] : undefined;
+  if (extra && list && Array.isArray(rows) && !isRulesetItemHidden(list, build, definition)) {
+    const columnDefault = (id: string) => {
+      const column = list.columns.find((entry) => entry.id === id);
+      return column?.type === "number" ? (column.default ?? 0) : 0;
+    };
+    const cell = (row: unknown, id: string) => {
+      const value = row && typeof row === "object" ? own(row as Record<string, unknown>, id) : undefined;
+      return typeof value === "number" && Number.isFinite(value) ? value : columnDefault(id);
+    };
+    for (const row of rows) {
+      const count = clamp(Math.floor(cell(row, extra.countColumn)), 0, RULESET_WOUND_EXTRA_PER_ROW);
+      const penalty = clamp(Math.round(cell(row, extra.penaltyColumn)), -1000, 0);
+      let after = -1;
+      levels.forEach((level, index) => {
+        if (level.penalty >= penalty) after = index;
+      });
+      const beside = levels[after];
+      const label = beside && beside.penalty === penalty ? beside.label : String(penalty);
+      levels.splice(after + 1, 0, ...Array.from({ length: count }, () => ({ label, penalty })));
+      // A level past the cap can never move back under it, so the rest of the rows change nothing.
+      if (levels.length >= RULESET_WOUND_LEVELS_MAX) break;
+    }
+  }
+  return levels.slice(0, RULESET_WOUND_LEVELS_MAX);
+}
+
+/** A working wound track: the marks as severities, so every rule below is plain number work. On a
+ *  sequential track `marks` is dense and sorted most severe first; on an indexed one it has a slot
+ *  per box, null where the box is clear. */
 interface WoundWork {
   ladder: RulesetTrackKind[];
-  severityOf: Map<string, number>;
   length: number;
-  /** Severities, most severe first. */
-  marks: number[];
+  indexed: boolean;
+  refuse: boolean;
+  marks: Array<number | null>;
   overflow: number;
 }
 
-function woundWork(track: RulesetLiveTrack, stored: RulesetLiveWounds | undefined): WoundWork {
+function woundWork(
+  track: RulesetLiveTrack,
+  levels: readonly RulesetTrackLevel[],
+  stored: RulesetLiveWounds | undefined,
+): WoundWork {
   const ladder = kindLadder(track);
   const severityOf = new Map(ladder.map((kind) => [kind.id, kind.severity]));
-  const length = track.levels?.length ?? 0;
+  const length = levels.length;
+  const indexed = track.fill === "indexed";
+  let overflow = Math.max(0, Math.floor(stored?.overflow ?? 0));
   // A mark of a kind the ruleset no longer declares cannot sit anywhere on the ladder, so it is
   // dropped on the way in. Sorting here is what makes a hand-edited blob read as the rules say.
-  const marks = (stored?.marks ?? [])
-    .flatMap((id) => {
-      const severity = severityOf.get(id);
-      return severity === undefined ? [] : [severity];
-    })
-    .sort((a, b) => b - a)
-    .slice(0, length);
-  return { ladder, severityOf, length, marks, overflow: Math.max(0, Math.floor(stored?.overflow ?? 0)) };
+  const read = (stored?.marks ?? []).map((id) => severityOf.get(id) ?? null);
+  let marks: Array<number | null>;
+  if (indexed) {
+    marks = Array.from({ length }, (_, index) => read[index] ?? null);
+    overflow += read.slice(length).filter((mark) => mark !== null).length;
+  } else {
+    const dense = read.filter((mark): mark is number => mark !== null).sort((a, b) => b - a);
+    marks = dense.slice(0, length);
+    overflow += dense.length - marks.length;
+  }
+  return { ladder, length, indexed, refuse: indexed || track.onFull === "refuse", marks, overflow };
+}
+
+function filledOf(work: WoundWork): number {
+  return work.marks.filter((mark) => mark !== null).length;
 }
 
 /** Put one mark of `severity` where its severity earns it, pushing lighter marks down. */
 function placeMark(work: WoundWork, severity: number): void {
-  const at = work.marks.findIndex((mark) => mark < severity);
+  const at = work.marks.findIndex((mark) => mark !== null && mark < severity);
   if (at === -1) work.marks.push(severity);
   else work.marks.splice(at, 0, severity);
 }
 
-/** One mark of one kind, by the rules above. */
+/** One mark of one kind on a sequential track that upgrades, by the rules above. */
 function markOnce(work: WoundWork, severity: number): void {
   if (work.marks.length < work.length) return placeMark(work, severity);
   // Full. The marks are sorted most severe first, so the last one is the lowest severity there is.
@@ -314,17 +425,58 @@ function markOnce(work: WoundWork, severity: number): void {
   placeMark(work, next.severity);
 }
 
-/** Clear one mark, lightest first. Overflow clears before marks do. */
-function healOnce(work: WoundWork): void {
-  if (work.overflow > 0) work.overflow -= 1;
-  else work.marks.pop();
+/** Clear one mark: overflow first, then the lightest (of `severity` alone when one is named), the
+ *  highest box among equals. False when there was nothing left to clear. */
+function healOnce(work: WoundWork, severity: number | undefined): boolean {
+  if (work.overflow > 0) {
+    work.overflow -= 1;
+    return true;
+  }
+  let at = -1;
+  work.marks.forEach((mark, index) => {
+    if (mark === null || (severity !== undefined && mark !== severity)) return;
+    if (at === -1 || mark <= work.marks[at]!) at = index;
+  });
+  if (at === -1) return false;
+  if (work.indexed) work.marks[at] = null;
+  else work.marks.splice(at, 1);
+  return true;
 }
 
-/** Apply `amount` marks of one kind, or `-amount` healing, one at a time. */
-function applyWoundAmount(work: WoundWork, severity: number, amount: number): void {
+/** Apply `amount` marks of one kind, or `-amount` healing, one at a time. False when a track that
+ *  refuses has no box for every mark, and then nothing was changed. */
+function applyWoundAmount(
+  work: WoundWork,
+  severity: number,
+  amount: number,
+  options: { box?: number; healSeverity?: number } = {},
+): boolean {
   if (amount < 0) {
-    for (let i = 0; i < -amount && (work.overflow > 0 || work.marks.length > 0); i++) healOnce(work);
-    return;
+    for (let i = 0; i < -amount; i++) if (!healOnce(work, options.healSeverity)) break;
+    return true;
+  }
+  if (work.indexed) {
+    // Every box is found before any is marked, so a command that cannot land whole lands not at all.
+    const from = Math.max(0, (options.box ?? 1) - 1);
+    const planned: number[] = [];
+    for (let i = 0; i < amount; i++) {
+      let at = -1;
+      for (let box = from; box < work.length; box++) {
+        if (work.marks[box] === null && !planned.includes(box)) {
+          at = box;
+          break;
+        }
+      }
+      if (at === -1) return false;
+      planned.push(at);
+    }
+    for (const box of planned) work.marks[box] = severity;
+    return true;
+  }
+  if (work.refuse) {
+    if (work.length - work.marks.length < amount) return false;
+    for (let i = 0; i < amount; i++) placeMark(work, severity);
+    return true;
   }
   const top = work.ladder[work.ladder.length - 1]?.severity;
   for (let i = 0; i < amount; i++) {
@@ -332,53 +484,73 @@ function applyWoundAmount(work: WoundWork, severity: number, amount: number): vo
     // is one more overflow. Counted in one step because the answer cannot change again.
     if (work.marks.length === work.length && work.marks[work.marks.length - 1] === top) {
       work.overflow += amount - i;
-      return;
+      return true;
     }
     markOnce(work, severity);
   }
+  return true;
 }
 
-/** The stored shape again, with the kinds put back on the severities. */
+/** The stored shape again, with the kinds put back on the severities. An indexed track keeps its
+ *  empty boxes as "" so each mark stays where it landed; trailing ones are left off. */
 function woundState(work: WoundWork): RulesetLiveWounds {
   const idOf = new Map(work.ladder.map((kind) => [kind.severity, kind.id]));
+  const marks = work.marks.map((severity) => (severity === null ? "" : (idOf.get(severity) ?? "")));
+  if (!work.indexed) marks.splice(0, marks.length, ...marks.filter(Boolean));
+  while (marks.length > 0 && marks[marks.length - 1] === "") marks.pop();
   return {
-    marks: work.marks.flatMap((severity) => {
-      const id = idOf.get(severity);
-      return id === undefined ? [] : [id];
-    }),
+    marks,
     ...(work.overflow > 0 ? { overflow: Math.min(MAX_LIVE_NUMBER, work.overflow) } : {}),
   };
 }
 
-function resolveWounds(track: RulesetLiveTrack, stored: RulesetLiveWounds | undefined): ResolvedRulesetWounds {
-  const work = woundWork(track, stored);
+function resolveWounds(
+  track: RulesetLiveTrack,
+  levels: readonly RulesetTrackLevel[],
+  stored: RulesetLiveWounds | undefined,
+): ResolvedRulesetWounds {
+  const work = woundWork(track, levels, stored);
   const marks = woundState(work).marks;
-  const levels = track.levels ?? [];
+  const filled = filledOf(work);
+  let lowest = -1;
+  work.marks.forEach((mark, index) => {
+    if (mark !== null) lowest = index;
+  });
+  const boxes = track.boxes?.penalty;
   return {
     levels,
     kinds: track.kinds ?? [],
     marks,
+    filled,
+    lowest,
     overflow: work.overflow,
-    // The lowest MARKED level, never a sum of the marked ones.
-    penalty: marks.length > 0 ? (levels[marks.length - 1]?.penalty ?? 0) : 0,
+    penalty: boxes
+      ? lookupStepTable(boxes.table, boxes.by === "filled" ? filled : levels.length - filled)
+      : lowest >= 0
+        ? (levels[lowest]?.penalty ?? 0)
+        : 0,
+    numbered: !!track.boxes,
+    indexed: work.indexed,
+    refusesWhenFull: work.refuse,
   };
 }
 
 /**
- * The penalty in force on one named wound track, read straight from a stored live blob.
+ * The penalty in force on one named wound track, read from a stored live blob and the character's
+ * own build: a track's length may be the sheet's own number, and a list may add levels to it.
  *
- * It takes no sheet build, because nothing about a wound track depends on one: the levels, the
- * kinds and the marks are all the definition's and the live state's. That is what lets the check
- * resolver read it per roll without evaluating a sheet it has already evaluated.
- *
- * 0 for a track that does not exist, is not a wound track, or carries no marks, so a caller never
- * has to ask which of those it was before it can roll.
+ * 0 for a track that does not exist or is not a wound track, so a caller never has to ask which of
+ * those it was before it can roll.
  */
-export function readRulesetWoundPenalty(definition: RulesetDefinition, stored: unknown, trackId: string): number {
+export function readRulesetWoundPenalty(
+  definition: RulesetDefinition,
+  build: RulesetSheetBuild,
+  stored: unknown,
+  trackId: string,
+): number {
   const track = definition.sheet.live.tracks.find((entry) => entry.id === trackId);
   if (!track || !isRulesetWoundTrack(track)) return 0;
-  const state = readStoredLiveState(stored);
-  return resolveWounds(track, own(state.wounds, trackId)).penalty;
+  return readRulesetLive(definition, build, stored).tracks.find((entry) => entry.id === trackId)?.wound?.penalty ?? 0;
 }
 
 function keepValid<T>(value: unknown, schema: z.ZodType<T>, maxEntries: number): Record<string, T> | undefined {
@@ -419,6 +591,8 @@ function readStoredLiveState(stored: unknown): RulesetLiveState {
     ].slice(0, MAX_LIVE_CONDITIONS);
     if (conditions.length > 0) state.conditions = conditions;
   }
+  const states = keepValid(source.states, z.string().max(MAX_LIVE_STATE_VALUE_LENGTH), MAX_LIVE_STATES);
+  if (states) state.states = states;
   return state;
 }
 
@@ -430,6 +604,7 @@ function normalizeLiveState(state: RulesetLiveState): RulesetLiveState {
   if (state.wounds && Object.keys(state.wounds).length > 0) normalized.wounds = state.wounds;
   if (state.text && Object.keys(state.text).length > 0) normalized.text = state.text;
   if (state.conditions && state.conditions.length > 0) normalized.conditions = state.conditions;
+  if (state.states && Object.keys(state.states).length > 0) normalized.states = state.states;
   return normalized;
 }
 
@@ -439,6 +614,15 @@ function resolveLive(
   state: RulesetLiveState,
 ): ResolvedRulesetLive {
   const active = new Set(state.conditions ?? []);
+  // Worked out once, and only when a track's maximum is a value the sheet works out.
+  let evaluated: ReturnType<typeof evaluateRulesetSheet> | null = null;
+  const trackMax = (track: RulesetDefinition["sheet"]["live"]["tracks"][number]): number => {
+    if (typeof track.max === "number") return track.max;
+    evaluated ??= evaluateRulesetSheet(definition, build);
+    const worked = Math.floor(resolveRulesetValueRef(definition, build, track.max, evaluated));
+    // A maximum below the floor is a track with nowhere to go, not one that runs backwards.
+    return Math.max(track.min, Math.min(MAX_LIVE_NUMBER, worked));
+  };
   return {
     pools: listRulesetLivePools(definition, build).map((spec) => {
       const entry = own(state.pools, spec.key);
@@ -450,28 +634,36 @@ function resolveLive(
         temp: spec.allowTemp ? Math.max(0, entry?.temp ?? 0) : 0,
       };
     }),
-    tracks: definition.sheet.live.tracks.map((track) => {
+    // A track a field takes off the sheet is not on it, exactly as a hidden pool is not.
+    tracks: definition.sheet.live.tracks.flatMap((track) => {
+      if (isRulesetItemHidden(track, build, definition)) return [];
       // A wound track's number is how many marks are on it, and its length is its levels. Its own
       // `min` and `max` are held to 0 and `levels.length` at import, so they agree by construction.
       if (isRulesetWoundTrack(track)) {
-        const wound = resolveWounds(track, own(state.wounds, track.id));
-        return {
+        const levels = woundLevels(definition, build, track, trackMax);
+        const wound = resolveWounds(track, levels, own(state.wounds, track.id));
+        return [
+          {
+            id: track.id,
+            label: track.label,
+            min: 0,
+            max: wound.levels.length,
+            value: wound.filled,
+            wound,
+          },
+        ];
+      }
+      const max = trackMax(track);
+      const fallback = clamp(track.default ?? track.min, track.min, max);
+      return [
+        {
           id: track.id,
           label: track.label,
-          min: 0,
-          max: wound.levels.length,
-          value: wound.marks.length,
-          wound,
-        };
-      }
-      const fallback = clamp(track.default ?? track.min, track.min, track.max);
-      return {
-        id: track.id,
-        label: track.label,
-        min: track.min,
-        max: track.max,
-        value: clamp(own(state.tracks, track.id) ?? fallback, track.min, track.max),
-      };
+          min: track.min,
+          max,
+          value: clamp(own(state.tracks, track.id) ?? fallback, track.min, max),
+        },
+      ];
     }),
     text: definition.sheet.live.text.map((entry) => ({
       id: entry.id,
@@ -486,7 +678,29 @@ function resolveLive(
       label: condition.label,
       active: active.has(condition.id),
     })),
+    // A stored value the state no longer offers reads as its default, as an enum field's does; it
+    // stays stored, like a hidden pool's value, in case the value comes back.
+    states: definition.sheet.live.states.flatMap((entry) => {
+      if (isRulesetItemHidden(entry, build, definition)) return [];
+      const stored = own(state.states, entry.id);
+      const value = stored !== undefined && entry.values.includes(stored) ? stored : rulesetStateDefault(entry);
+      return [
+        {
+          id: entry.id,
+          label: entry.label,
+          values: entry.values,
+          ...(entry.valueLabels ? { valueLabels: entry.valueLabels } : {}),
+          value,
+          valueLabel: own(entry.valueLabels, value) ?? value,
+        },
+      ];
+    }),
   };
+}
+
+/** Where a live state starts, and where a rest's `to: "default"` puts it back. */
+export function rulesetStateDefault(state: { values: readonly string[]; default?: string }): string {
+  return state.default !== undefined && state.values.includes(state.default) ? state.default : state.values[0]!;
 }
 
 /** The sheet's live state as it reads right now. Never throws: junk reads as defaults. */
@@ -498,6 +712,19 @@ export function readRulesetLive(
   return resolveLive(definition, build, readStoredLiveState(stored));
 }
 
+/** Every number the sheet yields, with its live tracks and pools read as they stand in `stored`:
+ *  the snapshot a check, a fight or the Game Master's sheet block works from. With nothing stored
+ *  (the sheet editor, an import review) they read at their declared defaults, a pool full or empty
+ *  as it starts and a track where it starts. The live state's own maximums never read it back
+ *  (refused at import), so resolving them first cannot loop. */
+export function evaluateRulesetSheetLive(
+  definition: RulesetDefinition,
+  build: RulesetSheetBuild,
+  stored?: unknown,
+): ReturnType<typeof evaluateRulesetSheet> {
+  return evaluateRulesetSheet(definition, build, readRulesetLive(definition, build, stored));
+}
+
 // ── Commands ──
 
 export type RulesetSheetOp =
@@ -505,11 +732,15 @@ export type RulesetSheetOp =
    *  shape below and two members under one name could not be told apart by the name alone. */
   | { op: "spend" | "restore" | "damage" | "temp"; pool: string; amount: number }
   /** Marks a WOUND track. `kind` is one the track declares; `amount` is a number of marks of that
-   *  one kind, and a NEGATIVE amount heals, clearing the lightest marks first. Told apart from the
-   *  pool shape above by naming a track, which is what `"track" in op` reads. */
-  | { op: "damage"; track: string; kind: string; amount: number }
+   *  one kind, and a NEGATIVE amount heals, clearing marks of that kind (the lightest first when the
+   *  kind is not one the track knows). `box` is where the first mark aims on an indexed track: that
+   *  box, or the next free one above it. Told apart from the pool shape above by naming a track,
+   *  which is what `"track" in op` reads. */
+  | { op: "damage"; track: string; kind: string; amount: number; box?: number }
   | { op: "track"; track: string; to?: number; by?: number }
   | { op: "condition"; condition: string; active: boolean }
+  /** Sets a live state to one of its values, named by the value or its label. */
+  | { op: "state"; state: string; value: string }
   | { op: "note"; field: string; value: string }
   | { op: "rest"; rest: string }
   /** Uses something the character picked from a catalog, paying everything it costs. Resolved by
@@ -527,7 +758,13 @@ export type RulesetSheetRefusal =
   | "wrong-track"
   /** A kind the wound track does not declare. */
   | "unknown-kind"
+  /** A track that refuses a mark it has no box for had none free. */
+  | "no-box"
   | "unknown-condition"
+  /** A live state the sheet does not have (or hides). */
+  | "unknown-state"
+  /** A value the live state does not offer. */
+  | "unknown-value"
   | "unknown-field"
   | "unknown-rest"
   | "unknown-entry"
@@ -536,8 +773,7 @@ export type RulesetSheetRefusal =
   | "malformed";
 
 export type RulesetSheetOpResult =
-  | { ok: true; live: RulesetLiveState; now: string }
-  | { ok: false; reason: RulesetSheetRefusal };
+  { ok: true; live: RulesetLiveState; now: string } | { ok: false; reason: RulesetSheetRefusal };
 
 /** The op names a tag may spell. `heal` is an alias the tag layer folds into `restore`, and `cast`
  *  one it folds into `use`. */
@@ -548,6 +784,7 @@ export const RULESET_SHEET_OP_NAMES = Object.freeze([
   "temp",
   "track",
   "condition",
+  "state",
   "note",
   "rest",
   "use",
@@ -621,6 +858,14 @@ export function applyRulesetSheetOp(
     else wounds[id] = state;
     next.wounds = wounds;
   };
+  const setState = (entry: ResolvedRulesetLive["states"][number], value: string): void => {
+    const states = next.states ?? {};
+    // Back at its default, the entry goes away: the stored blob only says where a state was moved.
+    const declared = definition.sheet.live.states.find((candidate) => candidate.id === entry.id);
+    if (!declared || value === rulesetStateDefault(declared)) delete states[entry.id];
+    else states[entry.id] = value;
+    next.states = states;
+  };
   const setText = (id: string, value: string): void => {
     const text = next.text ?? {};
     if (value) text[id] = value;
@@ -649,22 +894,29 @@ export function applyRulesetSheetOp(
     const kind = resolvedTrack.wound.kinds.find(
       (entry) => sameName(entry.id, op.kind) || sameName(entry.label, op.kind),
     );
-    // Healing names no kind it could get wrong, so it takes any name the track knows, or none.
+    // Healing names a kind to clear only that kind; a name the track does not know heals lightest
+    // first, as healing always has.
     if (!kind && op.amount > 0) return { ok: false, reason: "unknown-kind" };
+    if (op.box !== undefined && (!Number.isInteger(op.box) || op.box < 1 || op.box > RULESET_WOUND_LEVELS_MAX)) {
+      return { ok: false, reason: "bad-amount" };
+    }
 
-    const work = woundWork(declared, own(next.wounds, resolvedTrack.id));
+    const levels = resolvedTrack.wound.levels;
+    const work = woundWork(declared, levels, own(next.wounds, resolvedTrack.id));
     const before = work.overflow;
-    applyWoundAmount(work, kind?.severity ?? 0, op.amount);
+    const landed = applyWoundAmount(work, kind?.severity ?? 0, op.amount, {
+      ...(op.box !== undefined ? { box: op.box } : {}),
+      ...(op.amount < 0 && kind ? { healSeverity: kind.severity } : {}),
+    });
+    if (!landed) return { ok: false, reason: "no-box" };
     const state = woundState(work);
     setWounds(resolvedTrack.id, state);
-    const wound = resolveWounds(declared, state);
-    const level = wound.marks.length > 0 ? wound.levels[wound.marks.length - 1]?.label : undefined;
+    const wound = resolveWounds(declared, levels, state);
+    const level = wound.lowest >= 0 && !wound.numbered ? wound.levels[wound.lowest]?.label : undefined;
     // The overflow is SAID when it grew, because a blow that could not land is still a blow and a
     // silent one would read as nothing having happened.
     const spilled = work.overflow > before ? ` +${work.overflow - before} over` : "";
-    return done(
-      `${resolvedTrack.label} ${wound.marks.length}/${wound.levels.length}${level ? ` ${level}` : ""}${spilled}`,
-    );
+    return done(`${resolvedTrack.label} ${wound.filled}/${wound.levels.length}${level ? ` ${level}` : ""}${spilled}`);
   }
 
   if (op.op === "spend" || op.op === "restore" || op.op === "damage" || op.op === "temp") {
@@ -728,6 +980,17 @@ export function applyRulesetSheetOp(
     return done(`${condition.label} ${op.active ? "on" : "off"}`);
   }
 
+  if (op.op === "state") {
+    const entry = resolved.states.find((state) => sameName(state.id, op.state) || sameName(state.label, op.state));
+    if (!entry) return { ok: false, reason: "unknown-state" };
+    const value = entry.values.find(
+      (candidate) => sameName(candidate, op.value) || sameName(entry.valueLabels?.[candidate] ?? candidate, op.value),
+    );
+    if (value === undefined) return { ok: false, reason: "unknown-value" };
+    setState(entry, value);
+    return done(`${entry.label} ${own(entry.valueLabels, value) ?? value}`);
+  }
+
   if (op.op === "note") {
     const field = resolved.text.find((entry) => sameName(entry.id, op.field) || sameName(entry.label, op.field));
     if (!field) return { ok: false, reason: "unknown-field" };
@@ -750,22 +1013,36 @@ export function applyRulesetSheetOp(
 
   for (const step of rest.restore) {
     const moved = (current: number, max: number, min: number): number => {
-      if (step.to !== undefined) return step.to === "max" ? max : step.to === "min" ? min : step.to;
+      // A string other than these two is a state's value, which a state step below handles.
+      if (step.to !== undefined) return step.to === "max" ? max : step.to === "min" ? min : Number(step.to);
       const by = step.by!;
       if ("const" in by) return current + by.const;
       return current + Math.max(by.min, roundRulesetNumber(max * by.fractionOfMax, by.round));
     };
+    if (step.state !== undefined) {
+      // A state the sheet hides has nothing to put back.
+      const entry = resolved.states.find((state) => state.id === step.state);
+      const declared = definition.sheet.live.states.find((state) => state.id === step.state);
+      if (!entry || !declared || typeof step.to !== "string") continue;
+      const value = step.to === "default" ? rulesetStateDefault(declared) : step.to;
+      if (!declared.values.includes(value)) continue;
+      if (value !== entry.value) changes.push(`${entry.label} ${own(entry.valueLabels, value) ?? value}`);
+      entry.value = value;
+      setState(entry, value);
+      continue;
+    }
     if (step.track !== undefined) {
       const entry = trackValues.get(step.track);
       if (!entry) continue;
       const value = clamp(moved(entry.value, entry.track.max, entry.track.min), entry.track.min, entry.track.max);
-      // A rest can only HEAL a wound track: it names no kind, so a step that would raise the count
-      // does nothing rather than guessing at one. `to` clears down to that many marks, overflow and
-      // all; `by` clears that many, overflow first, which is what healing means everywhere else.
+      // A rest can only HEAL a wound track: a step that would raise the count does nothing rather
+      // than guessing at a kind. `to` clears down to that many marks, overflow and all; `by` clears
+      // that many, overflow first, which is what healing means everywhere else. A step that names a
+      // `kind` clears only marks of that kind and leaves the others where they are.
       if (entry.track.wound) {
         const declared = definition.sheet.live.tracks.find((candidate) => candidate.id === entry.track.id);
         if (!declared) continue;
-        const work = woundWork(declared, own(next.wounds, entry.track.id));
+        const work = woundWork(declared, entry.track.wound.levels, own(next.wounds, entry.track.id));
         // `by` clears the number the rest ASKED for, not the number the boxes went down by: harm
         // that could not land is still harm, and it comes off first, so a rest of two on a track
         // showing one mark and one spilled clears both rather than stopping at the box.
@@ -774,11 +1051,12 @@ export function applyRulesetSheetOp(
             ? entry.value - value + work.overflow
             : Math.trunc(entry.value - moved(entry.value, entry.track.max, entry.track.min));
         if (cleared <= 0) continue;
-        applyWoundAmount(work, 0, -cleared);
+        const severity = declared.kinds?.find((candidate) => candidate.id === step.kind)?.severity;
+        applyWoundAmount(work, 0, -cleared, severity === undefined ? {} : { healSeverity: severity });
         const state = woundState(work);
         setWounds(entry.track.id, state);
-        entry.value = state.marks.length;
-        changes.push(`${entry.track.label} ${state.marks.length}/${entry.track.max}`);
+        entry.value = filledOf(work);
+        changes.push(`${entry.track.label} ${entry.value}/${entry.track.max}`);
         continue;
       }
       if (value !== entry.value) changes.push(`${entry.track.label} ${value}`);
@@ -865,8 +1143,7 @@ export function rulesetEntryNamed(
 }
 
 export type RulesetUsePlan =
-  | { ok: true; label: string; steps: RulesetUseStep[] }
-  | { ok: false; reason: RulesetSheetRefusal };
+  { ok: true; label: string; steps: RulesetUseStep[] } | { ok: false; reason: RulesetSheetRefusal };
 
 /** The column a Game Master sees a row of this list under: what the sheet block prints it as, then
  *  the name a row pool is keyed by, then the first text column the list has. */

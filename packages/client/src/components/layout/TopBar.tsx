@@ -43,14 +43,14 @@ import { useCommandPaletteStore } from "../../stores/command-palette.store";
 import { isApplePlatform } from "../../lib/keyboard-shortcuts";
 import { GenerationJobsActivityDot } from "../generation-jobs/GenerationJobsActivityDot";
 import {
-  PersonalExtensionContributionsMenu,
-  PersonalExtensionTopbarButtons,
-} from "./PersonalExtensionContributionsMenu";
-import {
   activatePersonalExtensionContribution,
   usePersonalExtensionContributions,
 } from "../../lib/personal-extension-contributions";
 import { PersonalExtensionContributionIcon } from "../extensions/PersonalExtensionContributionIcon";
+import {
+  PersonalExtensionContributionsMenu,
+  PersonalExtensionTopbarButtons,
+} from "./PersonalExtensionContributionsMenu";
 
 type RightPanelButtonPanel = "lorebooks" | "presets" | "connections" | "agents" | "personas";
 
@@ -236,6 +236,58 @@ export function TopBar({ mobileTopbarNavigation }: { mobileTopbarNavigation: boo
 
   const clearTopbarHover = useCallback(() => setHoveredTopbarKey(null), []);
 
+  const overflowItems: TopbarOverflowItem[] = [
+    {
+      key: "characters",
+      icon: <Users size={16} />,
+      label: localize("Characters"),
+      active: isCharactersPanelActive,
+      onSelect: () => handleRightPanelClick("characters"),
+    },
+    ...RIGHT_PANEL_BUTTONS.map(({ panel, icon: Icon, label, gradientClass }) => ({
+      key: panel,
+      icon: <Icon size={16} />,
+      iconClassName: cn(gradientClass, "text-[var(--mari-panel-gradient-start)]"),
+      label: localize(label),
+      active: panelContextActive[panel],
+      onSelect: () => handleRightPanelClick(panel),
+    })),
+    ...contributions
+      .filter((contribution) => contribution.kind === "button" && (contribution.surface ?? "top-bar") === "top-bar")
+      .slice(0, 2)
+      .map((contribution) => ({
+        key: `extension:${contribution.key}`,
+        icon: <PersonalExtensionContributionIcon icon={contribution.icon} size={16} />,
+        label: contribution.label,
+        hint: contribution.extensionName,
+        onSelect: () => activatePersonalExtensionContribution(contribution.key),
+      })),
+    {
+      key: "settings",
+      icon: <Settings size={16} />,
+      label: localize("Settings"),
+      active: rightPanelOpen && rightPanel === "settings",
+      onSelect: () => handleRightPanelClick("settings"),
+    },
+    {
+      key: "command-palette",
+      icon: <Search size={16} />,
+      label: t("navigation.topbar.search"),
+      onSelect: openPalette,
+    },
+    {
+      key: "generation-jobs",
+      icon: (
+        <>
+          <Clock3 size={16} />
+          <GenerationJobsActivityDot />
+        </>
+      ),
+      label: localize("Generation jobs"),
+      onSelect: handleGenerationJobsClick,
+    },
+  ];
+
   useEffect(() => {
     const header = headerRef.current;
     const leftControls = leftControlsRef.current;
@@ -295,44 +347,6 @@ export function TopBar({ mobileTopbarNavigation }: { mobileTopbarNavigation: boo
       document.removeEventListener("visibilitychange", clearWhenHidden);
     };
   }, [clearTopbarHover]);
-
-  const overflowItems: TopbarOverflowItem[] = [
-    {
-      key: "command-palette",
-      icon: <Search size={16} />,
-      label: t("navigation.topbar.search"),
-      onSelect: openPalette,
-    },
-    ...RIGHT_PANEL_BUTTONS.map(({ panel, icon: Icon, label, gradientClass }) => ({
-      key: panel,
-      icon: <Icon size={16} />,
-      iconClassName: cn(gradientClass, "text-[var(--mari-panel-gradient-start)]"),
-      label: localize(label),
-      active: panelContextActive[panel],
-      onSelect: () => handleRightPanelClick(panel),
-    })),
-    {
-      key: "generation-jobs",
-      icon: (
-        <>
-          <Clock3 size={16} />
-          <GenerationJobsActivityDot />
-        </>
-      ),
-      label: localize("Generation jobs"),
-      onSelect: handleGenerationJobsClick,
-    },
-    ...contributions
-      .filter((contribution) => contribution.kind === "button" && (contribution.surface ?? "top-bar") === "top-bar")
-      .slice(0, 2)
-      .map((contribution) => ({
-        key: `extension:${contribution.key}`,
-        icon: <PersonalExtensionContributionIcon icon={contribution.icon} size={16} />,
-        label: contribution.label,
-        hint: contribution.extensionName,
-        onSelect: () => activatePersonalExtensionContribution(contribution.key),
-      })),
-  ];
 
   const chatsActive = sidebarOpen && (!mobileTopbarNavigation || !rightPanelOpen);
   const chatsButton = (
@@ -456,6 +470,7 @@ export function TopBar({ mobileTopbarNavigation }: { mobileTopbarNavigation: boo
           data-topbar-hover-key="characters"
           className={cn(
             TOPBAR_PANEL_BUTTON_CLASS,
+            PHONE_OVERFLOW_HIDDEN_CLASS,
             isCharactersPanelActive
               ? TOPBAR_ACTIVE_BUTTON_CLASS
               : cn(
@@ -516,6 +531,7 @@ export function TopBar({ mobileTopbarNavigation }: { mobileTopbarNavigation: boo
           aria-pressed={rightPanelOpen && rightPanel === "settings"}
           className={cn(
             TOPBAR_PANEL_BUTTON_CLASS,
+            PHONE_OVERFLOW_HIDDEN_CLASS,
             rightPanelOpen && rightPanel === "settings"
               ? cn(TOPBAR_ACTIVE_BUTTON_CLASS, "text-gray-300")
               : cn(

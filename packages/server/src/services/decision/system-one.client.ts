@@ -1,6 +1,12 @@
-import { buildDecisionInstructions, type DecisionQuestionShape } from "@marinara-engine/shared";
+import {
+  buildDecisionInstructions,
+  type DecisionQuestionShape,
+  type DecisionDebugReport,
+  type DecisionDebugRequest,
+} from "@marinara-engine/shared";
 import { isProviderLocalUrlsEnabled } from "../../config/runtime-config.js";
-import { logger, logDebugOverride } from "../../lib/logger.js";
+import { logRateLimited } from "../../lib/log-rate-limit.js";
+import { logDebugOverride } from "../../lib/logger.js";
 import { safeFetch } from "../../utils/security.js";
 import type { DecisionConnection } from "./decision-connection.js";
 
@@ -17,12 +23,7 @@ export interface NoulQuestion {
 /** The option a Choice question adds so a turn that fits none of the others can say so. */
 export const DECISION_CHOICE_NONE = "none of these";
 export type DecisionRequestError =
-  | "timeout"
-  | "cancelled"
-  | "network"
-  | "invalid_response"
-  | "partial_response"
-  | `http_${number}`;
+  "timeout" | "cancelled" | "network" | "invalid_response" | "partial_response" | `http_${number}`;
 
 export interface DecisionRequest {
   connection: DecisionConnection;
@@ -31,11 +32,59 @@ export interface DecisionRequest {
   timeoutMs?: number;
   signal?: AbortSignal;
   debugMode?: boolean;
+  inspection?: DecisionDebugReport;
   /**
    * How this backend wants the question worded. Defaults to plain text, which is what
    * every backend shipped before a model was measured wanting otherwise.
    */
   questionShape?: DecisionQuestionShape;
+}
+
+/**
+ * POST to a Decision connection's own URL under the provider URL policy.
+ *
+ * DNS validation precedes the fetch and cannot itself be aborted, so the whole
+ * operation is raced against `signal`.
+ */
+export async function postDecisionRequest(
+  endpoint: string,
+  apiKey: string,
+  body: unknown,
+  signal: AbortSignal,
+): Promise<Response> {
+  signal.throwIfAborted();
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([
+      safeFetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
+        body: JSON.stringify(body),
+        signal,
+        policy: {
+          allowLocal: isProviderLocalUrlsEnabled(),
+          allowLoopback: true,
+          allowMdns: true,
+          allowedProtocols: ["https:", "http:"],
+          allowedOrigins: [new URL(endpoint).origin],
+          flagName: "PROVIDER_LOCAL_URLS_ENABLED",
+        },
+        maxResponseBytes: 1024 * 1024,
+        bufferResponse: true,
+        decodeCompressedResponse: true,
+      }),
+      aborted,
+    ]);
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
 }
 
 /** Safe, bounded System One transport. Error bodies may contain chat data, so never log them. */
@@ -52,7 +101,7 @@ export async function askNoulQuestions(req: DecisionRequest): Promise<{
   const timeout = AbortSignal.timeout(req.timeoutMs ?? 1500);
   const signal = req.signal ? AbortSignal.any([req.signal, timeout]) : timeout;
   let error: DecisionRequestError | undefined;
-  let onAbort: (() => void) | undefined;
+  let trace: DecisionDebugRequest | undefined;
   try {
     signal.throwIfAborted();
     const body = {
@@ -70,39 +119,17 @@ export async function askNoulQuestions(req: DecisionRequest): Promise<{
         }),
       ),
     };
+    if (req.inspection) {
+      trace = { protocol: "system_one", body };
+      req.inspection.requests.push(trace);
+      if (req.inspection.mode === "inspect") return { answers, choices, latencyMs: 0 };
+    }
     logDebugOverride(
       req.debugMode === true || process.env.DEBUG_AGENTS === "true",
       "[decision] System One request: %s",
       JSON.stringify(body),
     );
-    // DNS validation precedes fetch and cannot itself be aborted. Bound the entire operation.
-    const aborted = new Promise<never>((_, reject) => {
-      onAbort = () => reject(signal.reason);
-      signal.addEventListener("abort", onAbort, { once: true });
-    });
-    const response = await Promise.race([
-      safeFetch(req.connection.endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(req.connection.apiKey ? { Authorization: `Bearer ${req.connection.apiKey}` } : {}),
-        },
-        body: JSON.stringify(body),
-        signal,
-        policy: {
-          allowLocal: isProviderLocalUrlsEnabled(),
-          allowLoopback: true,
-          allowMdns: true,
-          allowedProtocols: ["https:", "http:"],
-          allowedOrigins: [new URL(req.connection.endpoint).origin],
-          flagName: "PROVIDER_LOCAL_URLS_ENABLED",
-        },
-        maxResponseBytes: 1024 * 1024,
-        bufferResponse: true,
-        decodeCompressedResponse: true,
-      }),
-      aborted,
-    ]);
+    const response = await postDecisionRequest(req.connection.endpoint, req.connection.apiKey, body, signal);
     if (!response.ok) {
       error = `http_${response.status}`;
     } else {
@@ -146,7 +173,27 @@ export async function askNoulQuestions(req: DecisionRequest): Promise<{
           ? "invalid_response"
           : "network";
   }
-  if (onAbort) signal.removeEventListener("abort", onAbort);
-  if (error && error !== "cancelled") logger.warn("[decision] Activation request failed: %s", error);
+  const results = req.questions.map((question) => ({
+    id: question.id,
+    ...(answers.has(question.id) ? { probability: answers.get(question.id) } : {}),
+    ...(choices.has(question.id) ? { choice: choices.get(question.id) } : {}),
+  }));
+  if (trace) Object.assign(trace, { results, latencyMs: Date.now() - start, ...(error ? { error } : {}) });
+  logDebugOverride(
+    req.debugMode === true || process.env.DEBUG_AGENTS === "true",
+    "[decision] System One results: %s%s",
+    JSON.stringify(results),
+    error ? ` (${error})` : "",
+  );
+  // A gate calls this on every turn, so a server that stays down would repeat the same
+  // warning each time; at most one line per error code per window.
+  if (error && error !== "cancelled")
+    logRateLimited(
+      "warn",
+      `decision.system-one:${error}`,
+      undefined,
+      "[decision] Activation request failed: %s",
+      error,
+    );
   return { answers, choices, ...(error ? { error } : {}), latencyMs: Date.now() - start };
 }

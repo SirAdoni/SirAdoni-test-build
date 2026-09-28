@@ -44,6 +44,7 @@ import { DECISION_SIDECAR_RATE_LIMIT } from "../middleware/rate-limit.js";
 import { decisionProcessService } from "../services/sidecar/decision-process.service.js";
 import { DECISION_TIMEOUT_MS } from "@marinara-engine/shared";
 import { askNoulQuestions } from "../services/decision/system-one.client.js";
+import { whenDecisionServerFree } from "../services/decision/decision-server-queue.js";
 import { inspectDecisionRepo } from "../services/sidecar/decision-byo.js";
 import { configuredCudaIndex, preflightDecisionModel } from "../services/sidecar/decision-preflight.js";
 import { awaitGpuProbe } from "../services/sidecar/sidecar-footprint.js";
@@ -65,6 +66,9 @@ import { getAnswerStyle } from "../services/decision/decision-thinking-cache.js"
 import { probeDecisionSlot } from "../services/decision/sidecar-decision.backend.js";
 import { sidecarModelService } from "../services/sidecar/sidecar-model.service.js";
 import { utilitySidecarService } from "../services/utility-sidecar/utility-sidecar.service.js";
+
+import { decisionConnectionUnavailable, readSelectedDecisionModel } from "../services/decision/decision-status.js";
+export { decisionConnectionUnavailable } from "../services/decision/decision-status.js";
 
 const slotSchema = z.enum(DECISION_LOCAL_SLOTS);
 const selectSchema = z.object({ id: z.string().trim().max(128).nullable() });
@@ -104,29 +108,6 @@ function slotModelIdentity(slot: DecisionLocalSlot): string {
   }
   const status = sidecarModelService.getStatus();
   return `primary:${sidecarModelService.getConfiguredModelRef() ?? ""}:${status.modelSize ?? 0}`;
-}
-
-interface DecisionConnectionRowSummary {
-  id: string;
-  credentialsFromConnectionId?: string | null;
-  profileImportReviewRequired?: unknown;
-}
-
-/**
- * Why a Decision connection cannot serve, or null when it can.
- *
- * A borrowed key whose connection is gone cannot sign a request, and copying the key
- * across on deletion would be a silent credential move. One function so the list and
- * the writer cannot drift into disagreeing about what is selectable.
- */
-export function decisionConnectionUnavailable(
-  row: DecisionConnectionRowSummary,
-  rows: DecisionConnectionRowSummary[],
-): "needs_relinking" | null {
-  if (row.profileImportReviewRequired === "true") return "needs_relinking";
-  if (!row.credentialsFromConnectionId) return null;
-  const lender = rows.find((other) => other.id === row.credentialsFromConnectionId);
-  return lender && lender.profileImportReviewRequired !== "true" ? null : "needs_relinking";
 }
 
 function localOption(slot: DecisionLocalSlot, selectedId: string | null): DecisionModelOption {
@@ -392,12 +373,7 @@ export async function decisionRoutes(app: FastifyInstance) {
     return { process: decisionProcessService.getStatus() };
   });
 
-  const readSelected = async (): Promise<string | null> => {
-    const local = await settings.get(DECISION_LOCAL_DEFAULT_SETTINGS_KEY);
-    if (decisionLocalSlotForId(local)) return local;
-    const row = await connections.getDefaultForDecision();
-    return row?.id ?? null;
-  };
+  const readSelected = () => readSelectedDecisionModel(app.db);
 
   /** Every entry the dropdown offers, with the reason for each one it cannot use. */
   app.get("/options", async (): Promise<DecisionModelOptions> => {
@@ -563,18 +539,24 @@ export async function decisionRoutes(app: FastifyInstance) {
     // A System One slot answers a fixed Noul question, not a chat prompt. Testing it
     // the chat way is what made this return "no answer" against a healthy server.
     if (resolution.resolved.protocol === "system_one") {
-      const result = await askNoulQuestions({
-        connection: {
-          endpoint: `${resolution.resolved.baseUrl}/v1/systemone`,
-          apiKey: "",
-          model: resolution.resolved.model,
-          maxStateTokens: 3500,
-        },
-        state: { recent_messages: [{ role: "user", name: "User", content: "The door is open." }] },
-        questions: [{ id: "test", instructions: "The door is open." }],
-        timeoutMs: DECISION_TIMEOUT_MS.sidecar,
-        questionShape: resolution.resolved.calibration?.questionShape ?? "text",
-      });
+      const { baseUrl, serverSlots } = resolution.resolved;
+      // Timed from when the model takes it: a Test clicked during a busy turn reports the
+      // model's answer time, not the time it spent behind the turn's request.
+      const result = await whenDecisionServerFree(baseUrl, serverSlots, undefined, () =>
+        askNoulQuestions({
+          connection: {
+            protocol: "system_one",
+            endpoint: `${resolution.resolved.baseUrl}/v1/systemone`,
+            apiKey: "",
+            model: resolution.resolved.model,
+            maxStateTokens: 3500,
+          },
+          state: { recent_messages: [{ role: "user", name: "User", content: "The door is open." }] },
+          questions: [{ id: "test", instructions: "The door is open." }],
+          timeoutMs: DECISION_TIMEOUT_MS.sidecar,
+          questionShape: resolution.resolved.calibration?.questionShape ?? "text",
+        }),
+      );
       const probability = result.answers.get("test");
       return {
         success: probability !== undefined,

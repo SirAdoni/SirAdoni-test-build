@@ -2023,6 +2023,7 @@ export function TTSConfigCard() {
               >
                 <option value="mp3">{localizeUi("ui.panels.ttsconfigcard.mp3")}</option>
                 <option value="wav">{localizeUi("ui.panels.ttsconfigcard.wav")}</option>
+                <option value="pcm">{localizeUi("ui.panels.ttsconfigcard.pcm")}</option>
               </select>
             </FieldRow>
           )}

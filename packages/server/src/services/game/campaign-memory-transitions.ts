@@ -38,22 +38,11 @@ import { readCampaignMemorySources } from "./campaign-memory-sources.js";
  * lane; lift them once a build is allowed.
  */
 export type CampaignMemoryTransitionClass =
-  | "event"
-  | "movement"
-  | "item-transfer"
-  | "relationship"
-  | "quest"
-  | "knowledge";
+  "event" | "movement" | "item-transfer" | "relationship" | "quest" | "knowledge";
 /** How the source supports the change. Only `observed` may change world truth. */
 export type CampaignMemoryTransitionBasis = "observed" | "offer" | "promise" | "rumor" | "speculation";
 export type CampaignMemoryQuestStatus =
-  | "proposed"
-  | "accepted"
-  | "active"
-  | "completed"
-  | "declined"
-  | "cancelled"
-  | "unresolved";
+  "proposed" | "accepted" | "active" | "completed" | "declined" | "cancelled" | "unresolved";
 /** `pending`: consequential ambiguity, nothing applied. `stale`: a newer order already holds the state; only the event was recorded. */
 export type CampaignMemoryTransitionStatus = "applied" | "pending" | "stale";
 

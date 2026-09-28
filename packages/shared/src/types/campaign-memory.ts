@@ -9,14 +9,7 @@ import type { CampaignMemoryPage } from "./campaign-memory-api.js";
  * cards, spatial state, or lorebook entries.
  */
 export type CampaignMemoryEntityKind =
-  | "character"
-  | "persona"
-  | "location"
-  | "organization"
-  | "item"
-  | "quest"
-  | "lore"
-  | "note";
+  "character" | "persona" | "location" | "organization" | "item" | "quest" | "lore" | "note";
 
 export type CampaignMemoryRecordStatus = "active" | "archived";
 /** `verified` is review acceptance; proposition truth remains in the structured value. `retracted` removes canonical force. */
@@ -27,12 +20,7 @@ export type CampaignMemoryActor = "system" | "user" | "import";
 export type CampaignMemoryConfidence = "low" | "medium" | "high";
 
 export type CampaignMemoryJson =
-  | null
-  | boolean
-  | number
-  | string
-  | CampaignMemoryJson[]
-  | { [key: string]: CampaignMemoryJson };
+  null | boolean | number | string | CampaignMemoryJson[] | { [key: string]: CampaignMemoryJson };
 
 export interface CampaignMemoryEvidence {
   messageId: string;

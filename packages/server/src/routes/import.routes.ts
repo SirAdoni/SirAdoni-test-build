@@ -30,6 +30,7 @@ import { getImportAllowedRoots } from "../config/runtime-config.js";
 import { requirePrivilegedAccess } from "../middleware/privileged-gate.js";
 import { assertInsideDir, safeCompareString, tokenForPath } from "../utils/security.js";
 import { logSuppressed } from "../lib/best-effort.js";
+import { logger } from "../lib/logger.js";
 
 const PICK_FOLDER_TIMEOUT_MS = 60_000; // 60s — prevents infinite hang on headless servers
 const FOLDER_TOKEN_TTL_MS = 15 * 60_000;
@@ -605,9 +606,14 @@ export async function importRoutes(app: FastifyInstance) {
           }
         }
       }
-    } catch (error) {
-      // Header parse or character lookup failed: import without a character link.
-      logSuppressed(error, { event: "import.stChat", stage: "linkCharacter", level: "debug" });
+    } catch (err) {
+      // Non-fatal: import without a character link. Only the error type is logged at warn, since a
+      // JSON parse message can quote chat text; the full error stays at debug.
+      logger.warn(
+        { errorType: err instanceof Error ? err.name : typeof err },
+        "[import] SillyTavern chat header unreadable; importing without a character link",
+      );
+      logger.debug(err, "[import] SillyTavern chat header parse error");
     }
 
     return importSTChat(text, app.db, {

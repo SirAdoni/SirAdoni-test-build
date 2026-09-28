@@ -400,9 +400,7 @@ interface CombatLogEntry {
 type CombatImpactTone = "hit" | "critical" | "miss" | "heal" | "reaction";
 
 type CombatVoiceEntry =
-  | { status: "loading"; urls?: undefined }
-  | { status: "ready"; urls: string[] }
-  | { status: "error"; urls?: undefined };
+  { status: "loading"; urls?: undefined } | { status: "ready"; urls: string[] } | { status: "error"; urls?: undefined };
 
 type CombatVoiceLine = PartyDialogueLine & {
   chunks: string[];
@@ -453,6 +451,8 @@ interface GameCombatUIProps {
       view: DirectedRulesetView;
       /** The ruleset's own name for a budget id. */
       budgetLabel: (id: string) => string;
+      /** What the ruleset calls its defense. */
+      defenseLabel?: string;
       busy: boolean;
       onChoose: (optionId: string, targetIds: string[], payWith?: string) => void;
       onFlee: () => void;
@@ -1701,6 +1701,7 @@ export function GameCombatUI({
     <RulesetCombatMenu
       view={rulesetFight.view}
       budgetLabel={rulesetFight.budgetLabel}
+      defenseLabel={rulesetFight.defenseLabel}
       busy={rulesetFight.busy}
       onChoose={rulesetFight.onChoose}
       onFlee={rulesetFight.onFlee}

@@ -1,3 +1,4 @@
+import { clickTopbarPanel } from "./topbar-navigation.js";
 import { expect, test } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { CONVERSATION_SCHEDULE_DAYS, type WeekSchedule } from "@marinara-engine/shared";
@@ -303,7 +304,7 @@ test("Character card schedules explain missing connections and allow manual edit
   await page.addInitScript((version) => localStorage.setItem("marinara:whats-new:seen-version", version), version);
   try {
     await page.goto("/");
-    await page.locator('[data-tour="panel-characters"]').click();
+    await clickTopbarPanel(page, "characters");
     const rightPanel = page.locator(
       `[data-component="${info.project.name.includes("mobile") ? "RightPanelMobile" : "RightPanelDesktop"}"]`,
     );

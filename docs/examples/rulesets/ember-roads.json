@@ -44,6 +44,10 @@
       }
     ],
     "advantage": false,
+    "adjust": [
+      { "value": { "derived": "burdened" }, "abilities": ["brawn"] },
+      { "value": { "derived": "stance_brawn" }, "abilities": ["brawn"] }
+    ],
     "difficultyLadder": [
       {
         "label": "Easy",
@@ -117,9 +121,11 @@
         "ability": "wits"
       },
       {
+        "$comment": "Fiddling with a mechanism nobody showed you costs two: an untrained Tinker check has two taken off its number.",
         "id": "tinker",
         "label": "Tinker",
-        "ability": "wits"
+        "ability": "wits",
+        "untrained": { "by": -2 }
       },
       {
         "id": "sway",
@@ -177,6 +183,52 @@
           }
         ],
         "section": "about"
+      },
+      {
+        "$comment": "How much a character is hauling: the bulk of every piece of gear they have packed, added up off the list rather than typed in beside it, so it can never drift from what they carry.",
+        "id": "burden",
+        "label": "Burden",
+        "op": "sum",
+        "of": [{ "listSum": { "list": "gear", "column": "bulk", "onlyWhen": "packed" } }],
+        "section": "gear"
+      },
+      {
+        "$comment": "Every three bulk slows a climb or a shove, so resolution.adjust takes this off every Brawn roll.",
+        "id": "burdened",
+        "label": "Burden on Brawn rolls",
+        "op": "stepTable",
+        "from": { "derived": "burden" },
+        "table": [
+          [0, 0],
+          [3, -1],
+          [6, -2],
+          [9, -3]
+        ],
+        "section": "gear"
+      },
+      {
+        "$comment": "What a traveller carries before the road slows them. The items block's carry reads it.",
+        "id": "load",
+        "label": "Load",
+        "op": "sum",
+        "of": [{ "const": 6 }, { "abilityMod": "brawn" }],
+        "section": "gear"
+      },
+      {
+        "id": "strain_boxes",
+        "label": "Strain boxes",
+        "op": "sum",
+        "of": [{ "const": 2 }, { "abilityMod": "heart" }],
+        "section": "about"
+      },
+      {
+        "$comment": "An enum table keyed on the live Stance, so it follows the stance as it changes in play. The resolution's adjust adds it to every roll made with Brawn: two for throwing caution away, one less for holding back.",
+        "id": "stance_brawn",
+        "label": "Stance on Brawn",
+        "op": "enumTable",
+        "from": { "liveState": "stance" },
+        "table": { "guarded": -1, "reckless": 2 },
+        "section": "about"
       }
     ],
     "lists": [
@@ -218,6 +270,20 @@
             "label": "Kind of harm",
             "type": "text",
             "maxLength": 20
+          },
+          {
+            "id": "bulk",
+            "label": "Bulk",
+            "type": "number",
+            "min": 0,
+            "max": 3,
+            "default": 0
+          },
+          {
+            "id": "packed",
+            "label": "Packed",
+            "type": "boolean",
+            "default": true
           }
         ]
       },
@@ -306,7 +372,27 @@
           "label": "Heat",
           "min": 0,
           "max": 5,
-          "default": 0
+          "default": 0,
+          "alwaysShow": true
+        },
+        {
+          "$comment": "Numbered boxes rather than named levels, as many as Strain boxes works out. A hit marks the box its strength names, or the next free one above; with none free the hit does not land on the track, and in a fight that takes the traveller out. The table reads the boxes still clear: none left is -1 on every roll.",
+          "id": "strain",
+          "label": "Strain",
+          "min": 0,
+          "max": { "derived": "strain_boxes" },
+          "boxes": {
+            "penalty": {
+              "by": "remaining",
+              "table": [
+                [0, -1],
+                [1, 0]
+              ]
+            }
+          },
+          "kinds": [{ "id": "strain", "label": "S", "severity": 0 }],
+          "fill": "indexed",
+          "onFull": "refuse"
         }
       ],
       "conditions": [
@@ -321,6 +407,20 @@
         {
           "id": "pinned",
           "label": "Pinned"
+        },
+        {
+          "id": "held",
+          "label": "Held"
+        }
+      ],
+      "states": [
+        {
+          "$comment": "A LIVE STATE: exactly one of its values at a time, changing in play. The Game Master sets it with op=\"state\", the sheet shows a picker, and making camp settles it again.",
+          "id": "stance",
+          "label": "Stance",
+          "values": ["guarded", "steady", "reckless"],
+          "valueLabels": { "guarded": "Guarded", "steady": "Steady", "reckless": "Reckless" },
+          "default": "steady"
         }
       ]
     }
@@ -350,7 +450,8 @@
           "listPools": "tricks",
           "recharge": ["camp"],
           "to": "max"
-        }
+        },
+        { "state": "stance", "to": "default" }
       ],
       "clear": {
         "conditions": ["shaken"]
@@ -366,10 +467,71 @@
       "lists": [
         {
           "list": "gear",
-          "nameColumn": "name"
+          "nameColumn": "name",
+          "columns": ["damage"]
         }
       ]
     }
+  },
+  "items": {
+    "$comment": "The words every item of Ember Roads is written in. Bulk is what an item weighs: a traveller carries their Load before the road slows them and twelve at the most. Coin and salt are two families: a moneychanger will not take salt, and a caravan will not take coin.",
+    "categories": [
+      { "id": "weapon", "label": "Weapon" },
+      { "id": "armor", "label": "Armor" },
+      { "id": "ammunition", "label": "Ammunition" },
+      { "id": "provisions", "label": "Provisions" },
+      { "id": "gear", "label": "Gear" }
+    ],
+    "rarities": [
+      { "id": "common", "label": "Common" },
+      { "id": "uncommon", "label": "Uncommon" },
+      { "id": "storied", "label": "Storied" }
+    ],
+    "tags": [
+      { "id": "thrown", "label": "Thrown" },
+      { "id": "ranged", "label": "Ranged" },
+      { "id": "two_handed", "label": "Two-handed" }
+    ],
+    "stats": [
+      { "id": "bulk", "label": "Bulk", "type": "number", "min": 0, "max": 10, "default": 0 },
+      { "id": "guard", "label": "Guard", "type": "number", "min": 0, "max": 4, "default": 0 },
+      { "id": "damage", "label": "Damage", "type": "dice", "example": "1d6" },
+      {
+        "id": "swing",
+        "label": "Rolls with",
+        "type": "enum",
+        "values": ["brawn", "wits", "heart"],
+        "default": "brawn"
+      },
+      { "id": "reach", "label": "Reach", "type": "enum", "values": ["close", "near", "far"], "default": "close" }
+    ],
+    "slots": [
+      { "id": "body", "label": "Body", "count": 1 },
+      { "id": "hands", "label": "Hands", "count": 2 }
+    ],
+    "carry": { "stat": "bulk", "encumberedAbove": { "derived": "load" }, "limit": { "const": 12 } },
+    "currencies": [
+      {
+        "id": "coin",
+        "label": "Coin",
+        "perWeight": 100,
+        "units": [
+          { "id": "bit", "label": "bits", "value": 1 },
+          { "id": "mark", "label": "marks", "value": 10 },
+          { "id": "sovereign", "label": "sovereigns", "value": 100 }
+        ]
+      },
+      {
+        "$comment": "Salt is heavy: ten pinches weigh one bulk, where it takes a hundred coins.",
+        "id": "salt",
+        "label": "Salt",
+        "perWeight": 10,
+        "units": [
+          { "id": "pinch", "label": "pinches", "value": 1 },
+          { "id": "cake", "label": "cakes", "value": 20 }
+        ]
+      }
+    ]
   },
   "catalogs": [
     {
@@ -624,6 +786,34 @@
               }
             ]
           }
+        },
+        {
+          "$comment": "A COUNTER: it answers somebody on the other side using a knack, anywhere within eight paces and whoever it is aimed at, and calls it off. It answers only this catalog's entries, so the swing of an axe opens nothing for it. A turn here holds one action and it is long spent by anybody else's turn, so this costs a point of Luck instead.",
+          "id": "smother",
+          "label": "Smother",
+          "summary": "Snuff out a knack as it starts.",
+          "filters": {
+            "grit": 0,
+            "road": "Glasslands",
+            "callings": ["Ember-tender"]
+          },
+          "rows": [
+            {
+              "list": "knacks",
+              "values": {
+                "name": "Smother",
+                "notes": "When somebody within eight paces starts a knack, spend a point of Luck to stop it."
+              }
+            }
+          ],
+          "mechanics": {
+            "kind": "utility",
+            "free": true,
+            "range": 8,
+            "targets": "enemy",
+            "cost": [{ "pool": "luck", "amount": 1 }],
+            "reaction": { "on": "used", "at": "source", "cancels": true, "against": { "catalogs": ["knacks"] } }
+          }
         }
       ]
     },
@@ -854,6 +1044,133 @@
               }
             ]
           }
+        },
+        {
+          "$comment": "Written in this ruleset's own words: Brawn, Wits and Heart, a Toughness, the gear it swings and a knack picked out of the same catalog a traveller picks from. Its Grit and its Guard are what the sheet adds up to, and Hold the Line costs it Luck out of its own pool, exactly as it costs a traveller. Nothing here is a number written twice.",
+          "id": "toll-warden",
+          "label": "Toll Warden",
+          "summary": "Somebody who decided a stretch of road was theirs, and brought friends to say so.",
+          "filters": {
+            "tier": "Pack trouble",
+            "road": "Toll roads"
+          },
+          "creature": {
+            "tier": "pack",
+            "traits": [
+              {
+                "name": "Knows the road",
+                "text": "It will not follow anyone past the last milestone it collects at."
+              }
+            ],
+            "sheet": {
+              "abilities": {
+                "brawn": 2,
+                "wits": 1,
+                "heart": 1
+              },
+              "skills": {
+                "sway": "trained"
+              },
+              "fields": {
+                "calling": "Hauler",
+                "toughness": 3
+              },
+              "lists": {
+                "gear": [
+                  {
+                    "name": "Toll hook",
+                    "notes": "Long, and meant for pulling people off carts",
+                    "swing": "brawn",
+                    "damage": "1d6",
+                    "harm": "cut"
+                  }
+                ],
+                "knacks": [
+                  {
+                    "name": "Hold the Line",
+                    "notes": "Spend 1 Luck to steady one ally who can hear you. In a fight they gain 2 temporary Grit.",
+                    "_catalog": "knacks/hold-the-line"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "$comment": "What the outfitter at the last town sells. A catalog of items writes nothing onto the sheet, so it feeds no list.",
+      "id": "outfitter",
+      "label": "Outfitter",
+      "holds": "items",
+      "entries": [
+        {
+          "id": "hand-axe",
+          "label": "Hand axe",
+          "summary": "Good for kindling, and for throwing when there is no time to chop.",
+          "item": {
+            "category": "weapon",
+            "rarity": "common",
+            "tags": ["thrown"],
+            "stats": { "bulk": 1, "damage": "1d6", "swing": "brawn", "reach": "close" },
+            "slots": { "hands": 1 },
+            "cost": { "amount": 4, "unit": "mark" }
+          }
+        },
+        {
+          "id": "hunting-bow",
+          "label": "Hunting bow",
+          "summary": "Yew, waxed string, and a grip worn smooth by someone else's hand.",
+          "item": {
+            "category": "weapon",
+            "rarity": "common",
+            "tags": ["ranged", "two_handed"],
+            "stats": { "bulk": 2, "damage": "1d8", "swing": "wits", "reach": "far" },
+            "slots": { "hands": 2 },
+            "cost": { "amount": 3, "unit": "sovereign" }
+          }
+        },
+        {
+          "id": "arrows",
+          "label": "Arrows",
+          "summary": "Goose-feathered and iron-tipped, twenty to a quiver.",
+          "item": {
+            "category": "ammunition",
+            "rarity": "common",
+            "stats": { "bulk": 1 },
+            "stack": 20,
+            "cost": { "amount": 1, "unit": "mark" }
+          }
+        },
+        {
+          "id": "leather-coat",
+          "label": "Leather coat",
+          "summary": "Stiff, scarred and warm, and it has turned a knife before.",
+          "item": {
+            "category": "armor",
+            "rarity": "common",
+            "stats": { "bulk": 3, "guard": 1 },
+            "slots": { "body": 1 },
+            "cost": { "amount": 2, "unit": "sovereign" }
+          }
+        },
+        {
+          "id": "road-rations",
+          "label": "Road rations",
+          "summary": "A day of hard bread and harder cheese.",
+          "item": {
+            "category": "provisions",
+            "rarity": "common",
+            "stats": { "bulk": 1 },
+            "stack": 7,
+            "cost": { "amount": 5, "unit": "bit" }
+          }
+        },
+        {
+          "id": "waystone",
+          "label": "Waystone",
+          "summary": "A smooth stone from the first milestone of the old road. Caravan folk sell them for salt, never for coin.",
+          "item": { "category": "gear", "rarity": "storied", "cost": { "amount": 2, "unit": "cake" } }
         }
       ]
     }
@@ -955,8 +1272,71 @@
         "effects": ["own-attacks-disadvantage", "ends-on-damage"]
       },
       {
+        "$comment": "Hurt enough to show it: a step slower and a little easier to land a blow on. Numbers rather than effect names, because this system rolls once and has no advantage for an effect to switch on.",
+        "condition": "wounded",
+        "modifiers": [
+          { "to": "defense", "flat": -1 },
+          { "to": "speed", "flat": -2 }
+        ]
+      },
+      {
         "condition": "pinned",
         "effects": ["cannot-act", "speed-zero"]
+      },
+      {
+        "$comment": "Held in somebody's grip: nowhere to walk, and it ends when whoever holds on goes down. The Grab contest below puts it on, and Break free takes it off.",
+        "condition": "held",
+        "effects": ["speed-zero"],
+        "endsWhenSourceDown": true
+      }
+    ],
+    "levels": [
+      {
+        "$comment": "Heat builds up on the road and a camp takes a point of it off. From 3 the hands shake, and at the top of the track the legs go too; at 5 both count.",
+        "track": "heat",
+        "at": 3,
+        "modifiers": [{ "to": "attacks", "flat": -1 }]
+      },
+      { "track": "heat", "at": 5, "modifiers": [{ "to": "speed", "times": 0.5 }] }
+    ],
+    "checks": [
+      {
+        "$comment": "The numbers a contest reads. Nothing here is a skill: Ember Roads wrestles on Brawn and slips a grip on Wits.",
+        "id": "brawn",
+        "label": "Brawn",
+        "value": { "abilityMod": "brawn" }
+      },
+      { "id": "wits", "label": "Wits", "value": { "abilityMod": "wits" } }
+    ],
+    "contests": [
+      {
+        "$comment": "Both sides throw the same two dice an attack does and add a check; the higher total wins, and the defender takes a tie unless the contest says otherwise.",
+        "id": "grab",
+        "label": "Grab",
+        "budget": "act",
+        "attacker": { "checks": ["brawn"] },
+        "defender": { "checks": ["brawn", "wits"] },
+        "onWin": { "applies": [{ "condition": "held" }] }
+      },
+      {
+        "$comment": "Aimed only at whoever holds on, and only there while held.",
+        "id": "break_free",
+        "label": "Break free",
+        "budget": "act",
+        "attacker": { "checks": ["brawn", "wits"] },
+        "defender": { "checks": ["brawn"] },
+        "from": { "holding": "held" },
+        "onWin": { "ends": [{ "condition": "held", "on": "actor" }] }
+      },
+      {
+        "$comment": "Four paces is two cells on a board, straight away from whoever shoves; a fight with no board moves nobody.",
+        "id": "shove",
+        "label": "Shove back",
+        "budget": "act",
+        "attacker": { "checks": ["brawn"] },
+        "defender": { "checks": ["brawn"] },
+        "ties": "attacker",
+        "onWin": { "push": 4 }
       }
     ],
     "threat": {

@@ -423,8 +423,7 @@ export function collectGameNpcCharacterCandidates(input: {
     const appearance = observedAppearance;
     const description = canonicalDescription || (appearance ? `Observed appearance: ${appearance}` : "");
     const presentIdentity = present as
-      | (PresentCharacter & { gender?: string | null; pronouns?: string | null })
-      | undefined;
+      (PresentCharacter & { gender?: string | null; pronouns?: string | null }) | undefined;
     const npcId = cleanText(npc.id, 200) || buildStableGameNpcId(name);
     candidates.set(npcId, {
       npcId,

@@ -69,8 +69,17 @@ import {
 } from "../../packages/shared/src/index.js";
 
 const read = (path: string) => readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
-const fiveEText = read("../../docs/development/ruleset-5e-2014.example.json");
-const emberText = read("../../docs/examples/rulesets/ember-roads.json");
+/** Both examples less 1.43's contests and the checks they read: this lane is about the board, and a
+ *  contest on it is proven in the contest lane. */
+const withoutContests = (text: string): string => {
+  const doc = JSON.parse(text);
+  delete doc.combat.checks;
+  delete doc.combat.contests;
+  for (const catalog of doc.catalogs ?? []) for (const entry of catalog.entries ?? []) delete entry.creature?.checks;
+  return JSON.stringify(doc);
+};
+const fiveEText = withoutContests(read("../../docs/development/ruleset-5e-2014.example.json"));
+const emberText = withoutContests(read("../../docs/examples/rulesets/ember-roads.json"));
 const variant = (text: string, edit: (doc: Record<string, any>) => void = () => {}): Record<string, any> => {
   const doc = JSON.parse(text) as Record<string, any>;
   edit(doc);
@@ -1329,6 +1338,22 @@ const cellsOf = (cells: Array<{ x: number; y: number }>) =>
   assert.equal(took.state.window, undefined, "the window closed behind the answer");
   assert.deepEqual(firstOf(took.events, "move").to, { x: 5, y: 1 }, "and the walk picked up where it stopped");
   assert.equal(firstOf(took.events, "move").cost, 5, "paying for every cell it really crossed");
+
+  // A fight saved in the middle of a walk by an Engine from before a resume said what kind it was
+  // comes back as one: answering the window still finishes the walk, rather than leaving the
+  // walker standing on the step they were asked about.
+  {
+    const saved = JSON.parse(JSON.stringify(held.state)) as RulesetEncounterState;
+    delete (saved.window!.resume as { kind?: string }).kind;
+    const resumed = act(fiveE, saved, {
+      actorId: "snag",
+      optionId: RULESET_PASS_OPTION,
+      targetIds: [],
+      window: saved.window!.id,
+    });
+    assert.equal(resumed.state.window, undefined);
+    assert.deepEqual(firstOf(resumed.events, "move").to, { x: 5, y: 1 }, "an old save's walk still finishes");
+  }
 
   // Letting it go by costs nothing and finishes the same walk.
   const let_go = act(fiveE, held.state, { actorId: "snag", optionId: RULESET_PASS_OPTION, targetIds: [], window: window.id });

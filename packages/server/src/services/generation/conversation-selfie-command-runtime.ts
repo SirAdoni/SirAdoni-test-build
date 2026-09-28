@@ -370,6 +370,7 @@ async function generateSelfie(
       height: selfieH || imageSettings.selfie.height,
     });
     await persistGeneratedImageToEntityGalleries({
+      enabled: imageSettings.autoSaveToGalleries,
       sourceFilePath: filePath,
       sourceChatImageId: galleryEntry?.id,
       characterIds: selfieResolvedCharacterIds,

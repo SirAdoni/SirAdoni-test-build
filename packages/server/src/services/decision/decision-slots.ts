@@ -22,6 +22,7 @@ import {
   type DecisionThinkingMode,
   type DecisionUnavailableReason,
 } from "@marinara-engine/shared";
+import { logRateLimited } from "../../lib/log-rate-limit.js";
 import { logger } from "../../lib/logger.js";
 import { sidecarModelService } from "../sidecar/sidecar-model.service.js";
 import { sidecarProcessService } from "../sidecar/sidecar-process.service.js";
@@ -69,6 +70,12 @@ export interface ResolvedDecisionSlot {
    * 422 instead of truncating, so it must never inherit a chat slot's context size.
    */
   maxLengthTokens?: number;
+  /**
+   * How many requests the model's server works on at once. More are queued there, so
+   * decisions wait for one of these before their time limit starts: a statement's
+   * limit is for answering it, not for waiting behind the others.
+   */
+  serverSlots: number;
 }
 
 export type DecisionSlotFailure = { slot: DecisionLocalSlot; reason: DecisionUnavailableReason; detail?: string };
@@ -141,6 +148,41 @@ export function decisionSidecarSettings(): DecisionSidecarSettings {
   return readDecisionSidecarSettings();
 }
 
+/** Not imported: sidecar-process.service.ts keeps the class private and names it. */
+function isSidecarStartupCancelled(error: unknown): boolean {
+  return error instanceof Error && error.name === "SidecarStartupCancelledError";
+}
+
+/**
+ * The one log line for a slot that cannot serve.
+ *
+ * A gate asks on every turn, so a slot that stays down would otherwise write the same
+ * warning each time; it is rate-limited per slot and reason, so a changed diagnosis still logs. A user stop is an expected outcome
+ * and goes to info. Returns the failure so each branch can report and return at once.
+ */
+function slotFailure(
+  failure: DecisionSlotFailure,
+  cause?: { error?: unknown; aborted?: boolean; detail?: string | null },
+): { resolved: null; failure: DecisionSlotFailure } {
+  const fields: Record<string, unknown> = { slot: failure.slot, reason: failure.reason };
+  const detail = cause?.detail ?? failure.detail;
+  if (detail) fields.detail = detail;
+  if (cause?.error !== undefined) fields.err = cause.error;
+  if (cause?.aborted || isSidecarStartupCancelled(cause?.error)) {
+    logger.info(fields, "[decision] Cancelled while the %s local model was starting", failure.slot);
+  } else {
+    logRateLimited(
+      "warn",
+      `decision.slot:${failure.slot}:${failure.reason}`,
+      fields,
+      "[decision] The %s local model cannot serve decisions (%s); gates fail open",
+      failure.slot,
+      failure.reason,
+    );
+  }
+  return { resolved: null, failure };
+}
+
 /**
  * Bring a slot up and hand back what a decision request needs, or say why not.
  *
@@ -150,9 +192,10 @@ export function decisionSidecarSettings(): DecisionSidecarSettings {
 export async function resolveDecisionSlot(
   slot: DecisionLocalSlot,
   signal?: AbortSignal,
+  inspectOnly = false,
 ): Promise<{ resolved: ResolvedDecisionSlot; failure?: never } | { resolved: null; failure: DecisionSlotFailure }> {
   const description = describeDecisionSlot(slot);
-  if (!description.available) return { resolved: null, failure: { slot, ...description } };
+  if (!description.available) return slotFailure({ slot, ...description });
 
   if (slot === "primary") {
     let baseUrl: string;
@@ -161,10 +204,9 @@ export async function resolveDecisionSlot(
       // decision model is an explicit request for it to serve. Without it a user who
       // runs a local model but has trackers and game-scene analysis both off would
       // have their chosen decision model never start, and every gate fail open.
-      baseUrl = await sidecarProcessService.ensureReady({ forceStart: true });
+      baseUrl = inspectOnly ? "" : await sidecarProcessService.ensureReady({ forceStart: true });
     } catch (error) {
-      logger.warn(error, "[decision] The primary local model could not start; gates fail open");
-      return { resolved: null, failure: { slot, reason: "stopped" } };
+      return slotFailure({ slot, reason: "stopped" }, { error });
     }
     const status = sidecarModelService.getStatus();
     return {
@@ -177,29 +219,37 @@ export async function resolveDecisionSlot(
         label: description.label,
         thinking: primaryThinking(),
         protocol: "chat_logprobs",
+        serverSlots: sidecarModelService.getConfig().maxParallelJobs,
       },
     };
   }
 
   if (slot === "decision_sidecar") {
     const model = installedDecisionModel(decisionSidecarSettings());
-    if (!model) return { resolved: null, failure: { slot, reason: "not_installed" } };
+    if (!model) return slotFailure({ slot, reason: "not_installed" });
     // Raced against the caller's abort. A cold load takes up to three minutes, and a
     // generation the user already cancelled must not sit behind it; the process keeps
     // starting in the background so the next turn finds it ready.
-    const baseUrl = await Promise.race([
-      decisionProcessService.ensureRunning(model),
-      new Promise<null>((resolve) => {
-        if (!signal) return;
-        if (signal.aborted) resolve(null);
-        else signal.addEventListener("abort", () => resolve(null), { once: true });
-      }),
-    ]);
-    if (!baseUrl) return { resolved: null, failure: { slot, reason: "stopped" } };
+    const baseUrl = inspectOnly
+      ? ""
+      : await Promise.race([
+          decisionProcessService.ensureRunning(model),
+          new Promise<null>((resolve) => {
+            if (!signal) return;
+            if (signal.aborted) resolve(null);
+            else signal.addEventListener("abort", () => resolve(null), { once: true });
+          }),
+        ]);
+    // A cancelled request is not a failure: the start carries on in the background.
+    if (!inspectOnly && !baseUrl)
+      return slotFailure(
+        { slot, reason: "stopped" },
+        { aborted: signal?.aborted === true, detail: decisionProcessService.getStatus().error },
+      );
     return {
       resolved: {
         slot,
-        baseUrl,
+        baseUrl: baseUrl ?? "",
         model: "jev-latest",
         modelIdentity: `decision:${model.id}`,
         label: model.label,
@@ -210,6 +260,8 @@ export async function resolveDecisionSlot(
         // A purpose-built decision model never reasons: it scores candidates in one
         // forward pass and has no text to think in.
         thinking: "off",
+        // Its server answers one request at a time behind a lock.
+        serverSlots: 1,
       },
     };
   }
@@ -217,25 +269,26 @@ export async function resolveDecisionSlot(
   // The utility slot already tracks which model the running child actually loaded, so
   // its blob id is the identity rather than a guess from the configured name.
   let status = utilitySidecarService.getStatus();
-  if (!status.ready) {
+  if (!inspectOnly && !status.ready) {
     try {
       status = await utilitySidecarService.ensureRunning();
     } catch (error) {
-      logger.warn(error, "[decision] The utility local model could not start; gates fail open");
-      return { resolved: null, failure: { slot, reason: "stopped" } };
+      return slotFailure({ slot, reason: "stopped" }, { error });
     }
   }
-  if (!status.ready || !status.baseUrl) return { resolved: null, failure: { slot, reason: "stopped" } };
+  if (!inspectOnly && (!status.ready || !status.baseUrl))
+    return slotFailure({ slot, reason: "stopped" }, { detail: status.error });
   const activeModelId = status.activeModelId ?? "";
   return {
     resolved: {
       slot,
-      baseUrl: status.baseUrl,
+      baseUrl: status.baseUrl ?? "",
       model: "utility-sidecar",
       modelIdentity: `utility:${activeModelId}:${status.models[activeModelId]?.oid ?? ""}`,
       label: description.label,
       thinking: utilityThinking(),
       protocol: "chat_logprobs",
+      serverSlots: utilitySidecarService.getConfig().maxParallelJobs,
     },
   };
 }

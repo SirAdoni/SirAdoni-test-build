@@ -186,6 +186,14 @@ export function isCapabilityPackageAvailableUntilRestart(installed: InstalledCap
   return Boolean(resolveCapabilityPackageAvailableUntilRestart(installed));
 }
 
+/** A package the user can use right now: active, or updated and still running its previous
+ *  version until the next restart. */
+export function isCapabilityPackageAvailable(installed: InstalledCapabilityPackage[], packageId: string): boolean {
+  return installed.some(
+    (item) => item.id === packageId && (item.status === "active" || isCapabilityPackageAvailableUntilRestart(item)),
+  );
+}
+
 /** Installed destinations that Home can safely expose as browser tabs. */
 export function selectHomeBrowserPackages(
   installed: InstalledCapabilityPackage[] | undefined,
@@ -198,6 +206,23 @@ export function selectHomeBrowserPackages(
         Boolean(pkg.manifest.contributions?.slots?.includes("home-browser-tab")) &&
         Boolean(pkg.manifest.entrypoints.client?.trim()) &&
         Boolean(pkg.manifest.contributions?.homeBrowserTab),
+    );
+}
+
+/** Agent packages with validated Home widget declarations and an available client runtime. */
+export function selectHomeWidgetPackages(
+  installed: InstalledCapabilityPackage[] | undefined,
+): InstalledCapabilityPackage[] {
+  return (installed ?? [])
+    .map((pkg) => (isInstalledCapabilityReady(pkg) ? pkg : resolveCapabilityPackageAvailableUntilRestart(pkg)))
+    .filter(
+      (pkg): pkg is InstalledCapabilityPackage =>
+        pkg !== null &&
+        pkg.manifest.kind.includes("agent") &&
+        pkg.manifest.permissions.includes("ui") &&
+        Boolean(pkg.manifest.contributions?.slots?.includes("home-widget")) &&
+        Boolean(pkg.manifest.contributions?.homeWidgets?.length) &&
+        Boolean(pkg.manifest.entrypoints.client?.trim()),
     );
 }
 
@@ -476,22 +501,25 @@ interface BulkCapabilityPackageResult {
   succeeded: string[];
   failures: BulkCapabilityPackageFailure[];
   restartRequired: boolean;
+  usesDecisions: boolean;
 }
 
 async function runCapabilityPackageQueue(
   ids: string[],
-  operation: (id: string) => Promise<{ restartRequired: boolean }>,
+  operation: (id: string) => Promise<{ restartRequired: boolean; usesDecisions?: boolean }>,
   onProgress?: BulkCapabilityPackageVariables["onProgress"],
 ): Promise<BulkCapabilityPackageResult> {
   const succeeded: string[] = [];
   const failures: BulkCapabilityPackageFailure[] = [];
   let restartRequired = false;
+  let usesDecisions = false;
 
   for (const [index, id] of ids.entries()) {
     try {
       const result = await operation(id);
       succeeded.push(id);
       restartRequired ||= result.restartRequired;
+      usesDecisions ||= result.usesDecisions ?? false;
     } catch (error) {
       failures.push({ id, error });
     } finally {
@@ -499,7 +527,7 @@ async function runCapabilityPackageQueue(
     }
   }
 
-  return { succeeded, failures, restartRequired };
+  return { succeeded, failures, restartRequired, usesDecisions };
 }
 
 export function useInstallCapabilityPackage() {
@@ -507,10 +535,13 @@ export function useInstallCapabilityPackage() {
   return useMutation({
     mutationFn: (variables: { id: string; expectedVersion: string; expectedArtifactSha256: string }) => {
       const { id, expectedVersion, expectedArtifactSha256 } = variables;
-      return api.post<InstalledCapabilityPackage>(`/capability-packages/${encodeURIComponent(id)}/install`, {
-        expectedVersion,
-        expectedArtifactSha256,
-      });
+      return api.post<InstalledCapabilityPackage & { usesDecisions?: boolean }>(
+        `/capability-packages/${encodeURIComponent(id)}/install`,
+        {
+          expectedVersion,
+          expectedArtifactSha256,
+        },
+      );
     },
     onSettled: invalidate,
   });
@@ -546,14 +577,14 @@ export function useInstallAllCapabilityPackages() {
         packages.map((entry) => entry.manifest.id),
         async (id) => {
           const entry = packages.find((candidate) => candidate.manifest.id === id)!;
-          const result = await api.post<InstalledCapabilityPackage>(
+          const result = await api.post<InstalledCapabilityPackage & { usesDecisions?: boolean }>(
             `/capability-packages/${encodeURIComponent(id)}/install`,
             {
               expectedVersion: entry.manifest.version,
               expectedArtifactSha256: entry.artifact.sha256,
             },
           );
-          return { restartRequired: result.status === "restart-required" };
+          return { restartRequired: result.status === "restart-required", usesDecisions: result.usesDecisions };
         },
         onProgress,
       ),

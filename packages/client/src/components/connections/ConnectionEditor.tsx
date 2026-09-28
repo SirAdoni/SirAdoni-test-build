@@ -3,7 +3,9 @@ import {
   DECISION_SOURCES,
   DECISION_SOURCE_BASE_URLS,
   DECISION_TIMEOUT_MS,
+  decisionSourceTakesUrl,
   defaultDecisionStateTokens,
+  defaultDecisionTimeoutMs,
   resolveDecisionConnectionTimeoutMs,
   type DecisionSource,
 } from "@marinara-engine/shared";
@@ -80,6 +82,7 @@ import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 import { translate } from "../../localization/i18n";
 import { decisionConnectionTestMessage } from "../../lib/decision-test-message";
 import { AtlasCloudModelOptions } from "./AtlasCloudModelOptions";
+import { NanoGptUsageWidget } from "./NanoGptUsageWidget";
 import { HelpTooltip } from "../ui/HelpTooltip";
 import { SettingsCheckbox, SettingsSwitch } from "../panels/settings/SettingControls";
 import {
@@ -378,6 +381,10 @@ export function ConnectionEditor() {
   const [localBaseUrl, setLocalBaseUrl] = useState("");
   const [localApiKey, setLocalApiKey] = useState("");
   const [clearStoredApiKeyOnSave, setClearStoredApiKeyOnSave] = useState(false);
+  /** NanoGPT: usage-only management token (`usage:read`) and the widget toggle. */
+  const [localManagementToken, setLocalManagementToken] = useState("");
+  const [clearStoredManagementTokenOnSave, setClearStoredManagementTokenOnSave] = useState(false);
+  const [localShowUsageWidget, setLocalShowUsageWidget] = useState(false);
   const [localModel, setLocalModel] = useState("");
   const [localMaxContext, setLocalMaxContext] = useState(128000);
   const [localMaxParallelJobs, setLocalMaxParallelJobs] = useState(DEFAULT_MAX_PARALLEL_JOBS);
@@ -516,6 +523,9 @@ export function ConnectionEditor() {
     setLocalBaseUrl((c.baseUrl as string) ?? "");
     setLocalApiKey(""); // never pre-fill (it's masked)
     setClearStoredApiKeyOnSave(false);
+    setLocalManagementToken(""); // never pre-fill (it's masked)
+    setClearStoredManagementTokenOnSave(false);
+    setLocalShowUsageWidget(c.showUsageWidget === "true" || c.showUsageWidget === true);
     setLocalModel(normalizeGrokCliEditorModel(provider, model));
     setLocalMaxContext(normalizeConnectionMaxContext(provider, c.maxContext));
     setLocalMaxParallelJobs(normalizeMaxParallelJobs(c.maxParallelJobs));
@@ -582,7 +592,7 @@ export function ConnectionEditor() {
     setLocalDecisionSource((c.decisionSource as DecisionSource) ?? "typesafe");
     setLocalCredentialsFrom((c.credentialsFromConnectionId as string) ?? "");
     setLocalMaxStateTokens(Number(c.maxStateTokens ?? defaultDecisionStateTokens(c.decisionSource as string)));
-    setLocalDecisionTimeoutMs(resolveDecisionConnectionTimeoutMs(c.decisionTimeoutMs));
+    setLocalDecisionTimeoutMs(resolveDecisionConnectionTimeoutMs(c.decisionTimeoutMs, c.decisionSource as string));
     setLocalAudioSource((c.audioSource as string) || "elevenlabs");
     setLocalAudioVoice((c.audioVoice as string) ?? "");
     setLocalAudioSoundEffects(c.audioSoundEffects === "true" || c.audioSoundEffects === true);
@@ -820,10 +830,19 @@ export function ConnectionEditor() {
       context: m.context ?? 0,
       maxOutput: m.maxOutput ?? 0,
       capabilities: m.capabilities,
+      subscriptionIncluded: m.subscriptionIncluded,
+      inputTokenMultiplier: m.inputTokenMultiplier,
       isRemote: true as const,
     }));
     const remoteIds = new Set(remote.map((m) => m.id));
-    const known = providerModels.filter((m) => !remoteIds.has(m.id)).map((m) => ({ ...m, isRemote: false as const }));
+    const known = providerModels
+      .filter((m) => !remoteIds.has(m.id))
+      .map((m) => ({
+        ...m,
+        subscriptionIncluded: undefined as boolean | undefined,
+        inputTokenMultiplier: undefined as number | undefined,
+        isRemote: false as const,
+      }));
     return [...remote, ...known];
   }, [providerModels, remoteModels]);
 
@@ -975,7 +994,7 @@ export function ConnectionEditor() {
       maxStateTokens: localProvider === "decision" ? localMaxStateTokens : null,
       // The default is stored as null, so a connection that never chose a limit follows it.
       decisionTimeoutMs:
-        localProvider === "decision" && localDecisionTimeoutMs !== DECISION_TIMEOUT_MS.systemOne
+        localProvider === "decision" && localDecisionTimeoutMs !== defaultDecisionTimeoutMs(localDecisionSource)
           ? localDecisionTimeoutMs
           : null,
       audioSource: isAudioProvider ? localAudioSource || null : null,
@@ -991,6 +1010,15 @@ export function ConnectionEditor() {
       payload.apiKey = localApiKey;
     } else if (clearStoredApiKeyOnSave) {
       payload.apiKey = "";
+    }
+    // NanoGPT management token: scoped to nanogpt, and only sent when retyped.
+    payload.showUsageWidget = localProvider === "nanogpt" && localShowUsageWidget;
+    if (localProvider !== "nanogpt") {
+      payload.managementToken = "";
+    } else if (localManagementToken.trim()) {
+      payload.managementToken = localManagementToken;
+    } else if (clearStoredManagementTokenOnSave) {
+      payload.managementToken = "";
     }
     savingRef.current = true;
     try {
@@ -1046,6 +1074,10 @@ export function ConnectionEditor() {
       }
       setDirty(false);
       setClearStoredApiKeyOnSave(false);
+      // The token is only sent when retyped, so clear it after a successful
+      // save; otherwise it would ride along on every later save.
+      setLocalManagementToken("");
+      setClearStoredManagementTokenOnSave(false);
       setSavedFlash(true);
       setTimeout(() => setSavedFlash(false), 1500);
     } catch (err) {
@@ -1065,6 +1097,9 @@ export function ConnectionEditor() {
     baseUrlValidation,
     localApiKey,
     clearStoredApiKeyOnSave,
+    localManagementToken,
+    clearStoredManagementTokenOnSave,
+    localShowUsageWidget,
     localModel,
     localMaxContext,
     localMaxParallelJobs,
@@ -1215,7 +1250,7 @@ export function ConnectionEditor() {
       decisionSource: localProvider === "decision" ? localDecisionSource : null,
       maxStateTokens: localProvider === "decision" ? localMaxStateTokens : null,
       decisionTimeoutMs:
-        localProvider === "decision" && localDecisionTimeoutMs !== DECISION_TIMEOUT_MS.systemOne
+        localProvider === "decision" && localDecisionTimeoutMs !== defaultDecisionTimeoutMs(localDecisionSource)
           ? localDecisionTimeoutMs
           : null,
       embeddingModel: supportsDirectEmbeddings ? localEmbeddingModel : existingEmbeddingModel,
@@ -1572,6 +1607,7 @@ export function ConnectionEditor() {
   const isClaudeSubscriptionProvider = localProvider === "claude_subscription";
   const isOpenAIChatGPTProvider = localProvider === "openai_chatgpt";
   const isGrokSubscriptionProvider = localProvider === "grok_subscription";
+  const isNanoGptProvider = localProvider === "nanogpt";
   const isLocalAuthProvider = isLocalAuthConnectionProvider(localProvider);
   const usesLocalAuth = isLocalAuthProvider || isChatGPTImageService;
   const supportsDirectEmbeddingConfig = providerSupportsDirectEmbeddingConfig(localProvider);
@@ -1971,21 +2007,26 @@ export function ConnectionEditor() {
             </FieldGroup>
           )}
 
-          {localProvider === "openrouter" && (
+          {(localProvider === "openrouter" || localProvider === "custom") && (
             <button
               type="button"
-              disabled={dirty || createDecisionConnection.isPending}
+              disabled={
+                dirty || createDecisionConnection.isPending || (localProvider === "custom" && !localModel.trim())
+              }
               className="text-left text-xs text-[var(--primary)] underline disabled:opacity-50"
               onClick={() => {
                 if (!connectionDetailId) return;
+                // OpenRouter lends its key to hosted Jev. A Custom connection lends its
+                // server, model and key, so the chat model it already runs answers decisions.
+                const chat = localProvider === "custom";
                 createDecisionConnection.mutate(
                   {
                     name: t("connections.decision.linkedName", { name: localName }),
                     provider: "decision",
-                    decisionSource: "openrouter",
-                    baseUrl: DECISION_SOURCE_BASE_URLS.openrouter,
+                    decisionSource: chat ? "openai_compatible" : "openrouter",
+                    baseUrl: chat ? localBaseUrl : DECISION_SOURCE_BASE_URLS.openrouter,
                     apiKey: "",
-                    model: "jev-latest",
+                    model: chat ? localModel.trim() : "jev-latest",
                     credentialsFromConnectionId: connectionDetailId,
                     defaultForAgents: !(
                       allConnections as Array<{ provider: string; defaultForAgents?: unknown }> | undefined
@@ -2003,7 +2044,7 @@ export function ConnectionEditor() {
                 );
               }}
             >
-              {t("connections.decision.shortcut")}
+              {t(localProvider === "custom" ? "connections.decision.chatShortcut" : "connections.decision.shortcut")}
             </button>
           )}
 
@@ -2021,6 +2062,7 @@ export function ConnectionEditor() {
                   setLocalDecisionSource(source);
                   setLocalBaseUrl(DECISION_SOURCE_BASE_URLS[source]);
                   setLocalMaxStateTokens(defaultDecisionStateTokens(source));
+                  setLocalDecisionTimeoutMs(defaultDecisionTimeoutMs(source));
                   setLocalApiKey("");
                   setClearStoredApiKeyOnSave(true);
                   const matches =
@@ -2039,7 +2081,11 @@ export function ConnectionEditor() {
               </select>
               <p className="text-xs text-[var(--muted-foreground)]">
                 {t(
-                  localDecisionSource === "custom" ? "connections.decision.customHelp" : "connections.decision.privacy",
+                  localDecisionSource === "custom"
+                    ? "connections.decision.customHelp"
+                    : localDecisionSource === "openai_compatible"
+                      ? "connections.decision.chatHelp"
+                      : "connections.decision.privacy",
                 )}
               </p>
               {localDecisionSource !== "typesafe" && (
@@ -2123,7 +2169,7 @@ export function ConnectionEditor() {
                 {t("connections.decision.timeLimitHelp", {
                   min: DECISION_CONNECTION_TIMEOUT_BOUNDS_MS.min / 1000,
                   max: DECISION_CONNECTION_TIMEOUT_BOUNDS_MS.max / 1000,
-                  default: DECISION_TIMEOUT_MS.systemOne / 1000,
+                  default: defaultDecisionTimeoutMs(localDecisionSource) / 1000,
                 })}
               </p>
             </section>
@@ -2169,6 +2215,84 @@ export function ConnectionEditor() {
                 )}
               </FieldGroup>
 
+              {/* ── NanoGPT management token + subscription usage ── */}
+              {isNanoGptProvider && (
+                // A fragment's children are not direct children of the parent's
+                // space-y-6, so this block carries its own vertical rhythm.
+                <div className="space-y-6">
+                  <FieldGroup
+                    label={localizeUi("ui.connections.connectioneditor.managementToken")}
+                    icon={<Key size="0.875rem" className="text-sky-400" />}
+                    help={localizeUi("ui.connections.connectioneditor.managementTokenHelp")}
+                  >
+                    <input
+                      value={localManagementToken}
+                      onChange={(e) => {
+                        setLocalManagementToken(e.target.value);
+                        markDirty();
+                      }}
+                      type="password"
+                      className="w-full rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-sm ring-1 ring-[var(--border)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+                      placeholder={localizeUi("ui.connections.connectioneditor.leaveEmptyToKeepExistingKey")}
+                    />
+                    <p className="mt-1 text-[0.625rem] text-[var(--muted-foreground)]">
+                      {localizeUi("ui.connections.connectioneditor.managementTokenEncryptedHint")}
+                    </p>
+                    <label className="mt-1.5 flex w-fit cursor-pointer items-center gap-1.5 text-[0.625rem] text-[var(--muted-foreground)]">
+                      <input
+                        type="checkbox"
+                        checked={clearStoredManagementTokenOnSave}
+                        onChange={(e) => {
+                          setClearStoredManagementTokenOnSave(e.target.checked);
+                          if (e.target.checked) setLocalManagementToken("");
+                          markDirty();
+                        }}
+                        className="h-3 w-3 shrink-0 accent-[var(--destructive)]"
+                      />
+                      {localizeUi("ui.connections.connectioneditor.clearStoredManagementToken")}
+                    </label>
+                    <a
+                      href="https://nano-gpt.com/settings#management-api-tokens"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-1.5 inline-flex items-center gap-1 text-[0.6875rem] font-medium text-sky-400 transition-colors hover:text-sky-300"
+                    >
+                      <ExternalLink size="0.625rem" />
+                      {localizeUi("ui.connections.connectioneditor.createAManagementToken")}
+                    </a>
+                  </FieldGroup>
+
+                  <label className="flex cursor-pointer items-start gap-2.5 rounded-xl bg-[var(--secondary)] px-3 py-2.5 ring-1 ring-[var(--border)]">
+                    <input
+                      type="checkbox"
+                      checked={localShowUsageWidget}
+                      onChange={(e) => {
+                        setLocalShowUsageWidget(e.target.checked);
+                        markDirty();
+                      }}
+                      className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--primary)]"
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-sm font-medium">
+                        {localizeUi("ui.connections.connectioneditor.showSubscriptionUsage")}
+                      </span>
+                      <span className="mt-0.5 block text-[0.625rem] text-[var(--muted-foreground)]">
+                        {localizeUi("ui.connections.connectioneditor.showSubscriptionUsageHelp")}
+                      </span>
+                    </span>
+                  </label>
+
+                  {localShowUsageWidget && connectionDetailId && !dirty && (
+                    <NanoGptUsageWidget connectionId={connectionDetailId} />
+                  )}
+                  {localShowUsageWidget && dirty && (
+                    <p className="rounded-xl bg-[var(--secondary)] px-3 py-2 text-[0.625rem] text-[var(--muted-foreground)]">
+                      {localizeUi("ui.connections.connectioneditor.saveToLoadSubscriptionUsage")}
+                    </p>
+                  )}
+                </div>
+              )}
+
               {/* ── Base URL ── */}
               <FieldGroup
                 label={localizeUi("ui.connections.connectioneditor.baseUrl")}
@@ -2176,7 +2300,7 @@ export function ConnectionEditor() {
                 help={localizeUi("ui.connections.connectioneditor.theApiEndpointUrlUsuallyAutoFilledForKnown")}
               >
                 <input
-                  disabled={isDecisionProvider && localDecisionSource !== "custom"}
+                  disabled={isDecisionProvider && !decisionSourceTakesUrl(localDecisionSource)}
                   value={localBaseUrl}
                   onChange={(e) => {
                     setLocalBaseUrl(e.target.value);
@@ -2708,6 +2832,37 @@ export function ConnectionEditor() {
                             {m.isRemote && (
                               <span className="rounded-md bg-sky-400/10 px-1.5 py-0.5 text-[0.5625rem] font-medium text-sky-400">
                                 {modelFetchSourceLabel}
+                              </span>
+                            )}
+                            {/* Subscription cost. Included models always show a
+                                multiplier (green at 1x), so "covered at normal
+                                cost" stays distinct from "no data at all". */}
+                            {m.subscriptionIncluded === true && (
+                              <span
+                                className={cn(
+                                  "rounded-md px-1.5 py-0.5 text-[0.5625rem] font-semibold",
+                                  (m.inputTokenMultiplier ?? 1) > 1
+                                    ? "bg-[var(--marinara-editor-accent)]/15 text-[var(--marinara-editor-accent)]"
+                                    : "bg-emerald-400/15 text-emerald-400",
+                                )}
+                                title={localizeUi(
+                                  (m.inputTokenMultiplier ?? 1) > 1
+                                    ? "ui.connections.connectioneditor.inputTokenMultiplierHint_boosted"
+                                    : "ui.connections.connectioneditor.inputTokenMultiplierHint",
+                                  { multiplier: String(m.inputTokenMultiplier ?? 1) },
+                                )}
+                              >
+                                {localizeUi("ui.connections.connectioneditor.multiplierBadge", {
+                                  multiplier: String(m.inputTokenMultiplier ?? 1),
+                                })}
+                              </span>
+                            )}
+                            {m.subscriptionIncluded === false && (
+                              <span
+                                className="rounded-md bg-[var(--secondary)] px-1.5 py-0.5 text-[0.5625rem] font-medium text-[var(--muted-foreground)]"
+                                title={localizeUi("ui.connections.connectioneditor.notInSubscriptionHint")}
+                              >
+                                {localizeUi("ui.connections.connectioneditor.paid")}
                               </span>
                             )}
                             {localModel === m.id && <Check size="0.75rem" className="text-sky-400" />}
@@ -4105,8 +4260,7 @@ function ImageGenerationDefaultsPanel({
   onExpandedChange: (expanded: boolean) => void;
   onChange: (
     next:
-      | ImageGenerationDefaultsProfile
-      | ((current: ImageGenerationDefaultsProfile) => ImageGenerationDefaultsProfile),
+      ImageGenerationDefaultsProfile | ((current: ImageGenerationDefaultsProfile) => ImageGenerationDefaultsProfile),
   ) => void;
   onReset: () => void;
 }) {

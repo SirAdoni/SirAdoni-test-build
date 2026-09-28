@@ -1,19 +1,30 @@
 import { logger } from "./logger.js";
 import { noteSessionExitKind } from "./session-postmortem.js";
 import type { ShutdownDeadlineOptions } from "./shutdown-deadline.js";
-import { RUNTIME_STOP_BUDGET_MS } from "./shutdown-steps.js";
+import { UNBOUNDED_RUNTIME_STOP_BUDGET_MS } from "./shutdown-steps.js";
+import {
+  getShutdownRuntimeStopBudgetMs,
+  isShutdownForceExitOnRepeatEnabled,
+  isShutdownWindowsConsoleSignalsEnabled,
+} from "../config/runtime-config.js";
 
 /**
- * Which stop requests reach the graceful shutdown path.
+ * Which stop requests reach the graceful shutdown path. By default these are
+ * exactly the signals index.ts always handled: SIGINT and SIGTERM everywhere,
+ * plus SIGHUP off Windows.
  *
- * Windows maps console events onto Node signals: Ctrl+C is SIGINT, Ctrl+Break
- * is SIGBREAK and closing the console window is SIGHUP. Without a listener the
- * default action for SIGBREAK and SIGHUP terminates the process at once, which
- * drops the file store's debounced writes. Closing the console window is the
- * most common way a desktop user stops the server, so both are handled here.
+ * Opt-in (SHUTDOWN_WINDOWS_CONSOLE_SIGNALS): Windows maps console events onto
+ * Node signals: Ctrl+C is SIGINT, Ctrl+Break is SIGBREAK and closing the
+ * console window is SIGHUP. Without a listener the default action for SIGBREAK
+ * and SIGHUP terminates the process at once, which drops the file store's
+ * debounced writes. With the setting on, both start the graceful shutdown.
  */
-export function shutdownSignalsFor(platform: NodeJS.Platform = process.platform): NodeJS.Signals[] {
-  return platform === "win32" ? ["SIGINT", "SIGTERM", "SIGBREAK", "SIGHUP"] : ["SIGINT", "SIGTERM", "SIGHUP"];
+export function shutdownSignalsFor(
+  platform: NodeJS.Platform = process.platform,
+  windowsConsoleSignals: boolean = isShutdownWindowsConsoleSignalsEnabled(),
+): NodeJS.Signals[] {
+  if (platform !== "win32") return ["SIGINT", "SIGTERM", "SIGHUP"];
+  return windowsConsoleSignals ? ["SIGINT", "SIGTERM", "SIGBREAK", "SIGHUP"] : ["SIGINT", "SIGTERM"];
 }
 
 /**
@@ -21,7 +32,7 @@ export function shutdownSignalsFor(platform: NodeJS.Platform = process.platform)
  * is terminated regardless of handlers, so that stop gets a tighter deadline:
  * sever connections quickly, give the runtime stops a shorter budget, and
  * leave the rest of the window (STORE_CLOSE_RESERVE_MS or more) to the store
- * close and its final flush.
+ * close and its final flush. Every other stop keeps the #5838 deadlines.
  */
 export const WINDOWS_CONSOLE_CLOSE_DEADLINES: Required<
   Pick<ShutdownDeadlineOptions, "connectionDeadlineMs" | "forceExitDeadlineMs">
@@ -35,6 +46,7 @@ function isWindowsConsoleClose(signal: NodeJS.Signals, platform: NodeJS.Platform
   return platform === "win32" && signal === "SIGHUP";
 }
 
+/** Options for armShutdownDeadline; empty (the defaults) for everything but a Windows console close. */
 export function shutdownDeadlinesFor(
   signal: NodeJS.Signals,
   platform: NodeJS.Platform = process.platform,
@@ -42,11 +54,20 @@ export function shutdownDeadlinesFor(
   return isWindowsConsoleClose(signal, platform) ? { ...WINDOWS_CONSOLE_CLOSE_DEADLINES } : {};
 }
 
-/** The runtime stop budget (see shutdown-steps.ts) that fits inside shutdownDeadlinesFor(signal). */
-export function runtimeStopBudgetFor(signal: NodeJS.Signals, platform: NodeJS.Platform = process.platform): number {
-  return isWindowsConsoleClose(signal, platform)
-    ? WINDOWS_CONSOLE_CLOSE_RUNTIME_STOP_BUDGET_MS
-    : RUNTIME_STOP_BUDGET_MS;
+/**
+ * The runtime stop budget (see shutdown-steps.ts) for this stop. A Windows
+ * console close (only handled with SHUTDOWN_WINDOWS_CONSOLE_SIGNALS on) gets
+ * the short budget that fits its deadline. Every other stop uses
+ * SHUTDOWN_RUNTIME_STOP_BUDGET_MS, and waits for every runtime as before when
+ * that is unset.
+ */
+export function runtimeStopBudgetFor(
+  signal: NodeJS.Signals,
+  platform: NodeJS.Platform = process.platform,
+  configuredBudgetMs: number = getShutdownRuntimeStopBudgetMs(),
+): number {
+  if (isWindowsConsoleClose(signal, platform)) return WINDOWS_CONSOLE_CLOSE_RUNTIME_STOP_BUDGET_MS;
+  return configuredBudgetMs > 0 ? configuredBudgetMs : UNBOUNDED_RUNTIME_STOP_BUDGET_MS;
 }
 
 /**
@@ -69,12 +90,17 @@ export interface ShutdownSignalControllerOptions {
   /** Starts the graceful shutdown. Called once, for the first signal. */
   onShutdown(signal: NodeJS.Signals): void;
   /**
-   * True when a close is already running that did not come from a signal (a
-   * fatal-error close, which must still end with its own nonzero exit code).
+   * True when a close is already running that did not come from a signal.
    * The first signal then counts as a duplicate instead of starting a second
-   * close that would exit 0; a later keypress can still force the exit.
+   * close; a later keypress can still force the exit.
    */
   alreadyStopping?(): boolean;
+  /**
+   * Whether a deliberate repeat keypress may force the exit. Defaults to the
+   * SHUTDOWN_FORCE_EXIT_ON_REPEAT setting (off): every repeat is ignored and
+   * the #5838 deadline bounds the close, as before.
+   */
+  forceExitOnRepeat?: boolean;
   /** Ends the process immediately. Defaults to process.exit(130). */
   forceExit?(signal: NodeJS.Signals): void;
   now?(): number;
@@ -87,15 +113,17 @@ export interface ShutdownSignalController {
 }
 
 /**
- * First signal: graceful shutdown (bounded by armShutdownDeadline). Repeats
- * inside the grace window are treated as duplicate delivery and ignored. A
+ * First signal: graceful shutdown (bounded by armShutdownDeadline). By
+ * default every repeat is ignored, as before. With forceExitOnRepeat on, a
  * keypress repeat (SIGINT or SIGBREAK) after the grace window is a deliberate
- * second request from the user, and forces the exit instead of making them
- * wait out the deadline. Repeated SIGHUP and SIGTERM are always ignored.
+ * second request from the user and forces the exit instead of making them
+ * wait out the deadline; repeats inside the grace window (duplicate delivery)
+ * and repeated SIGHUP and SIGTERM are still ignored.
  */
 export function createShutdownSignalController(options: ShutdownSignalControllerOptions): ShutdownSignalController {
   const now = options.now ?? Date.now;
   const repeatGraceMs = options.repeatGraceMs ?? REPEATED_SIGNAL_GRACE_MS;
+  const forceExitOnRepeat = options.forceExitOnRepeat ?? isShutdownForceExitOnRepeatEnabled();
   const forceExit =
     options.forceExit ??
     (() => {
@@ -119,7 +147,7 @@ export function createShutdownSignalController(options: ShutdownSignalController
         return "shutdown";
       }
       const elapsed = now() - firstSignalAt;
-      if (forced || elapsed < repeatGraceMs || !FORCE_EXIT_SIGNALS.has(signal)) {
+      if (!forceExitOnRepeat || forced || elapsed < repeatGraceMs || !FORCE_EXIT_SIGNALS.has(signal)) {
         logger.warn("Received %s while shutdown is already in progress", signal);
         return "duplicate";
       }

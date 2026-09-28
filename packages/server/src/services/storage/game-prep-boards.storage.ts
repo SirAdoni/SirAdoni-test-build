@@ -18,8 +18,7 @@ export interface PrepBoardRecord {
 }
 
 export type PrepBoardSaveResult =
-  | { ok: true; record: PrepBoardRecord }
-  | { ok: false; conflict: PrepBoardRecord | null };
+  { ok: true; record: PrepBoardRecord } | { ok: false; conflict: PrepBoardRecord | null };
 
 function parseBoard(value: string): PrepBoard {
   try {
@@ -42,8 +41,7 @@ function recordFrom(row: PrepBoardDbRow): PrepBoardRecord {
 export function createGamePrepBoardsStorage(db: DB) {
   async function rowFor(gameId: string): Promise<PrepBoardDbRow | undefined> {
     return (await db.select().from(gamePrepBoards).where(eq(gamePrepBoards.gameId, gameId)))[0] as
-      | PrepBoardDbRow
-      | undefined;
+      PrepBoardDbRow | undefined;
   }
 
   // Saves for one game run one at a time, so the revision check and the write

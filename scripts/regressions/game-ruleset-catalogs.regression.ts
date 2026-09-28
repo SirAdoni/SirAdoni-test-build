@@ -47,19 +47,60 @@ function ruleset(edit: (doc: Record<string, any>) => void = () => {}): string {
   edit(doc);
   return JSON.stringify(doc, null, 2);
 }
+/** The example's Toll Warden picks a knack out of the knacks catalog by its id, so a case that
+ *  replaces those entries takes the creature out too, rather than leave it pointing at nothing. */
+function withoutSheetCreatures(doc: Record<string, any>): void {
+  for (const catalog of doc.catalogs ?? []) {
+    catalog.entries = catalog.entries?.filter((entry: Record<string, any>) => !entry.creature?.sheet);
+  }
+}
 /** The keys of the example that gate on a LATER declaration than the case at hand is about, so a
  *  case about catalogs is not answered by the gate that came after them. */
 function withoutLaterGates(doc: Record<string, any>): void {
   delete doc.layers;
+  // 1.49's items block, with the catalog written in it.
+  delete doc.items;
+  doc.catalogs = (doc.catalogs ?? []).filter((catalog: Record<string, any>) => catalog.holds !== "items");
+  // The 1.37 sheet keys: a track always shown and a summary list's columns.
+  for (const track of doc.sheet?.live?.tracks ?? []) delete track.alwaysShow;
+  for (const list of doc.gm?.sheetSummary?.lists ?? []) delete list.columns;
+  // And 1.38's modifier off the sheet, with 1.39's list sum it reads.
+  delete doc.resolution?.adjust;
+  doc.sheet.derived = (doc.sheet?.derived ?? []).filter(
+    (entry: { id: string }) => !["burden", "burdened"].includes(entry.id),
+  );
+  // And 1.40's track of numbered boxes, and 1.41's untrained rule.
+  doc.sheet.live.tracks = (doc.sheet?.live?.tracks ?? []).filter((track: { id: string }) => track.id !== "strain");
+  for (const skill of doc.sheet?.skills ?? []) delete skill.untrained;
+  // And 1.42's live states, the enum tables and whatever reads one, and the rest steps that put a
+  // state back.
+  const tables = new Set(
+    (doc.sheet?.derived ?? []).flatMap((entry: { id: string; op: string }) =>
+      entry.op === "enumTable" ? [entry.id] : [],
+    ),
+  );
+  doc.sheet.derived = (doc.sheet?.derived ?? []).filter((entry: { id: string }) => !tables.has(entry.id));
+  for (const entry of doc.sheet.derived) {
+    if (Array.isArray(entry.of))
+      entry.of = entry.of.filter((ref: { derived?: string }) => !tables.has(ref.derived ?? ""));
+  }
+  if (doc.sheet?.live) delete doc.sheet.live.states;
+  for (const rest of doc.rests ?? []) {
+    rest.restore = (rest.restore ?? []).filter((step: { state?: string }) => step.state === undefined);
+  }
   // The combat block goes whole, and with it the 1.28 keys that give a fight a board.
   delete doc.combat;
   // The bestiary is a 1.27 declaration of its own, and a catalog of creatures needs the combat
   // block that just went, so it leaves with it.
   doc.catalogs = (doc.catalogs ?? []).filter((catalog: Record<string, any>) => catalog.holds !== "creatures");
   if (doc.catalogs.length === 0) delete doc.catalogs;
-  // And the 1.29 keys that say what one turn can do, for the same reason.
+  // And the 1.29 keys that say what one turn can do, for the same reason, and an entry that names
+  // the moment it waits for (1.33, and 1.44 for somebody using something).
   for (const catalog of doc.catalogs ?? []) {
-    catalog.entries = (catalog.entries ?? []).filter((entry: Record<string, any>) => entry.mechanics?.kind !== "rider");
+    catalog.entries = (catalog.entries ?? []).filter(
+      (entry: Record<string, any>) =>
+        entry.mechanics?.kind !== "rider" && typeof entry.mechanics?.reaction !== "object",
+    );
   }
   for (const entry of doc.catalogs?.[0]?.entries ?? []) {
     for (const key of [
@@ -101,7 +142,7 @@ const catalogFile = (entries: unknown[], catalog = "knacks") =>
   const catalog = ember.catalogs![0]!;
   assert.equal(catalog.id, "knacks");
   assert.deepEqual(catalog.feeds, ["knacks", "tricks"]);
-  assert.equal(catalog.entries!.length, 7);
+  assert.equal(catalog.entries!.length, 8);
   assert.equal(
     catalog.entries!.filter((entry) => entry.rows.length > 1).length,
     2,
@@ -179,6 +220,7 @@ const catalogFile = (entries: unknown[], catalog = "knacks") =>
       JSON.parse(
         ruleset((doc) => {
           doc.catalogs[0].entries = [entry];
+          withoutSheetCreatures(doc);
           extra(doc);
         }),
       ),
@@ -340,7 +382,7 @@ const catalogFile = (entries: unknown[], catalog = "knacks") =>
   const withAsset = parsedOrThrow(ruleset(asAsset));
   const good = parseRulesetCatalogFile(withAsset, "knacks", JSON.parse(catalogFile(emberEntries)));
   assert.ok(good.ok, `the same entries are usable from a file: ${good.ok ? "" : good.issues.join("; ")}`);
-  assert.equal(good.ok && good.entries.length, 7);
+  assert.equal(good.ok && good.entries.length, 8);
 
   const wrongName = parseRulesetCatalogFile(withAsset, "knacks", JSON.parse(catalogFile(emberEntries, "tricks")));
   assert.ok(!wrongName.ok && /this file is for "tricks"/.test(wrongName.issues[0]!));
@@ -457,10 +499,13 @@ const installedPackages = packages.map((fixture) => {
   ];
   const manifest = {
     schemaVersion: 2,
-    // 1.29, because the example ruleset carries the combat bridge's battle block, a scaled catalog
+    // 1.49, because the example ruleset carries the combat bridge's battle block, a scaled catalog
     // row, a layer, a combat block, catalog mechanics a fight reads, a catalog of creatures, the
-    // keys that give that fight a board and the ones that say what one turn of it can do.
-    capabilityApi: { major: 1, minor: 29 },
+    // keys that give that fight a board, the ones that say what one turn of it can do, a creature
+    // written in the ruleset's own terms, a track always shown, a summary list's columns, a
+    // modifier off the sheet, a list added up, a track of numbered boxes, an untrained rule, a live
+    // state, contests, conditions that change numbers, and items.
+    capabilityApi: { major: 1, minor: 49 },
     builtAgainst: { engineVersion: "2.4.6", engineCommit: "0".repeat(40) },
     id: packageId,
     name: fixture.id,
@@ -609,7 +654,8 @@ try {
     // The entries in the FILE gate on their own later declarations too, and these cases are about
     // the scaled row and nothing else.
     scaledFile.entries = (scaledFile.entries ?? []).filter(
-      (entry: Record<string, any>) => entry.mechanics?.kind !== "rider",
+      (entry: Record<string, any>) =>
+        entry.mechanics?.kind !== "rider" && typeof entry.mechanics?.reaction !== "object",
     );
     for (const entry of scaledFile.entries) {
       for (const key of ["plus", "free", "gives", "standard", "rider"]) delete entry.mechanics?.[key];
@@ -643,6 +689,7 @@ try {
     ruleset((doc) => {
       doc.version = 2;
       doc.catalogs[0].entries = doc.catalogs[0].entries.slice(0, 2);
+      withoutSheetCreatures(doc);
     }),
     plainRoads,
   ]) {
@@ -692,7 +739,7 @@ try {
     const pinned = await catalogRequest({ rulesetId: "local/ember-roads", catalogId: "knacks", version: "1" });
     assert.equal(pinned.statusCode, 200, pinned.body);
     assert.equal(pinned.json().version, 1);
-    assert.equal(pinned.json().entries.length, 7, "a game on version 1 picks from version 1's catalog");
+    assert.equal(pinned.json().entries.length, 8, "a game on version 1 picks from version 1's catalog");
 
     const gone = await catalogRequest({ rulesetId: "local/ember-roads", catalogId: "knacks", version: "9" });
     assert.equal(gone.statusCode, 404, gone.body);
@@ -704,7 +751,7 @@ try {
     const served = await catalogRequest({ rulesetId: "ember-roads", catalogId: "knacks" });
     assert.equal(served.statusCode, 200, served.body);
     const payload = served.json();
-    assert.equal(payload.entries.length, 7);
+    assert.equal(payload.entries.length, 8);
     assert.equal(payload.version, 1);
     assert.deepEqual(
       payload.entries.map((entry: RulesetCatalogEntry) => entry.id),

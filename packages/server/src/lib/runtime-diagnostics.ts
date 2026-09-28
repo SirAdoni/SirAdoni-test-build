@@ -37,6 +37,7 @@ export function collectProcessDiagnostics() {
   return {
     pid: process.pid,
     node: process.version,
+    platform: process.platform,
     uptimeSeconds: Math.round(process.uptime()),
     memoryPeaks: getRuntimeMemoryPeaks(),
   };
@@ -62,6 +63,7 @@ export function collectStorageDiagnostics() {
     residentRows,
     tableCount: Object.keys(stats.tables).length,
     lazyTables,
+    residentChatUnits: stats.residentChatUnits,
     fullyResidentLazyTables: Object.entries(stats.tables)
       .filter(([, table]) => table.lazy && table.fullyResident)
       .map(([name]) => name)
@@ -108,7 +110,7 @@ export async function collectCapabilityPackageDiagnostics() {
   const runtime = capabilityModuleRuntime.runtimeState();
   const live = new Set(runtime.live);
   const packages = installed.map((item) => {
-    const hasServer = Boolean(item.manifest.entrypoints.server);
+    const hasServer = Boolean(item.manifest.entrypoints?.server);
     const activationError = runtime.activationErrors[item.id];
     const isLive = hasServer ? live.has(item.id) : null;
     const state = derivePackageRuntimeState({
@@ -133,6 +135,7 @@ export async function collectCapabilityPackageDiagnostics() {
       live: isLive,
       state,
       error: rawError ? sanitizeDiagnosticText(rawError, MAX_ERROR_TEXT) : null,
+      lastActivationFailureAt: activationError?.at ?? null,
       lastActivationFailure: activationError
         ? {
             at: activationError.at,

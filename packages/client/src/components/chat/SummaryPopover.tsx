@@ -86,6 +86,10 @@ import { DraftNumberInput } from "../ui/DraftNumberInput";
 import { MacroTextarea } from "../ui/MacroTextarea";
 import { isChatToolbarPanelTrigger } from "./ChatToolbarControls";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import {
+  SemanticSummaryRetrievalControls,
+  type SemanticSummaryRetrievalControlField,
+} from "./SemanticSummaryRetrievalControls";
 import { useTouchFolderDrag } from "../../hooks/use-touch-folder-drag";
 import { getTouchReorderDropIndex } from "../../lib/touch-reorder";
 import {
@@ -111,6 +115,9 @@ interface SummaryPopoverProps {
   summaryMaxTokens?: number;
   automaticSummaryEnabled?: boolean;
   semanticSummaryRetrievalEnabled?: boolean;
+  semanticSummaryRecentCount?: number;
+  semanticSummaryOlderCount?: number;
+  semanticSummaryMinSimilarity?: number;
   activeAgentIds?: string[];
   summaryRunInterval?: number;
   /** Per-chat persisted "Hide summarised messages" preference (metadata-backed). Undefined/false means off (opt-in default). */
@@ -391,6 +398,9 @@ export function SummaryPopover({
   summaryMaxTokens,
   automaticSummaryEnabled = false,
   semanticSummaryRetrievalEnabled = false,
+  semanticSummaryRecentCount = 2,
+  semanticSummaryOlderCount = 3,
+  semanticSummaryMinSimilarity = 0.15,
   activeAgentIds = [],
   summaryRunInterval,
   hideSummarisedMessages,
@@ -1860,6 +1870,18 @@ export function SummaryPopover({
                         checked={semanticSummaryRetrievalEnabled}
                         onChange={(checked) =>
                           updateMeta.mutate({ id: chatId, semanticSummaryRetrievalEnabled: checked })
+                        }
+                      />
+                      <SemanticSummaryRetrievalControls
+                        enabled={semanticSummaryRetrievalEnabled}
+                        recentCount={semanticSummaryRecentCount}
+                        olderCount={semanticSummaryOlderCount}
+                        minSimilarity={semanticSummaryMinSimilarity}
+                        recentLabel={localizeUi("ui.chat.chatsettingsdrawer.recentSummaryCount")}
+                        olderLabel={localizeUi("ui.chat.chatsettingsdrawer.olderSummaryCount")}
+                        thresholdLabel={localizeUi("ui.chat.chatsettingsdrawer.summaryRelevanceThreshold")}
+                        onChange={(field: SemanticSummaryRetrievalControlField, value) =>
+                          updateMeta.mutate({ id: chatId, [field]: value })
                         }
                       />
                       <p className="px-1.5 pb-1 text-[0.625rem] leading-snug text-[var(--muted-foreground)]">
