@@ -504,8 +504,10 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
   });
   const connections = useConnections();
   const coverageIssuesRef = useRef<HTMLDivElement>(null);
+  const connectionSelectRef = useRef<HTMLSelectElement>(null);
   const [expandedBatchId, setExpandedBatchId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsNavigationRequest, setSettingsNavigationRequest] = useState(0);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [batchesOpen, setBatchesOpen] = useState(false);
   const [filter, setFilter] = useState<BatchFilter>("attention");
@@ -530,6 +532,16 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
     config.extractionInstructions,
     config.verificationInstructions,
   ]);
+
+  useEffect(() => {
+    if (!settingsOpen || settingsNavigationRequest === 0) return;
+    const connectionSelect = connectionSelectRef.current;
+    if (connectionSelect) {
+      connectionSelect.focus({ preventScroll: true });
+      connectionSelect.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    setSettingsNavigationRequest(0);
+  }, [settingsOpen, settingsNavigationRequest]);
 
   // Batch views and save errors belong to the chat they were opened in.
   const { reset: resetSave } = updateMetadata;
@@ -830,7 +842,14 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
         {t("ui.game.continuity.retry")}
       </button>
     ) : health === "connection" ? (
-      <button type="button" className={primaryButton} onClick={() => setSettingsOpen(true)}>
+      <button
+        type="button"
+        className={primaryButton}
+        onClick={() => {
+          setSettingsOpen(true);
+          setSettingsNavigationRequest((request) => request + 1);
+        }}
+      >
         <Settings2 size={13} aria-hidden="true" />
         {t("ui.game.continuityPanel.action.chooseConnection", { defaultValue: "Choose a connection" })}
       </button>
@@ -1426,6 +1445,7 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
                         : t("ui.game.continuityPanel.verifierLabel", { defaultValue: "Checker connection" })}
                     </span>
                     <select
+                      ref={field === "extractorConnectionId" ? connectionSelectRef : undefined}
                       value={draft[field] ?? ""}
                       onChange={(event) =>
                         setDraft((value) => ({ ...value, [field]: event.target.value || undefined }))

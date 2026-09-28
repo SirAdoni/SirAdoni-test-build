@@ -14,6 +14,14 @@ export const messageReplySchema = z.object({
   content: z.string().min(1).max(16000),
 });
 
+export const cacheGuardHeldTurnSchema = z.object({
+  messageId: z.string().min(1).max(200),
+  activeSwipeIndex: z.number().int().nonnegative(),
+  contentHash: z.string().regex(/^[a-f0-9]{64}$/i),
+  submissionId: z.string().min(1).max(100).optional(),
+});
+export type CacheGuardHeldTurn = z.infer<typeof cacheGuardHeldTurnSchema>;
+
 export const createChatSchema = z.object({
   name: z.string().min(1).max(200),
   mode: chatModeSchema,
@@ -48,6 +56,8 @@ export const generateRequestSchema = z.object({
   impersonate: z.boolean().optional().default(false),
   /** The player saw the low prompt-cache warning for this send and chose to send anyway. */
   cacheGuardAcknowledged: z.boolean().optional().default(false),
+  /** Server-issued identity for the saved user turn held by a cache warning. */
+  cacheGuardHeldTurn: cacheGuardHeldTurnSchema.optional(),
   /** When true, this generation drives the active turn-game's bot seats instead of a normal chat reply. */
   turnGameBots: z.boolean().optional().default(false),
   streaming: z.boolean().optional().default(true),

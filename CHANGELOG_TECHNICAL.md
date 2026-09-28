@@ -1,5 +1,32 @@
 # Technical changelog
 
+## 2026-09-28 - Preserve replay with authorial continuity
+
+- `generate.routes.ts` marks the Engine-owned authorial-continuity injection as a prompt-history snapshot producer alongside its existing runtime-context marker. The prompt text, system role and correction precedence are preserved; arbitrary unmarked system injections remain ineligible for replay.
+- Two saved prompts, independently reconstructed to their actual outgoing request hashes, both failed replay descriptor creation. Adding only the producer marker in memory made both succeed. The missing marker prevented new replay chains even after the separate cache-warning acknowledgement repair. This explains an application-side failure in the recent roughly 31-percent cache turns; it does not prove the cause of every provider cache miss or guarantee a cache percentage.
+- Verification: the mocked `/api/generate` regression reproduced the missing-descriptor failure before the marker and passed afterward, including immediate newer-correction injection, next-turn reference to the updated snapshot, and an unchanged prior prompt. All four existing prompt-history replay regressions, server TypeScript and whitespace checks passed; independent GPT-6 Luna review found no blockers. No live provider request or campaign mutation was used by these tests.
+
+## 2026-09-28 - Verify bounded cache diagnostic hashes
+
+- Strengthened `openai-cache-diagnostics.regression.ts` to compare emitted sanitized item and rolling-prefix hashes with the exact mocked serialized request, including a first difference at index 40 across the 24-item batch boundary. Existing 512-item cap and raw-content/credential sentinel checks remain.
+- Existing `MARINARA_CACHE_DIAGNOSTICS=1` supplies the needed bounded INFO-level metadata capture without a production source change or raw prompt logging. Focused regression and independent GPT-6 Luna review passed; no live provider calls were used. These diagnostics cannot recover omitted historical batches or expose provider-internal cache eviction/routing.
+
+
+## 2026-09-28 - Preserve held turns across cache-warning acknowledgement
+
+- `use-generate.ts` forwards a server-issued held-turn descriptor when the user accepts a cache warning. The request still omits one-shot user text, attachments and spatial commands to avoid duplicate persistence or repeated side effects.
+- `cache-held-turn.ts` binds the descriptor to the saved chat/user row, selected content and swipe, submission identity, attachments and reply reference. `generate.routes.ts` revalidates the row and generation ownership after storage awaits, refuses changed/deleted/superseded or mixed-operation retries, and restores the current-turn context only after the insertion branch. Warning acknowledgements without a new held user turn retain their existing path.
+- Incident evidence: request `514c9b12` cached 94,976/104,739 tokens; after cache hold `658f4c0c`, acknowledgement `da50045a` omitted turn context and cached 18,560/57,103. Model, connection, main instructions and cache-key fingerprints were unchanged. This repair addresses that application-side replay reset; it does not establish a cause or fix for the earlier zero-cache response.
+- Verification: the synthetic actual-route cache-send-guard regression passed, including descriptor-only acknowledgement, no duplicate user row, retained replay metadata and replay on the following normal ChatGPT Game turn. All four prompt-history-replay regressions, shared/server/client TypeScript checks, targeted client ESLint and diff checks passed; independent Luna review reported no material findings. Tests used temporary storage and mocked providers, not live campaign data or generation quota. Runtime deployment is handled separately by Command; this evidence does not establish live cache percentages.
+
+
+
+## 2026-09-28 - Story memory connection navigation
+
+- `GameContinuityPanel.tsx`: the missing-connection action previously only expanded a settings disclosure below coverage/batch content in the Session history scroll container. It now requests navigation after rendering, focuses the extractor selector without an implicit browser scroll, and explicitly scrolls it into view. Requests are consumed so manual disclosure toggles do not unexpectedly move focus; repeated action clicks still navigate.
+- Existing localized labels and draft/save behavior are retained. Opening the chooser does not select a provider or update chat metadata. The isolated `game-continuity-connection` browser fixture covers initial and already-expanded navigation with mocked API responses; it has no live campaign/provider access.
+
+
 ## 2026-09-28 - Selectable full, game-data and incremental backups
 
 - `backup.routes.ts` persists `full | data | incremental` beside automatic-backup settings. Legacy settings default to `full`; updates from older clients retain the selected mode. Manual creation and scheduled runs use the same selection. The existing full ZIP export remains portable.

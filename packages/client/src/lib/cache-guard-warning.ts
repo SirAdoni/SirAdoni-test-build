@@ -3,6 +3,7 @@
  * would mostly have to be cached again; the player decides whether to send anyway.
  */
 import { translate } from "../localization/i18n";
+import type { CacheGuardHeldTurn } from "@marinara-engine/shared";
 
 type CacheGuardWarningRequestKind = "narrator" | "tool-planner" | "tool-round" | "isolated-planner";
 
@@ -16,12 +17,24 @@ export interface CacheGuardWarning {
   minutesSinceLastSend: number;
   firstChange: { index: number; label: string } | null;
   thresholdPercent: number;
+  heldTurn?: CacheGuardHeldTurn;
 }
 
 export function isCacheGuardWarning(value: unknown): value is CacheGuardWarning {
   if (!value || typeof value !== "object") return false;
   const warning = value as Record<string, unknown>;
-  return typeof warning.percent === "number" && (warning.reason === "expired" || warning.reason === "changed");
+  if (typeof warning.percent !== "number" || (warning.reason !== "expired" && warning.reason !== "changed"))
+    return false;
+  if (warning.heldTurn === undefined) return true;
+  if (!warning.heldTurn || typeof warning.heldTurn !== "object") return false;
+  const heldTurn = warning.heldTurn as Record<string, unknown>;
+  return (
+    typeof heldTurn.messageId === "string" &&
+    Number.isInteger(heldTurn.activeSwipeIndex) &&
+    typeof heldTurn.contentHash === "string" &&
+    /^[a-f0-9]{64}$/iu.test(heldTurn.contentHash) &&
+    (heldTurn.submissionId === undefined || typeof heldTurn.submissionId === "string")
+  );
 }
 
 /** Rough token count from characters, matching the usual four characters per token for English prose. */

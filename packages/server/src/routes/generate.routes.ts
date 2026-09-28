@@ -53,6 +53,10 @@ import {
   recordSentPrompt,
   type PromptFingerprint,
 } from "../services/generation/cache-send-guard.js";
+import {
+  createCacheGuardHeldTurnDescriptor,
+  resolveCacheGuardHeldTurn,
+} from "../services/generation/cache-held-turn.js";
 import { queueSceneTimeline, readSceneTimeline } from "../services/game/scene-timeline.service.js";
 import { isGameTurnReviewMutationPending } from "../services/game/turn-review.service.js";
 import { isGameAutoSceneMediaEnabled, isGameSceneTimelineEnabled, readGameClock } from "@marinara-engine/shared";
@@ -1399,8 +1403,29 @@ export async function generateRoutes(app: FastifyInstance) {
       travel?: ResolvedSpatialTravel;
     } | null = null;
 
+    if (
+      input.cacheGuardHeldTurn &&
+      (!input.cacheGuardAcknowledged ||
+        input.userMessage ||
+        input.attachments.length > 0 ||
+        input.replyTo ||
+        input.pendingSpatialTransition ||
+        input.regenerateMessageId ||
+        input.continueMessageId ||
+        input.impersonate ||
+        input.autonomous ||
+        input.turnGameBots)
+    ) {
+      releaseActiveGeneration();
+      return reply.status(400).send({ error: "A cache-held turn acknowledgement cannot include a new user turn" });
+    }
+
     // Save user message — skip for impersonate (no real user message to save)
-    if (!input.impersonate && (input.userMessage || input.attachments?.length || input.pendingSpatialTransition)) {
+    if (
+      !input.impersonate &&
+      !input.cacheGuardHeldTurn &&
+      (input.userMessage || input.attachments?.length || input.pendingSpatialTransition)
+    ) {
       // ── Commit game state: lock in the game state the user was seeing ──
       // Find the last assistant message's active swipe and commit its game state.
       // This ensures swipes/regens always use the state from the user's accepted turn.
@@ -1549,6 +1574,29 @@ export async function generateRoutes(app: FastifyInstance) {
 
       // Mirror user message to Discord (deferred — personaName resolved later)
       pendingUserDiscordMsg = discordWebhookUrl && input.userMessage ? input.userMessage : "";
+    }
+
+    if (input.cacheGuardAcknowledged && input.cacheGuardHeldTurn) {
+      if (abortController.signal.aborted || activeGenerations.get(input.chatId) !== activeGenerationRecord) {
+        releaseActiveGeneration();
+        return reply.status(409).send({ error: "Generation ownership changed while resuming the held turn" });
+      }
+      const heldMessages = await chats.listMessages(input.chatId).catch(releaseActiveGenerationAndRethrow);
+      if (abortController.signal.aborted || activeGenerations.get(input.chatId) !== activeGenerationRecord) {
+        releaseActiveGeneration();
+        return reply.status(409).send({ error: "Generation ownership changed while validating the held turn" });
+      }
+      const heldMessage = resolveCacheGuardHeldTurn(heldMessages, input.chatId, input.cacheGuardHeldTurn);
+      if (!heldMessage) {
+        releaseActiveGeneration();
+        return reply.status(409).send({ error: "The saved user turn changed; send it again" });
+      }
+      const heldExtra = parseExtra(heldMessage.extra) as Record<string, unknown>;
+      currentTurnUserMessage = heldMessage;
+      currentTurnUserMessageId = heldMessage.id;
+      input.userMessage = heldMessage.content;
+      input.attachments = Array.isArray(heldExtra.attachments) ? heldExtra.attachments : [];
+      input.replyTo = heldExtra.replyTo as typeof input.replyTo;
     }
 
     // Resolve connection
@@ -4992,7 +5040,8 @@ export async function generateRoutes(app: FastifyInstance) {
                 role: "system" as const,
                 content: authorialContinuity,
                 contextKind: "injection" as const,
-                providerMetadata: { marinaraRuntimeContext: true },
+                // Retain corrections as a current-turn snapshot; an unmarked system injection disables replay.
+                providerMetadata: { marinaraRuntimeContext: true, marinaraPromptHistoryReplaySnapshot: true },
               };
               if (firstSystemIndex >= 0) {
                 finalMessages.splice(firstSystemIndex + 1, 0, authorialMessage);
@@ -15263,7 +15312,11 @@ export async function generateRoutes(app: FastifyInstance) {
           "[cache-guard] held a send with a low predicted cache hit",
         );
         trace.finish("skipped", { reason: "cache_guard_hold", predictedHit: err.prediction.percent });
-        sendSseEvent(reply, { type: "cache_warning", data: err.prediction });
+        const heldTurn = currentTurnUserMessage ? createCacheGuardHeldTurnDescriptor(currentTurnUserMessage) : null;
+        sendSseEvent(reply, {
+          type: "cache_warning",
+          data: { ...err.prediction, ...(heldTurn ? { heldTurn } : {}) },
+        });
         sendSseEvent(reply, { type: "done", data: "" });
         return;
       }

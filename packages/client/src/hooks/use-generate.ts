@@ -6,7 +6,12 @@ import { showConfirmDialog } from "../lib/app-dialogs";
 import { useCallback, useRef } from "react";
 import { audioManager } from "../lib/game-audio";
 import { normalizeEchoChamberMessages } from "../lib/echo-chamber-queue";
-import { characterDataSchema, normalizeAvatarCrop, type AvatarCrop } from "@marinara-engine/shared";
+import {
+  characterDataSchema,
+  normalizeAvatarCrop,
+  type AvatarCrop,
+  type CacheGuardHeldTurn,
+} from "@marinara-engine/shared";
 import { useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import { toast, type ExternalToast } from "sonner";
 import { api, ApiError, isPassiveStreamDisconnect, requestTimeoutSignal } from "../lib/api-client";
@@ -1257,6 +1262,7 @@ export function useGenerate() {
       pendingSpatialTransition?: PendingSpatialTransition;
       /** The player saw the low prompt-cache warning and chose to send anyway. */
       cacheGuardAcknowledged?: boolean;
+      cacheGuardHeldTurn?: CacheGuardHeldTurn;
     }) => {
       // Prevent concurrent generations for the same chat. Different chats may
       // keep generating in the background while the user navigates elsewhere.
@@ -3068,7 +3074,11 @@ export function useGenerate() {
                 pendingSpatialTransition: _pendingSpatialTransition,
                 ...resendParams
               } = params;
-              const resend = { ...resendParams, cacheGuardAcknowledged: true };
+              const resend = {
+                ...resendParams,
+                cacheGuardAcknowledged: true,
+                ...(warning.heldTurn ? { cacheGuardHeldTurn: warning.heldTurn } : {}),
+              };
               void (async () => {
                 for (let wait = 0; wait < 100 && useChatStore.getState().abortControllers.has(chatId); wait += 1) {
                   await new Promise((resolve) => setTimeout(resolve, 100));

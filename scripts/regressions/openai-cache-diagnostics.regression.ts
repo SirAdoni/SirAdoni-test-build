@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -196,6 +198,33 @@ try {
   const firstTailBatchItems = (inputBatches[1]?.inputItems ?? []) as Array<Record<string, unknown>>;
   const secondBatchItems = (inputBatches[2]?.inputItems ?? []) as Array<Record<string, unknown>>;
   const secondTailBatchItems = (inputBatches[3]?.inputItems ?? []) as Array<Record<string, unknown>>;
+  // Compare emitted hashes with the exact input serialized for the mocked transport.
+  const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+  for (const [requestIndex, request] of requestRecords.slice(0, 2).entries()) {
+    const input = (JSON.parse(calls[requestIndex]!.serialized) as { input: unknown[] }).input;
+    const items = inputBatches
+      .filter((record) => record.cacheRequestId === request.cacheRequestId)
+      .flatMap((record) => record.inputItems as Array<Record<string, unknown>>);
+    assert.equal(items.length, input.length);
+    let prefixHash = hash("<input>");
+    for (const [index, item] of input.entries()) {
+      prefixHash = hash(`${prefixHash}\n${JSON.stringify(item)}`);
+      assert.equal(items[index]?.index, index);
+      assert.equal(items[index]?.itemHash, hash(JSON.stringify(item)));
+      assert.equal(items[index]?.prefixHash, prefixHash);
+    }
+  }
+  const firstItems = [...firstBatchItems, ...firstTailBatchItems];
+  const secondItems = [...secondBatchItems, ...secondTailBatchItems];
+  assert.equal(
+    firstItems.findIndex((item, index) => item.itemHash !== secondItems[index]?.itemHash),
+    40,
+  );
+  assert.equal(
+    firstItems.findIndex((item, index) => item.prefixHash !== secondItems[index]?.prefixHash),
+    40,
+  );
+
   assert.equal(firstBatchItems[0]?.itemHash, secondBatchItems[0]?.itemHash);
   assert.notEqual(
     firstTailBatchItems[firstTailBatchItems.length - 1]?.itemHash,

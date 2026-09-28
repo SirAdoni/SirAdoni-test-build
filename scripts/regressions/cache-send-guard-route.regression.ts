@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -33,15 +33,92 @@ let app: {
 } | null = null;
 let pendingNpcSyncRequests = new Set<Promise<unknown>>();
 let resetSdk = () => {};
+let resetOpenAIProvider = () => {};
+const originalCodexHome = process.env.CODEX_HOME;
 try {
   const { buildApp } = await import("../../packages/server/src/app.js");
   const guard = await import("../../packages/server/src/services/generation/cache-send-guard.js");
+  const heldTurns = await import("../../packages/server/src/services/generation/cache-held-turn.js");
   const { __setSdkForTesting } =
     await import("../../packages/server/src/services/llm/providers/claude-subscription.provider.js");
   const { getDB } = await import("../../packages/server/src/db/connection.js");
   const { createChatsStorage } = await import("../../packages/server/src/services/storage/chats.storage.js");
+  const { OpenAIProvider } = await import("../../packages/server/src/services/llm/providers/openai.provider.js");
   const db = await getDB();
   const chats = createChatsStorage(db);
+  const heldTurnFixture = {
+    id: "held-user",
+    chatId: "held-chat",
+    role: "user",
+    content: "selected user swipe",
+    activeSwipeIndex: 1,
+    extra: JSON.stringify({
+      submissionId: "held-submission",
+      attachments: [{ type: "image", url: "/held.png" }],
+      replyTo: { messageId: "quoted", name: "A", content: "quoted content" },
+    }),
+  };
+  const heldTurnDescriptor = heldTurns.createCacheGuardHeldTurnDescriptor(heldTurnFixture)!;
+  assert.ok(heldTurns.resolveCacheGuardHeldTurn([heldTurnFixture], "held-chat", heldTurnDescriptor));
+  assert.equal(
+    heldTurns.resolveCacheGuardHeldTurn([], "held-chat", heldTurnDescriptor),
+    null,
+    "deleted turns are rejected",
+  );
+  assert.equal(heldTurns.resolveCacheGuardHeldTurn([heldTurnFixture], "other-chat", heldTurnDescriptor), null);
+  assert.equal(
+    heldTurns.resolveCacheGuardHeldTurn(
+      [heldTurnFixture, { ...heldTurnFixture, id: "new-user", activeSwipeIndex: 0 }],
+      "held-chat",
+      heldTurnDescriptor,
+    ),
+    null,
+    "a newer user turn invalidates acknowledgement",
+  );
+  assert.equal(
+    heldTurns.resolveCacheGuardHeldTurn(
+      [heldTurnFixture, { ...heldTurnFixture, id: "new-assistant", role: "assistant" }],
+      "held-chat",
+      heldTurnDescriptor,
+    ),
+    null,
+    "a newer assistant turn invalidates acknowledgement",
+  );
+  assert.equal(
+    heldTurns.resolveCacheGuardHeldTurn(
+      [{ ...heldTurnFixture, content: "edited user swipe" }],
+      "held-chat",
+      heldTurnDescriptor,
+    ),
+    null,
+  );
+  assert.equal(
+    heldTurns.resolveCacheGuardHeldTurn([{ ...heldTurnFixture, activeSwipeIndex: 0 }], "held-chat", heldTurnDescriptor),
+    null,
+  );
+  assert.equal(
+    heldTurns.resolveCacheGuardHeldTurn(
+      [{ ...heldTurnFixture, extra: JSON.stringify({ ...JSON.parse(heldTurnFixture.extra), replyTo: null }) }],
+      "held-chat",
+      heldTurnDescriptor,
+    ),
+    null,
+    "changed reply metadata is rejected",
+  );
+  assert.equal(
+    heldTurns.resolveCacheGuardHeldTurn(
+      [
+        {
+          ...heldTurnFixture,
+          extra: JSON.stringify({ ...JSON.parse(heldTurnFixture.extra), attachments: [] }),
+        },
+      ],
+      "held-chat",
+      heldTurnDescriptor,
+    ),
+    null,
+    "changed attachment metadata is rejected",
+  );
   resetSdk = () => __setSdkForTesting(null);
 
   let providerCalls = 0;
@@ -130,6 +207,7 @@ try {
       chatId: chat.id,
       connectionId: connection.id,
       userMessage: "ordinary narrator request",
+      submissionId: "ordinary-held-turn",
       streaming: true,
     },
   });
@@ -139,6 +217,12 @@ try {
   const heldMessages = await app.inject({ method: "GET", url: `/api/chats/${chat.id}/messages` });
   assert.equal(heldMessages.statusCode, 200);
   assert.match(heldMessages.body, /ordinary narrator request/u, "cache hold must preserve the saved user message");
+  const heldWarning = held.body
+    .split("\n")
+    .filter((line: string) => line.startsWith("data: "))
+    .map((line: string) => JSON.parse(line.slice(6)))
+    .find((event: { type?: string }) => event.type === "cache_warning");
+  assert.ok(heldWarning?.data?.heldTurn, "warning carries the server-resolved held turn descriptor");
 
   const acknowledged = await app.inject({
     method: "POST",
@@ -146,14 +230,37 @@ try {
     payload: {
       chatId: chat.id,
       connectionId: connection.id,
-      userMessage: "ordinary narrator request",
       cacheGuardAcknowledged: true,
+      cacheGuardHeldTurn: heldWarning.data.heldTurn,
       streaming: true,
     },
   });
   assert.equal(acknowledged.statusCode, 200);
   assert.match(acknowledged.body, /isolated scene continues/u);
   assert.equal(providerCalls, 1, "acknowledgement must release the send to the provider");
+  const resumedMessages = (await app.inject({ method: "GET", url: `/api/chats/${chat.id}/messages` })).json();
+  const resumedAssistant = resumedMessages.find((message: { role: string }) => message.role === "assistant");
+  const mixedReplay = await app.inject({
+    method: "POST",
+    url: "/api/generate",
+    payload: {
+      chatId: chat.id,
+      connectionId: connection.id,
+      regenerateMessageId: resumedAssistant?.id,
+      cacheGuardAcknowledged: true,
+      cacheGuardHeldTurn: heldWarning.data.heldTurn,
+      streaming: true,
+    },
+  });
+  assert.equal(mixedReplay.statusCode, 400, "a held-turn descriptor cannot authorize a regenerate request");
+  assert.equal(
+    resumedMessages.filter(
+      (message: { role: string; content: string }) =>
+        message.role === "user" && message.content === "ordinary narrator request",
+    ).length,
+    1,
+    "acknowledging a held turn reuses its saved row without inserting a duplicate",
+  );
   const recorded = await guard.readLastSentPrompt(chat.id, scope);
   assert.ok((recorded?.entries.length ?? 0) > 0, "accepted send records a non-empty sent fingerprint");
   assert.ok((recorded?.at ?? 0) > Date.now() - 60_000, "accepted send refreshes the fingerprint timestamp");
@@ -165,11 +272,12 @@ try {
     connectionId: connection.id,
   } as any);
   await chats.updateMetadata(isolatedChat.id, {
+    gameSceneTimelineEnabled: false,
+    gameAutoSceneMediaEnabled: false,
     gameNpcKnowledgeMode: "isolated",
     gameNpcs: [],
     gameJournal: { entries: [], quests: [], locations: [], npcLog: [], inventoryLog: [] },
   } as any);
-  await chats.createMessage({ chatId: isolatedChat.id, role: "user", content: "I enter the isolated scene." } as any);
   const isolatedScope = {
     provider: "claude_subscription",
     model: "claude-opus-5",
@@ -188,37 +296,305 @@ try {
       chatId: isolatedChat.id,
       connectionId: connection.id,
       userMessage: "I enter the isolated scene.",
+      submissionId: "isolated-held-turn",
       streaming: true,
     },
   });
   assert.equal(isolatedHeld.statusCode, 200);
   assert.match(isolatedHeld.body, /cache_warning/u, "isolated planner hold must reach SSE");
+  const isolatedWarning = isolatedHeld.body
+    .split("\n")
+    .filter((line: string) => line.startsWith("data: "))
+    .map((line: string) => JSON.parse(line.slice(6)))
+    .find((event: { type?: string }) => event.type === "cache_warning");
+  assert.ok(isolatedWarning?.data?.heldTurn, "Game planner warning carries the saved-turn descriptor");
   assert.equal(
     providerCalls,
     isolatedProviderCallsBefore,
     "isolated planner hold must happen before the paid provider call",
   );
-  const isolatedMessages = await app.inject({ method: "GET", url: `/api/chats/${isolatedChat.id}/messages` });
-  assert.match(isolatedMessages.body, /I enter the isolated scene/u, "isolated hold preserves the saved user message");
+  const isolatedHeldMessages = await app.inject({ method: "GET", url: `/api/chats/${isolatedChat.id}/messages` });
+  assert.match(
+    isolatedHeldMessages.body,
+    /I enter the isolated scene/u,
+    "isolated hold preserves the saved user message",
+  );
   const isolatedAccepted = await app.inject({
     method: "POST",
     url: "/api/generate",
     payload: {
       chatId: isolatedChat.id,
       connectionId: connection.id,
-      userMessage: "I enter the isolated scene.",
       cacheGuardAcknowledged: true,
+      cacheGuardHeldTurn: isolatedWarning.data.heldTurn,
       streaming: true,
     },
   });
   assert.equal(isolatedAccepted.statusCode, 200);
   assert.match(isolatedAccepted.body, /The isolated scene continues/u);
   assert.ok(providerCalls > isolatedProviderCallsBefore, "isolated acknowledgement releases the planner provider call");
+  const isolatedMessages = (await app.inject({ method: "GET", url: `/api/chats/${isolatedChat.id}/messages` })).json();
+  assert.equal(
+    isolatedMessages.filter(
+      (message: { role: string; content: string }) =>
+        message.role === "user" && message.content === "I enter the isolated scene.",
+    ).length,
+    1,
+    "Game acknowledgement resumes the original turn without creating a duplicate",
+  );
   assert.ok(await guard.readLastSentPrompt(isolatedChat.id, isolatedScope), "isolated planner success is recorded");
+
+  const originalOpenAIChat = OpenAIProvider.prototype.chat;
+  const originalOpenAIChatComplete = OpenAIProvider.prototype.chatComplete;
+  let chatGptProviderCalls = 0;
+  const chatGptPrompts: Array<Array<{ role: string; content: unknown }>> = [];
+  const captureChatGptPrompt = (messages: Array<{ role: string; content: unknown }>) => {
+    chatGptProviderCalls += 1;
+    chatGptPrompts.push(messages.map(({ role, content }) => ({ role, content })));
+  };
+  (OpenAIProvider.prototype as any).chat = async function* (messages: Array<{ role: string; content: unknown }>) {
+    captureChatGptPrompt(messages);
+    yield "The held Game action reaches the narrator.";
+    return { promptTokens: 50000, completionTokens: 10, totalTokens: 50010, cachedPromptTokens: 18000 };
+  };
+  (OpenAIProvider.prototype as any).chatComplete = async function (
+    messages: Array<{ role: string; content: unknown }>,
+  ) {
+    captureChatGptPrompt(messages);
+    return {
+      content: "The held Game action reaches the narrator.",
+      toolCalls: [],
+      finishReason: "stop",
+      usage: { promptTokens: 50000, completionTokens: 10, totalTokens: 50010, cachedPromptTokens: 18000 },
+    };
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const requestUrl = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (requestUrl.startsWith("https://chatgpt.com/") || requestUrl.startsWith("https://auth.openai.com/")) {
+      throw new Error("Unexpected external OpenAI request in cache guard route regression");
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+  resetOpenAIProvider = () => {
+    OpenAIProvider.prototype.chat = originalOpenAIChat;
+    OpenAIProvider.prototype.chatComplete = originalOpenAIChatComplete;
+    globalThis.fetch = originalFetch;
+  };
+  const codexHome = join(dataDir, "codex-home");
+  mkdirSync(codexHome, { recursive: true });
+  writeFileSync(
+    join(codexHome, "auth.json"),
+    JSON.stringify({ auth_mode: "chatgpt", tokens: { access_token: "synthetic-access-token", account_id: "fixture" } }),
+    "utf8",
+  );
+  process.env.CODEX_HOME = codexHome;
+
+  const createChatGptConnection = await app.inject({
+    method: "POST",
+    url: "/api/connections",
+    payload: {
+      name: "Cache guard ChatGPT fixture",
+      provider: "openai_chatgpt",
+      model: "gpt-5.6-sol",
+      isDefault: false,
+    },
+  });
+  assert.equal(createChatGptConnection.statusCode, 200);
+  const chatGptConnection = createChatGptConnection.json();
+  const createChatGptGame = await app.inject({
+    method: "POST",
+    url: "/api/chats",
+    payload: {
+      name: "Cache guard ChatGPT Game fixture",
+      mode: "game",
+      characterIds: [character.id],
+      connectionId: chatGptConnection.id,
+    },
+  });
+  assert.equal(createChatGptGame.statusCode, 200);
+  const chatGptGame = createChatGptGame.json();
+  const { createLorebooksStorage } = await import("../../packages/server/src/services/storage/lorebooks.storage.js");
+  const lorebooks = createLorebooksStorage(db);
+  const fixtureLore = await lorebooks.create({ name: "Stable fixture lore", isGlobal: true } as any);
+  await lorebooks.createEntry({
+    lorebookId: fixtureLore!.id,
+    name: "Fixture setting",
+    content: "Stable campaign setting for cache replay verification. ".repeat(800),
+    enabled: true,
+    constant: true,
+  } as any);
+
+  await chats.updateMetadata(chatGptGame.id, {
+    gameSceneTimelineEnabled: false,
+    gameAutoSceneMediaEnabled: false,
+    fullLorebookContext: true,
+    gameNpcs: [],
+    gameJournal: { entries: [], quests: [], locations: [], npcLog: [], inventoryLog: [] },
+  } as any);
+  const chatGptScope = {
+    provider: "openai_chatgpt",
+    model: "gpt-5.6-sol",
+    connectionId: chatGptConnection.id,
+    requestKind: "narrator" as const,
+  };
+  const baselineGameSend = await app.inject({
+    method: "POST",
+    url: "/api/generate",
+    payload: {
+      chatId: chatGptGame.id,
+      connectionId: chatGptConnection.id,
+      userMessage: "[To the GM] The gate is blue.",
+      submissionId: "chatgpt-baseline-turn",
+      streaming: true,
+    },
+  });
+  assert.equal(baselineGameSend.statusCode, 200);
+  assert.equal(chatGptProviderCalls, 1, "baseline ChatGPT Game send uses only the stub provider");
+  await guard.recordSentPrompt(
+    chatGptGame.id,
+    guard.fingerprintPrompt([{ role: "user", content: "different prior full-lore prompt" }], Date.now(), chatGptScope),
+  );
+  const heldChatGptGameSend = await app.inject({
+    method: "POST",
+    url: "/api/generate",
+    payload: {
+      chatId: chatGptGame.id,
+      connectionId: chatGptConnection.id,
+      userMessage: "The held ChatGPT Game action must appear in the resumed prompt.",
+      submissionId: "chatgpt-held-turn",
+      streaming: true,
+    },
+  });
+  assert.equal(heldChatGptGameSend.statusCode, 200);
+  const chatGptWarning = heldChatGptGameSend.body
+    .split("\n")
+    .filter((line: string) => line.startsWith("data: "))
+    .map((line: string) => JSON.parse(line.slice(6)))
+    .find((event: { type?: string }) => event.type === "cache_warning");
+  assert.ok(
+    chatGptWarning?.data?.heldTurn,
+    `ChatGPT Game hold returns the saved-turn descriptor: ${heldChatGptGameSend.body.slice(-2200)}`,
+  );
+  assert.equal(chatGptProviderCalls, 1, "the held ChatGPT Game turn is stopped before the stub provider");
+  const acknowledgedChatGptGameSend = await app.inject({
+    method: "POST",
+    url: "/api/generate",
+    payload: {
+      chatId: chatGptGame.id,
+      connectionId: chatGptConnection.id,
+      cacheGuardAcknowledged: true,
+      cacheGuardHeldTurn: chatGptWarning.data.heldTurn,
+      streaming: true,
+    },
+  });
+  assert.equal(acknowledgedChatGptGameSend.statusCode, 200);
+  assert.equal(chatGptProviderCalls, 2, "the descriptor-only acknowledgement reaches the stub ChatGPT provider");
+  assert.equal(
+    chatGptPrompts
+      .at(-1)
+      ?.filter(
+        (message) =>
+          message.role === "user" &&
+          message.content === "The held ChatGPT Game action must appear in the resumed prompt.",
+      ).length,
+    1,
+    "the ChatGPT Game provider prompt contains the held user turn exactly once",
+  );
+  const chatGptMessages = (await app.inject({ method: "GET", url: `/api/chats/${chatGptGame.id}/messages` })).json();
+  assert.equal(
+    chatGptMessages.filter(
+      (message: { role: string; id: string }) =>
+        message.role === "user" && message.id === chatGptWarning.data.heldTurn.messageId,
+    ).length,
+    1,
+    "acknowledgement retains exactly one original saved user row",
+  );
+  assert.equal(chatGptMessages.filter((message: { role: string }) => message.role === "user").length, 2);
+  const chatGptAssistant = [...chatGptMessages]
+    .reverse()
+    .find((message: { role: string }) => message.role === "assistant");
+  const chatGptAssistantExtra =
+    typeof chatGptAssistant?.extra === "string" ? JSON.parse(chatGptAssistant.extra) : (chatGptAssistant?.extra ?? {});
+  assert.ok(
+    chatGptAssistantExtra.promptHistoryReplay?.helper,
+    "acknowledgement persists the restored Game replay descriptor",
+  );
+  assert.equal(chatGptAssistantExtra.promptHistoryReplay?.sourceCount, 3);
+  assert.equal(chatGptAssistantExtra.promptHistoryReplay?.responseId, chatGptAssistant.id);
+  assert.equal(chatGptAssistantExtra.promptHistoryReplay?.scope?.provider, "openai_chatgpt");
+
+  // Prove the resumed descriptor supports actual replay on the following ordinary turn.
+  const nextGameSend = await app.inject({
+    method: "POST",
+    url: "/api/generate",
+    payload: {
+      chatId: chatGptGame.id,
+      connectionId: chatGptConnection.id,
+      userMessage: "[To the GM] Correction: the gate is green.",
+      submissionId: "chatgpt-after-ack",
+      streaming: true,
+    },
+  });
+  assert.equal(nextGameSend.statusCode, 200);
+  assert.equal(chatGptProviderCalls, 3, "following normal turn reaches the mocked provider");
+  const afterMessages = await chats.listMessages(chatGptGame.id);
+  const afterAssistant = afterMessages.filter((m) => m.role === "assistant").at(-1)!;
+  const afterExtra = typeof afterAssistant.extra === "string" ? JSON.parse(afterAssistant.extra) : afterAssistant.extra;
+  assert.equal(
+    afterExtra.promptHistoryReplay?.replayed,
+    true,
+    "the next real Game route reuses the acknowledged replay descriptor",
+  );
+  // Verify the corrected snapshot remains available to the next turn without rewriting history.
+  const correctionFollowUp = await app.inject({
+    method: "POST",
+    url: "/api/generate",
+    payload: {
+      chatId: chatGptGame.id,
+      connectionId: chatGptConnection.id,
+      userMessage: "Describe the corrected gate.",
+      submissionId: "chatgpt-after-correction",
+      streaming: true,
+    },
+  });
+  assert.equal(correctionFollowUp.statusCode, 200);
+  assert.equal(chatGptProviderCalls, 4);
+  const priorPrompt = chatGptPrompts[2]!;
+  const correctedPrompt = chatGptPrompts[3]!;
+  assert.deepEqual(correctedPrompt.slice(0, priorPrompt.length), priorPrompt);
+  const newestAuthorial = priorPrompt
+    .slice(chatGptPrompts[1]!.length)
+    .find((message) => String(message.content).includes("<authorial_continuity>"));
+  assert.ok(newestAuthorial, "the correction turn emits the changed authorial snapshot");
+  const correctionText = String(newestAuthorial.content);
+  assert.ok(correctionText.includes("[To the GM] The gate is blue."));
+  assert.ok(correctionText.includes("[To the GM] Correction: the gate is green."));
+  assert.ok(correctionText.indexOf("The gate is blue.") < correctionText.indexOf("Correction: the gate is green."));
+  assert.match(correctionText, /a newer correction supersedes the older claim/u);
+  assert.ok(
+    correctedPrompt
+      .slice(priorPrompt.length)
+      .some((message) => String(message.content).includes("The newest snapshot replaces prior snapshots")),
+  );
+  const correctionSnapshotId = /^<marinara_replay_snapshot id="([a-f0-9]{64})">/.exec(correctionText)?.[1];
+  assert.ok(correctionSnapshotId);
+  assert.ok(
+    correctedPrompt
+      .slice(priorPrompt.length)
+      .some(
+        (message) =>
+          String(message.content) ===
+          `<marinara_replay_snapshot_ref id="${correctionSnapshotId}">${correctionSnapshotId}</marinara_replay_snapshot_ref>`,
+      ),
+  );
 
   console.log("cache-send-guard route regression passed");
 } finally {
   resetSdk();
+  resetOpenAIProvider();
+  if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+  else process.env.CODEX_HOME = originalCodexHome;
   if (app) {
     await Promise.allSettled([...pendingNpcSyncRequests]);
     await app.close();
