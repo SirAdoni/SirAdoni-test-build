@@ -1,5 +1,10 @@
 # Technical changelog
 
+## 2026-09-28 - Repair frozen pnpm install after private and staging merge
+
+- Moved the private dependency security overrides from the root `package.json` `pnpm` field into `pnpm-workspace.yaml`, where the declared pnpm runner reads the effective workspace policy. Preserved upstream `onnxruntime-node@1.30.0` and its patch, `onnxruntime-web`, and the private `protobufjs@7.6.5` pin. The workspace's existing broad `brace-expansion@5.0.9` override subsumes the former private exact-version selector.
+- Regenerated `pnpm-lock.yaml` with pinned pnpm 10.34.5. Frozen lockfile-only validation and a full offline frozen install passed; the ONNX native binding was ready. `pnpm check` passed against the newly installed dependency tree after temporarily materializing and then restoring the tracked Windows skills link; `pnpm version:check` passed. One existing calendar Hook lint warning remains. No live runtime, data, or published branch was changed by this repair.
+
 ## 2026-09-28 - Validate the combined private and staging integration
 
 - Merged private build `2f4fcbd42` into the isolated integration branch after proving its original base tree matched the private snapshot joined by the ancestry bridge. The production cache and connection fixes were already present; the private merge retained focused regression and browser fixture updates without duplicating runtime code.
