@@ -1,0 +1,271 @@
+{
+  "schemaVersion": 2,
+  "capabilityApi": {
+    "major": 1,
+    "minor": 10
+  },
+  "builtAgainst": {
+    "engineVersion": "2.4.6",
+    "engineCommit": "d091ad7d3209e41fc8ef3a72033446dd34268fe2"
+  },
+  "id": "hierarchical-maps",
+  "name": "World Maps",
+  "version": "1.4.29",
+  "description": "Adds persistent hierarchical locations, durable shared worlds, reusable artwork, customizable Direct Link lines, and movement to Roleplay and Game. Add the Agent in Chat Settings → Agents → Tracker Agents for Roleplay and Game modes.",
+  "engine": {
+    "min": "2.4.6",
+    "maxExclusive": "4.0.0"
+  },
+  "kind": [
+    "agent",
+    "maps"
+  ],
+  "entrypoints": {
+    "agents": "agents.json",
+    "server": "server.mjs",
+    "client": "client.js"
+  },
+  "contributions": {
+    "agentDetail": {
+      "agentIds": [
+        "hierarchical-maps"
+      ]
+    },
+    "slots": [
+      "chat-settings",
+      "spatial-workspace",
+      "chat-runtime",
+      "game-world-map"
+    ],
+    "assets": {
+      "paths": [
+        "assets/icons/game-icons-00.json",
+        "assets/icons/game-icons-01.json",
+        "assets/icons/game-icons-02.json",
+        "assets/icons/game-icons-03.json",
+        "assets/icons/game-icons-04.json",
+        "assets/icons/game-icons-05.json",
+        "assets/icons/game-icons-06.json",
+        "assets/icons/game-icons-07.json",
+        "assets/icons/game-icons-08.json",
+        "assets/icons/game-icons-09.json",
+        "assets/icons/game-icons-10.json",
+        "assets/icons/game-icons-11.json",
+        "assets/icons/game-icons-12.json",
+        "assets/icons/game-icons-13.json",
+        "assets/icons/game-icons-14.json",
+        "assets/icons/game-icons-15.json",
+        "assets/icons/game-icons-16.json",
+        "assets/icons/game-icons-17.json",
+        "assets/icons/game-icons-18.json",
+        "assets/icons/game-icons-19.json",
+        "assets/icons/game-icons-20.json",
+        "assets/icons/game-icons-21.json",
+        "assets/icons/game-icons-22.json",
+        "assets/icons/game-icons-23.json",
+        "assets/icons/game-icons-24.json",
+        "assets/icons/game-icons-25.json",
+        "assets/icons/game-icons-26.json",
+        "assets/icons/game-icons-27.json",
+        "assets/icons/game-icons-28.json",
+        "assets/icons/game-icons-29.json",
+        "assets/icons/game-icons-30.json",
+        "assets/icons/game-icons-31.json",
+        "assets/icons/game-icons-32.json"
+      ]
+    }
+  },
+  "files": [
+    {
+      "path": "agents.json",
+      "sha256": "42d95c7fea1ac79de89fbc8805e1dc8e2886ad3ba2a8d8396718bdc643f4f165",
+      "bytes": 557
+    },
+    {
+      "path": "server.mjs",
+      "sha256": "2d19eb09aa422877c1d4d587174a07b6eae3fcf4a8578934ca9c96b89bfc530d",
+      "bytes": 319112
+    },
+    {
+      "path": "client.js",
+      "sha256": "21e899e3c61c15d57fa77bab2f31eaaf0dfd093b3571ee1b8ba30607f4391f26",
+      "bytes": 1932651
+    },
+    {
+      "path": "assets/icons/game-icons-00.json",
+      "sha256": "59608a4efa5d03445529688b0edb5f439322ca84488ee2428435c1bda9b55b28",
+      "bytes": 340922
+    },
+    {
+      "path": "assets/icons/game-icons-01.json",
+      "sha256": "2105bac6a660887b4973682838e09e2ac10c07d7b949b06e37d4d18faa79b8f5",
+      "bytes": 180400
+    },
+    {
+      "path": "assets/icons/game-icons-02.json",
+      "sha256": "5bc77dbf6779ee8a73da6cd162b5980e9ca528b7b41670176c8dad885cdedc86",
+      "bytes": 196911
+    },
+    {
+      "path": "assets/icons/game-icons-03.json",
+      "sha256": "df309ffcd586c7a02b610288221753e82e0be5222a5309c6924399418292ccc5",
+      "bytes": 184803
+    },
+    {
+      "path": "assets/icons/game-icons-04.json",
+      "sha256": "7418f987431e89997e33b740cccc6c0d0871c07246dc13026cbfb632f4ab54f2",
+      "bytes": 193319
+    },
+    {
+      "path": "assets/icons/game-icons-05.json",
+      "sha256": "58dc0c4b2ec75c1a03a9bae4ca189e7314c038df6dece123d26f84f860b4a306",
+      "bytes": 195465
+    },
+    {
+      "path": "assets/icons/game-icons-06.json",
+      "sha256": "a44be7a4266e79a0a66f9513215d01e77c02e171ee43360f114850a9a8613698",
+      "bytes": 214551
+    },
+    {
+      "path": "assets/icons/game-icons-07.json",
+      "sha256": "ef63c68732e8c4cbe3cbee96fb85c7428879bf4c9f8e58f53c63075aecb9f61b",
+      "bytes": 194277
+    },
+    {
+      "path": "assets/icons/game-icons-08.json",
+      "sha256": "5eb07e8116eb1fb3fc578895d38b13b77fdbf95255f52f0a67c0e868b892d073",
+      "bytes": 191303
+    },
+    {
+      "path": "assets/icons/game-icons-09.json",
+      "sha256": "149ea4fe3a5e871116a5d31339a630ce3f0585a14c6562a9d8a4ace34ed00df1",
+      "bytes": 201778
+    },
+    {
+      "path": "assets/icons/game-icons-10.json",
+      "sha256": "b13dc31ae3c04612087ca81d4d3d4a6966638666e725e9bb8a79cac45f56a47f",
+      "bytes": 185447
+    },
+    {
+      "path": "assets/icons/game-icons-11.json",
+      "sha256": "53a2f070f01ef162afe093fc87c5af2c13387736c130e888646d06aa9375dfe7",
+      "bytes": 187435
+    },
+    {
+      "path": "assets/icons/game-icons-12.json",
+      "sha256": "9e77a54d2005c2bd6897c25f8c5db8254d47af98db5bc038bb20a553ae79a63a",
+      "bytes": 217490
+    },
+    {
+      "path": "assets/icons/game-icons-13.json",
+      "sha256": "bab9e90f57ab8913b315e7935cf1617e6f77a182937e8f5babccfbe5cdd6a716",
+      "bytes": 205711
+    },
+    {
+      "path": "assets/icons/game-icons-14.json",
+      "sha256": "9d9c9cb090fe60caeff8fa78faf74c68abda8a65dd3c38110e7937d9d439391e",
+      "bytes": 174295
+    },
+    {
+      "path": "assets/icons/game-icons-15.json",
+      "sha256": "0361123b8517d8dfc1f07a3d30c44b1d2128940f8370144e16ed0ef0bc9963b8",
+      "bytes": 178761
+    },
+    {
+      "path": "assets/icons/game-icons-16.json",
+      "sha256": "8db5661004f4d5ccb26430a444c2412550995977c59519a9558602bf7499c96c",
+      "bytes": 177007
+    },
+    {
+      "path": "assets/icons/game-icons-17.json",
+      "sha256": "ee1dec1b37cde9a3dbb307f1f4f980c808bea8d2e0450dbd9016d6ad22d3b965",
+      "bytes": 189173
+    },
+    {
+      "path": "assets/icons/game-icons-18.json",
+      "sha256": "580d94019c62d0e7b9a491aa3e34b5c23b60fee4779d35e3ea24c611935dbe67",
+      "bytes": 215003
+    },
+    {
+      "path": "assets/icons/game-icons-19.json",
+      "sha256": "7dc29a98e575597f04c5700ff6368d55a87f386eaa708c6c95fca4d752454291",
+      "bytes": 199599
+    },
+    {
+      "path": "assets/icons/game-icons-20.json",
+      "sha256": "0f0cdca26ff5b18e505b9236d119c0270bf07ab7f160d3df2d3f177c66b7e7a6",
+      "bytes": 187914
+    },
+    {
+      "path": "assets/icons/game-icons-21.json",
+      "sha256": "5944ec5983d886a26d108b6690ab1902fe3d51dc16c90cae7e5d099d9ea61cbb",
+      "bytes": 187085
+    },
+    {
+      "path": "assets/icons/game-icons-22.json",
+      "sha256": "a07e9342eece54d69701efab4f86af4cb183f3a189b7335d47fcc5e562073189",
+      "bytes": 194824
+    },
+    {
+      "path": "assets/icons/game-icons-23.json",
+      "sha256": "cb660fe12cfaeeaeafbfa85382cb7d0a897677b8f36d196a6930a2f3b7bda0b3",
+      "bytes": 203605
+    },
+    {
+      "path": "assets/icons/game-icons-24.json",
+      "sha256": "ba4fa2a2be2e102531e9bf40ed3db8fff311a9cec9cb41cb9cf5a8074bb947f3",
+      "bytes": 194794
+    },
+    {
+      "path": "assets/icons/game-icons-25.json",
+      "sha256": "569130ea4ff7db94ab7b23032a5a230b09c6dab5ae3b8980d5e2886e3daa6b39",
+      "bytes": 188896
+    },
+    {
+      "path": "assets/icons/game-icons-26.json",
+      "sha256": "a33f7f7f60fdd78d77493d52d677cc81c155d60050285866290be39bb40f8eff",
+      "bytes": 185661
+    },
+    {
+      "path": "assets/icons/game-icons-27.json",
+      "sha256": "180d02b8d64e60ada4307002d713c9d03992bd940a922ddf1a84cc6c23b40acf",
+      "bytes": 179217
+    },
+    {
+      "path": "assets/icons/game-icons-28.json",
+      "sha256": "d29d862d78c19f83d5477ec8d0848baf371086149e1313b834543095fa6b771f",
+      "bytes": 185516
+    },
+    {
+      "path": "assets/icons/game-icons-29.json",
+      "sha256": "3e22e8fbb0354affccfb84acab334ceb9e1eb2fd7f0fcc0b889c1c06020e561c",
+      "bytes": 211431
+    },
+    {
+      "path": "assets/icons/game-icons-30.json",
+      "sha256": "6c16cca46dac72139d28089d9d284196c4816ee94b5018e9d834c6da917d7bce",
+      "bytes": 200572
+    },
+    {
+      "path": "assets/icons/game-icons-31.json",
+      "sha256": "a8ffa8b70fa9c04b82991d5a8c945d1717eeed02247ed4c7e377c016ac388387",
+      "bytes": 190248
+    },
+    {
+      "path": "assets/icons/game-icons-32.json",
+      "sha256": "17ac22091e189bc5075db4cc7cd5506ea584f803b49e0d1fe727590e5ed60110",
+      "bytes": 59171
+    }
+  ],
+  "permissions": [
+    "agent-runtime",
+    "chat-read",
+    "chat-write",
+    "network",
+    "prompt-context",
+    "routes",
+    "storage",
+    "ui"
+  ],
+  "restartRequired": true
+}

@@ -261,3 +261,7 @@ and Branding Policy](TRADEMARKS.md) for the complete guidelines.
 _olud.ai is an independent third-party service and is not endorsed by Pasta-Devs._
 
 [![olud.ai](https://olud.ai/badge.php?tool=pasta-devs-marinara-engine)](https://olud.ai/project/pasta-devs-marinara-engine.html)
+
+## Private agent suite
+
+This private test build also preserves the standalone downloadable-agent source and current package archives under [`agent-suite/`](agent-suite/PRIVATE-SUITE.md). See that guide for the captured versions, build setup and validation. This source snapshot does not replace installed packages or change the running Engine.

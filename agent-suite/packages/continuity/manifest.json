@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "id": "continuity",
+  "name": "Continuity Checker",
+  "version": "1.0.3",
+  "description": "Post-processes the latest assistant message to fix concrete spatial, timeline, and physical logic errors without changing the story. Add the Agent in Chat Settings → Agents → Writer Agents for Roleplay mode.",
+  "engine": {
+    "min": "2.3.0",
+    "maxExclusive": "4.0.0"
+  },
+  "kind": [
+    "agent"
+  ],
+  "entrypoints": {
+    "agents": "agents.json"
+  },
+  "files": [
+    {
+      "path": "agents.json",
+      "sha256": "0e690bf4f297c6a1e10f066aea20399549f69809a3e93bc9f3e1ff86ee45f657",
+      "bytes": 2128
+    }
+  ],
+  "permissions": [
+    "agent-runtime",
+    "chat-read",
+    "prompt-context",
+    "storage",
+    "ui"
+  ],
+  "restartRequired": false
+}

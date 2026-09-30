@@ -75,3 +75,10 @@ docker-compose.override.yaml
 .playwright-mcp
 # Dev MCP local state (journal, logs, lock)
 .dev-mcp/
+
+# Required upstream-tracked build inputs in the private Agents snapshot.
+# These are source/helper files, not the Engine runtime data or build output.
+!agent-suite/packages/slurp2/src/engine/packages/server/src/slp/data/
+!agent-suite/packages/slurp2/src/engine/packages/server/src/slp/data/**
+!agent-suite/sources/engine/packages/shared/dist/
+!agent-suite/sources/engine/packages/shared/dist/**

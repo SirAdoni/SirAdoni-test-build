@@ -1,0 +1,22 @@
+[
+  {
+    "id": "noodle",
+    "name": "Noodle",
+    "description": "Explore the Noodle public timeline as an optional local social world.",
+    "author": "Pasta Devs",
+    "phase": "pre_generation",
+    "enabledByDefault": false,
+    "category": "misc",
+    "runtimeDisabled": true,
+    "libraryHidden": true,
+    "modeAllowlist": [
+      "conversation",
+      "roleplay",
+      "game"
+    ],
+    "defaultTools": [],
+    "defaultSettings": {},
+    "defaultPromptTemplate": "",
+    "execution": "feature"
+  }
+]

@@ -5,6 +5,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 ## [Unreleased]
 
 ### Personal-build changes
+- Preserved the complete private downloadable-agent source suite and all 40 current package archives alongside the Engine under `agent-suite/`, including the 14 locally modified packages. Added a build guide and capture provenance so those changes can be recovered and maintained from this repository.
+
 - Fresh installs of this build no longer stop on a pnpm lockfile mismatch; the dependency security pins and patched ONNX runtime remain in place.
 - Added selectable backup modes under Settings → Advanced → Backup & Export: Full, Chats & game data, and Changed files only. Data-only backups preserve chats, campaign records and long-term memory without media. Changed-files snapshots share unchanged files with earlier snapshots, remain independently restorable, and can be downloaded as complete ZIPs. Full remains the default; the selected mode also applies to scheduled backups.
 - Fixed Story memory’s “Choose a connection” action opening settings out of view. It now brings the memory connection selector into view and focuses it, including when settings are already expanded, without changing the selected connection.

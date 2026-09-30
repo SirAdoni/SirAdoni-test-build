@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "id": "chess",
+  "name": "Chess",
+  "version": "1.0.5",
+  "description": "Play Chess with a Conversation character. Install to use /chess manually in any Conversation chat. Add under Chat Settings → Agents → Commands only to let characters initiate it.",
+  "engine": {
+    "min": "2.3.0",
+    "maxExclusive": "4.0.0"
+  },
+  "kind": [
+    "agent",
+    "turn-game"
+  ],
+  "entrypoints": {
+    "agents": "agents.json",
+    "server": "server.mjs",
+    "client": "client.js"
+  },
+  "contributions": {
+    "slots": [
+      "conversation-surface"
+    ],
+    "conversationGame": {
+      "command": "/chess",
+      "aliases": [
+        "chess"
+      ],
+      "playerLabel": "1v1 strategy"
+    }
+  },
+  "files": [
+    {
+      "path": "agents.json",
+      "sha256": "f58f4b748a584938928985f1aeeaf52e24ccc1d0c93aa75582bf068dac950ccf",
+      "bytes": 562
+    },
+    {
+      "path": "server.mjs",
+      "sha256": "0473cb2ef2446c512a8194b4de265cc3db141c4ef0390b7d1b12c41fe5df23f9",
+      "bytes": 108076
+    },
+    {
+      "path": "client.js",
+      "sha256": "440a0c52a2e34b071858db7d89fd3ca0c68ae84fd93a16264ab1d49dd7940fce",
+      "bytes": 566758
+    }
+  ],
+  "permissions": [
+    "agent-runtime",
+    "chat-read",
+    "chat-write",
+    "storage",
+    "ui"
+  ],
+  "restartRequired": true
+}

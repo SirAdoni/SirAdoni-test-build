@@ -1,0 +1,13 @@
+[
+  {
+    "id": "background",
+    "name": "Background",
+    "description": "Selects the most fitting existing background image for the current scene from your background library. Add the Agent in Chat Settings → Agents → Tracker Agents for Roleplay mode.",
+    "phase": "post_processing",
+    "enabledByDefault": false,
+    "category": "tracker",
+    "defaultTools": [],
+    "author": "Pasta Devs",
+    "defaultPromptTemplate": "Pick one existing background image for the current scene. Respond ONLY with valid JSON.\nUse the latest assistant message, available background filenames, original names, and tags. Match location, time/lighting, mood, and environmental details. Tags are the primary signal.\nPreserve the current background if the scene has not meaningfully changed location or setting.\nOutput format (JSON only, no markdown):\n{\n  \"chosen\": \"filename.ext or null\"\n}\nCRITICAL RULES:\n1. When \"chosen\" is not null, you MUST pick EXACTLY one filename from the <available_backgrounds> list. Copy-paste the filename exactly as listed. Do NOT modify it, shorten it, or invent a new one. If your chosen filename is not in the list, the system will reject it.\n2. If no background is an exact fit, choose the closest existing match from the list.\n3. If the list is empty, return { \"chosen\": null }.\n4. If the scene has not meaningfully changed location or setting since the current background, return { \"chosen\": null } to avoid unnecessary switches.\n5. Never request, describe, or invent a new background image. Image generation belongs to the Illustrator agent."
+  }
+]

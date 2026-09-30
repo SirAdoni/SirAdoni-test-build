@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Pasta-Devs/Marinara-Agents/schemas/package-manifest.schema.json",
+  "title": "Marinara capability package manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "name", "version", "engine", "kind", "entrypoints", "files", "permissions"],
+  "properties": {
+    "schemaVersion": { "enum": [1, 2] },
+    "capabilityApi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["major", "minor"],
+      "properties": {
+        "major": { "type": "integer", "minimum": 1 },
+        "minor": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "builtAgainst": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["engineVersion", "engineCommit"],
+      "properties": {
+        "engineVersion": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
+        },
+        "engineCommit": { "type": "string", "pattern": "^[a-f0-9]{40}$" }
+      }
+    },
+    "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$", "maxLength": 80 },
+    "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$" },
+    "description": { "type": "string", "maxLength": 2000 },
+    "localizations": {
+      "type": "object",
+      "propertyNames": { "type": "string", "minLength": 2, "maxLength": 35 },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "description": { "type": "string", "maxLength": 2000 },
+          "homeBrowserTab": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "label": { "type": "string", "minLength": 1, "maxLength": 40 },
+              "ariaLabel": { "type": "string", "minLength": 1, "maxLength": 100 }
+            }
+          }
+        }
+      }
+    },
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min", "maxExclusive"],
+      "properties": {
+        "min": { "type": "string" },
+        "maxExclusive": { "type": "string" }
+      }
+    },
+    "kind": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "enum": ["agent", "maps", "conversation-calls", "ruleset", "turn-game"] }
+    },
+    "entrypoints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "server": { "type": "string" },
+        "client": { "type": "string" },
+        "agents": { "type": "string" },
+        "knowledge": { "type": "string" }
+      }
+    },
+    "contributions": {
+      "type": "object",
+      "description": "What the package adds to the Engine (slots, assets, a Home tab, Game Mode setup and more). Left open on purpose: the Engine owns this contract and grows it with each Capability API, and scripts/validate-catalog.mjs checks the parts this catalog depends on. Closing it here would make this file a second copy that refuses shipped packages the day the Engine adds a key."
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256", "bytes"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1, "maxLength": 240 },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "bytes": { "type": "integer", "minimum": 0, "maximum": 104857600 }
+        }
+      }
+    },
+    "permissions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": ["agent-runtime", "chat-read", "chat-write", "network", "prompt-context", "routes", "storage", "ui"]
+      }
+    },
+    "restartRequired": { "type": "boolean", "default": false }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "schemaVersion": { "const": 2 } },
+        "required": ["schemaVersion"]
+      },
+      "then": { "required": ["capabilityApi", "builtAgainst"] },
+      "else": {
+        "not": {
+          "anyOf": [
+            { "required": ["capabilityApi"] },
+            { "required": ["builtAgainst"] }
+          ]
+        }
+      }
+    }
+  ]
+}

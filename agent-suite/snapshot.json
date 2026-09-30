@@ -1,0 +1,334 @@
+{
+  "format": 1,
+  "capturedAt": "2026-09-30T03:59:27.928671+00:00",
+  "description": "Current working-file snapshot of the reconciled private Marinara Agents suite; not a Git history export.",
+  "sourceBaseline": "e28f527ba2b57ce193da3f22046ad8f8afe8cb2f",
+  "enclosingEngineCommit": "fc3b39aeb66824cfbb30c3e4965755afcc2cd036",
+  "capturedFileCount": 2457,
+  "capturedBytes": 138714916,
+  "capturedTreeSha256": "e335f229153d1efadf092743bd8a0fe4e2fb876256a08dbf13dea550221316d4",
+  "treeHashAlgorithm": "Sorted relative paths: SHA256(concat(UTF8(path), NUL, raw SHA256(file))); excludes PRIVATE-SUITE.md and snapshot.json added for this handoff.",
+  "excluded": [
+    "Git history",
+    "dependencies",
+    "local tool state",
+    "runtime data",
+    "logs",
+    "backups",
+    "historical package ZIP versions"
+  ],
+  "packages": [
+    {
+      "id": "background",
+      "version": "1.0.3",
+      "archive": "artifacts/background-1.0.3.zip",
+      "archiveSha256": "c81a75a054570afb6fa6abf3da0b1c9570737afafbecb1172e4f0cb2b23f9fe4",
+      "privateChanges": false
+    },
+    {
+      "id": "beholder",
+      "version": "1.3.11",
+      "archive": "artifacts/beholder-1.3.11.zip",
+      "archiveSha256": "8bb5a75dd11991399fcdf164c11cc3a91981de2971237055d5d983d693ea03a1",
+      "privateChanges": false
+    },
+    {
+      "id": "card-evolution-auditor",
+      "version": "1.0.3",
+      "archive": "artifacts/card-evolution-auditor-1.0.3.zip",
+      "archiveSha256": "34770bae686178281e894382ba762608bed774293556b95e6c33a6b8748dff14",
+      "privateChanges": true
+    },
+    {
+      "id": "character-tracker",
+      "version": "1.1.1",
+      "archive": "artifacts/character-tracker-1.1.1.zip",
+      "archiveSha256": "3c7f686449333ed154f903105e089b1cffae12f595df6dda1405a6af2f71e4b9",
+      "privateChanges": true
+    },
+    {
+      "id": "chess",
+      "version": "1.0.5",
+      "archive": "artifacts/chess-1.0.5.zip",
+      "archiveSha256": "5a57afb19f65d5942e4746017a3411641c7a3fffb5d3991d419df1c1edb245c5",
+      "privateChanges": false
+    },
+    {
+      "id": "combat",
+      "version": "1.0.3",
+      "archive": "artifacts/combat-1.0.3.zip",
+      "archiveSha256": "9da6690edaa65f3f54e3a16489ef9780085c630008482e33592c7b6c748f2e82",
+      "privateChanges": false
+    },
+    {
+      "id": "continuity",
+      "version": "1.0.3",
+      "archive": "artifacts/continuity-1.0.3.zip",
+      "archiveSha256": "d1f0ca5a575632bc5c8990a2714187ed1178b3ebc83a69ccf3437ce10e83ed60",
+      "privateChanges": true
+    },
+    {
+      "id": "conversation-calls",
+      "version": "1.0.17",
+      "archive": "artifacts/conversation-calls-1.0.17.zip",
+      "archiveSha256": "bb1b12fae8ffcacb755d8c2e8519575a3a6d9dc32ac865187937d2d897372a55",
+      "privateChanges": false
+    },
+    {
+      "id": "custom-tracker",
+      "version": "1.1.1",
+      "archive": "artifacts/custom-tracker-1.1.1.zip",
+      "archiveSha256": "4cac746b2a7cab15f680835007a4116354b9ba444de24ea9246f127f3d3029c2",
+      "privateChanges": true
+    },
+    {
+      "id": "cyoa",
+      "version": "1.0.3",
+      "archive": "artifacts/cyoa-1.0.3.zip",
+      "archiveSha256": "dd279408cd81692571cc3ed8d788ff731145722fc1e81b6eef9682b8b993c22b",
+      "privateChanges": false
+    },
+    {
+      "id": "director",
+      "version": "1.0.3",
+      "archive": "artifacts/director-1.0.3.zip",
+      "archiveSha256": "20a987e3bca5eaf7c5dfb89e825252518b6df854ea43495c02b7e7e10233b68f",
+      "privateChanges": true
+    },
+    {
+      "id": "echo-chamber",
+      "version": "1.0.2",
+      "archive": "artifacts/echo-chamber-1.0.2.zip",
+      "archiveSha256": "e78f4d13e6da36deae79dd6d0f6f4396e1bad8c75935b4cb41ffee4189a93520",
+      "privateChanges": false
+    },
+    {
+      "id": "eightball",
+      "version": "1.0.5",
+      "archive": "artifacts/eightball-1.0.5.zip",
+      "archiveSha256": "b5b5923af21aefc348668a53dd187a7d7011f6cbfb0dcb7f4b19fab67d81df7a",
+      "privateChanges": false
+    },
+    {
+      "id": "expression",
+      "version": "1.0.4",
+      "archive": "artifacts/expression-1.0.4.zip",
+      "archiveSha256": "e038bdc5693a619445846aebe17a815ec85e17c6659e5d41d39fe3be7d4b6e13",
+      "privateChanges": false
+    },
+    {
+      "id": "gacha-forge",
+      "version": "1.8.2",
+      "archive": "artifacts/gacha-forge-1.8.2.zip",
+      "archiveSha256": "d8ef6e02d41f0f885ffb3665cf66a1f052dc16ba52b97af7565f2107574e2bb1",
+      "privateChanges": false
+    },
+    {
+      "id": "haptic",
+      "version": "1.0.3",
+      "archive": "artifacts/haptic-1.0.3.zip",
+      "archiveSha256": "515d342cb2af5138ba64342f8d1b5e3e5dea56bb3597bfd842cda56b8a0c92bf",
+      "privateChanges": false
+    },
+    {
+      "id": "hierarchical-maps",
+      "version": "1.4.29",
+      "archive": "artifacts/hierarchical-maps-1.4.29.zip",
+      "archiveSha256": "d1f24117efdde7006b768fd9dd0dd6745e99557a900355bb266f98788fe10aef",
+      "privateChanges": true
+    },
+    {
+      "id": "html",
+      "version": "1.0.2",
+      "archive": "artifacts/html-1.0.2.zip",
+      "archiveSha256": "5dc780a4f019905c8e409e2f996c85f457bbe1ba5adbd7ffd926d27cd00cea81",
+      "privateChanges": false
+    },
+    {
+      "id": "illustrator",
+      "version": "1.0.4",
+      "archive": "artifacts/illustrator-1.0.4.zip",
+      "archiveSha256": "d9d11c5edc32fb31206b2b43514aaa2c888697f205f1a4a33d19a2facbf3d529",
+      "privateChanges": false
+    },
+    {
+      "id": "inventory-tracker",
+      "version": "1.2.1",
+      "archive": "artifacts/inventory-tracker-1.2.1.zip",
+      "archiveSha256": "2ffe5a69ddf3138fcb9f0f4025b92e2512107f2b252828932133bb03e9b1f8a7",
+      "privateChanges": true
+    },
+    {
+      "id": "knowledge-retrieval",
+      "version": "1.0.3",
+      "archive": "artifacts/knowledge-retrieval-1.0.3.zip",
+      "archiveSha256": "3b72b8130c18752cf52e147b1c28b897ff1170ac915b99ee6275412dc347a839",
+      "privateChanges": false
+    },
+    {
+      "id": "knowledge-router",
+      "version": "1.0.3",
+      "archive": "artifacts/knowledge-router-1.0.3.zip",
+      "archiveSha256": "36ea3ff692a1b8fc43dfeba282f7a2f99a880ca3e46e5d8a01e934425ec4bf04",
+      "privateChanges": false
+    },
+    {
+      "id": "long-term-memory",
+      "version": "1.3.6",
+      "archive": "artifacts/long-term-memory-1.3.6.zip",
+      "archiveSha256": "1423e4a7658bac300aa6e4b2af0e4a114f95473e4b1533d845523e23ea53fd5a",
+      "privateChanges": true
+    },
+    {
+      "id": "lorebook-keeper",
+      "version": "1.0.6",
+      "archive": "artifacts/lorebook-keeper-1.0.6.zip",
+      "archiveSha256": "e1ef31093f924bf4d39b552e78a71cfe2a79360f2d0b02c6bb116bffec2c01d4",
+      "privateChanges": true
+    },
+    {
+      "id": "memory-nag",
+      "version": "1.1.3",
+      "archive": "artifacts/memory-nag-1.1.3.zip",
+      "archiveSha256": "610a7978d266c1eceb3996490aff72788cd71f98b3534ceb03b98b3845e343f9",
+      "privateChanges": true
+    },
+    {
+      "id": "noodle",
+      "version": "1.2.24",
+      "archive": "artifacts/noodle-1.2.24.zip",
+      "archiveSha256": "fc34f67225c422ed754c7cede1a8961854677d730376f0b0b328e6c30006bab3",
+      "privateChanges": false
+    },
+    {
+      "id": "persona-stats",
+      "version": "1.0.3",
+      "archive": "artifacts/persona-stats-1.0.3.zip",
+      "archiveSha256": "bbc61a59f0c634660c38bd83a8401480bbfe5d4808fde44d2da0c992a9968911",
+      "privateChanges": true
+    },
+    {
+      "id": "pixelforge",
+      "version": "0.16.8",
+      "archive": "artifacts/pixelforge-0.16.8.zip",
+      "archiveSha256": "db90010d46768e461e23825b7cd1339a6b64b64022abf2bba89dfc0a9f3efca3",
+      "privateChanges": false
+    },
+    {
+      "id": "poker",
+      "version": "1.0.5",
+      "archive": "artifacts/poker-1.0.5.zip",
+      "archiveSha256": "6c0a3ed32fb423a30ae8c80cefec2b7f165ecb0966e88b0bd5d121ac0b0c6ff8",
+      "privateChanges": false
+    },
+    {
+      "id": "prose-guardian",
+      "version": "1.0.3",
+      "archive": "artifacts/prose-guardian-1.0.3.zip",
+      "archiveSha256": "8706f608d64aabe03412c63beadb38936698da5b6f21a846d61a623e3bf550e1",
+      "privateChanges": true
+    },
+    {
+      "id": "quest",
+      "version": "1.0.5",
+      "archive": "artifacts/quest-1.0.5.zip",
+      "archiveSha256": "81f05fc6c366c0bbdca3a03d47f0b3d5710ebc926fe9b542abbd79a27545b519",
+      "privateChanges": true
+    },
+    {
+      "id": "rock-paper-scissors",
+      "version": "1.0.5",
+      "archive": "artifacts/rock-paper-scissors-1.0.5.zip",
+      "archiveSha256": "c941f85435ca13de2f4013d079a7071b106230d472aff09ae10ab559bfd6d93d",
+      "privateChanges": false
+    },
+    {
+      "id": "ruleset-5e-2014",
+      "version": "0.6.0",
+      "archive": "artifacts/ruleset-5e-2014-0.6.0.zip",
+      "archiveSha256": "e186166b6a38d7308d599be2bf6ea17cc3b9ec6f4c715d07831473c50c15e64f",
+      "privateChanges": false
+    },
+    {
+      "id": "slurp",
+      "version": "1.51.0",
+      "archive": "artifacts/slurp-1.51.0.zip",
+      "archiveSha256": "c03e5e223aa146cf2f0f9eafe7a748ef0d38bc4b83c2714141cd417fcd022926",
+      "privateChanges": false
+    },
+    {
+      "id": "slurp2",
+      "version": "0.1.3",
+      "archive": "artifacts/slurp2-0.1.3.zip",
+      "archiveSha256": "7a189c7f4bf2490b6702851ceb90c1d7315182024570084df7f56436f406ed65",
+      "privateChanges": false
+    },
+    {
+      "id": "spotify",
+      "version": "1.0.2",
+      "archive": "artifacts/spotify-1.0.2.zip",
+      "archiveSha256": "ea71353c1fd41249c969bb38f72b9cad634b666200b8ad1523ddd245b34e61f1",
+      "privateChanges": false
+    },
+    {
+      "id": "storyboard",
+      "version": "1.1.5",
+      "archive": "artifacts/storyboard-1.1.5.zip",
+      "archiveSha256": "aae00d5923bed18f55f01d692f8f3eaf306a3b34b63c7acd21172c6af47d9bd2",
+      "privateChanges": false
+    },
+    {
+      "id": "tic-tac-toe",
+      "version": "1.0.5",
+      "archive": "artifacts/tic-tac-toe-1.0.5.zip",
+      "archiveSha256": "0f102c617777c5656555aec0411ca51fc5892c5788fcbad620d01d291bc642f9",
+      "privateChanges": false
+    },
+    {
+      "id": "uno",
+      "version": "1.0.5",
+      "archive": "artifacts/uno-1.0.5.zip",
+      "archiveSha256": "eb697351c7a56a37a4c6a15f8ab3476c7f7eb6fd32949b2a41c8e828e631a1e7",
+      "privateChanges": false
+    },
+    {
+      "id": "world-state",
+      "version": "1.1.1",
+      "archive": "artifacts/world-state-1.1.1.zip",
+      "archiveSha256": "fae2c5fe01a2c5c42ef1d2f09635ae50b282ad79cb990893bbf531225c3ad6df",
+      "privateChanges": true
+    }
+  ],
+  "modifiedSupportPaths": [
+    "catalog/catalog.json",
+    "catalog/notes.json",
+    "catalog/v2/catalog.json",
+    "catalog/v2/notes.json",
+    "catalog/v3/catalog.json",
+    "catalog/v3/notes.json",
+    "scripts/build-agent-catalog.mjs",
+    "scripts/build-feature-packages.mjs",
+    "scripts/hierarchical-maps-boundary.mjs",
+    "scripts/package-manifest-integrity.mjs",
+    "sources/engine/packages/client/src/components/game/compact-map-layout.ts",
+    "sources/engine/packages/client/src/hooks/use-slurp-media-src.ts",
+    "sources/engine/packages/client/src/lib/slurp-refresh-batch.ts",
+    "sources/engine/packages/server/src/services/noodle/noodle-operation-lock.ts",
+    "sources/engine/packages/server/src/services/noodle/noodle-prompt.ts",
+    "sources/engine/packages/server/src/services/storage/slurp-refresh-run-retention.ts",
+    "sources/engine/packages/shared/dist/schemas/spatial-context.schema.js",
+    "tests/canon-authority.regression.mjs",
+    "tests/fullscreen-map.browser.mjs",
+    "tests/hierarchical-maps-lifecycle.regression.ts",
+    "tests/local-map-adapter.browser.mjs",
+    "tests/ltm-review-provenance.regression.ts",
+    "tests/map-compact-focus.regression.ts",
+    "tests/map-connect-drag.browser.mjs",
+    "tests/map-coordinate-contract.regression.mjs",
+    "tests/map-tools-popover.browser.mjs",
+    "tests/map-viewport.browser.mjs",
+    "tests/spatial-context.e2e.ts",
+    "tests/world-map-markers.regression.mjs",
+    "tests/world-maps-ui-contract.regression.mjs"
+  ]
+}

@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "id": "noodle",
+  "name": "Noodle",
+  "version": "1.2.24",
+  "description": "Explore the Noodle public timeline as an optional local social world. Install it, restart Marinara Engine when prompted, then open Home → Noodle.",
+  "localizations": {
+    "de": {
+      "name": "Noodle",
+      "description": "Entdecke die öffentliche Noodle-Timeline als optionale lokale soziale Welt. Installiere das Paket, starte Marinara Engine nach Aufforderung neu und öffne dann unter Home den Tab Noodle.",
+      "homeBrowserTab": {
+        "label": "Noodle",
+        "ariaLabel": "Noodle öffnen"
+      }
+    },
+    "ko": {
+      "name": "Noodle",
+      "description": "Noodle 공개 타임라인을 선택형 로컬 소셜 세계로 만나 보세요. 패키지를 설치하고 안내에 따라 Marinara Engine을 다시 시작한 다음 홈 → Noodle을 여세요.",
+      "homeBrowserTab": {
+        "label": "Noodle",
+        "ariaLabel": "Noodle 열기"
+      }
+    },
+    "pl": {
+      "name": "Noodle",
+      "description": "Poznaj publiczną oś czasu Noodle jako opcjonalny lokalny świat społecznościowy. Zainstaluj pakiet, uruchom ponownie Marinara Engine po wyświetleniu monitu, a następnie otwórz zakładkę Noodle na stronie głównej.",
+      "homeBrowserTab": {
+        "label": "Noodle",
+        "ariaLabel": "Otwórz Noodle"
+      }
+    }
+  },
+  "engine": {
+    "min": "2.4.4",
+    "maxExclusive": "4.0.0"
+  },
+  "kind": [
+    "agent"
+  ],
+  "entrypoints": {
+    "agents": "agents.json",
+    "server": "server.mjs",
+    "client": "client.js"
+  },
+  "contributions": {
+    "slots": [
+      "home-browser-tab"
+    ],
+    "homeBrowserTab": {
+      "label": "Noodle",
+      "ariaLabel": "Open Noodle",
+      "iconPaths": [
+        "noodle-klusek.png"
+      ]
+    }
+  },
+  "files": [
+    {
+      "path": "agents.json",
+      "sha256": "dbd9eccf6fca9b299ecdb9d0aab599e5d01fdd0260266490ca1c02a199bed923",
+      "bytes": 510
+    },
+    {
+      "path": "server.mjs",
+      "sha256": "9a8c9371d2f8799251a28b90cd5fed6b855ad1eeef8123fe77c37b672e574360",
+      "bytes": 2218589
+    },
+    {
+      "path": "client.js",
+      "sha256": "621bd3fb265860feb6cb15d7b2f98f5462af2f2b7f5dbc7e7ad3441ea03aee1e",
+      "bytes": 2329165
+    },
+    {
+      "path": "noodle-klusek.png",
+      "sha256": "003236ad2b83c5eb44731a48048c86b07aa8c1f9c411f881c15f7d4af3c68212",
+      "bytes": 28325
+    }
+  ],
+  "permissions": [
+    "chat-read",
+    "chat-write",
+    "network",
+    "routes",
+    "storage",
+    "ui"
+  ],
+  "restartRequired": true
+}

@@ -1,0 +1,138 @@
+import { useSpatialMapTranslation } from "../localization";
+
+const choices = [
+  "🏰",
+  "🏯",
+  "🏘️",
+  "🏡",
+  "🏠",
+  "🏚️",
+  "🏛️",
+  "🏢",
+  "🏨",
+  "🏪",
+  "🏫",
+  "🏥",
+  "⛪",
+  "🕌",
+  "🛕",
+  "⛩️",
+  "🕍",
+  "🗼",
+  "⛺",
+  "🛖",
+  "🏭",
+  "🏟️",
+  "🎪",
+  "🌉",
+  "🛤️",
+  "⚓",
+  "⛲",
+  "🗽",
+  "🌷",
+  "🌻",
+  "🌹",
+  "🪻",
+  "🌼",
+  "🌸",
+  "🌳",
+  "🌲",
+  "🌴",
+  "🌵",
+  "🎋",
+  "🍄",
+  "🪴",
+  "🌾",
+  "🍇",
+  "🍎",
+  "🏞️",
+  "🏔️",
+  "⛰️",
+  "🌋",
+  "🏝️",
+  "🏜️",
+  "🌊",
+  "🪨",
+  "🕳️",
+  "🧊",
+  "🔥",
+  "💧",
+  "🛏️",
+  "🛁",
+  "🚪",
+  "🪑",
+  "🛋️",
+  "🪞",
+  "🕯️",
+  "📚",
+  "📜",
+  "🧪",
+  "🔭",
+  "⚗️",
+  "🧵",
+  "🪡",
+  "🛠️",
+  "⚒️",
+  "⚔️",
+  "🛡️",
+  "🏹",
+  "🎯",
+  "🍽️",
+  "🍳",
+  "🍞",
+  "🧀",
+  "🥛",
+  "🍺",
+  "🍷",
+  "☕",
+  "🐎",
+  "🐄",
+  "🐑",
+  "🐖",
+  "🐔",
+  "🐟",
+  "🐝",
+  "🦌",
+  "🐉",
+  "🦅",
+  "💎",
+  "👑",
+  "💰",
+  "⚖️",
+  "🔑",
+  "🔒",
+  "⚰️",
+  "🪦",
+  "🎭",
+  "🎨",
+  "🎵",
+  "🔔",
+  "🧭",
+  "🗺️",
+  "📍",
+  "✨",
+  "🔮",
+  "🌀",
+];
+
+export function LocationEmojiChoices({ onSelect }: { onSelect: (icon: string) => void }) {
+  const { t } = useSpatialMapTranslation();
+  return (
+    <details className="col-span-2">
+      <summary className="cursor-pointer text-xs">{t("ui.worldMaps.icons.choose")}</summary>
+      <div className="mt-2 flex max-h-48 flex-wrap gap-1 overflow-y-auto">
+        {choices.map((emoji) => (
+          <button
+            key={emoji}
+            type="button"
+            className="flex h-11 w-11 items-center justify-center rounded border border-[var(--border)] text-xl hover:bg-[var(--muted)]"
+            aria-label={`${t("ui.worldMaps.icons.use")} ${emoji}`}
+            onClick={() => onSelect(`emoji:${emoji}`)}
+          >
+            {emoji}
+          </button>
+        ))}
+      </div>
+    </details>
+  );
+}

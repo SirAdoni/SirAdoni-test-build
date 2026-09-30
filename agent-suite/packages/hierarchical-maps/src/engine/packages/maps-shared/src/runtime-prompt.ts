@@ -1,0 +1,188 @@
+import {
+  SPATIAL_CONTEXT_LIMITS,
+  buildSpatialLocationIndex,
+  resolveSpatialBreadcrumb,
+  resolveSpatialDestinations,
+  type ResolvedOwnerSpatialProjection,
+  type ResolvedSpatialTravel,
+  type SpatialContextDefinition,
+  type SpatialTravelPromptSummary,
+} from "@marinara-engine/shared";
+import { defaultSpatialTurnPromptTemplates, renderSpatialTurnPromptTemplate } from "./maps-model.js";
+
+const MAX_PROMPT_BREADCRUMB_NODES = 20;
+const MAX_PROMPT_KNOWN_LOCATIONS = 50;
+
+type ResolvedOwnerSpatialProjectionWithKnownLocationLimit = ResolvedOwnerSpatialProjection & {
+  omittedKnownLocationCount?: number;
+  autoTravelNowEnabled?: boolean;
+};
+
+function boundedText(value: string | undefined, maximumLength: number): string {
+  return (value ?? "").trim().slice(0, maximumLength);
+}
+
+function escapeXmlText(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+}
+
+export function buildOwnerSpatialProjection(
+  chatId: string,
+  definition: SpatialContextDefinition | null,
+  currentLocationId: string | null,
+  acceptedTravel?: ResolvedSpatialTravel | null,
+  autoTravelNowEnabled = false,
+): ResolvedOwnerSpatialProjectionWithKnownLocationLimit | null {
+  if (!definition?.enabled || !currentLocationId) return null;
+
+  const current = buildSpatialLocationIndex(definition).get(currentLocationId);
+  if (!current) return null;
+
+  const allDestinations = resolveSpatialDestinations(definition, currentLocationId);
+  const destinations = allDestinations.slice(0, SPATIAL_CONTEXT_LIMITS.maxPromptDestinations);
+  const allKnownLocations = definition.locations.filter((location) => location.status === "active");
+  const knownLocations = allKnownLocations.slice(0, MAX_PROMPT_KNOWN_LOCATIONS).map((location) => ({
+    id: location.id,
+    path: resolveSpatialBreadcrumb(definition, location.id)
+      .slice(-MAX_PROMPT_BREADCRUMB_NODES)
+      .map(({ name }) => boundedText(name, SPATIAL_CONTEXT_LIMITS.maxNameLength))
+      .join(" > "),
+  }));
+  const travelSummary: SpatialTravelPromptSummary | undefined = acceptedTravel
+    ? (() => {
+        const byId = buildSpatialLocationIndex(definition);
+        const nameFor = (locationId: string): string =>
+          boundedText(byId.get(locationId)?.name ?? locationId, SPATIAL_CONTEXT_LIMITS.maxNameLength);
+        return {
+          mode: acceptedTravel.mode,
+          fromLocationName: nameFor(acceptedTravel.fromLocationId),
+          acceptedLocationName: nameFor(
+            acceptedTravel.mode === "step_by_step"
+              ? (acceptedTravel.routeLocationIds[0] ?? acceptedTravel.targetLocationId)
+              : acceptedTravel.targetLocationId,
+          ),
+          targetLocationName: nameFor(acceptedTravel.targetLocationId),
+          routeLocationNames: acceptedTravel.routeLocationIds
+            .slice(0, SPATIAL_CONTEXT_LIMITS.maxRouteLocations)
+            .map(nameFor),
+          remainingLocationNames: acceptedTravel.remainingLocationIds
+            .slice(0, SPATIAL_CONTEXT_LIMITS.maxRouteLocations)
+            .map(nameFor),
+        };
+      })()
+    : undefined;
+  return {
+    kind: "owner",
+    chatId,
+    ownerMode: definition.ownerMode,
+    definitionRevision: definition.revision,
+    currentLocationId,
+    breadcrumb: resolveSpatialBreadcrumb(definition, currentLocationId)
+      .slice(-MAX_PROMPT_BREADCRUMB_NODES)
+      .map(({ id, name }) => ({
+        id,
+        name: boundedText(name, SPATIAL_CONTEXT_LIMITS.maxNameLength),
+      })),
+    description: boundedText(current.description, SPATIAL_CONTEXT_LIMITS.maxDescriptionLength),
+    modelMemory: current.modelMemory
+      ? boundedText(current.modelMemory, SPATIAL_CONTEXT_LIMITS.maxModelMemoryLength) || null
+      : null,
+    referenceImageId: current.referenceImageId?.trim() || null,
+    useReferenceImage: current.useReferenceImage === true,
+    destinations,
+    knownLocations,
+    omittedKnownLocationCount: Math.max(0, allKnownLocations.length - knownLocations.length),
+    autoTravelNowEnabled,
+    lorebookEntryIds: current.lorebookEntryIds,
+    omittedDestinationCount: Math.max(0, allDestinations.length - destinations.length),
+    ...(acceptedTravel ? { travel: acceptedTravel } : {}),
+    ...(travelSummary ? { travelSummary } : {}),
+  };
+}
+
+export function formatOwnerSpatialBreadcrumb(projection: ResolvedOwnerSpatialProjection): string {
+  return projection.breadcrumb.map(({ name }) => name).join(" > ");
+}
+
+type ResolvedOwnerSpatialProjectionWithTemplate = ResolvedOwnerSpatialProjection & {
+  turnPromptTemplate?: string;
+};
+
+export function formatOwnerSpatialPrompt(projection: ResolvedOwnerSpatialProjection, template?: string): string {
+  const breadcrumb = escapeXmlText(formatOwnerSpatialBreadcrumb(projection));
+  const description = projection.description
+    ? escapeXmlText(projection.description)
+    : "(No public description is set.)";
+  const destinationLines = projection.destinations.length
+    ? projection.destinations.map((destination) => {
+        const label = destination.label ? ` — ${escapeXmlText(destination.label)}` : "";
+        return `- ${escapeXmlText(destination.name)} [${escapeXmlText(destination.id)}]${label}`;
+      })
+    : ["- None"];
+  if (projection.omittedDestinationCount > 0) {
+    destinationLines.push(`- ${projection.omittedDestinationCount} additional destinations omitted.`);
+  }
+  const knownLocationLines = projection.knownLocations?.length
+    ? projection.knownLocations.map(({ id, path }) => `- ${escapeXmlText(path)} [${escapeXmlText(id)}]`)
+    : ["- None"];
+  const omittedKnownLocationCount =
+    (projection as ResolvedOwnerSpatialProjectionWithKnownLocationLimit).omittedKnownLocationCount ?? 0;
+  const autoTravelNowEnabled =
+    (projection as ResolvedOwnerSpatialProjectionWithKnownLocationLimit).autoTravelNowEnabled === true;
+  if (omittedKnownLocationCount > 0) {
+    knownLocationLines.push(`- ${omittedKnownLocationCount} additional known locations omitted.`);
+  }
+  const knownLocationIndex = [
+    "Known map locations (active breadcrumb names and exact IDs only):",
+    ...knownLocationLines,
+    "",
+  ].join("\n");
+  const travelFacts =
+    projection.travel && projection.travelSummary
+      ? [
+          `<movement_this_turn mode="${projection.travel.mode}">`,
+          `From: ${escapeXmlText(projection.travelSummary.fromLocationName)}`,
+          `Accepted destination: ${escapeXmlText(projection.travelSummary.acceptedLocationName)}`,
+          `Target: ${escapeXmlText(projection.travelSummary.targetLocationName)}`,
+          `Validated route: ${projection.travelSummary.routeLocationNames.map(escapeXmlText).join(" > ")}`,
+          `Remaining route: ${projection.travelSummary.remainingLocationNames.length ? projection.travelSummary.remainingLocationNames.map(escapeXmlText).join(" > ") : "None"}`,
+          `Complete: ${projection.travel.complete ? "yes" : "no"}`,
+          "Movement is already canonical for this turn. Do not emit another location change or topology mutation.",
+          "</movement_this_turn>",
+          "",
+        ].join("\n")
+      : "";
+  const contextualTravelInstruction = autoTravelNowEnabled
+    ? " An immediately preceding assistant turn may supply the destination but never the authority: when it supplied exactly one known destination for the immediate trip, treat unambiguous present commitment such as “Ready to go,” “Let’s go,” or “Take us there” as user-led movement only if your visible response actually completes arrival at that same destination."
+    : "";
+  const moveValidationInstruction = autoTravelNowEnabled
+    ? ' When that user-led arrival matches a known map location reachable through the existing map, append [spatial_move: destination_id="exact_id"] as the final line. Automatic Travel now is enabled for this chat, so the application permits this completed move over an existing validated route; it never creates or changes a route.'
+    : ' When that user-led arrival matches a directly available destination listed above, append [spatial_move: destination_id="exact_id"] as the final line. Automatic Travel now is off, so the application accepts only directly available destinations for automatic movement.';
+  const userLedTransitionInstruction = `Use the latest user message as the authority for map changes. Treat direct present-tense or imperative movement by the focal party, such as “We go to the Kitchen” or “We follow her into the outdoor section,” as establishing arrival for this turn.${contextualTravelInstruction}${moveValidationInstruction} When the user explicitly establishes discovery or arrival at a significant named, durable, revisitable place that has no known match, choose its containment separately from how the party reached it. Only when the place is physically contained inside the current location, such as “We discover a hidden room” inside the current building, append [spatial_discover: name="Place Name" relation="enter" parent_id="${escapeXmlText(projection.currentLocationId)}" description="Short orientation"] as the final line. Arrival order, adjacency, travel, teleportation, portal passage, or merely being current never proves parent-child containment. For a distinct neighboring, remote, planar, dimensional, or otherwise travel-connected place, use relation="link", include direction="outgoing", direction="incoming", or direction="both" relative to the current location, and set parent_id="root" unless the known-location list supplies the exact ID of its established container other than the current location; containment inside the current location requires relation="enter" instead. A link discovery without direction or with an unknown parent is invalid. A known but unreachable location is not discovery and must not create a link. The visible response may narrate the consequence, but narration without that user authority never authorizes either command. Do not emit either command for future intentions, failed or unfinished travel, mentions, NPC-only movement, imagined places, temporary camps, hallways, vehicles, or other transient scene details. These commands are hidden from the user and validated by the application.`;
+  const authorityInstruction =
+    projection.ownerMode === "game"
+      ? `${knownLocationIndex}Treat this as the authoritative world location for the GM and party. A legacy Game map, when present, is only local/tactical detail inside this location. Keep the current location unless the latest user message establishes a change. ${userLedTransitionInstruction}`
+      : `${knownLocationIndex}Treat this as the authoritative location for the focal scene. Keep the current location unless the latest user message establishes a change. ${userLedTransitionInstruction}`;
+  const defaults = defaultSpatialTurnPromptTemplates();
+  const selectedTemplate =
+    template ??
+    (projection as ResolvedOwnerSpatialProjectionWithTemplate).turnPromptTemplate ??
+    defaults[projection.ownerMode];
+  const body = renderSpatialTurnPromptTemplate(selectedTemplate, {
+    ownerMode: projection.ownerMode,
+    currentPath: breadcrumb,
+    currentLocationId: escapeXmlText(projection.currentLocationId),
+    visibleLocationContext: description,
+    privateModelContextBlock: projection.modelMemory
+      ? `Private model context:\n${escapeXmlText(projection.modelMemory)}\n\n`
+      : "",
+    availableDestinations: destinationLines.join("\n"),
+    authorityInstruction,
+  }).trim();
+  return [
+    `<spatial_context mode="${projection.ownerMode}" authority="application">`,
+    travelFacts,
+    body,
+    "</spatial_context>",
+  ].join("\n");
+}

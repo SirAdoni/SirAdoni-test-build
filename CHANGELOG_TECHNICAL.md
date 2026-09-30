@@ -1,5 +1,13 @@
 # Technical changelog
 
+## 2026-09-30 - Preserve the private downloadable-agent suite
+
+- Added `agent-suite/` as a standalone source snapshot of the reconciled Marinara-Agents working tree. Captured all 40 current package directories and matching ZIPs, catalogs, manifests, source/build support, artwork, schemas and regression fixtures. The 14 locally modified packages include Hierarchical Maps 1.4.29 and Long-Term Memory 1.3.6; working-file capture preserves newer unstaged contents rather than exporting the older Git index or baseline commit.
+- `agent-suite/snapshot.json` records the source baseline, enclosing Engine commit, package/archive hashes, modified support paths and a deterministic SHA-256 capture digest. `PRIVATE-SUITE.md` documents the standalone npm install and explicit `MARINARA_ENGINE_ROOT` required by the nested layout. Upstream catalog filtering, URLs, licenses and attribution remain intact. Historical ZIP versions, Git history, dependencies, campaign data, databases, logs, backups and local tooling state are excluded.
+- Added narrowly scoped Git ignore exceptions for 214 captured shared `dist` inputs and 44 Slurp 2 source modules in its `slp/data` directory; the enclosing Engine's generic ignore rules otherwise omit those required build inputs. This does not relax exclusions for runtime data or ordinary Engine build output.
+- Verified the 2,457 copied source/archive files against their original bytes, checked all 40 archive manifests and payload hashes, and scanned source plus ZIP contents for the requested identity markers, private paths and common credential patterns. Agents `npm run check` passed with 0 errors and 895 existing warnings; catalog lane/provenance, localization, catalog integrity and release-note checks passed. Focused canon-authority, map coordinate/marker/UI-contract/compact-focus and memory review-provenance regressions passed. Independent Luna review checked publication completeness and the nested build setup. Two inherited whitespace findings in unchanged captured helper files are retained to preserve source bytes; the new documentation and ignore changes pass whitespace checks. No live package installation or campaign exercise was performed by this source handoff.
+
+
 ## 2026-09-28 - Repair frozen pnpm install after private and staging merge
 
 - Moved the private dependency security overrides from the root `package.json` `pnpm` field into `pnpm-workspace.yaml`, where the declared pnpm runner reads the effective workspace policy. Preserved upstream `onnxruntime-node@1.30.0` and its patch, `onnxruntime-web`, and the private `protobufjs@7.6.5` pin. The workspace's existing broad `brace-expansion@5.0.9` override subsumes the former private exact-version selector.

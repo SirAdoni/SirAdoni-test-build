@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "id": "poker",
+  "name": "Poker",
+  "version": "1.0.5",
+  "description": "Play Texas Hold’em Poker with Conversation characters. Install to use /poker manually in any Conversation chat. Add under Chat Settings → Agents → Commands only to let characters initiate it.",
+  "engine": {
+    "min": "2.3.0",
+    "maxExclusive": "4.0.0"
+  },
+  "kind": [
+    "agent",
+    "turn-game"
+  ],
+  "entrypoints": {
+    "agents": "agents.json",
+    "server": "server.mjs",
+    "client": "client.js"
+  },
+  "contributions": {
+    "slots": [
+      "conversation-surface"
+    ],
+    "conversationGame": {
+      "command": "/poker",
+      "aliases": [
+        "poker",
+        "hold'em",
+        "texas hold'em"
+      ],
+      "playerLabel": "Table game"
+    }
+  },
+  "files": [
+    {
+      "path": "agents.json",
+      "sha256": "b747c803dd3bd6dad070ecf6d1245ffc1102b427046c9f6288991508427c6d0e",
+      "bytes": 577
+    },
+    {
+      "path": "server.mjs",
+      "sha256": "171b58dc63e712968aa5eeb7181ac7f409a4f5207a80fe995e3caf4ca6668c39",
+      "bytes": 83630
+    },
+    {
+      "path": "client.js",
+      "sha256": "515835c986e9369ac28c8769d552a1a24224f10bceed6c2068a4b08b7936cf5b",
+      "bytes": 569375
+    }
+  ],
+  "permissions": [
+    "agent-runtime",
+    "chat-read",
+    "chat-write",
+    "storage",
+    "ui"
+  ],
+  "restartRequired": true
+}
