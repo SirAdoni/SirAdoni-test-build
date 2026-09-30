@@ -100,7 +100,7 @@ export function AmbientProfilesPanel({
                         onError: (error) => toast.error(errorMessage(error)),
                       })
                     }
-                    className="inline-flex min-h-9 items-center gap-1.5 rounded-lg bg-[var(--noodle-accent)] px-2.5 text-[0.7rem] font-bold text-zinc-950 [&_svg]:!text-zinc-950 disabled:opacity-50"
+                    className="inline-flex min-h-9 items-center gap-1.5 rounded-lg bg-[var(--noodle-accent)] px-2.5 text-[0.7rem] font-bold text-[var(--slurp-on-accent)] [&_svg]:!text-[var(--slurp-on-accent)] disabled:opacity-50"
                   >
                     <Save size={12} />
                     {t("ui.slurp.settings.ambient.save")}

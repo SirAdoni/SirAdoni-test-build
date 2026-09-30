@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { createRequire } from "node:module";
+import { createServer } from "node:http";
+import { mock } from "node:test";
 import { join } from "node:path";
 
 // Covers lorebook activation statistics: batched writes, the generation hook,
@@ -9,35 +10,42 @@ import { join } from "node:path";
 
 const dataDir = mkdtempSync(join(tmpdir(), "marinara-lorebook-activation-stats-"));
 const previous = {
+  NODE_ENV: process.env.NODE_ENV,
+  MARINARA_LITE: process.env.MARINARA_LITE,
+  LOG_LEVEL: process.env.LOG_LEVEL,
+  AUTO_CREATE_DEFAULT_CONNECTION: process.env.AUTO_CREATE_DEFAULT_CONNECTION,
   DATA_DIR: process.env.DATA_DIR,
   FILE_STORAGE_DIR: process.env.FILE_STORAGE_DIR,
   MARINARA_FILE_STORAGE_DIR: process.env.MARINARA_FILE_STORAGE_DIR,
 };
-type Response = { statusCode: number; body: string; json(): any };
-let app: {
-  close(): Promise<void>;
-  inject(options: Record<string, unknown>): Promise<Response>;
-} | null = null;
+let app: Awaited<ReturnType<typeof import("../../packages/server/src/app.js").buildApp>> | null = null;
+let provider: ReturnType<typeof createServer> | null = null;
+let db: Awaited<
+  ReturnType<typeof import("../../packages/server/src/db/file-backed-store.js").createFileNativeDB>
+> | null = null;
 
 try {
+  process.env.NODE_ENV = "test";
+  process.env.MARINARA_LITE = "true";
+  process.env.LOG_LEVEL = "silent";
+  process.env.AUTO_CREATE_DEFAULT_CONNECTION = "false";
   const fileStorageDir = join(dataDir, "file-storage");
   process.env.DATA_DIR = dataDir;
   process.env.FILE_STORAGE_DIR = fileStorageDir;
   process.env.MARINARA_FILE_STORAGE_DIR = fileStorageDir;
 
-  // A minimal app with just the lorebook routes keeps this well inside the time budget.
-  const [{ createFileNativeDB }, { lorebooksRoutes }, stats] = await Promise.all([
-    import("../../packages/server/src/db/file-backed-store.js"),
-    import("../../packages/server/src/routes/lorebooks.routes.js"),
-    import("../../packages/server/src/services/lorebook/activation-stats.js"),
-  ]);
-  const db = await createFileNativeDB();
-  const Fastify = createRequire(new URL("../../packages/server/package.json", import.meta.url))("fastify");
-  const server = Fastify();
-  server.decorate("db", db);
-  await server.register(lorebooksRoutes, { prefix: "/api/lorebooks" });
-  app = server;
-  const request = async (method: string, url: string, payload?: unknown) => {
+  const [{ createFileNativeDB }, { buildApp }, stats, featureSettings, { lorebookEntryActivationStats }] =
+    await Promise.all([
+      import("../../packages/server/src/db/file-backed-store.js"),
+      import("../../packages/server/src/app.js"),
+      import("../../packages/server/src/services/lorebook/activation-stats.js"),
+      import("../../packages/server/src/services/features/feature-settings.js"),
+      import("../../packages/server/src/db/schema/index.js"),
+    ]);
+  app = await buildApp();
+  db = app.db;
+  await app.ready();
+  const request = async (method: "GET" | "POST" | "DELETE", url: string, payload?: Record<string, unknown>) => {
     const response = await app!.inject({ method, url, payload });
     assert.ok(response.statusCode < 400, `${method} ${url} -> ${response.statusCode}`);
     return response.body ? response.json() : null;
@@ -46,12 +54,22 @@ try {
   const book = await request("POST", "/api/lorebooks", { name: "Stats World" });
   const entry = (name: string, extra: Record<string, unknown>) =>
     request("POST", `/api/lorebooks/${book.id}/entries`, { lorebookId: book.id, name, ...extra });
-  const city = await entry("Brindlemere", { keys: ["Brindlemere"], content: "The capital." });
-  const queen = await entry("Queen Adalwen", { keys: ["Adalwen"], content: "A monarch." });
+  const city = await entry("Valdenmoor", { keys: ["Valdenmoor"], content: "The capital." });
+  const queen = await entry("Queen Sybel", { keys: ["Sybel"], content: "A monarch." });
 
   // ── Activation statistics ──
   const statsUrl = `/api/lorebooks/${book.id}/activation-stats`;
+  featureSettings.resetFeatureSettingsForTests({ usageAndActivationStats: false });
   assert.deepEqual(await request("GET", statsUrl), [], "nothing has fired yet");
+  stats.recordLorebookActivations(db, { entryIds: [city.id] });
+  await stats.flushLorebookActivationStats(db);
+  assert.deepEqual(await request("GET", statsUrl), [], "activation collection is off when disabled");
+  assert.deepEqual(
+    await db.select().from(lorebookEntryActivationStats),
+    [],
+    "disabled collection does not persist hidden activation counts",
+  );
+  featureSettings.resetFeatureSettingsForTests({ usageAndActivationStats: true });
 
   stats.recordLorebookActivations(db, {
     entryIds: [city.id, queen.id],
@@ -74,7 +92,12 @@ try {
   assert.equal(cityStat?.lastChatId, "chat-2");
   assert.equal(cityStat?.lorebookId, book.id);
   assert.equal(rows.find((row) => row.entryId === queen.id)?.count, 1);
-  assert.equal(rows.length, 2, "unknown entry ids are ignored");
+  assert.equal(rows.length, 2);
+  assert.equal(
+    (await db.select().from(lorebookEntryActivationStats)).some((row) => row.entryId === "deleted-entry"),
+    false,
+    "unknown entry IDs are not persisted, including rows hidden by the route's current-entry filter",
+  );
 
   // A second batch updates in place.
   stats.recordLorebookActivations(db, { entryIds: [queen.id], chatId: "chat-3" });
@@ -82,36 +105,91 @@ try {
   rows = await request("GET", statsUrl);
   assert.equal(rows.find((row) => row.entryId === queen.id)?.count, 2);
 
+  // Turning the switch off drops pending counts and hides saved stats without deleting them.
+  const savedStatsBeforeOff = await db.select().from(lorebookEntryActivationStats);
+  stats.recordLorebookActivations(db, { entryIds: [city.id], chatId: "chat-off" });
+  featureSettings.resetFeatureSettingsForTests({ usageAndActivationStats: false });
+  await stats.flushLorebookActivationStats(db);
+  assert.deepEqual(await request("GET", statsUrl), [], "off hides previously saved activation stats");
+  assert.deepEqual(
+    await db.select().from(lorebookEntryActivationStats),
+    savedStatsBeforeOff,
+    "off drops queued counts and backlinks without changing saved statistics",
+  );
+  featureSettings.resetFeatureSettingsForTests({ usageAndActivationStats: true });
+  rows = await request("GET", statsUrl);
+  assert.equal(
+    rows.find((row) => row.entryId === city.id)?.count,
+    2,
+    "off dropped pending data without deleting saved counts",
+  );
   // Deleting an entry removes its stats row.
   await request("DELETE", `/api/lorebooks/${book.id}/entries/${queen.id}`);
   assert.deepEqual(await stats.listLorebookActivationStats(db, [queen.id]), []);
 
-  // The generation path reports the entries it persisted with the message.
-  const generateSource = readFileSync(
-    new URL("../../packages/server/src/routes/generate.routes.ts", import.meta.url),
-    "utf8",
-  );
-  assert.match(
-    generateSource,
-    /extraUpdate\.lorebookScan = lorebookScanSnapshot;(?:\s*\/\/[^\n]*\n)+\s*if \(!input\.continueMessageId\) \{\s*recordLorebookActivations\(app\.db, \{\s*entryIds: lorebookScanSnapshot\.activatedEntries\.map/,
-    "activation stats are recorded where the generation's lorebook scan is saved, skipping Continue",
-  );
-  // A normal shutdown writes the last batch before the database closes.
-  const appSource = readFileSync(new URL("../../packages/server/src/app.ts", import.meta.url), "utf8");
-  const closeHook = appSource.slice(appSource.indexOf('app.addHook("onClose"'));
+  // Exercise the real generation route with the same local SSE-provider pattern as other lorebook proofs.
+  const prompts: string[] = [];
+  provider = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(Buffer.from(chunk));
+    prompts.push(Buffer.concat(chunks).toString());
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end(
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "Welcome to Valdenmoor." } }] })}\n\n` +
+        `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
+    );
+  });
+  await new Promise<void>((resolve) => provider!.listen(0, "127.0.0.1", resolve));
+  const address = provider.address();
+  assert.ok(address && typeof address === "object");
+  const connection = await request("POST", "/api/connections", {
+    name: "Stats fixture",
+    provider: "custom",
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    model: "fixture",
+    apiKey: "fixture",
+    maxContext: 8192,
+    maxTokensOverride: 256,
+  });
+  const character = await request("POST", "/api/characters", { data: { name: "Stats narrator" } });
+  const chat = await request("POST", "/api/chats", {
+    name: "Stats generation",
+    mode: "roleplay",
+    characterIds: [character.id],
+    connectionId: connection.id,
+  });
+  const { createChatsStorage } = await import("../../packages/server/src/services/storage/chats.storage.js");
+  const chats = createChatsStorage(db);
+  await chats.patchMetadata(chat.id, {
+    enableAgents: false,
+    enableMemoryRecall: false,
+    activeLorebookIds: [book.id],
+  });
+  const generate = async (payload: Record<string, unknown>) => {
+    const response = await app!.inject({
+      method: "POST",
+      url: "/api/generate/",
+      payload: { chatId: chat.id, ...payload },
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.ok(!response.body.includes('"type":"error"'), response.body);
+    await stats.flushLorebookActivationStats(db!);
+  };
+  await generate({ userMessage: "Explore Valdenmoor." });
+  assert.ok(prompts[0]?.includes("The capital."), "the activated entry reaches the real provider prompt");
+  const reply = (await chats.listMessages(chat.id)).filter((message) => message.role === "assistant").at(-1);
+  assert.ok(reply, "generation saved an assistant reply");
   assert.ok(
-    closeHook.indexOf("flushLorebookActivationStats()") > 0 &&
-      closeHook.indexOf("flushLorebookActivationStats()") < closeHook.indexOf("await closeDB()"),
-    "the onClose hook flushes activation stats before closing the database",
+    JSON.parse(reply.extra).lorebookScan.activatedEntries.some((entry: { id: string }) => entry.id === city.id),
+    "the saved reply records the activated lore entry",
   );
-  // flush cancels the pending timer and writes immediately.
-  stats.recordLorebookActivations(db, { entryIds: [city.id], chatId: "chat-4" });
-  await stats.flushLorebookActivationStats();
-  assert.equal(
-    (await stats.listLorebookActivationStats(db, [city.id]))[0]?.count,
-    3,
-    "flush without a db uses the queued one",
-  );
+  rows = await request("GET", statsUrl);
+  assert.equal(rows.find((row) => row.entryId === city.id)?.count, 3, "generation records one new activation");
+  assert.equal(rows.find((row) => row.entryId === city.id)?.lastChatId, chat.id);
+  await generate({ continueMessageId: reply.id });
+  assert.ok(prompts[1]?.includes("The capital."), "Continue still sends the activated entry to the provider");
+  rows = await request("GET", statsUrl);
+  assert.equal(rows.find((row) => row.entryId === city.id)?.count, 3, "Continue does not count the same turn again");
 
   // Failures never escape: a broken database only logs.
   const brokenDb = {
@@ -124,8 +202,39 @@ try {
   assert.doesNotThrow(() =>
     stats.recordLorebookActivations(null as unknown as typeof db, { entryIds: null as unknown as string[] }),
   );
+
+  // Hold only the queued flush timer; real shutdown deadlines and service waits run normally.
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    stats.recordLorebookActivations(db, { entryIds: [city.id], chatId: "chat-shutdown" });
+  } finally {
+    mock.timers.reset();
+  }
+  assert.equal((await stats.listLorebookActivationStats(db, [city.id]))[0]?.count, 3, "the final count is pending");
+  let countBeforeStoreClose: number | undefined;
+  const closeStore = db._fileStore.close.bind(db._fileStore);
+  const closeSpy = mock.method(db._fileStore, "close", async () => {
+    countBeforeStoreClose = (await stats.listLorebookActivationStats(db!, [city.id]))[0]?.count;
+    await closeStore();
+  });
+  await app.close();
+  app = null;
+  closeSpy.mock.restore();
+  assert.equal(countBeforeStoreClose, 4, "the real shutdown hook flushes pending activations before storage closes");
+  db = await createFileNativeDB();
+  assert.equal(
+    (await stats.listLorebookActivationStats(db, [city.id]))[0]?.count,
+    4,
+    "the count survives reopening storage",
+  );
 } finally {
+  mock.timers.reset();
+  mock.restoreAll();
   await app?.close();
+  await db?._fileStore.close();
+  if (provider?.listening) {
+    await new Promise<void>((resolve, reject) => provider!.close((error) => (error ? reject(error) : resolve())));
+  }
   for (const [key, value] of Object.entries(previous)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;

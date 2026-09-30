@@ -28,3 +28,21 @@ export function qualityScores(events: readonly GarnishAdEvent[]): Map<string, nu
   }
   return scores;
 }
+
+/**
+ * The inline ads to show, from a best-first list. Ads not served lately come first; a small pool runs
+ * out of those after a few fetches, so the ads served longest ago fill the rest and the ads rotate
+ * instead of vanishing until "Restore ads" (R1-083). `recentAdIds` is newest first.
+ */
+export function garnishRotateInline<T extends { id: string }>(
+  ranked: readonly T[],
+  recentAdIds: readonly string[],
+  count = 2,
+): T[] {
+  const recent = new Set(recentAdIds);
+  const fresh = ranked.filter((ad) => !recent.has(ad.id));
+  const oldestServedFirst = ranked
+    .filter((ad) => recent.has(ad.id))
+    .sort((left, right) => recentAdIds.indexOf(right.id) - recentAdIds.indexOf(left.id));
+  return [...fresh, ...oldestServedFirst].slice(0, count);
+}

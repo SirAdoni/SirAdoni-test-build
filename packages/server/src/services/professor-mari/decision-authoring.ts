@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { logger } from "../../lib/logger.js";
 import { z } from "zod";
 import { collectDecisionQuestions } from "@marinara-engine/shared";
 import type { DB } from "../../db/connection.js";
@@ -175,6 +176,7 @@ function decisionUses(value: unknown, path = "", uses = new Map<string, number>(
       try {
         return decisionUses(JSON.parse(value), path, uses, depth + 1);
       } catch {
+        logger.debug("[mari-decision] treated non-JSON field content as ordinary prompt text");
         /* ordinary prompt text */
       }
     }

@@ -29,8 +29,8 @@ import {
   useTestImageGeneration,
   useTestVideoGeneration,
   useDiagnoseClaudeSubscription,
-  useFetchModels,
   useModelParameterCapabilities,
+  useFetchModels,
   useSaveConnectionDefaults,
   type ClaudeSubscriptionDiagnosis,
   type RemoteConnectionModel,
@@ -3445,13 +3445,13 @@ export function ConnectionEditor() {
                     effectiveParameters={parameterPreview.data?.parameters}
                     provider={localProvider}
                     model={localModel}
+                    baseUrl={localBaseUrl}
+                    modelCapabilities={selectedModelCapabilities}
                     value={localDefaultParameters}
                     showServiceTier={localProvider === "openrouter" || localProvider === "nanogpt"}
                     showCustomHeaders={
                       !["openai_chatgpt", "claude_subscription", "grok_subscription"].includes(localProvider)
                     }
-                    baseUrl={localBaseUrl}
-                    modelCapabilities={selectedModelCapabilities}
                     enabledParametersFallback={STRICT_CONNECTION_PARAMETER_SEND_DEFAULTS}
                     onChange={(next) => {
                       setLocalDefaultParameters(next);

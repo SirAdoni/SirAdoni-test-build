@@ -8,11 +8,20 @@
  *
  * Standalone and pure so the rules can be tested without an Engine checkout.
  */
+import type { SlpCreatorStageFacts } from "../../../../../shared/src/slp/slp-social.types.js";
 import { normalizeSlurpDiscoveryTags, SLURP_DISCOVERY_MIN_TAGS } from "../discovery/slp-discovery-profile.js";
 import { normalizeCreatorStageProfileDraft } from "./slp-stage-profile-normalize.js";
 
 /** The same limits the shared stage-profile schema and the create form enforce. */
 export const SLURP_STAGE_PROFILE_LIMITS = { displayName: 120, handle: 40, bio: 500, stagePersonality: 1000 } as const;
+
+/**
+ * How long one stage fact may be.
+ *
+ * Generous, because an appearance that has to stay identical across hundreds of pictures needs
+ * room for the details that actually identify a person, not just hair and build.
+ */
+export const SLURP_STAGE_FACT_MAX_LENGTH = 2000;
 
 export type SlurpRepairedStageProfileDraft = {
   displayName: string;
@@ -59,6 +68,11 @@ export function clampSlurpDraftText(value: string, max: number): string {
   return (sentenceEnd >= max * 0.6 ? cut.slice(0, sentenceEnd + 1) : cut).trimEnd();
 }
 
+/** A model's gender word ("woman", "nb", "Male") as a discovery gender, or null. */
+export function readSlurpDraftGender(value: unknown): "male" | "female" | "other" | null {
+  return typeof value === "string" ? (GENDER_WORDS[value.trim().toLocaleLowerCase()] ?? null) : null;
+}
+
 function text(value: unknown): string {
   if (typeof value === "string") return value;
   if (Array.isArray(value)) return value.filter((entry) => typeof entry === "string").join(" ");
@@ -95,8 +109,7 @@ export function repairSlurpStageProfileDraft(
   const bio = limited("bio", "Bio", text(raw.bio));
   const stagePersonality = limited("stagePersonality", "Stage personality", text(raw.stagePersonality));
 
-  const genderWord = typeof raw.gender === "string" ? raw.gender.trim().toLocaleLowerCase() : "";
-  const gender = GENDER_WORDS[genderWord] ?? null;
+  const gender = readSlurpDraftGender(raw.gender);
   if (!gender) notes.push("Pick a gender before saving.");
 
   const tagInput = Array.isArray(raw.tags) ? raw.tags : typeof raw.tags === "string" ? raw.tags.split(/[,;|]/u) : [];
@@ -116,4 +129,25 @@ export function repairSlurpStageProfileDraft(
     notes.push(`Add at least ${SLURP_DISCOVERY_MIN_TAGS} tags before saving.`);
 
   return { draft: { displayName, handle, bio, stagePersonality, gender, tags }, notes };
+}
+
+/**
+ * The stage facts out of a stage-profile input, or undefined when it carries none.
+ *
+ * The stage appearance is an intentional override. The linked source is resolved at image time.
+ */
+export function slurpStageFacts(input: {
+  appearance?: string;
+  wardrobe?: string;
+  locations?: string;
+}): SlpCreatorStageFacts | undefined {
+  const fact = (value: string | undefined) => value?.trim().slice(0, SLURP_STAGE_FACT_MAX_LENGTH) || undefined;
+  const facts: SlpCreatorStageFacts = {
+    ...(fact(input.appearance) !== undefined && {
+      appearance: fact(input.appearance)!,
+    }),
+    ...(fact(input.wardrobe) !== undefined && { wardrobe: fact(input.wardrobe)! }),
+    ...(fact(input.locations) !== undefined && { locations: fact(input.locations)! }),
+  };
+  return Object.keys(facts).length > 0 ? facts : undefined;
 }

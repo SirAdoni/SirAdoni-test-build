@@ -1,9 +1,9 @@
-import type { FastifyInstance, InjectOptions } from "fastify";
+import type { FastifyInstance, InjectOptions, LightMyRequestResponse as InjectResponse } from "fastify";
 import { logger } from "../../../lib/logger.js";
 import { createSlurpStorage } from "../../data/slp-storage.js";
 import { AUTOMATIC_GENERATION_HEADER } from "../../../services/generation/connection-admission.js";
 import { createGarnishAds } from "../ads/slp-ads-contract.js";
-import { syncGarnishAdsWithLorebook } from "../ads/slp-ads-contract.js";
+import { redrawOldGarnishAdBanner, syncGarnishAdsWithLorebook } from "../ads/slp-ads-contract.js";
 import {
   dueSlpRefreshTimes,
   markSlpRefreshAttempt,
@@ -76,7 +76,7 @@ export function nextSlpSchedulerPollDelayMs(schedule: PersistedSlpRefreshSchedul
 export function startSlpRefreshScheduler(
   app: FastifyInstance,
   registerStop?: (stop: () => Promise<void>) => void,
-  runInternalRoute?: (options: InjectOptions | string) => ReturnType<FastifyInstance["inject"]>,
+  runInternalRoute?: (options: InjectOptions | string) => Promise<InjectResponse>,
 ) {
   const noodle = createSlurpStorage(app.db);
   let stopped = false;
@@ -109,10 +109,10 @@ export function startSlpRefreshScheduler(
     );
     await noodle.saveRefreshSchedule(failed);
     if (SLP_SCHEDULER_CONFIGURATION_STATUS_CODES.has(statusCode)) {
-      logger.debug("[noodle-scheduler] Automatic refresh is waiting for valid configuration: %s", error);
+      logger.debug("[slurp-scheduler] Automatic refresh is waiting for valid configuration: %s", error);
     } else {
       logger.warn(
-        "[noodle-scheduler] Automatic refresh failed with status %d; retrying at %s: %s",
+        "[slurp-scheduler] Automatic refresh failed with status %d; retrying at %s: %s",
         statusCode,
         failed.nextAttemptAt ?? "unknown",
         error,
@@ -137,7 +137,13 @@ export function startSlpRefreshScheduler(
       // fingerprint actually changed, so a steady setting costs one cheap read per poll.
       if (settings.inlineAdsLorebookId) {
         await syncGarnishAdsWithLorebook(app.db, createGarnishAds(app.db).pool).catch((error) =>
-          logger.warn(error, "[noodle-scheduler] Lorebook ad sync failed"),
+          logger.warn(error, "[slurp-scheduler] Lorebook ad sync failed"),
+        );
+      }
+      // Older ads get their wide banner once (V), one picture per poll at most, paced over the day.
+      if (settings.inlineAdsEnabled && settings.inlineAdsImagesEnabled) {
+        await redrawOldGarnishAdBanner(app.db, createGarnishAds(app.db).pool, now).catch((error) =>
+          logger.warn(error, "[slurp-scheduler] Ad banner redraw failed"),
         );
       }
       let schedule = await noodle.ensureRefreshSchedule(now, settings);
@@ -175,7 +181,7 @@ export function startSlpRefreshScheduler(
         );
         await noodle.saveRefreshSchedule(completed);
         logger.info(
-          "[noodle-scheduler] Automatic timeline refresh completed; consumed %d due slot%s",
+          "[slurp-scheduler] Automatic timeline refresh completed; consumed %d due slot%s",
           Math.max(consumedTimes.length, latestDueTimes.length),
           Math.max(consumedTimes.length, latestDueTimes.length) === 1 ? "" : "s",
         );
@@ -193,7 +199,7 @@ export function startSlpRefreshScheduler(
         const failed = await persistFailure(schedule, message, 500, at);
         nextDelay = nextSlpSchedulerPollDelayMs(failed, at);
       } catch (persistError) {
-        logger.error(persistError, "[noodle-scheduler] Failed to persist scheduler failure state");
+        logger.error(persistError, "[slurp-scheduler] Failed to persist scheduler failure state");
       }
     } finally {
       polling = false;
@@ -216,6 +222,6 @@ export function startSlpRefreshScheduler(
     await active?.catch(() => {});
   });
 
-  logger.info("[noodle-scheduler] Automatic timeline refresh scheduler started");
+  logger.info("[slurp-scheduler] Automatic timeline refresh scheduler started");
   return { stop };
 }

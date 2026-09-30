@@ -115,15 +115,17 @@ for (const postId of ["post-c", "post-d", "post-e", "post-f"]) {
 // Wallets, ledgers, payouts, and subscriber lists must stay exact. `fans` is a paying subscriber
 // count, so it is read from real rows; only `followers` carries synthetic reach.
 //
-// Two halves, both exact: the personas on this install pay through subscription rows, and the
-// generated audience pays through the funnel, because an audience member is not a viewer and holds
-// no wallet. Neither half is reach.
+// Two halves, both from real rows: the personas on this install pay through subscription rows, and
+// the generated audience pays through the funnel, because an audience member is not a viewer and
+// holds no wallet. Neither half is reach. Since 0.3.7 each real audience subscriber is shown as the
+// crowd it stands for (`crowdWeight`), the same weight their payments earn at; payouts stay exact in coins.
 const routes = slurp2Source(
   join(import.meta.dirname, "..", "packages/slurp2/src/engine/packages/server/src/routes/slurp.routes.ts"),
 );
 assert.match(
   routes,
-  /fans:\s*\n?\s*\(await noodle\.listSubscriptionsForCreator\(creator\.id\)\)\.length \+ \(countsSubscribers\.get\(creator\.id\) \?\? 0\)/u,
+  // 0.3.7: the shown count, each real paying fan standing for the crowd (slurpShownSubscribers).
+  /fans: slurpShownSubscribers\(\s*countsSubscribers\.get\(creator\.id\) \?\? 0,\s*\(await noodle\.listSubscriptionsForCreator\(creator\.id\)\)\.length,/u,
 );
 assert.match(routes, /followers: slurpCreatorReach\(/u);
 // Real followers come from the funnel, so a Creator who loses subscribers loses reach.

@@ -1,6 +1,7 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { seedUIState } from "./ui-state-fixture.js";
+import { inventoryButton } from "./game-inventory-fixture.js";
 
 const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
@@ -64,11 +65,7 @@ test("an inventory stack changes by any amount, splits into a chosen size and me
   };
   try {
     await openGameChat(page, chatId);
-    await page
-      .getByRole("button", { name: /Inventory/ })
-      .filter({ visible: true })
-      .first()
-      .click({ timeout: 30000 });
+    await inventoryButton(page).click({ timeout: 30000 });
     const slot = (label: string) => page.getByRole("button", { name: label, exact: true });
 
     // Split 100 off the 300: two stacks, and nothing gained or lost.

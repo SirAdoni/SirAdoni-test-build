@@ -1,9 +1,12 @@
+import type { SlpPulseBudgetNote, SlpPulsePanel } from "./SlpPulse";
+import type { SlpPulseTarget } from "../../base/state/slp-task-store";
 // Shell contract, split out of components/slurp/SlurpShell.tsx in Slice 10.
-import type { ReactNode, RefObject } from "react";
+import type { ComponentProps, ReactNode, RefObject } from "react";
 import type { SlpAccount } from "../../../../../shared/src/slp/slp-social.types.js";
+import type { SlpStoryRings } from "../story/SlpStoryRing";
 
 export type SlpShellView =
-  "home" | "noodler" | "search" | "profile" | "messages" | "notifications" | "studio" | "wallet" | "settings" | null;
+  "home" | "noodler" | "search" | "profile" | "messages" | "notifications" | "stir" | "wallet" | "settings" | null;
 type SlpShellMode = "noodle" | "noodler" | "slurp";
 export type SlpShellContextualRail = "populated" | "blank" | "spanning";
 
@@ -53,16 +56,25 @@ export interface SlpShellProps {
   /** Omit on surfaces with no scoped equivalent. */
   /** Omit on surfaces with no scoped equivalent. */
   onOpenProfile?: () => void;
+  /** The own page's Dashboard, a row under the identity card in More; absent without a Creator page. */
+  onOpenDashboard?: () => void;
   onOpenSettings: () => void;
   /** Omit on surfaces with no scoped equivalent. */
   onOpenMessages?: () => void;
   /** Omit on surfaces with no scoped equivalent. */
   onOpenWallet?: () => void;
-  onOpenStudio?: () => void;
+  /** The Stir tab (W): the centre of the phone nav, a row in the desktop sidebar. */
+  onOpenStir?: () => void;
+  /** One-time Pulse note after the AI budget defaults went up (task F); absent once seen. */
+  budgetNote?: SlpPulseBudgetNote;
+  /** Pulse's tap-through (task C): a task's post, chat or Creator. */
+  onOpenPulseTarget?: (target: SlpPulseTarget) => void;
+  /** Pulse's "AI budget" link. */
+  onOpenBudget?: () => void;
+  /** Pulse's quick "Generate posts" chip and "Start it again from …" on restored failed tasks. */
+  pulseStarts?: Pick<ComponentProps<typeof SlpPulsePanel>, "onGeneratePosts" | "onStartAgain">;
   /** Unseen activity, shown on the unified Inbox entry. */
   notificationCount?: number;
-  /** The studio only exists for a persona that operates a Creator. */
-  hasOperatedCreator?: boolean;
   /** Shown on the desktop Wallet row and the identity card, so the balance is not mobile-only. */
   walletBalanceLabel?: string;
   /** Loaded numeric balance used for spend feedback; omitted while a placeholder is shown. */
@@ -71,8 +83,6 @@ export interface SlpShellProps {
   personaBannerUrl?: string | null;
   /** Offered on the identity card when the active persona runs no Creator profile. */
   onBecomeCreator?: () => void;
-  /** Omit on surfaces with no scoped equivalent. */
-  onCompose?: (opener: HTMLElement) => void;
   /** Replaces the desktop nav below the mark — used by Settings, which takes the column over. */
   desktopSidebar?: ReactNode;
   /** Optional right-hand rail (search box, suggestions, etc). Omitted entirely on surfaces that don't need one. */
@@ -83,5 +93,7 @@ export interface SlpShellProps {
   overlays?: ReactNode;
   /** Accent hex driving `--noodle-accent` for every reused surface. NoodleR passes SLP_PINK; defaults to Noodle blue. */
   accent?: string;
+  /** Who has a live Story and how to open it: every avatar under the shell wears the ring (T). */
+  storyRings?: SlpStoryRings;
   children: ReactNode;
 }

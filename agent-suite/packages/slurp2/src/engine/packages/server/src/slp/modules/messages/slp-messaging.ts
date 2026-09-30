@@ -5,6 +5,7 @@
  * without an Engine checkout. Nothing here reads the DB or the clock beyond what it is handed.
  */
 import { readSlurpRapportWeights, type SlurpRapport, type SlurpRapportWeights } from "./slp-rapport.js";
+import { slurpRotationHash } from "../feed/slp-post-variation.js";
 
 /** Storage key for the per-creator messaging settings blob. Mirrors the creator-prices key. */
 export const SLURP_CREATOR_MESSAGING_KEY = "slurp2.creator.messaging";
@@ -193,13 +194,78 @@ export const SLURP_DEFAULT_REPLY_DELAYS: SlurpReplyDelays = {
   messagesHighRapportDelayMaxMinutes: 20,
   messagesMediumRapportDelayMinMinutes: 30,
   messagesMediumRapportDelayMaxMinutes: 60,
-  messagesUnknownReturnDelayMinutes: 120,
-  messagesMaxReplyDelayMinutes: 180,
-  messagesRecentPostAwayMinMinutes: 30,
-  messagesRecentPostAwayMaxMinutes: 90,
-  messagesStalePostAwayMinMinutes: 120,
-  messagesStalePostAwayMaxMinutes: 240,
+  // A Creator nobody has bought anything from still answers her messages the same day. The shipped
+  // waits (two hours before a first answer, four before a stale one) read as a dead inbox, and the
+  // only way to get a reply was the Reply now button.
+  messagesUnknownReturnDelayMinutes: 45,
+  messagesMaxReplyDelayMinutes: 90,
+  messagesRecentPostAwayMinMinutes: 15,
+  messagesRecentPostAwayMaxMinutes: 45,
+  messagesStalePostAwayMinMinutes: 45,
+  messagesStalePostAwayMaxMinutes: 120,
 };
+
+/**
+ * Whether the viewer drew a picture into this chat less than `cooldownMinutes` ago (the
+ * `messagesViewerImageCooldownMinutes` setting). 0 turns the wait off.
+ */
+export function slurpViewerImageOnCooldown(
+  messages: readonly { role: string; createdAt: string; metadata: { generatedContext?: unknown } }[],
+  cooldownMinutes: number,
+  now = Date.now(),
+): boolean {
+  return slurpViewerImageReadyAt(messages, cooldownMinutes, now) !== null;
+}
+
+/**
+ * The draft for a photo the player took and sends in a chat: the persona's own appearance, no
+ * Creator (R1-054). The photo may not show the sender at all, so the look is conditional.
+ */
+export function slurpViewerPhotoPrompt(brief: string, appearance: string): string {
+  return [
+    "A photo the sender took themselves and sends in a private chat.",
+    `The photo shows: ${brief}`,
+    appearance ? `If the sender is in the photo, they look like this: ${appearance}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/**
+ * The chat uploads among some messages' metadata: only files in the shared messages folder. A
+ * Creator's own message media lives in that Creator's folder, and a thread can hold another
+ * Creator's files (a media offer), so nothing outside the folder is returned.
+ */
+export function slurpUploadedMessageMediaPaths(
+  metadata: readonly Record<string, unknown>[],
+  messagesFolder: string,
+): string[] {
+  return metadata.flatMap((entry) => {
+    const path = entry.noodlerMediaPath;
+    return typeof path === "string" &&
+      path.startsWith(messagesFolder) &&
+      !path.slice(messagesFolder.length).includes("..")
+      ? [path]
+      : [];
+  });
+}
+
+/** When the viewer may draw the next picture (ISO), or null when they may draw one now. */
+export function slurpViewerImageReadyAt(
+  messages: readonly { role: string; createdAt: string; metadata: { generatedContext?: unknown } }[],
+  cooldownMinutes: number,
+  now = Date.now(),
+): string | null {
+  if (cooldownMinutes <= 0) return null;
+  let latest = -Infinity;
+  for (const message of messages) {
+    if (message.role !== "viewer" || message.metadata.generatedContext !== "viewer") continue;
+    const at = Date.parse(message.createdAt);
+    if (at > latest) latest = at;
+  }
+  const readyAt = latest + cooldownMinutes * MINUTE;
+  return readyAt > now ? new Date(readyAt).toISOString() : null;
+}
 
 /** A point inside a player-set range. A range entered backwards still reads as a range. */
 export function slurpDelayInRange(min: number, max: number, variance: number): number {
@@ -230,6 +296,13 @@ export function slurpReplyPacing(input: {
   talkativeness?: number;
   /** Player-set timing. Defaults keep the shipped pacing. */
   delays?: SlurpReplyDelays;
+  /**
+   * The Creator has never answered in this thread.
+   *
+   * A stranger scores no rapport, is not subscribed, and therefore always landed on the slowest
+   * path — which is the one case a creator page actually answers: a new person in the inbox.
+   */
+  firstContact?: boolean;
 }): SlurpReplyPacing {
   const delays = input.delays ?? SLURP_DEFAULT_REPLY_DELAYS;
   const maxDelayMs = delays.messagesMaxReplyDelayMinutes * MINUTE;
@@ -242,7 +315,9 @@ export function slurpReplyPacing(input: {
   const moodDrag = mood > 60 ? 0.5 : mood < -20 ? 1.8 : 1.0;
 
   // Calculate reach: rapport + subscription bonus + mood bonus
-  const reach = Math.min(1, Math.max(0, input.rapport.score / 100 + (input.subscribed ? 0.2 : 0) + mood / 400));
+  const earned = input.rapport.score / 100 + (input.subscribed ? 0.2 : 0) + mood / 400;
+  // A first message is worth answering even from somebody who has given nothing yet.
+  const reach = Math.min(1, Math.max(0, input.firstContact ? Math.max(earned, 0.45) : earned));
 
   // ONLINE PATH: Creator is actively available
   if (input.online) {
@@ -433,15 +508,33 @@ export function splitSlurpReplyBurst(content: string, allow: boolean, limit = 3)
   if (!allow || trimmed.length < 90) return [trimmed];
   // Split on sentence ends only. Splitting mid-clause produces two fragments rather than two
   // messages, which reads worse than the paragraph it replaced.
-  const parts = trimmed.match(/[^.!?\n]+[.!?]*[\n]*/g)?.map((part) => part.trim()) ?? [];
-  const sentences = parts.filter(Boolean);
+  // A sentence ends at punctuation followed by a space, so "3.5k" and "v1.2" stay whole.
+  const parts = trimmed
+    .split(/(?<=[.!?…]["')\]]?(?:\s*\p{Extended_Pictographic}\uFE0F?)*)\s+|\n+/u)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  // A lone "..." or "!!" is a lead-in to the next sentence, not a message of its own.
+  const sentences: string[] = [];
+  for (const [index, part] of parts.entries()) {
+    const last = sentences.at(-1);
+    if (last !== undefined && /^[\p{P}\s]+$/u.test(last)) sentences[sentences.length - 1] = `${last} ${part}`;
+    else if (index === parts.length - 1 && /^[\p{P}\s]+$/u.test(part) && last !== undefined)
+      sentences[sentences.length - 1] = `${last}${part}`;
+    else sentences.push(part);
+  }
   if (sentences.length < 2) return [trimmed];
-  // Pack into at most `limit` bubbles, keeping them roughly even so one is not a single word.
-  const target = Math.min(limit, Math.max(2, Math.round(sentences.length / 2)));
-  const perBubble = Math.ceil(sentences.length / target);
+  // Aim at `limit` (the player's "up to this many"), one sentence or more per bubble, but keep each
+  // bubble worth sending: about 20 characters or more. Halving the sentences first meant a limit of
+  // 3 or 4 almost never applied (R1-003).
+  let target = Math.min(limit, sentences.length);
+  while (target > 2 && trimmed.length / target < 20) target -= 1;
+  if (target < 2) return [trimmed];
+  // Spread the sentences evenly, so a limit of 4 over 4 sentences really sends four.
   const bubbles: string[] = [];
-  for (let index = 0; index < sentences.length; index += perBubble) {
-    bubbles.push(sentences.slice(index, index + perBubble).join(" "));
+  for (let index = 0; index < target; index += 1) {
+    const from = Math.floor((index * sentences.length) / target);
+    const to = Math.floor(((index + 1) * sentences.length) / target);
+    bubbles.push(sentences.slice(from, to).join(" "));
   }
   return bubbles.filter(Boolean);
 }
@@ -502,6 +595,87 @@ export function slurpCommissionDeliveryDelayMs(input: { price: number; briefLeng
   return Math.round(5 * MINUTE + effort * (45 * MINUTE - 5 * MINUTE));
 }
 
+/**
+ * Paid commissions of automatic Creators that nothing is going to deliver (7c M-005).
+ *
+ * The player's accept route draws and schedules its own delivery; a quote an AI fan accepted on the
+ * world tick, or an accept whose scheduling failed, was left `accepted` with no delivery time and
+ * sat paid and silent forever. These get a delivery time from the same pacing, counted from the
+ * accept, so an old one is due at once. A fresh accept is left alone for ten minutes, because the
+ * accept route may still be drawing it. Hand-run Creators deliver by hand and are never listed.
+ */
+export function slurpUnscheduledCommissionDeliveries(
+  commissions: readonly Pick<
+    SlurpCommissionLike,
+    "id" | "creatorAccountId" | "state" | "deliverAt" | "price" | "brief" | "updatedAt"
+  >[],
+  automaticCreatorIds: ReadonlySet<string>,
+  now: Date,
+): { id: string; deliverAt: string }[] {
+  return commissions.flatMap((commission) => {
+    if (commission.state !== "accepted" || commission.deliverAt) return [];
+    if (!automaticCreatorIds.has(commission.creatorAccountId)) return [];
+    const acceptedAt = Date.parse(commission.updatedAt);
+    if (!Number.isFinite(acceptedAt) || now.getTime() - acceptedAt < 10 * MINUTE) return [];
+    const due =
+      acceptedAt + slurpCommissionDeliveryDelayMs({ price: commission.price, briefLength: commission.brief.length });
+    return [{ id: commission.id, deliverAt: new Date(Math.max(due, now.getTime())).toISOString() }];
+  });
+}
+type SlurpCommissionLike = {
+  id: string;
+  creatorAccountId: string;
+  state: string;
+  deliverAt: string | null;
+  price: number;
+  brief: string;
+  updatedAt: string;
+};
+
+/** Days an unanswerable request waits before it expires (7c M-009). */
+export const SLURP_REQUEST_EXPIRY_DAYS = 5;
+
+/**
+ * Message requests to automatic Creators that nobody is going to answer (7c M-009): the reply path
+ * gave up on them (no reply owed, which is what it does for an AI fan it cannot answer) and they
+ * have been quiet for five days. They expire, so a Creator's open requests do not grow forever.
+ * A request still owed a reply (a persona's) is left for the reply path.
+ */
+export function slurpExpiredRequestIds(
+  threads: readonly {
+    id: string;
+    creatorAccountId: string;
+    state: string;
+    needsReply: boolean;
+    lastMessageAt: string;
+  }[],
+  automaticCreatorIds: ReadonlySet<string>,
+  now: Date,
+): string[] {
+  return threads
+    .filter(
+      (thread) =>
+        thread.state === "request" &&
+        !thread.needsReply &&
+        automaticCreatorIds.has(thread.creatorAccountId) &&
+        now.getTime() - Date.parse(thread.lastMessageAt) > SLURP_REQUEST_EXPIRY_DAYS * 86_400_000,
+    )
+    .map((thread) => thread.id);
+}
+
+/**
+ * An automatic Creator answers about one in four AI fans who write to her (task E); the rest go
+ * unanswered and expire with the requests above. Picked by the fan's message id, so a retry after
+ * a busy lock or a spent budget asks the same question and gets the same answer. Only a plain text
+ * message fits: a tip, a shared post or a commission brief has its own path. A fan the Creator
+ * already answered in this thread keeps the conversation (per fan, not per message).
+ */
+export const SLURP_AI_FAN_ANSWER_ONE_IN = 4;
+export function slurpAnswersAiFan(message: { id: string; kind: string }, answeredBefore = false): boolean {
+  if (message.kind !== "text") return false;
+  return answeredBefore || slurpRotationHash(`ai-fan:${message.id}`) % SLURP_AI_FAN_ANSWER_ONE_IN === 0;
+}
+
 /** One line of thread summary for the inbox. Kept short: the list shows it on one row. */
 export function slurpMessagePreview(kind: SlurpMessageKind, content: string, price: number): string {
   const trimmed = content.replace(/\s+/g, " ").trim();
@@ -517,3 +691,20 @@ export function slurpMessagePreview(kind: SlurpMessageKind, content: string, pri
 }
 
 const clamp = (value: string, limit: number) => (value.length <= limit ? value : `${value.slice(0, limit - 1)}…`);
+
+/** The Creator's latest posts for a DM prompt (drafts left out), each marked when this fan owns it. */
+export function slurpDmRecentPosts<
+  T extends { id: string; title: string | null; content: string; access: string; imageUrl: string | null },
+>(rows: readonly T[], unlocked: { has(id: string): boolean }, max: number) {
+  return rows
+    .filter((post) => post.access !== "draft")
+    .slice(0, max)
+    .map((post) => ({
+      id: post.id,
+      title: post.title,
+      content: post.content,
+      access: post.access,
+      imageUrl: post.imageUrl,
+      unlockedByFan: unlocked.has(post.id),
+    }));
+}

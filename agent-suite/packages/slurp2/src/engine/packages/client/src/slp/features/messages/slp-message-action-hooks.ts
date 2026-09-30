@@ -1,6 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../../lib/api-client.js";
-import { slpKeys } from "../../base/state/slp-query-keys.js";
 import type { SlurpWallet } from "../economy/slp-economy-contract.js";
 import { invalidateSlurpMessages } from "./slp-message-keys.js";
 import type { SlurpMessage, SlurpSendResponse, SlurpThread } from "./slp-messages-contract.js";
@@ -14,8 +13,15 @@ export function useSendSlurpMessage() {
       content: string;
       requestId?: string;
       tip?: { amount: number; note?: string } | null;
+      /** Written as Slurp Support (Slurp's staff), not as the persona. */
+      asSupport?: boolean;
+      /** Support only: the Creator answers with a photo taken right now (0.3.6). */
+      photoDemand?: boolean;
+      /** Support only: an Offer or a move riding this line (docs/SUPPORT-DESK.md). */
+      desk?: { mode: "offer" | "now"; step: { action: string; input: Record<string, unknown> } };
     }) => api.post<SlurpSendResponse>("/slurp2/messages/send", input),
-    onSuccess: () => invalidateSlurpMessages(queryClient),
+    // Settled, not success: a request that timed out may still have been stored.
+    onSettled: () => invalidateSlurpMessages(queryClient),
   });
 }
 export function useSlurpCheatDirective() {
@@ -41,7 +47,8 @@ export function useSlurpCheatDirective() {
         reply?: SlurpMessage | null;
         replyStatus?: string;
       }>("/slurp2/messages/cheat", input),
-    onSuccess: () => invalidateSlurpMessages(queryClient),
+    // Settled, not success: a request that timed out may still have been stored.
+    onSettled: () => invalidateSlurpMessages(queryClient),
   });
 }
 /** Answer a queued conversation now. The server still applies every guard a normal send does. */
@@ -53,7 +60,8 @@ export function useForceSlurpReply() {
         `/slurp2/messages/threads/${encodeURIComponent(input.threadId)}/force-reply`,
         { personaId: input.personaId },
       ),
-    onSuccess: () => invalidateSlurpMessages(queryClient),
+    // Settled, not success: a request that timed out may still have been stored.
+    onSettled: () => invalidateSlurpMessages(queryClient),
   });
 }
 export function useRequestSlurpReply() {
@@ -64,7 +72,25 @@ export function useRequestSlurpReply() {
         `/slurp2/messages/threads/${encodeURIComponent(input.threadId)}/request-reply`,
         input,
       ),
-    onSuccess: () => invalidateSlurpMessages(queryClient),
+    // Settled, not success: a request that timed out may still have been stored.
+    onSettled: () => invalidateSlurpMessages(queryClient),
+  });
+}
+/**
+ * The Creator's side of "Request a reply": ask the fan to write back.
+ *
+ * Same tool, other direction. Only the Creator's owner may call it, which the route checks.
+ */
+export function useRequestSlurpFanReply() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { creatorAccountId: string; personaId: string; threadId: string; guidance?: string }) =>
+      api.post<{ reply: SlurpMessage | null; replyStatus: string }>(
+        `/slurp2/messages/creators/${encodeURIComponent(input.creatorAccountId)}/request-fan-reply`,
+        input,
+      ),
+    // Settled, not success: a request that timed out may still have been stored.
+    onSettled: () => invalidateSlurpMessages(queryClient),
   });
 }
 export function useTipInSlurpThread() {
@@ -77,7 +103,8 @@ export function useTipInSlurpThread() {
       note?: string;
       requestId?: string;
     }) => api.post<SlurpSendResponse & { wallet: SlurpWallet }>("/slurp2/messages/tip", input),
-    onSuccess: () => invalidateSlurpMessages(queryClient),
+    // Settled, not success: a request that timed out may still have been stored.
+    onSettled: () => invalidateSlurpMessages(queryClient),
   });
 }
 export function useUnlockSlurpMessage() {
@@ -85,7 +112,8 @@ export function useUnlockSlurpMessage() {
   return useMutation({
     mutationFn: (input: { personaId: string; messageId: string }) =>
       api.post<{ message: SlurpMessage; wallet: SlurpWallet }>("/slurp2/messages/ppv/unlock", input),
-    onSuccess: () => invalidateSlurpMessages(queryClient),
+    // Settled, not success: a request that timed out may still have been stored.
+    onSettled: () => invalidateSlurpMessages(queryClient),
   });
 }
 export function useReactToSlurpMessage() {
@@ -93,7 +121,8 @@ export function useReactToSlurpMessage() {
   return useMutation({
     mutationFn: (input: { personaId: string; messageId: string; reaction: "heart" | null }) =>
       api.post<{ message: SlurpMessage }>(`/slurp2/messages/${encodeURIComponent(input.messageId)}/reaction`, input),
-    onSuccess: () => invalidateSlurpMessages(queryClient),
+    // Settled, not success: a request that timed out may still have been stored.
+    onSettled: () => invalidateSlurpMessages(queryClient),
   });
 }
 /** Write as the Creator, in your own words. */
@@ -105,7 +134,8 @@ export function useSendSlurpCreatorReply() {
         `/slurp2/messages/creators/${encodeURIComponent(input.creatorAccountId)}/reply`,
         input,
       ),
-    onSuccess: () => invalidateSlurpMessages(queryClient),
+    // Settled, not success: a request that timed out may still have been stored.
+    onSettled: () => invalidateSlurpMessages(queryClient),
   });
 }
 /** Have the Creator draft a reply. The model is the fallback, not the default. */
@@ -117,7 +147,8 @@ export function useDraftSlurpCreatorReply() {
         `/slurp2/messages/creators/${encodeURIComponent(input.creatorAccountId)}/draft-reply`,
         input,
       ),
-    onSuccess: () => invalidateSlurpMessages(queryClient),
+    // Settled, not success: a request that timed out may still have been stored.
+    onSettled: () => invalidateSlurpMessages(queryClient),
   });
 }
 export function useSendSlurpCreatorPpv() {
@@ -134,7 +165,8 @@ export function useSendSlurpCreatorPpv() {
         `/slurp2/messages/creators/${encodeURIComponent(input.creatorAccountId)}/ppv`,
         input,
       ),
-    onSuccess: () => invalidateSlurpMessages(queryClient),
+    // Settled, not success: a request that timed out may still have been stored.
+    onSettled: () => invalidateSlurpMessages(queryClient),
   });
 }
 export function useSendSlurpCreatorImage() {
@@ -152,7 +184,8 @@ export function useSendSlurpCreatorImage() {
         `/slurp2/messages/threads/${encodeURIComponent(input.threadId)}/image`,
         input,
       ),
-    onSuccess: () => invalidateSlurpMessages(queryClient),
+    // Settled, not success: a request that timed out may still have been stored.
+    onSettled: () => invalidateSlurpMessages(queryClient),
   });
 }
 export function useSendSlurpViewerImage() {
@@ -164,20 +197,30 @@ export function useSendSlurpViewerImage() {
       personaId: string;
       file: File;
       content: string;
+      asSupport?: boolean;
     }) => {
       const form = new FormData();
       form.append("personaId", input.personaId);
+      if (input.asSupport) form.append("asSupport", "true");
       form.append("creatorAccountId", input.creatorAccountId);
       form.append("content", input.content);
       form.append("file", input.file);
-      return api.upload<{ message: SlurpMessage; replyStatus: string }>(
+      return api.upload<SlurpPhotoSendResult>(
         `/slurp2/messages/threads/${encodeURIComponent(input.threadId)}/image-upload`,
         form,
       );
     },
-    onSuccess: () => invalidateSlurpMessages(queryClient),
+    // Settled, not success: a request that timed out may still have been stored.
+    onSettled: () => invalidateSlurpMessages(queryClient),
   });
 }
+/** A sent photo and the Creator's answer to it, shaped like a text send's (R1-019). */
+export type SlurpPhotoSendResult = {
+  message: SlurpMessage;
+  reply: SlurpMessage | null;
+  replyStatus: string;
+  typingMs?: number;
+};
 export function useGenerateSlurpViewerImage() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -187,12 +230,14 @@ export function useGenerateSlurpViewerImage() {
       personaId: string;
       prompt: string;
       content?: string;
+      asSupport?: boolean;
     }) =>
-      api.post<{ message: SlurpMessage; replyStatus: string }>(
+      api.post<SlurpPhotoSendResult>(
         `/slurp2/messages/threads/${encodeURIComponent(input.threadId)}/viewer-image`,
         input,
       ),
-    onSuccess: () => invalidateSlurpMessages(queryClient),
+    // Settled, not success: a request that timed out may still have been stored.
+    onSettled: () => invalidateSlurpMessages(queryClient),
   });
 }
 export function useBroadcastSlurpMessage() {
@@ -203,7 +248,8 @@ export function useBroadcastSlurpMessage() {
         `/slurp2/messages/creators/${encodeURIComponent(input.creatorAccountId)}/broadcast`,
         input,
       ),
-    onSuccess: () => invalidateSlurpMessages(queryClient),
+    // Settled, not success: a request that timed out may still have been stored.
+    onSettled: () => invalidateSlurpMessages(queryClient),
   });
 }
 export function useResolveSlurpMessageRequest() {
@@ -214,7 +260,8 @@ export function useResolveSlurpMessageRequest() {
         `/slurp2/messages/threads/${encodeURIComponent(input.threadId)}/request`,
         input,
       ),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: slpKeys.noodlerRoot() }),
+    // Settled, not success: a request that timed out may still have been stored.
+    onSettled: () => invalidateSlurpMessages(queryClient),
   });
 }
 /** Empty one conversation. Every message goes; what the fan paid for does not. */
@@ -223,7 +270,8 @@ export function useResetSlurpThread() {
   return useMutation({
     mutationFn: (input: { threadId: string; personaId: string }) =>
       api.post<{ thread: SlurpThread }>(`/slurp2/messages/threads/${encodeURIComponent(input.threadId)}/reset`, input),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: slpKeys.noodlerRoot() }),
+    // Settled, not success: a request that timed out may still have been stored.
+    onSettled: () => invalidateSlurpMessages(queryClient),
   });
 }
 /**
@@ -239,12 +287,14 @@ export function useSetSlurpThreadNotes() {
       threadId: string;
       personaId: string;
       notes: { id?: string; text: string; tier: "working" | "longterm" }[];
+      baseNoteIds: string[];
     }) =>
       api.put<{ notes: { id: string; text: string; tier: "working" | "longterm" }[] }>(
         `/slurp2/messages/threads/${encodeURIComponent(input.threadId)}/notes`,
-        { personaId: input.personaId, notes: input.notes },
+        { personaId: input.personaId, notes: input.notes, baseNoteIds: input.baseNoteIds },
       ),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: slpKeys.noodlerRoot() }),
+    // Settled, not success: a request that timed out may still have been stored.
+    onSettled: () => invalidateSlurpMessages(queryClient),
   });
 }
 export function useCancelSlurpFollowUp() {
@@ -258,6 +308,37 @@ export function useCancelSlurpFollowUp() {
           personaId: input.personaId,
         },
       ),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: slpKeys.noodlerRoot() }),
+    // Settled, not success: a request that timed out may still have been stored.
+    onSettled: () => invalidateSlurpMessages(queryClient),
+  });
+}
+
+/** An internal note in a Support thread: the player's own, never shown to the Creator or a model. */
+export function useAddSlurpDeskNote() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { personaId: string; creatorAccountId: string; text: string }) =>
+      api.post<{ message: SlurpMessage }>("/slurp2/slurp/desk/note", input),
+    onSettled: () => invalidateSlurpMessages(queryClient),
+  });
+}
+
+/** Support marks the open ticket resolved; the Creator answers and rates it. */
+export function useResolveSlurpDeskTicket() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { personaId: string; creatorAccountId: string }) =>
+      api.post<{ message: SlurpMessage; replyStatus: string }>("/slurp2/slurp/desk/ticket/resolve", input),
+    onSettled: () => invalidateSlurpMessages(queryClient),
+  });
+}
+
+/** The player, as a Creator they run, answers an Offer AI Support sent them. */
+export function useAnswerSlurpDeskOffer() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { personaId: string; messageId: string; answer: "accept" | "decline" }) =>
+      api.post<{ status: string; error: string | null }>("/slurp2/slurp/desk/offer/answer", input),
+    onSettled: () => invalidateSlurpMessages(queryClient),
   });
 }

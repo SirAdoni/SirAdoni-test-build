@@ -158,15 +158,9 @@
       "palette": "Noodle cyan-blue, social pink, Marinara orange, deep navy, warm gold"
     },
     {
-      "id": "slurp",
+      "id": "slurp2",
       "name": "Slurp",
       "concept": "A close sister image to Noodle: a more deeply blushed Mari presents the same noodle-shaped mark in hot pink while knowingly narrowing her eyes, surrounded by social bubbles, hearts, and stars.",
-      "palette": "Slurp hot pink, Noodle cyan-blue, Marinara orange, deep navy, warm gold"
-    },
-    {
-      "id": "slurp2",
-      "name": "Slurp Remastered",
-      "concept": "PLACEHOLDER: currently a copy of the slurp cover. Needs its own art. Same Mari and social-bubble world as Slurp, but read as the newer, brighter sibling so the two are told apart at a glance in Download Agents.",
       "palette": "Slurp hot pink, Noodle cyan-blue, Marinara orange, deep navy, warm gold"
     },
     {
@@ -234,6 +228,18 @@
       "name": "World State",
       "concept": "Mari carefully holds a glowing miniature world showing tiny mountains and ocean, with day and night, sun, moon, rain cloud, snowflake, and temperature symbols orbiting it.",
       "palette": "planet blue, leaf green, sunlight gold, night violet"
+    },
+    {
+      "id": "quartermaster",
+      "name": "Quartermaster",
+      "concept": "Chibi Professor Mari wears medieval steel armor over navy cloth and confidently holds an upright sword, her blonde curls and glasses visible against a castle armory.",
+      "palette": "steel silver, navy, warm gold, sky blue"
+    },
+    {
+      "id": "relationship-tracker",
+      "name": "Relationship Tracker",
+      "concept": "Chibi Professor Mari and a friendly red orc sit across one plate of spaghetti, affectionately connected mouth-to-mouth by a single noodle in a Lady and the Tramp parody.",
+      "palette": "warm red, golden pasta, navy, candlelight gold"
     }
   ]
 }

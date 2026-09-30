@@ -4,6 +4,7 @@ import type {
   SlpStageProfileDraftRequest,
 } from "../../../../../shared/src/slp/slp-social-generation.schema.js";
 import type {
+  SlpCreatorArtworkPromptOptions,
   SlpAccount,
   SlpCreatorManagedStageProfile,
   SlpCreatorSourceSnapshot,
@@ -51,6 +52,8 @@ export function useBulkCreateCreatorStageProfiles() {
         created: SlurpManagedStageProfile[];
         skipped: string[];
         failed?: string[];
+        /** Creators that failed on the way and can be sent again as they are. */
+        retryable?: string[];
         reasons?: { accountId: string; reason: string }[];
       }>("/slurp2/slurp/accounts/bulk", input),
     onSuccess: (result) => {
@@ -88,6 +91,7 @@ export function useUpdateCreatorStageProfile() {
       sourceSnapshot?: SlpCreatorSourceSnapshot;
       sourceRevisionToken?: string;
       confirmAvatarReview?: boolean;
+      location?: string;
     } & SlurpStageProfileInput) =>
       api.put<SlurpManagedStageProfile>(`/slurp2/slurp/accounts/${encodeURIComponent(accountId)}/stage-profile`, {
         ...input,
@@ -99,6 +103,21 @@ export function useUpdateCreatorStageProfile() {
         qc.invalidateQueries({ queryKey: slpKeys.slpCreatorViewers() }),
         qc.invalidateQueries({ queryKey: slpKeys.noodlerReserveStatus() }),
       ]),
+  });
+}
+export function useCreatorAppearanceAction() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      accountId: string;
+      action: "generate" | "regenerate" | "accept" | "keep_override" | "clear_override" | "edit_override";
+      text?: string;
+    }) =>
+      api.post<SlpCreatorManagedStageProfile>(
+        `/slurp2/slurp/accounts/${encodeURIComponent(input.accountId)}/appearance`,
+        { action: input.action, ...(input.text && { text: input.text }) },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: slpKeys.noodlerAccounts() }),
   });
 }
 export function useUpdateCreatorProfileLocation() {
@@ -144,10 +163,21 @@ export function useUploadCreatorBanner() {
 }
 export function useGenerateCreatorArtwork() {
   return useCreatorAvatarMutation(
-    ({ accountId, kind, guidance }: { accountId: string; kind: "avatar" | "banner"; guidance?: string }) =>
+    ({
+      accountId,
+      kind,
+      guidance,
+      options,
+    }: {
+      accountId: string;
+      kind: "avatar" | "banner";
+      guidance?: string;
+      options?: SlpCreatorArtworkPromptOptions;
+    }) =>
       api.post<SlpCreatorStageProfile>(`/slurp2/slurp/accounts/${encodeURIComponent(accountId)}/artwork/generate`, {
         kind,
         guidance,
+        options,
       }),
   );
 }

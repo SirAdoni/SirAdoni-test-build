@@ -1,3 +1,5 @@
+import { errorMessage } from "../../modules/settings/slp-backstage-format";
+import { toast } from "sonner";
 import { Copy, Plus, RotateCcw, Trash2, UsersRound } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -9,6 +11,7 @@ import {
 } from "../../../../../shared/src/slp/slp-fan-types.js";
 import { api } from "../../../lib/api-client";
 import { Field, NumberSetting, SectionTitle, SettingsGroup, Toggle } from "../../modules/settings/SlpSettingsControls";
+import { SlpTextAssist, type SlpTextAssistRun } from "../assist/slp-assist-contract";
 
 type RebalancePreview = { changed: number; counts: Record<string, { before: number; after: number }> };
 
@@ -123,10 +126,33 @@ export function SlurpFanTypesSettings({
     const original = slurpFanTypesDefault().find((type) => type.id === selected.id);
     if (original && (await onSave(replace(original)))) setDraft(clone(original));
   };
+  // The fan type's own writer (R1-107), behind the shared assist: Write from the name, archetype,
+  // traits and tone, or Improve the voice as it stands, with the player's note.
+  const draftVoice: SlpTextAssistRun = async ({ mode, note }) => {
+    if (!draft) return "";
+    const { name, engineArchetype, traits, tone, voice } = draft;
+    const result = await api.post<{ voice: string }>("/slurp2/fan-types/voice-draft", {
+      name,
+      engineArchetype,
+      traits,
+      tone,
+      voice: mode === "improve" ? voice : "",
+      ...(note ? { note } : {}),
+    });
+    return result.voice;
+  };
   const previewRebalance = async () => {
     setRebalanceBusy(true);
     try {
       setPreview(await api.get<RebalancePreview>("/slurp2/fan-types/rebalance/preview"));
+    } catch (error) {
+      // Failures used to vanish without a word (R1-141).
+      toast.error(
+        errorMessage(
+          error,
+          t("ui.slurp.settings.fanTypes.rebalanceFailed", { defaultValue: "Could not rebalance the audience." }),
+        ),
+      );
     } finally {
       setRebalanceBusy(false);
     }
@@ -141,6 +167,13 @@ export function SlurpFanTypesSettings({
           defaultValue: "Reassigned {{count}} audience members.",
           count: result.changed,
         }),
+      );
+    } catch (error) {
+      toast.error(
+        errorMessage(
+          error,
+          t("ui.slurp.settings.fanTypes.rebalanceFailed", { defaultValue: "Could not rebalance the audience." }),
+        ),
       );
     } finally {
       setRebalanceBusy(false);
@@ -315,6 +348,15 @@ export function SlurpFanTypesSettings({
                 maxLength={600}
                 onChange={(event) => set("voice", event.target.value)}
               />
+              <div className="mt-1 flex flex-wrap items-center">
+                <SlpTextAssist
+                  field="voice"
+                  value={draft.voice}
+                  disabled={!draft.name.trim()}
+                  run={draftVoice}
+                  onApply={(text) => set("voice", text)}
+                />
+              </div>
             </Field>
             <Field
               label={t("ui.slurp.settings.fanTypes.traits", { defaultValue: "Traits" })}

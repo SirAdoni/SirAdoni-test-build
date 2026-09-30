@@ -8,12 +8,14 @@ import { createDeterministicZip } from "../deterministic-zip.mjs";
 import {
   RULESET_ASSET_PATH,
   RULESET_CATALOG_MAX_BYTES,
+  assertRulesetApplies,
   assertRulesetAssetDocument,
   assertRulesetBattle,
   assertRulesetCatalogs,
   assertRulesetCombat,
   assertRulesetCreatures,
   assertRulesetPackageContract,
+  assertRulesetReactions,
   assertRulesetScaled,
   isRulesetCatalogAssetPath,
   isRulesetPackage,
@@ -934,6 +936,74 @@ assert.throws(
 assert.doesNotThrow(() =>
   assertRulesetCombat(rulesetManifest({ capabilityApi: { major: 2, minor: 0 } }), combatDocument(combatBlock)),
 );
+
+// What one TURN of a fight can do, each key on its own: a package carrying any of them on an older
+// Engine is refused here rather than at install, where the whole strict file goes.
+const turnMessage = /says what one turn of a fight can do and must declare capability API 1\.29 or newer/u;
+const atCombatApi = (edit) => () => assertRulesetCombat(combatManifest, combatWith(edit));
+assert.throws(
+  atCombatApi((combat) => (combat.attacks[0].strikes = { const: 2 })),
+  turnMessage,
+);
+assert.throws(
+  atCombatApi((combat) => (combat.conditions[0].saves = ["str_save"])),
+  turnMessage,
+);
+assert.throws(
+  atCombatApi((combat) => (combat.conditions[0].whileSourceInSight = true)),
+  turnMessage,
+);
+assert.throws(
+  atCombatApi((combat) => (combat.conditions[0].endsWhenSourceDown = true)),
+  turnMessage,
+);
+assert.throws(
+  atCombatApi((combat) => (combat.conditions[0].effects = ["resist-all"])),
+  turnMessage,
+);
+assert.throws(
+  atCombatApi((combat) => (combat.standardEffects = { dodge: { saves: ["str_save"] } })),
+  turnMessage,
+);
+// An effect the older list already held asks for nothing newer.
+assert.doesNotThrow(atCombatApi((combat) => (combat.conditions[0].effects = ["cannot-act"])));
+const turnManifest = rulesetManifest({ capabilityApi: { major: 1, minor: 29 } });
+assert.doesNotThrow(() =>
+  assertRulesetCombat(
+    turnManifest,
+    combatWith((combat) => (combat.conditions[0].effects = ["resist-all"])),
+  ),
+);
+
+// A weapon held to one strike by a column of its own row, and the Engine that reads the key.
+const capManifest = rulesetManifest({ capabilityApi: { major: 1, minor: 32 } });
+const capped = (edit) =>
+  combatWith((combat) => {
+    combat.attacks[0].strikes = { const: 2 };
+    combat.attacks[0].strikesCappedBy = { column: "proficient" };
+    edit?.(combat);
+  });
+assert.doesNotThrow(() => assertRulesetCombat(capManifest, capped()));
+assert.throws(
+  () => assertRulesetCombat(turnManifest, capped()),
+  /caps a weapon's strikes and must declare capability API 1\.32 or newer/u,
+);
+assert.throws(
+  () =>
+    assertRulesetCombat(
+      capManifest,
+      capped((combat) => delete combat.attacks[0].strikes),
+    ),
+  /caps strikes on a list that buys one a spend anyway/u,
+);
+assert.throws(
+  () =>
+    assertRulesetCombat(
+      capManifest,
+      capped((combat) => (combat.attacks[0].strikesCappedBy.column = "bonus")),
+    ),
+  /strikesCappedBy names "bonus", which is not a boolean column of "attacks"/u,
+);
 assert.throws(
   () =>
     assertRulesetCombat(
@@ -1222,6 +1292,14 @@ assert.throws(
       combatWith((combat) => (combat.conditions[0].failsSaves = ["luck_save"])),
     ),
   /combat condition "prone" fails unknown save "luck_save"/u,
+);
+assert.throws(
+  () =>
+    assertRulesetCombat(
+      turnManifest,
+      combatWith((combat) => (combat.conditions[0].saves = ["luck_save"])),
+    ),
+  /combat condition "prone" narrows unknown save "luck_save"/u,
 );
 
 // Concentration, dying and the damage types.
@@ -1918,6 +1996,286 @@ assert.throws(
   );
 }
 
+// ── Reaction moments (Capability API 1.33) ──
+//
+// An entry may name the moment its reaction waits for. `true` keeps meaning a reaction taken on no
+// menu, so only the object is gated, and only what the Engine can open is allowed: harm, or being
+// aimed at, pointed back at the source or at whoever the holder picks, and a cancel only on an aim.
+
+const momentManifest = rulesetManifest({ capabilityApi: { major: 1, minor: 33 } });
+const momentDocument = (reaction) => {
+  const document = bestiaryDocument();
+  document.catalogs.push({
+    id: "tricks",
+    label: "Tricks",
+    feeds: ["spells"],
+    entries: [
+      {
+        id: "sear",
+        label: "Sear",
+        rows: [{ list: "spells", values: { name: "Sear" } }],
+        mechanics: { kind: "attack", reaction },
+      },
+    ],
+  });
+  return document;
+};
+assert.equal(
+  assertRulesetReactions(shippedManifest, parsedAsset, shippedCatalogSources),
+  4,
+  "the shipped package names four moments: Hellish Rebuke's, Counterspell's, Shield's and Uncanny Dodge's",
+);
+assert.equal(assertRulesetReactions(rulesetManifest(), momentDocument(true)), 0, "true needs no 1.33");
+assert.throws(
+  () =>
+    assertRulesetReactions(
+      rulesetManifest({ capabilityApi: { major: 1, minor: 32 } }),
+      momentDocument({ on: "harmed" }),
+    ),
+  /entry "sear" names the moment it waits for and must declare capability API 1\.33 or newer/u,
+);
+for (const reaction of [
+  { on: "harmed" },
+  { on: "harmed", at: "source" },
+  { on: "aimed", at: "chosen" },
+  { on: "aimed", cancels: true },
+]) {
+  assert.equal(assertRulesetReactions(momentManifest, momentDocument(reaction)), 1, JSON.stringify(reaction));
+}
+for (const [reaction, message] of [
+  [null, /has a reaction of null, not true or a moment/u],
+  ["soon", /has a reaction of "soon", not true or a moment/u],
+  [[], /has a reaction of \[\], not true or a moment/u],
+  [{ on: "harmed", why: "spite" }, /reaction has an unknown key "why"/u],
+  [{ on: "fallen" }, /waits for "fallen", not one of aimed, hit, harmed, used/u],
+  [{ at: "source" }, /waits for undefined, not one of aimed, hit, harmed, used/u],
+  [{ on: "harmed", at: "everyone" }, /is pointed at "everyone", not one of source, chosen/u],
+  [{ on: "aimed", cancels: false }, /reaction cancels must be true when it is given/u],
+  [
+    { on: "harmed", cancels: true },
+    /cancels a moment that has already happened: only an "aimed" or "used" reaction cancels/u,
+  ],
+]) {
+  assert.throws(
+    () => assertRulesetReactions(momentManifest, momentDocument(reaction)),
+    message,
+    JSON.stringify(reaction),
+  );
+}
+// A catalog asset is read too, and a creature's printed reactions are nothing this gate reads.
+{
+  const document = momentDocument(true);
+  const tricks = document.catalogs.pop();
+  document.catalogs.push({ ...tricks, entries: undefined, asset: "catalogs/tricks.json" });
+  const sources = new Map([
+    [
+      "catalogs/tricks.json",
+      JSON.stringify({ entries: [{ ...tricks.entries[0], mechanics: { reaction: { on: "near" } } }] }),
+    ],
+  ]);
+  assert.throws(() => assertRulesetReactions(momentManifest, document, sources), /waits for "near"/u);
+}
+
+// ── Creatures written as sheets (Capability API 1.34) ──
+//
+// A bestiary creature may carry a sheet in the ruleset's own terms, which a fight builds exactly as it
+// builds a party member. The sheet then says every number once, so none of the six it replaces may
+// also be given, and it is held to what the ruleset's own sheet declares, value by value.
+
+const sheetManifest = rulesetManifest({ capabilityApi: { major: 1, minor: 34 } });
+const sheetRuleset = {
+  ...combatSheet,
+  abilities: [{ id: "str", label: "Strength", min: 1, max: 30, default: 10 }],
+  skills: [{ id: "athletics", label: "Athletics", ability: "str" }],
+  saveTiers: ["none", "proficient"],
+  bonusRange: { min: -5, max: 5 },
+  fields: [
+    { id: "ac", label: "Armor Class", type: "number", min: 0, max: 30 },
+    { id: "speed", label: "Speed", type: "number", min: 0, max: 120 },
+    { id: "mood", label: "Mood", type: "text", maxLength: 10 },
+    { id: "calling", label: "Calling", type: "enum", values: ["none", "wizard"] },
+  ],
+  lists: [
+    ...combatSheet.lists.filter((list) => list.id !== "spells"),
+    {
+      id: "spells",
+      label: "Spells",
+      maxItems: 2,
+      columns: [
+        { id: "name", label: "Name", type: "text", maxLength: 80, required: true },
+        { id: "level", label: "Level", type: "number", min: 0, max: 9 },
+        { id: "prepared", label: "Prepared", type: "boolean" },
+      ],
+    },
+  ],
+};
+const casterSheet = () => ({
+  abilities: { str: 14 },
+  skills: { athletics: "expertise" },
+  saves: { str_save: "proficient" },
+  bonuses: { athletics: -1, str_save: 2 },
+  fields: { ac: 15, speed: 30, mood: "grim", calling: "wizard" },
+  lists: { spells: [{ name: "Sear", level: 1, prepared: true, _catalog: "tricks/sear" }] },
+});
+const sheetDocument = (edit = () => {}, sheet = casterSheet()) => {
+  const document = momentDocument(true);
+  document.sheet = sheetRuleset;
+  document.resolution = { proficiencyTiers: [{ id: "none" }, { id: "proficient" }, { id: "expertise" }] };
+  const block = document.catalogs[0].entries[0].creature;
+  for (const key of ["health", "defense", "initiativeModifier", "speed", "abilities", "saves"]) delete block[key];
+  block.sheet = sheet;
+  edit(block);
+  return document;
+};
+
+assert.equal(assertRulesetCreatures(sheetManifest, sheetDocument()), 1);
+assert.throws(
+  () => assertRulesetCreatures(momentManifest, sheetDocument()),
+  /entry "hound" carries a sheet and must declare capability API 1\.34 or newer/u,
+);
+// Its lists are what it does, so actions of its own are optional; the cap still holds.
+assert.equal(
+  assertRulesetCreatures(
+    sheetManifest,
+    sheetDocument((block) => (block.actions = [])),
+  ),
+  1,
+);
+assert.equal(
+  assertRulesetCreatures(
+    sheetManifest,
+    sheetDocument((block) => delete block.actions),
+  ),
+  1,
+);
+assert.throws(
+  () =>
+    assertRulesetCreatures(
+      sheetManifest,
+      sheetDocument((block) => (block.actions = 7)),
+    ),
+  /carries 0 to \d+ actions, not undefined/u,
+);
+// And a plain creature still needs its first one.
+assert.throws(
+  () =>
+    assertRulesetCreatures(
+      creatureManifest,
+      bestiaryDocument((block) => (block.actions = [])),
+    ),
+  /carries 1 to \d+ actions, not 0/u,
+);
+for (const key of ["health", "defense", "initiativeModifier", "speed", "abilities", "saves"]) {
+  assert.throws(
+    () =>
+      assertRulesetCreatures(
+        sheetManifest,
+        sheetDocument((block) => (block[key] = creature()[key] ?? 1)),
+      ),
+    new RegExp(`carries a sheet, which says its ${key}, so it does not also give one`, "u"),
+    key,
+  );
+}
+for (const [what, edit, message] of [
+  ["a key", (sheet) => (sheet.feats = {}), /sheet has an unknown key "feats"/u],
+  ["an ability", (sheet) => (sheet.abilities = { luck: 3 }), /sheet names unknown ability "luck"/u],
+  ["a score", (sheet) => (sheet.abilities = { str: 31 }), /sheet sets str to 31, outside 1 to 30/u],
+  ["a fraction", (sheet) => (sheet.abilities = { str: 12.5 }), /sheet sets str to 12\.5, outside 1 to 30/u],
+  ["a skill", (sheet) => (sheet.skills = { juggling: "proficient" }), /sheet names unknown skill "juggling"/u],
+  ["a save", (sheet) => (sheet.saves = { luck_save: "proficient" }), /sheet names unknown save "luck_save"/u],
+  [
+    "a narrowed tier",
+    (sheet) => (sheet.saves = { str_save: "expertise" }),
+    /sheet sets str_save to "expertise", not a tier offered for saves/u,
+  ],
+  ["a tier", (sheet) => (sheet.skills = { athletics: "legend" }), /sets athletics to "legend", not a tier offered/u],
+  ["a bonus", (sheet) => (sheet.bonuses = { luck: 1 }), /gives a bonus to unknown skill or save "luck"/u],
+  ["a large bonus", (sheet) => (sheet.bonuses = { athletics: 6 }), /gives athletics a bonus of 6, outside -5 to 5/u],
+  ["a field", (sheet) => (sheet.fields = { hue: 1 }), /sheet names unknown field "hue"/u],
+  ["a number", (sheet) => (sheet.fields = { ac: "15" }), /sheet field "ac" takes a number, not "15"/u],
+  ["a range", (sheet) => (sheet.fields = { ac: 31 }), /sheet field "ac" is 31, outside 0 to 30/u],
+  ["a whole number", (sheet) => (sheet.fields = { ac: 1.5 }), /sheet field "ac" takes a whole number, not 1\.5/u],
+  ["a length", (sheet) => (sheet.fields = { mood: "grimly jolly" }), /field "mood" is longer than 10 characters/u],
+  [
+    "a value",
+    (sheet) => (sheet.fields = { calling: "bard" }),
+    /field "calling" takes one of none, wizard, not "bard"/u,
+  ],
+  ["a list", (sheet) => (sheet.lists = { feats: [] }), /sheet names unknown list "feats"/u],
+  [
+    "too many rows",
+    (sheet) => (sheet.lists = { spells: [{ name: "A" }, { name: "B" }, { name: "C" }] }),
+    /sheet list "spells" holds more than its 2 rows/u,
+  ],
+  ["a column", (sheet) => (sheet.lists = { spells: [{ name: "A", colour: "red" }] }), /sets unknown column "colour"/u],
+  ["a cell", (sheet) => (sheet.lists = { spells: [{ name: "A", level: "one" }] }), /column "level" takes a number/u],
+  ["a required cell", (sheet) => (sheet.lists = { spells: [{ level: 1 }] }), /leaves required column "name" empty/u],
+  ["a mark", (sheet) => (sheet.lists.spells[0]._catalog = "sear"), /names "sear", not <catalog>\/<entry>/u],
+  [
+    "a catalog",
+    (sheet) => (sheet.lists.spells[0]._catalog = "beasts/hound"),
+    /names "beasts\/hound", and no catalog of that name feeds "spells"/u,
+  ],
+  [
+    "an entry",
+    (sheet) => (sheet.lists.spells[0]._catalog = "tricks/zap"),
+    /names "tricks\/zap", which that catalog does not hold/u,
+  ],
+]) {
+  const sheet = casterSheet();
+  edit(sheet);
+  assert.throws(
+    () =>
+      assertRulesetCreatures(
+        sheetManifest,
+        sheetDocument(() => {}, sheet),
+      ),
+    message,
+    what,
+  );
+}
+// A picked row naming an entry of a catalog FILE is checked against the file, which the Engine
+// cannot do from the ruleset alone.
+{
+  const document = sheetDocument();
+  const tricks = document.catalogs.pop();
+  document.catalogs.push({ ...tricks, entries: undefined, asset: "catalogs/tricks.json" });
+  const sources = new Map([["catalogs/tricks.json", JSON.stringify({ entries: tricks.entries })]]);
+  assert.equal(assertRulesetCreatures(sheetManifest, document, sources), 1);
+  document.catalogs[0].entries[0].creature.sheet.lists.spells[0]._catalog = "tricks/zap";
+  assert.throws(() => assertRulesetCreatures(sheetManifest, document, sources), /which that catalog does not hold/u);
+}
+// Text is held only to a length the ruleset declares, exactly as the Engine holds a row.
+{
+  const document = sheetDocument();
+  document.sheet = {
+    ...sheetRuleset,
+    fields: sheetRuleset.fields.map((field) =>
+      field.id === "mood" ? { id: "mood", label: "Mood", type: "text" } : field,
+    ),
+  };
+  document.catalogs[0].entries[0].creature.sheet.fields.mood = "grimly jolly";
+  assert.equal(assertRulesetCreatures(sheetManifest, document), 1);
+}
+// The shipped casters: every one a sheet, and every spell row one of the package's own spells.
+{
+  const bestiary = JSON.parse(shippedCatalogSources.get("catalogs/creatures.json"));
+  const casters = bestiary.entries.filter((entry) => entry.creature.sheet);
+  assert.equal(casters.length, 12, "the twelve slot casters of the SRD are sheets");
+  // SRD 5.1 prints the Priest's Religion as +4 where the fixture says +5: Intelligence 13 and a 5th
+  // level proficiency of 3 make exactly 4, so the corrected sheet carries no bonus there.
+  const priest = casters.find((entry) => entry.id === "priest").creature.sheet;
+  assert.equal(priest.skills.religion, "proficient");
+  assert.equal(priest.bonuses.religion, undefined, "the Priest's Religion is the printed +4");
+  for (const entry of casters) {
+    assert.ok(entry.creature.sheet.lists.spells.length > 0, `${entry.id} prepares spells`);
+    assert.ok(
+      entry.creature.sheet.lists.spells.every((row) => row._catalog?.startsWith("spells/")),
+      `${entry.id}'s spells are the package's own`,
+    );
+  }
+}
+
 // A shape and a target count live on the same action on purpose: the count is what a fight WITHOUT
 // a board reads, and the shape is what one with a board draws.
 assert.equal(
@@ -1969,6 +2327,339 @@ assert.throws(
     ),
   /action "bite" has a long range below its ordinary one/u,
 );
+
+// ── Contests (1.43), counters (1.44), condition numbers (1.45) and the moment after a hit (1.46) ──
+//
+// Each key is gated at the Engine that reads it and checked the way that Engine checks it, so a
+// package carrying one is refused here rather than at install, where the whole strict file goes.
+
+const apiManifest = (minor) => rulesetManifest({ capabilityApi: { major: 1, minor } });
+const combatAt = (minor, edit) => () => assertRulesetCombat(apiManifest(minor), combatWith(edit));
+
+// Contests and the checks they read.
+const withContests = (combat) => {
+  combat.checks = [{ id: "might", label: "Athletics", value: { abilityMod: "str" } }];
+  combat.contests = [
+    {
+      id: "grab",
+      label: "Grab",
+      budget: "action",
+      strike: true,
+      attacker: { checks: ["might"] },
+      defender: { checks: ["might"] },
+      onWin: { applies: [{ condition: "prone" }] },
+    },
+    {
+      id: "slip",
+      label: "Slip free",
+      budget: "action",
+      attacker: { checks: ["might"] },
+      defender: { checks: ["might"] },
+      from: { holding: "stunned" },
+      onWin: { ends: [{ condition: "stunned", on: "actor" }] },
+    },
+  ];
+};
+assert.doesNotThrow(combatAt(43, withContests));
+assert.throws(combatAt(42, withContests), /has contests in its fights and must declare capability API 1\.43 or newer/u);
+for (const [edit, message] of [
+  [
+    (combat) => (combat.checks[0].value = { skillMod: "stealth" }),
+    /check "might" value names unknown skill "stealth"/u,
+  ],
+  [(combat) => combat.checks.push({ ...combat.checks[0] }), /repeats the check "might"/u],
+  [(combat) => (combat.contests[0].budget = "reaction"), /contest "grab" budget names unknown budget "reaction"/u],
+  [(combat) => (combat.contests[0].attacker.checks = ["agility"]), /"grab" attacker names unknown check "agility"/u],
+  [(combat) => (combat.contests[0].defender.checks = ["might", "might"]), /"grab" defender repeats the check "might"/u],
+  [(combat) => (combat.contests[0].onWin = {}), /"grab" onWin applies, ends or pushes something/u],
+  [
+    (combat) => (combat.contests[0].onWin.applies = [{ condition: "dazed" }]),
+    /onWin applies names unknown condition "dazed"/u,
+  ],
+  [
+    (combat) => (combat.contests[1].onWin.applies = [{ condition: "stunned" }]),
+    /"slip" breaks free of "stunned", so it cannot also apply it/u,
+  ],
+  [
+    (combat) => (combat.contests[1].onWin.ends[0].on = "everyone"),
+    /ends "stunned" on "everyone", not the actor or the target/u,
+  ],
+  [
+    (combat) => (combat.contests[0].onWin.push = 5),
+    /"grab" push is measured in cells, so the block declares "distance" too/u,
+  ],
+  [
+    (combat) => (combat.contests[0].reach = 10),
+    /"grab" reach is measured in cells, so the block declares "distance" too/u,
+  ],
+  [(combat) => (combat.contests[0].ties = "nobody"), /"grab" gives a tie to "nobody"/u],
+]) {
+  assert.throws(
+    combatAt(43, (combat) => {
+      withContests(combat);
+      edit(combat);
+    }),
+    message,
+    String(message),
+  );
+}
+
+// Numbers a condition changes, levels of a track, and the effects on a holder's own checks.
+const numbersDocument = (edit) => {
+  const document = combatWith((combat) => {
+    combat.conditions.push({
+      condition: "stunned",
+      effects: ["own-checks-disadvantage"],
+      modifiers: [
+        { to: "defense", flat: -2 },
+        { to: "attacks", dice: "1d4", minus: true },
+        { to: "speed", times: 0.5 },
+      ],
+    });
+    combat.levels = [
+      { track: "fatigue", at: 1, effects: ["own-attacks-disadvantage"] },
+      { track: "fatigue", at: 2, modifiers: [{ to: "speed", times: 0.5 }] },
+    ];
+    edit(combat);
+  });
+  document.sheet = structuredClone(combatSheet);
+  document.sheet.live.tracks.push({ id: "fatigue", max: 6 }, { id: "harm", boxes: true });
+  return document;
+};
+const numbersAt =
+  (minor, edit = () => {}) =>
+  () =>
+    assertRulesetCombat(apiManifest(minor), numbersDocument(edit));
+const numbersMessage = /conditions that change numbers or count levels and must declare capability API 1\.45 or newer/u;
+assert.doesNotThrow(numbersAt(45));
+assert.throws(numbersAt(44), numbersMessage);
+// Any one of them asks for 1.45 on its own.
+assert.throws(
+  combatAt(44, (combat) => (combat.conditions[0].effects = ["own-checks-advantage"])),
+  numbersMessage,
+);
+assert.throws(
+  combatAt(44, (combat) => (combat.conditions[0].modifiers = [{ to: "defense", flat: 1 }])),
+  numbersMessage,
+);
+assert.throws(
+  () =>
+    assertRulesetCombat(
+      apiManifest(44),
+      numbersDocument((combat) => combat.conditions.pop()),
+    ),
+  numbersMessage,
+);
+const stunned = (combat) => combat.conditions.at(-1);
+for (const [edit, message] of [
+  [
+    (combat) => (stunned(combat).modifiers[0].to = "luck"),
+    /changes "luck", not one of defense, attacks, saves, checks, speed/u,
+  ],
+  [(combat) => (stunned(combat).modifiers[0] = { to: "defense" }), /changes defense by nothing/u],
+  [(combat) => (stunned(combat).modifiers[0].flat = 0), /changes defense by a flat 0, which changes nothing/u],
+  [
+    (combat) => (stunned(combat).modifiers[0].flat = 1.5),
+    /changes defense by 1\.5, not a whole number from -100 to 100/u,
+  ],
+  [
+    (combat) => (stunned(combat).modifiers[0] = { to: "defense", dice: "1d4" }),
+    /rolls dice onto defense, and dice change only attacks, saves, checks/u,
+  ],
+  [(combat) => (stunned(combat).modifiers[1].dice = "0d6"), /rolls "0d6", which is not dice a table has/u],
+  [
+    (combat) => (stunned(combat).modifiers[1] = { to: "attacks", flat: -1, minus: true }),
+    /takes dice off attacks with "minus" but has no dice/u,
+  ],
+  [(combat) => (stunned(combat).modifiers[2].to = "attacks"), /multiplies attacks, and "times" changes speed only/u],
+  [(combat) => (stunned(combat).modifiers[2].times = 3), /multiplies speed by 3, not 0\.5 or 2/u],
+  [(combat) => (stunned(combat).modifiers[2].why = "cold"), /a modifier has the unknown key "why"/u],
+  [(combat) => (stunned(combat).modifiers = []), /changes 1 to 6 numbers/u],
+  [(combat) => (stunned(combat).saves = ["str_save"]), /narrows saves with nothing to narrow/u],
+  [(combat) => (combat.levels[0].track = "grit"), /level names unknown track "grit"/u],
+  [(combat) => (combat.levels[0].track = "harm"), /reads a wound track, and a level reads a plain track's number/u],
+  [(combat) => (combat.levels[0].at = 7), /is never reached: the track goes up to 6/u],
+  [(combat) => (combat.levels[1].at = 1), /level 1 of "fatigue" is given twice/u],
+  [(combat) => (combat.levels[0].effects = ["ends-on-damage"]), /cannot have "ends-on-damage": nobody put it on/u],
+  [(combat) => (combat.levels[0].effects = ["glowing"]), /has the unknown effect "glowing"/u],
+  [(combat) => (combat.levels[0].effects = []), /does nothing: a level has effects, modifiers or saves it fails/u],
+  [(combat) => (combat.levels[0].failsSaves = ["luck_save"]), /names unknown save "luck_save"/u],
+]) {
+  assert.throws(numbersAt(45, edit), message, String(message));
+}
+// A modifier to saves is something `saves` narrows, exactly as a save effect is.
+assert.doesNotThrow(
+  numbersAt(45, (combat) => {
+    stunned(combat).modifiers[0] = { to: "saves", flat: -2 };
+    stunned(combat).saves = ["str_save"];
+  }),
+);
+
+// A reaction that answers something being used, or only some catalogs' entries (1.44), and one
+// that answers being hit (1.46).
+for (const [minor, reaction] of [
+  [44, { on: "used", cancels: true }],
+  [44, { on: "aimed", against: { catalogs: ["tricks"] } }],
+  [46, { on: "hit" }],
+  [46, { on: "hit", against: { catalogs: ["tricks", "beasts"] } }],
+]) {
+  assert.equal(assertRulesetReactions(apiManifest(minor), momentDocument(reaction)), 1, JSON.stringify(reaction));
+  assert.throws(
+    () => assertRulesetReactions(apiManifest(minor - 1), momentDocument(reaction)),
+    new RegExp(
+      `waits for a moment an older Engine does not open and must declare capability API 1\\.${minor} or newer`,
+      "u",
+    ),
+    JSON.stringify(reaction),
+  );
+}
+for (const [reaction, message] of [
+  [{ on: "hit", cancels: true }, /only an "aimed" or "used" reaction cancels/u],
+  [{ on: "used", against: { catalogs: ["hexes"] } }, /answers unknown catalog "hexes"/u],
+  [{ on: "used", against: { catalogs: [] } }, /not \{ catalogs \} naming 1 to 12 catalogs/u],
+  [{ on: "used", against: ["tricks"] }, /not \{ catalogs \} naming 1 to 12 catalogs/u],
+  [{ on: "used", against: { catalogs: ["tricks"], also: 1 } }, /not \{ catalogs \} naming 1 to 12 catalogs/u],
+]) {
+  assert.throws(
+    () => assertRulesetReactions(apiManifest(46), momentDocument(reaction)),
+    message,
+    JSON.stringify(reaction),
+  );
+}
+
+// The conditions a catalog entry applies: the sheet's own, and ending after one use or as a turn
+// begins only on an Engine that reads it.
+assert.ok(assertRulesetApplies(shippedManifest, parsedAsset, shippedCatalogSources) > 20);
+const appliesDocument = (applies) => {
+  const document = momentDocument(true);
+  document.catalogs.at(-1).entries[0].mechanics = { kind: "debuff", applies };
+  return document;
+};
+assert.equal(
+  assertRulesetApplies(apiManifest(27), appliesDocument([{ condition: "prone", duration: { rounds: 2 } }])),
+  1,
+);
+assert.equal(
+  assertRulesetApplies(apiManifest(27), bestiaryDocument()),
+  0,
+  "a creature's own actions are not read here",
+);
+for (const applies of [
+  { condition: "prone", duration: { rounds: 1, at: "turn-start" } },
+  { condition: "prone", duration: { rounds: 1 }, endsAfter: "own-attack" },
+]) {
+  assert.equal(assertRulesetApplies(apiManifest(45), appliesDocument([applies])), 1);
+  assert.throws(
+    () => assertRulesetApplies(apiManifest(44), appliesDocument([applies])),
+    /ends "prone" after one use or as a turn begins and must declare capability API 1\.45 or newer/u,
+  );
+}
+for (const [applies, message] of [
+  [{ condition: "dazed", duration: "instant" }, /applies unknown condition "dazed"/u],
+  [{ condition: "prone", duration: "until-save" }, /applies "prone" until a save it does not name/u],
+  [
+    { condition: "prone", duration: "until-save", saveEnds: { save: "luck_save", at: "turn-end" } },
+    /ends "prone" on unknown save "luck_save"/u,
+  ],
+  [
+    { condition: "prone", duration: { rounds: 1 }, endsAfter: "own-turn" },
+    /after "own-turn", not one of own-attack, attacked, own-save/u,
+  ],
+  [
+    { condition: "prone", duration: { rounds: 1, at: "turn-end" } },
+    /counts "prone" down at "turn-end", not "turn-start"/u,
+  ],
+]) {
+  assert.throws(() => assertRulesetApplies(apiManifest(46), appliesDocument([applies])), message, String(message));
+}
+
+// A creature's own contest checks (1.43), and its own reaction on itself (1.46).
+const contestBestiary = (edit) => {
+  const document = bestiaryDocument(edit);
+  document.combat = structuredClone(combatBlock);
+  withContests(document.combat);
+  return document;
+};
+const creaturesAt = (minor, edit) => () => assertRulesetCreatures(apiManifest(minor), contestBestiary(edit));
+const withChecks = (block) => (block.checks = { might: 3 });
+assert.equal(creaturesAt(43, withChecks)(), 1);
+assert.throws(
+  creaturesAt(42, withChecks),
+  /gives its own contest checks and must declare capability API 1\.43 or newer/u,
+);
+assert.throws(
+  creaturesAt(43, (block) => (block.checks = { agility: 3 })),
+  /names unknown contest check "agility"/u,
+);
+assert.throws(
+  creaturesAt(43, (block) => (block.checks = { might: 3.5 })),
+  /check "might" is 3\.5, not a whole number from -100 to 100/u,
+);
+const parryAction = () => ({
+  id: "parry",
+  name: "Parry",
+  budget: "bonus",
+  self: true,
+  reaction: { on: "hit" },
+  applies: [{ condition: "prone", duration: { rounds: 1 }, endsAfter: "attacked" }],
+});
+const withParry =
+  (edit = () => {}) =>
+  (block) => {
+    const parry = parryAction();
+    block.actions.push(parry);
+    edit(parry, block);
+  };
+assert.equal(creaturesAt(46, withParry())(), 1);
+assert.throws(
+  creaturesAt(45, withParry()),
+  /reacts or acts on the creature itself and must declare capability API 1\.46 or newer/u,
+);
+assert.throws(
+  creaturesAt(
+    45,
+    withParry((parry) => delete parry.reaction),
+  ),
+  /reacts or acts on the creature itself and must declare capability API 1\.46 or newer/u,
+  "self alone asks for 1.46",
+);
+assert.throws(
+  creaturesAt(
+    44,
+    withParry((parry) => delete parry.reaction),
+  ),
+  /ends "prone" after one use or as a turn begins and must declare capability API 1\.45 or newer/u,
+);
+for (const [edit, message] of [
+  [(parry) => (parry.targetCount = 2), /lands on the creature itself, so it takes no targetCount/u],
+  [(parry) => (parry.area = { shape: "burst", size: 5 }), /lands on the creature itself, so it takes no area/u],
+  [(parry) => (parry.self = false), /self must be true when it is given/u],
+  [
+    (parry, block) => {
+      parry.signature = { cost: 1 };
+      block.signaturePoints = 3;
+    },
+    /is a reaction, so it is not bought with points as well/u,
+  ],
+  [(parry) => (parry.reaction = { on: "hit", cancels: true }), /only an "aimed" or "used" reaction cancels/u],
+  [(parry) => (parry.reaction = { on: "hit", against: { catalogs: ["hexes"] } }), /answers unknown catalog "hexes"/u],
+  [(parry) => (parry.reaction = "soon"), /has a reaction of "soon", not a moment/u],
+  [
+    (parry) => (parry.applies[0].endsAfter = "own-turn"),
+    /after "own-turn", not one of own-attack, attacked, own-save/u,
+  ],
+  [
+    (parry, block) =>
+      block.actions.push({ id: "flurry", name: "Flurry", budget: "action", sequence: [{ action: "parry" }] }),
+    /names "parry", which is a reaction, so no sequence can make it/u,
+  ],
+  [
+    (parry, block) => (block.actions.find((action) => action.id === "both").self = true),
+    /is a sequence, so it carries no self of its own/u,
+  ],
+]) {
+  assert.throws(creaturesAt(46, withParry(edit)), message, String(message));
+}
 
 // The published artifact must be reproducible: the same manifest and asset bytes
 // have to produce the same zip, or every rebuild would churn the catalog's sha256

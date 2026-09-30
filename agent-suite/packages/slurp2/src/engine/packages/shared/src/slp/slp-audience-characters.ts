@@ -3,7 +3,7 @@
  *
  * Pure and leaf, like the other Slurp rule modules, so a test can import it without pulling in
  * `@marinara-engine/shared` — the constraint that made the privacy core untestable until it was
- * moved out of its service (see SLURP-AUDIT-TASKS.md T6).
+ * moved out of its service.
  *
  * A character fan is an account row, not a population member. It is shaped exactly like the six
  * ambient roster accounts: `kind: "random_user"`, identity carried in `entityId`. That is what
@@ -37,6 +37,18 @@ export function isSlurpCharacterFanAccount(
   account: Pick<{ kind: string; entityId: string }, "kind" | "entityId"> | null | undefined,
 ): boolean {
   return account?.kind === "random_user" && slurpCharacterIdFromFanEntityId(account.entityId) !== null;
+}
+
+/**
+ * Whether a raw `slp_accounts` row (database or backup) is a Creator. Ambient profiles and
+ * characters in the audience are `random_user` rows, and a persona's viewer identity is an
+ * invited persona row; none of them is a Creator (R1-117). `invited` is stored as text.
+ */
+export function slurpAccountRowIsCreator(row: unknown): boolean {
+  if (!row || typeof row !== "object") return false;
+  const { kind, invited } = row as { kind?: unknown; invited?: unknown };
+  if (kind === "random_user") return false;
+  return !(kind === "persona" && (invited === true || invited === "true"));
 }
 
 /** One character group, as `characters.listGroups()` returns it: `characterIds` is a JSON string. */

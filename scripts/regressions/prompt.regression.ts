@@ -112,6 +112,7 @@ import {
   injectGameGmPromptRuntime,
   resolveGameCharacterCardMacros,
 } from "../../packages/server/src/services/generation/game-gm-prompt-runtime.js";
+import { runWithRoomGeneration } from "../../packages/server/src/services/multiplayer/generation-policy.js";
 import {
   addNameLookupEntry,
   findCharAvatarFuzzy,
@@ -135,6 +136,34 @@ import {
   normalizeCyoaChoiceOutput,
   normalizeCyoaDialogueQuotes,
 } from "../../packages/server/src/services/agents/cyoa-choice-normalization.js";
+
+import {
+  appendNonLeadingSystemMessagesToLastUser,
+  appendReadableAttachmentsToContent,
+  applyTrackerCharacterCardIdentity,
+  canonicalizeGamePartySpeakerLabels,
+  buildGenerationGuideInstruction,
+  buildLockedInventoryTrackerPatch,
+  buildLockedPlayerStatsArrayPatch,
+  resolveTrackerGroupUpdate,
+  appendSeparateAgentInjectionMessage,
+  collectLatestTrackerCharacterHistory,
+  computeSummaryHideIds,
+  formatSeparateAgentInjection,
+  getMessageHiddenFromAICharacterIds,
+  injectIntoOutputFormatOrLastUser,
+  isMessageHiddenFromAIForCharacter,
+  moveUserHistoryMessageToPromptTail,
+  preserveTrackerCharacterUiFields,
+  prefixGroupIndividualHistorySpeakers,
+  readPersonaSnapshotName,
+  resolveActivePersonaCandidate,
+  resolveRoleplaySummaryTail,
+  shouldEnableAgentsForGeneration,
+  shouldInjectIdentityFallback,
+  stripSpeakerTagsExceptLastAssistant,
+  type SimpleMessage,
+} from "../../packages/server/src/routes/generate/generate-route-utils.js";
 
 const personaA = {
   id: "noodle-account-a",
@@ -809,33 +838,6 @@ import {
   escapeStandaloneGameNarrationAngleLines,
   hasVisibleGameNarrationText,
 } from "../../packages/client/src/lib/game-tag-parser.js";
-import {
-  appendNonLeadingSystemMessagesToLastUser,
-  appendReadableAttachmentsToContent,
-  applyTrackerCharacterCardIdentity,
-  canonicalizeGamePartySpeakerLabels,
-  buildGenerationGuideInstruction,
-  buildLockedInventoryTrackerPatch,
-  buildLockedPlayerStatsArrayPatch,
-  resolveTrackerGroupUpdate,
-  appendSeparateAgentInjectionMessage,
-  collectLatestTrackerCharacterHistory,
-  computeSummaryHideIds,
-  formatSeparateAgentInjection,
-  getMessageHiddenFromAICharacterIds,
-  injectIntoOutputFormatOrLastUser,
-  isMessageHiddenFromAIForCharacter,
-  moveUserHistoryMessageToPromptTail,
-  preserveTrackerCharacterUiFields,
-  prefixGroupIndividualHistorySpeakers,
-  readPersonaSnapshotName,
-  resolveActivePersonaCandidate,
-  resolveRoleplaySummaryTail,
-  shouldEnableAgentsForGeneration,
-  shouldInjectIdentityFallback,
-  stripSpeakerTagsExceptLastAssistant,
-  type SimpleMessage,
-} from "../../packages/server/src/routes/generate/generate-route-utils.js";
 import {
   appendContinuationMessageContent,
   CONTINUE_ASSISTANT_MESSAGE_DIRECT_PROMPT,
@@ -5422,6 +5424,88 @@ const cases: RegressionCase[] = [
       assert.doesNotMatch(prompt, /Description: Corvina adjudicates the scene\./u);
     },
   },
+  {
+    name: "room GM card lookups stay within approved character IDs",
+    async run() {
+      const requestedIds: string[] = [];
+      let listCalled = false;
+      const messages: ChatMLMessage[] = [{ role: "system", content: "placeholder" }];
+      await runWithRoomGeneration(
+        {
+          roomId: "room-security",
+          epoch: "1",
+          operationId: "room-security-test",
+          chatId: "room-chat",
+          characterIds: ["approved-character"],
+          characters: [],
+          lorebookIds: [],
+          participants: [],
+          memories: {},
+        },
+        () =>
+          injectGameGmPromptRuntime({
+            messages,
+            chatId: "room-chat",
+            chat: {},
+            chatMetadata: {
+              gameActiveState: "dialogue",
+              gameGmCharacterId: "unapproved-gm",
+              gamePartyCharacterIds: ["approved-character", "unapproved-party", "npc:tracked-visitor"],
+              gameCharacterCards: [{ name: "Tracked Visitor", class: "shared room card detail" }],
+              gameNpcs: [
+                {
+                  id: "tracked-visitor",
+                  characterId: "unapproved-linked-npc",
+                  name: "Tracked Visitor",
+                  description: "tracked NPC text remains available",
+                  location: "Market",
+                  notes: [],
+                },
+              ],
+            },
+            characterIds: ["approved-character", "unapproved-party", "npc:tracked-visitor"],
+            chars: {
+              async getById(id) {
+                requestedIds.push(id);
+                return id === "approved-character"
+                  ? { data: JSON.stringify({ name: "Room Member", description: "approved room card" }) }
+                  : { data: JSON.stringify({ name: "Unapproved", description: "must not load" }) };
+              },
+              async getPersona() {
+                return null;
+              },
+              async list() {
+                listCalled = true;
+                throw new Error("room generation must not enumerate the character library");
+              },
+            },
+            chats: {
+              async getById() {
+                return { metadata: {} };
+              },
+              async updateMetadata() {
+                return undefined;
+              },
+            },
+            selectedGameStateSnapshotPromise: Promise.resolve(null),
+            mappedMessages: [{ role: "user", content: "Tracked Visitor is nearby." }],
+            personaName: "Room Host",
+            resolvePromptMacros: (value) => value,
+            resolveCharacterPromptMacros: (value) => value,
+          }),
+      );
+
+      assert.equal(listCalled, false, "room generation never enumerates all library cards");
+      assert.ok(requestedIds.length > 0, "approved character references may be loaded");
+      assert.ok(requestedIds.every((id) => id === "approved-character"), "all card loads use approved room IDs");
+      const prompt = messages.map((message) => message.content).join("\\n");
+      assert.match(prompt, /approved room card/u);
+      assert.match(prompt, /tracked NPC text remains available/u);
+      assert.match(prompt, /Class: shared room card detail/u, "room-shared metadata cards remain available");
+      assert.doesNotMatch(prompt, /must not load/u, "unapproved linked library cards remain unavailable");
+    },
+  },
+
   {
     name: "Session conclusion cannot rewrite the player card while companion progression remains valid",
     run() {

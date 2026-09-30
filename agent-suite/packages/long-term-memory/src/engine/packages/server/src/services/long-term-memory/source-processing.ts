@@ -14,7 +14,11 @@ import { isLtmSourceLikeNote } from "../../../../shared/src/features/agents/long
 import { logger, type PackageLanguageModel } from "./package-runtime.js";
 import { rebuildLongTermMemoryIndexes } from "./rebuild.js";
 import { applyLongTermMemoryDraft } from "./reconciliation.js";
-import { extractLongTermMemoryFromSourceNote, finalizeLongTermMemoryExtractionDraft } from "./source-extraction.js";
+import {
+  extractLongTermMemoryFromSourceNote,
+  finalizeLongTermMemoryExtractionDraft,
+  type LtmSourceExtractionRecompile,
+} from "./source-extraction.js";
 import { LongTermMemoryStorage } from "./storage.js";
 import { loadTrustedLtmSubjectCatalog } from "./subject-identity.js";
 import { compileEvidenceUnitExtraction, sourceHashForEvidenceUnitExtraction } from "./evidence-unit-extraction.js";
@@ -44,6 +48,8 @@ type PreparedSource = {
   accounting: LtmExtractionAccounting;
   response: LtmExtractionResponse;
   reviewRequired: boolean;
+  /** Present for LLM extractions: recompiles against fresh candidates at commit without a provider call. */
+  recompile?: LtmSourceExtractionRecompile;
 };
 type PrepareOptions = {
   sourceNote: LtmNote;
@@ -59,7 +65,44 @@ type PrepareOptions = {
   chatId?: string;
   directGameMode?: boolean;
   directSourceText?: string;
+  existingNotes?: LtmNote[];
 };
+
+const RETRYABLE_FAILURE_CODES = new Set([
+  "ltm_model_output_empty",
+  "ltm_model_output_unusable",
+  "ltm_model_output_truncated",
+]);
+const PERMANENT_FAILURE_CODES = new Set([
+  "authentication_error",
+  "billing_hard_limit",
+  "insufficient_quota",
+  "quota_exceeded",
+]);
+const SAFE_ERROR_CODE = /^[a-z][a-z0-9_.-]{0,119}$/u;
+
+function failureCode(error: unknown, stage: "extract" | "finalize") {
+  const code =
+    error instanceof LtmServiceError
+      ? error.code
+      : error && typeof error === "object" && typeof (error as { code?: unknown }).code === "string"
+        ? (error as { code: string }).code
+        : "";
+  return SAFE_ERROR_CODE.test(code) ? code : `${stage}_failed`;
+}
+
+function retryableFailure(error: unknown, code: string, isCancelled: boolean) {
+  if (isCancelled || RETRYABLE_FAILURE_CODES.has(code)) return true;
+  if (PERMANENT_FAILURE_CODES.has(code)) return false;
+  const statusCode =
+    error instanceof LtmServiceError
+      ? error.statusCode
+      : error && typeof error === "object" && typeof (error as { status?: unknown }).status === "number"
+        ? (error as { status: number }).status
+        : undefined;
+  if (statusCode !== undefined) return statusCode === 408 || statusCode === 429 || statusCode >= 500;
+  return true;
+}
 
 function abortError() {
   const error = new Error("Long-term memory import was cancelled.");
@@ -71,6 +114,24 @@ function throwIfAborted(signal?: AbortSignal) {
 }
 function cancelled(error: unknown, signal?: AbortSignal) {
   return signal?.aborted || (error instanceof Error && error.name === "AbortError");
+}
+function reviewRequiredForExtraction(
+  sourceNote: LtmNote,
+  options: { requiresReview?: boolean; diagnostics?: readonly LtmExtractionDiagnostic[] } = {},
+) {
+  return (
+    sourceRequiresReview(sourceNote) ||
+    // Prefer the pre-truncation signal from compile/extract. Fall back to scanning retained
+    // diagnostics only when a path did not carry requiresReview (e.g. deterministic game ingest).
+    options.requiresReview === true ||
+    (options.diagnostics?.some(
+      (diagnostic) =>
+        diagnostic.code === "candidate_reconciliation_ambiguous" ||
+        diagnostic.code === "candidate_reconciliation_incomplete" ||
+        diagnostic.code === "event_shaped_character_fact",
+    ) ??
+      false)
+  );
 }
 function canMarkCurrent(prepared: PreparedSource) {
   if (prepared.outcome.incomplete) return false;
@@ -160,7 +221,7 @@ export async function prepareLongTermMemorySource(options: PrepareOptions): Prom
     };
     const sourceHash = sourceHashForEvidenceUnitExtraction(sourceNote);
     const sourceText = options.directSourceText ?? sourceNote.sections.source?.text ?? "";
-    const existingNotes = (await new LongTermMemoryStorage(options.root).listNotes()).filter(
+    const existingNotes = (options.existingNotes ?? (await new LongTermMemoryStorage(options.root).listNotes())).filter(
       (note) => !isLtmSourceLikeNote(note) && canUpdateLtmScopedTarget(note.scope, requestedScope),
     );
     const response = {
@@ -212,8 +273,40 @@ export async function prepareLongTermMemorySource(options: PrepareOptions): Prom
   return {
     ...result,
     extractionMethod: "llm",
-    reviewRequired: sourceRequiresReview(options.sourceNote),
+    reviewRequired: reviewRequiredForExtraction(options.sourceNote, {
+      requiresReview: result.requiresReview,
+      diagnostics: result.diagnostics,
+    }),
   };
+}
+
+async function recompilePreparedWithFreshCandidates(
+  prepared: PreparedSource,
+  storage: LongTermMemoryStorage,
+  overlay?: ReadonlyMap<string, LtmNote>,
+) {
+  if (!prepared.recompile) return null;
+  try {
+    // Merge by id so a note that reached the vault and is still projected in the batch overlay is one
+    // candidate, not two identical ones that read as an ambiguous match. The overlay carries this
+    // batch's newer projected state, so it normally wins â€” except when the durable note reached a
+    // terminal status after the projection, which the stale active copy must not revive.
+    const candidates = new Map<string, LtmNote>();
+    for (const note of await storage.listNotes()) candidates.set(note.id, note);
+    for (const note of overlay?.values() ?? []) {
+      const durable = candidates.get(note.id);
+      candidates.set(
+        note.id,
+        durable && (durable.status === "archived" || durable.status === "resolved") ? durable : note,
+      );
+    }
+    return await prepared.recompile({ candidateNotes: [...candidates.values()] });
+  } catch (error) {
+    // Freshness is best-effort: a failed scan must not fail a commit that the preparation
+    // snapshot could already finalize.
+    logger.warn(error, "[ltm] Commit-time reconciliation refresh failed; using the preparation snapshot");
+    return null;
+  }
 }
 
 async function commitPreparedLongTermMemorySource(
@@ -221,21 +314,39 @@ async function commitPreparedLongTermMemorySource(
   options: { root?: string; overlay?: Map<string, LtmNote>; applyLowRisk?: boolean },
 ) {
   const storage = new LongTermMemoryStorage(options.root);
-  const reviewRequired = prepared.reviewRequired || sourceRequiresReview(prepared.sourceNote);
   // ponytail: serialize finalization per vault; use narrower locks only if local commit throughput becomes a bottleneck.
   return withLtmVaultLock(storage.root, async () => {
+    // Reconcile against the committed vault plus any sibling projections this batch already
+    // prepared, then finalize. A concurrent import or sibling source may have created the
+    // compatible target after the preparation snapshot that reconciliation originally saw.
+    const fresh = await recompilePreparedWithFreshCandidates(prepared, storage, options.overlay);
+    const response = fresh?.response ?? prepared.response;
+    const diagnostics = fresh?.diagnostics ?? prepared.diagnostics;
+    const outcome = fresh?.outcome ?? prepared.outcome;
+    const accounting = fresh?.accounting ?? prepared.accounting;
+    // Prefer preparation's reviewRequired when recompile did not run; otherwise use the
+    // pre-truncation requiresReview from the fresh compile so truncated warnings still gate.
+    const reviewRequired = fresh
+      ? reviewRequiredForExtraction(prepared.sourceNote, {
+          requiresReview: fresh.requiresReview,
+          diagnostics,
+        })
+      : prepared.reviewRequired ||
+        reviewRequiredForExtraction(prepared.sourceNote, {
+          diagnostics,
+        });
     const draft = await finalizeLongTermMemoryExtractionDraft(
       {
         sourceNote: prepared.sourceNote,
         sourceFingerprintBeforeBinding: prepared.sourceFingerprintBeforeBinding,
-        response: prepared.response,
+        response,
         scope: prepared.sourceNote.destinationScope ?? prepared.sourceNote.scope,
         modes: prepared.sourceNote.modes,
         extractionMode: prepared.extractionMode,
         operationId: prepared.operationId,
-        diagnostics: prepared.diagnostics,
-        outcome: prepared.outcome,
-        accounting: prepared.accounting,
+        diagnostics,
+        outcome,
+        accounting,
         reviewRequired,
         chatId: prepared.chatId,
         afterWrite: (draft) =>
@@ -245,7 +356,7 @@ async function commitPreparedLongTermMemorySource(
       },
       { root: options.root, overlay: options.overlay },
     );
-    const markCurrent = canMarkCurrent(prepared);
+    const markCurrent = canMarkCurrent({ ...prepared, outcome, diagnostics });
     const note =
       markCurrent && draft.source.extractionFingerprint
         ? await storage.updateNote(prepared.sourceNote.id, {
@@ -268,7 +379,7 @@ async function commitPreparedLongTermMemorySource(
           })
         : null;
     const finalDraft = applyResult?.draft ?? draft;
-    return { draft: finalDraft, note, applyResult };
+    return { draft: finalDraft, note, applyResult, response, diagnostics, outcome, accounting, reviewRequired };
   });
 }
 
@@ -282,10 +393,10 @@ export async function processLongTermMemorySource(options: PrepareOptions & { ap
   return {
     operationId: prepared.operationId,
     draft: committed.draft,
-    diagnostics: prepared.diagnostics,
-    outcome: prepared.outcome,
-    accounting: prepared.accounting,
-    response: prepared.response,
+    diagnostics: committed.diagnostics,
+    outcome: committed.outcome,
+    accounting: committed.accounting,
+    response: committed.response,
     appliedMutationIds: committed.applyResult?.appliedMutationIds ?? [],
     skippedMutationIds: committed.applyResult?.skippedMutationIds ?? [],
   };
@@ -307,7 +418,7 @@ function failed(
       created: item.created,
       sourceWriteStatus: item.created ? ("created" as const) : ("refreshed" as const),
       extractionMethod: method,
-      retryable: true as const,
+      retryable: retryableFailure(error, failureCode(error, stage), isCancelled),
       draft: null,
       outcome: prepared?.outcome ?? {
         state: "no_suggestions_created" as const,
@@ -339,8 +450,11 @@ function failed(
     : {
         ...base,
         extractionStatus: "failed",
-        error: { code: `${stage}_failed`, message },
-        diagnostics: [...(prepared?.diagnostics ?? []), { severity: "error", code: `${stage}_failed`, message }],
+        error: { code: failureCode(error, stage), message },
+        diagnostics: [
+          ...(prepared?.diagnostics ?? []),
+          { severity: "error", code: failureCode(error, stage), message },
+        ],
       };
 }
 
@@ -363,6 +477,7 @@ export async function processLongTermMemorySourceBatch(options: {
     | { state: "failed"; result: LtmImportedSourceResult }
     | undefined
   > = new Array(options.items.length);
+  let deterministicSnapshot: Promise<LtmNote[]> | undefined;
   let next = 0;
   await Promise.all(
     Array.from({ length: Math.min(Math.max(options.concurrency, 1), options.items.length) }, async () => {
@@ -387,6 +502,9 @@ export async function processLongTermMemorySourceBatch(options: {
               chatId: options.chatId,
               directGameMode,
               directSourceText: item.deterministicSourceText,
+              existingNotes: directGameMode
+                ? await (deterministicSnapshot ??= new LongTermMemoryStorage(options.root).listNotes())
+                : undefined,
             }),
           };
         } catch (error) {
@@ -407,43 +525,49 @@ export async function processLongTermMemorySourceBatch(options: {
   const overlay = new Map<string, LtmNote>(),
     results: LtmImportedSourceResult[] = [];
   let hasDraftMutations = false;
-  for (const entry of preparedResults) {
-    if (!entry) continue;
-    if (entry.state === "failed") {
-      results.push(entry.result);
-      continue;
+  // Hold one vault lock across the ordered commit loop: the shared overlay carries this batch's
+  // projections, so an independent write landing between items could otherwise make it stale
+  // against the vault at the next item's commit-time reconciliation. The lock is reentrant, so each
+  // commit reuses it; the post-batch index rebuild stays outside and runs after release.
+  await withLtmVaultLock(new LongTermMemoryStorage(options.root).root, async () => {
+    for (const entry of preparedResults) {
+      if (!entry) continue;
+      if (entry.state === "failed") {
+        results.push(entry.result);
+        continue;
+      }
+      const { item, prepared } = entry;
+      try {
+        throwIfAborted(options.signal);
+        const committed = await commitPreparedLongTermMemorySource(prepared, {
+          root: options.root,
+          overlay,
+          applyLowRisk: options.applyLowRisk,
+        });
+        hasDraftMutations ||= committed.draft.mutations.length > 0;
+        results.push({
+          sourceId: item.sourceId,
+          title: item.title,
+          note: committed.note,
+          created: item.created,
+          sourceWriteStatus: item.created ? "created" : "refreshed",
+          extractionStatus: committed.outcome.incomplete === true ? "incomplete" : "succeeded",
+          extractionMethod: prepared.extractionMethod,
+          retryable: committed.outcome.incomplete === true,
+          draft: committed.draft,
+          diagnostics: committed.diagnostics,
+          outcome: committed.outcome,
+          accounting: committed.accounting,
+          appliedMutationIds: committed.applyResult?.appliedMutationIds ?? [],
+          skippedMutationIds: committed.applyResult?.skippedMutationIds ?? [],
+        });
+      } catch (error) {
+        results.push(
+          failed(item, prepared.extractionMethod, "finalize", error, cancelled(error, options.signal), prepared),
+        );
+      }
     }
-    const { item, prepared } = entry;
-    try {
-      throwIfAborted(options.signal);
-      const committed = await commitPreparedLongTermMemorySource(prepared, {
-        root: options.root,
-        overlay,
-        applyLowRisk: options.applyLowRisk,
-      });
-      hasDraftMutations ||= committed.draft.mutations.length > 0;
-      results.push({
-        sourceId: item.sourceId,
-        title: item.title,
-        note: committed.note,
-        created: item.created,
-        sourceWriteStatus: item.created ? "created" : "refreshed",
-        extractionStatus: prepared.outcome.incomplete === true ? "incomplete" : "succeeded",
-        extractionMethod: prepared.extractionMethod,
-        retryable: prepared.outcome.incomplete === true,
-        draft: committed.draft,
-        diagnostics: prepared.diagnostics,
-        outcome: prepared.outcome,
-        accounting: prepared.accounting,
-        appliedMutationIds: committed.applyResult?.appliedMutationIds ?? [],
-        skippedMutationIds: committed.applyResult?.skippedMutationIds ?? [],
-      });
-    } catch (error) {
-      results.push(
-        failed(item, prepared.extractionMethod, "finalize", error, cancelled(error, options.signal), prepared),
-      );
-    }
-  }
+  });
   if (hasDraftMutations) await rebuildAfterSourceExtraction(options.root);
   return results;
 }

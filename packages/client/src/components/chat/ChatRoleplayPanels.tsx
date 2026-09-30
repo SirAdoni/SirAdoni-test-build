@@ -418,7 +418,7 @@ export function AuthorNotesPanel({
   const { t: localizeUi } = useUiTranslation();
   const [notes, setNotes] = useState((chatMeta.authorNotes as string) ?? "");
   const [depthStr, setDepthStr] = useState(String((chatMeta.authorNotesDepth as number) ?? 4));
-  const updateMeta = useUpdateChatMetadata();
+  const updateMeta = useUpdateChatMetadata({ serialize: true });
 
   const initialBaseline = {
     notes: (chatMeta.authorNotes as string) ?? "",

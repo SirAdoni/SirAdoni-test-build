@@ -1,13 +1,12 @@
 import { useEffect, useState } from "react";
-import { Loader2, Sparkles } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useGenerateSlurpPostGuidance, useUpdateSlurpPostGuidance } from "./slp-post-guidance-contract";
 import type { SlurpPostAccess, SlurpPostGuidance } from "./slp-post-guidance-contract";
 import { errorMessage } from "../../modules/settings/slp-backstage-format";
 import { PromptCard, PromptEditor } from "../../modules/settings/SlpBackstageKit";
 
-import { focusRing } from "../../base/chrome/slp-focus";
-const quietButton = `inline-flex min-h-10 items-center gap-2 rounded-lg px-3 text-xs font-semibold ring-1 ring-inset ring-[var(--slurp-outline)] hover:bg-[var(--slurp-canvas)] disabled:opacity-50 ${focusRing}`;
+import { SlpTextAssist } from "../assist/slp-assist-contract";
 
 export const SLURP_POST_GUIDANCE_MAX_LENGTH = 4000;
 
@@ -25,10 +24,11 @@ export function SlurpPostGuidanceField({
   inherited,
   label,
   detail,
-  generateLabel,
   clearLabel,
   savedMessage,
   disabled = false,
+  draftValue,
+  onStage,
 }: {
   /** `menu` is a Creator's private content menu: same card, no model draft. */
   access: SlurpPostAccess | "menu";
@@ -38,12 +38,16 @@ export function SlurpPostGuidanceField({
   inherited: string;
   label: string;
   detail: string;
-  generateLabel: string;
   clearLabel: string;
   savedMessage: string;
   disabled?: boolean;
+  /** When supplied, edits join the Backstage draft instead of saving this separate document now. */
+  draftValue?: string;
+  onStage?: (value: string) => void;
 }) {
-  const saved = (creatorId ? guidance?.creators[creatorId] : guidance?.defaults)?.[access] ?? "";
+  const { t } = useTranslation();
+  const persisted = (creatorId ? guidance?.creators[creatorId] : guidance?.defaults)?.[access] ?? "";
+  const saved = draftValue ?? persisted;
   const [draft, setDraft] = useState("");
   const [open, setOpen] = useState(false);
   const update = useUpdateSlurpPostGuidance();
@@ -57,6 +61,10 @@ export function SlurpPostGuidanceField({
 
   const save = async (next: string): Promise<boolean> => {
     if (next === saved) return true;
+    if (onStage) {
+      onStage(next);
+      return true;
+    }
     try {
       await update.mutateAsync({ creatorId, [access]: next });
       toast.success(savedMessage);
@@ -83,31 +91,26 @@ export function SlurpPostGuidanceField({
         onRestore={() => void save("")}
       />
       {access !== "menu" && (
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            disabled={disabled || generate.isPending || update.isPending}
-            onClick={() =>
-              generate.mutate(
-                { access, creatorId, currentDraft: draft || effective },
-                {
-                  onSuccess: (result) => {
-                    setDraft(result.guidance);
-                    setOpen(true);
-                  },
-                  onError: (error) => toast.error(errorMessage(error)),
-                },
-              )
+        // The shared assist with this field's own writer; the answer opens in the editor for review.
+        <div className="flex flex-wrap items-center">
+          <SlpTextAssist
+            value={draft || effective}
+            disabled={disabled || update.isPending}
+            run={async ({ note }) =>
+              (
+                await generate.mutateAsync({
+                  access,
+                  creatorId,
+                  currentDraft: draft || effective,
+                  ...(note ? { guidance: note } : {}),
+                })
+              ).guidance
             }
-            className={quietButton}
-          >
-            {generate.isPending ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : (
-              <Sparkles size={14} className="text-[var(--noodle-accent)]" />
-            )}
-            {generateLabel}
-          </button>
+            onApply={(text) => {
+              setDraft(text);
+              setOpen(true);
+            }}
+          />
         </div>
       )}
       <PromptEditor
@@ -129,6 +132,7 @@ export function SlurpPostGuidanceField({
         }}
         restoreLabel={clearLabel}
         pending={disabled || update.isPending || generate.isPending}
+        saveLabel={t("ui.slurp.settings.prompts.applyDraft", { defaultValue: "Apply to draft" })}
       />
     </div>
   );

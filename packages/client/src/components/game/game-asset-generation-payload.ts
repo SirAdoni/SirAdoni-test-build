@@ -1,4 +1,10 @@
 import { resolveAssetTag } from "../../lib/asset-fuzzy-match";
+import {
+  hasAuthoritativeNpcAvatarState,
+  isNpcAvatarRemoved,
+  resolveNpcAvatarStateForIdentity,
+} from "../../lib/game-npc-avatar";
+import type { GameNpcAvatarState } from "@marinara-engine/shared";
 
 type AssetManifestMap = Record<string, { path: string }> | null;
 
@@ -12,6 +18,7 @@ export type SceneAssetNpcAvatarCandidate = {
   gender?: string | null;
   pronouns?: string | null;
   avatarUrl?: string | null;
+  avatarState?: GameNpcAvatarState;
 };
 
 type MissingSceneAssetGenerationPayload = {
@@ -54,8 +61,15 @@ function sceneAssetNpcAvatarForceValue(candidate: SceneAssetNpcAvatarCandidate):
 }
 
 function findNpcAvatar(lookup: Map<string, string>, candidate: SceneAssetNpcAvatarCandidate): string | undefined {
+  if (isNpcAvatarRemoved(candidate.avatarState)) return undefined;
   const keyed = lookup.get(sceneAssetNpcAvatarKey(candidate));
   if (keyed) return keyed;
+  const characterId = candidate.characterId?.trim();
+  if (characterId) {
+    const byCharacter = lookup.get(`character:${characterId}`);
+    if (byCharacter) return byCharacter;
+  }
+  if (hasAuthoritativeNpcAvatarState(candidate.avatarState)) return undefined;
   // GameSurface builds name-keyed lookups, so fall back to the normalized name when the id key misses.
   return lookup.get(normalizeSceneAssetNameForGeneration(candidate.name));
 }
@@ -85,6 +99,7 @@ export type CampaignPortraitCharacter = {
   description?: string | null;
   appearance?: string | null;
   avatarUrl?: string | null;
+  avatarState?: GameNpcAvatarState;
 };
 
 /** Joins the saved NPC roster and active character cards by stable identity. */
@@ -100,6 +115,16 @@ export function buildCampaignPortraitRosterCandidates(
     const name = candidate.name.trim();
     if (!npcId || !name) continue;
     const previous = byNpcId.get(npcId);
+    const avatarState = resolveNpcAvatarStateForIdentity(
+      previous?.avatarState,
+      previous?.characterId,
+      candidate.avatarState,
+      candidate.characterId,
+    );
+    const incomingCharacterId = candidate.characterId?.trim();
+    const previousCharacterId = previous?.characterId?.trim();
+    const changedAuthoritySubject = !!incomingCharacterId && incomingCharacterId !== previousCharacterId;
+    const stateOwner = avatarState === candidate.avatarState ? candidate : previous;
     byNpcId.set(npcId, {
       ...previous,
       ...candidate,
@@ -110,7 +135,14 @@ export function buildCampaignPortraitRosterCandidates(
       description: previous?.description || candidate.description || "",
       gender: candidate.gender ?? previous?.gender ?? null,
       pronouns: candidate.pronouns ?? previous?.pronouns ?? null,
-      avatarUrl: candidate.avatarUrl || previous?.avatarUrl || undefined,
+      avatarUrl: isNpcAvatarRemoved(avatarState)
+        ? undefined
+        : hasAuthoritativeNpcAvatarState(avatarState)
+          ? (stateOwner?.avatarUrl ?? undefined)
+          : changedAuthoritySubject
+            ? (candidate.avatarUrl ?? undefined)
+            : candidate.avatarUrl || previous?.avatarUrl || undefined,
+      avatarState,
     });
   }
 
@@ -225,11 +257,15 @@ export function buildMissingSceneAssetGenerationPayload({
   const npcAssetCandidates = sceneAssetNpcs
     .filter((npc) => npc.description && npc.name)
     .map((npc) => ({
+      id: npc.id,
       npcId: npc.npcId ?? npc.id ?? null,
+      characterId: npc.characterId ?? null,
       name: npc.name,
       description: npc.description,
       gender: npc.gender ?? null,
       pronouns: npc.pronouns ?? null,
+      avatarUrl: npc.avatarUrl ?? null,
+      avatarState: npc.avatarState,
     }))
     .slice(0, 10);
   const forceNpcAvatarValueSet = new Set<string>();

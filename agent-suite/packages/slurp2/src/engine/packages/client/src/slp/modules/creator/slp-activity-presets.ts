@@ -10,7 +10,9 @@
  * turn auto-posting off instead.
  */
 
-export type SlurpActivityPreset = "manual" | "occasional" | "lively" | "veryActive";
+/** `grows`: the number grows with the active Creators (F), Publishing's default; no fixed number. */
+export type SlurpActivityPreset = "manual" | "occasional" | "lively" | "veryActive" | "grows";
+type SlurpFixedPreset = Exclude<SlurpActivityPreset, "manual" | "grows">;
 
 /** Ordered quietest-first, which is also the order the onboarding wizard offers them in. */
 export const SLURP_ACTIVITY_PRESETS: readonly SlurpActivityPreset[] = [
@@ -20,8 +22,11 @@ export const SLURP_ACTIVITY_PRESETS: readonly SlurpActivityPreset[] = [
   "veryActive",
 ] as const;
 
+/** Publishing offers a fifth choice, "Grows with Creators" (the default once nothing is set by hand). */
+export const SLURP_PUBLISHING_PRESETS: readonly SlurpActivityPreset[] = [...SLURP_ACTIVITY_PRESETS, "grows"];
+
 /** Posts per day for each preset. `manual` has none: it disables automatic posting. */
-export const SLURP_ACTIVITY_PRESET_POSTS_PER_DAY: Record<Exclude<SlurpActivityPreset, "manual">, number> = {
+export const SLURP_ACTIVITY_PRESET_POSTS_PER_DAY: Record<SlurpFixedPreset, number> = {
   occasional: 2,
   lively: 4,
   veryActive: 8,
@@ -31,9 +36,9 @@ export const SLURP_ACTIVITY_PRESET_POSTS_PER_DAY: Record<Exclude<SlurpActivityPr
 export const SLURP_DEFAULT_ACTIVITY_PRESET: SlurpActivityPreset = "lively";
 
 /** One step quieter than the default, used by the one-click calm-down action. */
-export const SLURP_QUIETER_ACTIVITY_PRESET: Exclude<SlurpActivityPreset, "manual"> = "occasional";
+export const SLURP_QUIETER_ACTIVITY_PRESET: SlurpFixedPreset = "occasional";
 
-export function slurpPostsPerDayForPreset(preset: Exclude<SlurpActivityPreset, "manual">): number {
+export function slurpPostsPerDayForPreset(preset: SlurpFixedPreset): number {
   return SLURP_ACTIVITY_PRESET_POSTS_PER_DAY[preset];
 }
 
@@ -45,11 +50,14 @@ export function slurpPostsPerDayForPreset(preset: Exclude<SlurpActivityPreset, "
 export function slurpActivityPresetForSettings(input: {
   autoPostingScheduleEnabled: boolean;
   postsPerDay: number;
+  postsPerDayCustom?: boolean;
 }): SlurpActivityPreset | null {
   if (!input.autoPostingScheduleEnabled) return "manual";
-  const match = (
-    Object.keys(SLURP_ACTIVITY_PRESET_POSTS_PER_DAY) as Array<Exclude<SlurpActivityPreset, "manual">>
-  ).find((preset) => SLURP_ACTIVITY_PRESET_POSTS_PER_DAY[preset] === input.postsPerDay);
+  // A number nobody set grows with the Creators, whatever it happens to equal today.
+  if (input.postsPerDayCustom === false) return "grows";
+  const match = (Object.keys(SLURP_ACTIVITY_PRESET_POSTS_PER_DAY) as SlurpFixedPreset[]).find(
+    (preset) => SLURP_ACTIVITY_PRESET_POSTS_PER_DAY[preset] === input.postsPerDay,
+  );
   return match ?? null;
 }
 
@@ -57,8 +65,10 @@ export function slurpActivityPresetForSettings(input: {
 export function slurpActivityPresetPatch(preset: SlurpActivityPreset): {
   autoPostingScheduleEnabled: boolean;
   postsPerDay?: number;
+  postsPerDayCustom?: boolean;
 } {
   if (preset === "manual") return { autoPostingScheduleEnabled: false };
+  if (preset === "grows") return { autoPostingScheduleEnabled: true, postsPerDayCustom: false };
   return {
     autoPostingScheduleEnabled: true,
     postsPerDay: slurpPostsPerDayForPreset(preset),

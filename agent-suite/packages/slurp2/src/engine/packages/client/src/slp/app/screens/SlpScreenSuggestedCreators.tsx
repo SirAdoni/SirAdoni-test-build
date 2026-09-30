@@ -1,8 +1,11 @@
-import { Sparkles } from "lucide-react";
+import { SlpSparkleGlyph } from "../../base/chrome/SlpGlyphs";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { cn } from "../../../lib/utils";
+import { SLP_TYPE } from "../../base/chrome/SlpChrome";
 import { SlurpCreatorProfileCard } from "../../modules/creator/SlpCreatorProfileCard";
 import type { SlurpViewerCreator } from "./SlpHomeHelpers";
 
+/** Suggested creators in the feed: a swipeable row of the same cards as Discover (open-only), no box around them. */
 export function SlurpInlineSuggestedCreators({
   creators,
   onOpenProfile,
@@ -13,24 +16,20 @@ export function SlurpInlineSuggestedCreators({
   const { t: localizeUi } = useUiTranslation();
   if (creators.length === 0) return null;
   return (
-    <aside
-      data-component="SlurpHome.InlineSuggestedCreators"
-      aria-labelledby="slurp-inline-suggested-creators"
-      className="overflow-hidden rounded-xl bg-[var(--slurp-surface)] px-3 py-3 ring-1 ring-inset ring-[var(--noodle-divider)]"
-    >
-      <div className="flex items-center justify-between gap-3 px-1">
-        <h2 id="slurp-inline-suggested-creators" className="text-sm font-bold">
+    <aside data-component="SlurpHome.InlineSuggestedCreators" aria-labelledby="slurp-inline-suggested-creators">
+      <div className="flex items-center gap-1.5 px-1 pb-2.5">
+        <SlpSparkleGlyph size={16} className="shrink-0 text-[var(--slurp-ink)]" aria-hidden="true" />
+        <h2 id="slurp-inline-suggested-creators" className={cn(SLP_TYPE.title)}>
           {localizeUi("ui.slurp.suggestedCreators")}
         </h2>
-        <Sparkles size={15} className="shrink-0 text-[var(--noodle-accent)]" aria-hidden="true" />
       </div>
-      <div className="mt-2 flex snap-x gap-3 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div className="flex snap-x gap-2.5 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {creators.map((creator) => (
           <SlurpCreatorProfileCard
             key={creator.profile.id}
             creator={creator}
             onOpenProfile={onOpenProfile}
-            className="w-64 shrink-0 snap-start"
+            className="w-44 shrink-0 snap-start"
           />
         ))}
       </div>

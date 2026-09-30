@@ -36,8 +36,9 @@ export function useCreatorFollowers(accountId: string | null) {
     staleTime: 10_000,
   });
 }
-export function useSlurpAudienceCharacters() {
+export function useSlurpAudienceCharacters(enabled = true) {
   return useInfiniteQuery({
+    enabled,
     queryKey: ["slurp", "audience", "characters"],
     initialPageParam: 0,
     queryFn: ({ pageParam }) =>

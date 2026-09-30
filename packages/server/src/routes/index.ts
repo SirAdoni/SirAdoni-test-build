@@ -11,7 +11,7 @@ import { promptsRoutes } from "./prompts.routes.js";
 import { connectionsRoutes } from "./connections.routes.js";
 import { agentsRoutes } from "./agents.routes.js";
 import { customToolsRoutes } from "./custom-tools.routes.js";
-import { generateRoutes } from "./generate.routes.js";
+import { generateRoutes, type GenerationRunner } from "./generate.routes.js";
 import { utilitySidecarRoutes } from "./utility-sidecar.routes.js";
 import { decisionRoutes } from "./decision.routes.js";
 import { importRoutes } from "./import.routes.js";
@@ -85,10 +85,30 @@ import { generationJobsRoutes } from "./generation-jobs.routes.js";
 import { generationJobRecordsRoutes } from "./generation-job-records.routes.js";
 import { androidLocalAuthRoutes } from "../middleware/android-local-auth.js";
 import { diagnosticsRoutes } from "./diagnostics.routes.js";
+import { multiplayerRoutes } from "./multiplayer.routes.js";
+import { MultiplayerService, type MultiplayerGameRuntime } from "../services/multiplayer/service.js";
+import { loadTlsOptions, multiplayerAvailable } from "../config/runtime-config.js";
 
 export async function registerRoutes(app: FastifyInstance) {
   // Sibling routes must see the same in-flight generations as the generation plugin.
   if (!app.hasDecorator("activeGenerations")) app.decorate("activeGenerations", new Map());
+  const multiplayer = new MultiplayerService({
+    db: app.db,
+    available: multiplayerAvailable,
+    tls: loadTlsOptions,
+    abortGeneration: (chatId) => {
+      const active = (
+        app as unknown as {
+          activeGenerations: Map<string, { abortController: AbortController; agentAbortController?: AbortController }>;
+        }
+      ).activeGenerations.get(chatId);
+      active?.abortController.abort();
+      active?.agentAbortController?.abort();
+    },
+  });
+  await multiplayer.initialize();
+  app.decorate("multiplayer", multiplayer);
+  app.addHook("onClose", () => multiplayer.close());
   await app.register(androidLocalAuthRoutes, { prefix: "/api/android-auth" });
   await app.register(diagnosticsRoutes, { prefix: "/api/diagnostics" });
   await app.register(chatsRoutes, { prefix: "/api/chats" });
@@ -109,7 +129,10 @@ export async function registerRoutes(app: FastifyInstance) {
   await app.register(agentsRoutes, { prefix: "/api/agents" });
   await app.register(utilitySidecarRoutes, { prefix: "/api/utility-sidecar" });
   await app.register(customToolsRoutes, { prefix: "/api/custom-tools" });
-  await app.register(generateRoutes, { prefix: "/api/generate" });
+  await app.register(generateRoutes, {
+    prefix: "/api/generate",
+    onRunnerReady: (runner: GenerationRunner) => multiplayer.setRunner(runner),
+  });
   await app.register(importRoutes, { prefix: "/api/import" });
   await app.register(backgroundsRoutes, { prefix: "/api/backgrounds" });
   await app.register(avatarsRoutes, { prefix: "/api/avatars" });
@@ -145,7 +168,11 @@ export async function registerRoutes(app: FastifyInstance) {
   await app.register(usageRoutes, { prefix: "/api/usage" });
   await app.register(privateNotebookRoutes, { prefix: "/api/private-notebook" });
   await app.register(achievementsRoutes, { prefix: "/api/achievements" });
-  await app.register(gameRoutes, { prefix: "/api/game" });
+  await app.register(gameRoutes, {
+    prefix: "/api/game",
+    onRoomRuntimeReady: (runtime: MultiplayerGameRuntime) => multiplayer.setGameRuntime(runtime),
+  });
+  await app.register(multiplayerRoutes, { prefix: "/api/multiplayer", service: multiplayer });
   await app.register(combatDirectorRoutes, { prefix: "/api/game/combat/director" });
   await app.register(campaignMemoryRoutes, { prefix: "/api/game" });
   await app.register(campaignMemoryWriteRoutes, { prefix: "/api/game" });

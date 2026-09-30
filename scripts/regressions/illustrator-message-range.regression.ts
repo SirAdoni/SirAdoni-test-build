@@ -102,7 +102,7 @@ try {
     imageGenerationSource: "openai",
     apiKey: "fixture",
   });
-  await createAgentsStorage(db).create({
+  const illustratorConfig = await createAgentsStorage(db).create({
     type: "illustrator",
     name: "Illustrator",
     phase: "post_processing",
@@ -221,8 +221,51 @@ try {
     ordinary.body,
   );
   assert.match(textRequests.at(-1)!, /FUTURE_REPLY/);
-  assert.doesNotMatch(textRequests.at(-1)!, /SELECTED_GARDEN/);
-  console.info("Historical Illustrator range, review and gallery setting regressions passed.");
+  assert.doesNotMatch(textRequests.at(-1)!, /SELECTED_GARDEN|FUTURE_CONVERSATION/);
+  const savedConfig = await createAgentsStorage(db).getById(illustratorConfig.id);
+  assert.ok(savedConfig);
+  assert.equal(JSON.parse(savedConfig.settings).contextSize, 1, "explicit ranges never persist a larger window");
+  for (const activation of [
+    { enableAgents: false, activeAgentIds: [] },
+    { enableAgents: true, activeAgentIds: [] },
+  ]) {
+    await chats.patchMetadata(chat.id, activation);
+    const metadataBefore = (await chats.getById(chat.id))!.metadata;
+    const beforeImages = imageRequests;
+    const manual = await retry({ illustratorMessageRange: undefined });
+    assert.ok(
+      parseEvents(manual.body).some((event) => event.type === "illustration"),
+      manual.body,
+    );
+    assert.equal(imageRequests, beforeImages + 1, "an explicit request generates exactly one illustration");
+    assert.equal(
+      (await chats.getById(chat.id))!.metadata,
+      metadataBefore,
+      "manual generation never activates the agent",
+    );
+    const beforeAutomatic = textRequests.length + imageRequests;
+    const inactiveRetry = await retry({ illustratorRetryTargets: undefined, illustratorMessageRange: undefined });
+    assert.ok(
+      parseEvents(inactiveRetry.body).some((event) => event.type === "error"),
+      inactiveRetry.body,
+    );
+    assert.equal(textRequests.length + imageRequests, beforeAutomatic, "ordinary retries retain the active-agent gate");
+  }
+  replaceBuiltInAgentDefinitions([]);
+  const beforeUninstalled = textRequests.length + imageRequests;
+  const uninstalled = await retry({ illustratorMessageRange: undefined });
+  assert.ok(
+    parseEvents(uninstalled.body).some((event) => event.type === "error"),
+    uninstalled.body,
+  );
+  assert.equal(
+    textRequests.length + imageRequests,
+    beforeUninstalled,
+    "manual requests cannot revive an uninstalled package",
+  );
+  console.info(
+    "Historical Illustrator range, review, gallery settings and disabled-agent manual illustration regressions passed.",
+  );
 } finally {
   provider.closeAllConnections();
   await app.close();

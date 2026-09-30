@@ -9,6 +9,9 @@
  * model, so briefs and questions come from the combinatorial bank in `slurp-world-copy.ts`.
  * Auto-posting is the one exception to that rule and it lives in its own scheduler.
  */
+import { slurpCoupleBuzz } from "../../modules/projects/slp-couple-group.js";
+import { settleSlurpStuckMessages } from "../messages/slp-messages-contract.js";
+import { advanceSlurpCreatorTies, readSlurpClosedCouplePageIds } from "../projects/slp-projects-contract.js";
 import {
   slurpCommissionQuote,
   slurpDynamicPriceTarget,
@@ -27,6 +30,7 @@ import { trySlpOperation } from "../../base/locking/slp-operation-lock.js";
 import { readSlurpAudienceTone } from "../../../../../shared/src/slp/slp-tone.js";
 import { slurpCapTickEvents, slurpRhythmMultiplier } from "../../../../../shared/src/slp/slp-tuning.js";
 import { slurpCreatorReach } from "../../../../../shared/src/slp/slp-reach.js";
+import { isSlurpCharacterFanAccount } from "../../../../../shared/src/slp/slp-audience-characters.js";
 import {
   selectSlurpAudienceCharacterIds,
   slurpAudienceCharacterFanTypeId,
@@ -47,7 +51,7 @@ import {
   slurpAudienceSubscriptionDecision,
   slurpLapseReason,
 } from "../../../../../shared/src/slp/slp-audience-subscription.js";
-import { slurpPlatformScaleMultiplier, slurpWorldActivityMultiplier } from "../../modules/audience/slp-scale.js";
+import { slurpPlatformScaleMultiplier, slurpWorldActivityMultiplier } from "../../../../../shared/src/slp/slp-scale.js";
 import { slurpCreatorOpener, slurpCreatorReaction, slurpLapseNote } from "../../modules/world/slp-world-copy.js";
 import { generateSlurpArc } from "../projects/slp-projects-contract.js";
 import {
@@ -64,6 +68,7 @@ import { SLURP_POST_LANDED_REACTIONS } from "../../modules/creators/slp-creator-
 import { planSlurpWorldPulse } from "../../../../../shared/src/slp/slp-world-pulse.js";
 import { slpCreatorUnlockPriceFromMetadata } from "../../modules/economy/slp-prices.js";
 import { localDayKey, applyAction, applyPulse } from "./slp-world-actions.js";
+import { planSlurpCreatorCheckIn } from "./slp-creator-check-in.js";
 import {
   PULSE_KEY,
   readLastTick,
@@ -86,6 +91,12 @@ function slurpDeterministicUnit(value: string): number {
   out ^= out >>> 13;
   return (out >>> 0) / 0x100000000;
 }
+
+/**
+ * Give the Engine's event loop a turn. The tick's storage calls resolve without real I/O, so a
+ * large world ran as one uninterrupted block and froze every other route and package for seconds.
+ */
+const yieldToEngine = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 /** Posts older than this are no longer worth asking about. */
 const RECENT_POST_DAYS = 7;
@@ -112,13 +123,20 @@ export async function advanceSlurpWorld(db: DB, until = new Date()): Promise<Slu
   if (!lease) return { status: "busy", actions: 0 };
   try {
     const operation = await trySlpOperation("slurp-world-tick", async () => {
+      const storyStorage = createSlurpStorage(db);
+      // Occurrences are a clock/ledger concern, so they advance even when ambient activity is off.
+      await storyStorage.reconcileStoryEvents(until);
+      // Collabs, rivalries and brand deals: their own clock, and their posts settle every tick (7b-c).
+      await advanceSlurpCreatorTies(db, until).catch((error: unknown) =>
+        logger.warn(error, "[slurp-world] Collabs and deals could not move on this tick"),
+      );
       const since = await readLastTick(db);
       if (!since) {
         await writeLastTick(db, until);
         return { status: "idle" as const, actions: 0 };
       }
 
-      const settings = await createSlurpStorage(db).getSettings();
+      const settings = await storyStorage.getSettings();
       const activity = slurpWorldActivityMultiplier(settings.worldActivity);
       const scale = slurpPlatformScaleMultiplier(settings.platformScale);
       const tuning = settings.simulationTuning;
@@ -132,12 +150,24 @@ export async function advanceSlurpWorld(db: DB, until = new Date()): Promise<Slu
       /** How many people the world keeps on hand to act. Small: actions per tick are capped anyway. */
       const WORLD_AUDIENCE_POOL = tuning.pulse.poolSize;
       if (activity === 0) {
+        // "Off" silences the world around the Creators, not their own lives: storylines still move
+        // on and start (R1-109). Prices and churn read audience demand, which is frozen with it.
+        for (const account of await noodle.listNoodlerAccounts()) {
+          await yieldToEngine();
+          await noodle.tickProjects(account.id, until).catch(() => []);
+          await noodle
+            .rollAutoArc(account.id, until, (id, partnerIds) =>
+              generateSlurpArc(db, id, partnerIds, "", { kind: "background" }),
+            )
+            .catch(() => null);
+        }
         await writeLastTick(db, until);
         return { status: "idle" as const, actions: 0 };
       }
       const accounts = await noodle.listNoodlerAccounts();
       const automaticCreators = accounts.filter(
-        (account) => !(account.kind === "persona" && account.sourceKind === "persona"),
+        (account) =>
+          !(account.kind === "persona" && account.sourceKind === "persona") && !isSlurpCharacterFanAccount(account),
       );
       const allAccounts = await noodle.listAccounts();
 
@@ -258,6 +288,7 @@ export async function advanceSlurpWorld(db: DB, until = new Date()): Promise<Slu
       const maintenanceSince = maintenanceMark ?? since;
       const maintenanceDue = (until.getTime() - maintenanceSince.getTime()) / 86_400_000 >= CHURN_MIN_ELAPSED_DAYS;
       for (const account of maintenanceDue ? accounts : []) {
+        await yieldToEngine();
         for (const tie of tiesByCreator.get(account.id) ?? []) {
           if (tie.stage === "lapsed" || tie.stage === "stranger" || tie.stage === "subscriber") continue;
           if (tie.lastSeenAt >= staleBefore) continue;
@@ -277,6 +308,7 @@ export async function advanceSlurpWorld(db: DB, until = new Date()): Promise<Slu
         ]);
         const prices = createSlurpStorage(db);
         for (const account of automated) {
+          await yieldToEngine();
           const pricing = await messages.getCreatorMessaging(account.id);
           if (pricing.pricedAt && until.getTime() - Date.parse(pricing.pricedAt) < 7 * 86_400_000) continue;
           const demand = { followers: followers.get(account.id) ?? 0, subscribers: subscribers.get(account.id) ?? 0 };
@@ -301,6 +333,7 @@ export async function advanceSlurpWorld(db: DB, until = new Date()): Promise<Slu
       // Creator arcs. A chapter with a day range moves on once its time runs out, posted or not, so a
       // move does not stall forever on a Creator who stopped posting.
       for (const account of maintenanceDue ? accounts : []) {
+        await yieldToEngine();
         await noodle.tickProjects(account.id, until).catch(() => []);
         // After the tick, so an arc that just finished leaves room for the next one.
         // Generated arcs are the one model call here; a failed call starts nothing this tick.
@@ -315,6 +348,7 @@ export async function advanceSlurpWorld(db: DB, until = new Date()): Promise<Slu
       // cadence as churn because it reads the same silence, and because recomputing a three-week
       // trajectory on every page load would be a full scan for nothing.
       for (const account of maintenanceDue ? accounts : []) {
+        await yieldToEngine();
         for (const tie of tiesByCreator.get(account.id) ?? []) {
           if (tie.stage === "stranger") continue;
           const next = slurpNextAudienceArc({
@@ -393,7 +427,9 @@ export async function advanceSlurpWorld(db: DB, until = new Date()): Promise<Slu
       };
       /** Resolved once per distinct member per tick: the Fan Type is what decides money now. */
       const fanTypeFor = new Map<string, SlurpFanType | null>();
+      const closedPages = await readSlurpClosedCouplePageIds(db).catch(() => new Set<string>());
       for (const account of accounts) {
+        await yieldToEngine();
         const price = await noodle.getCreatorSubscriptionPrice(account.id).catch(() => 0);
         for (const tie of await population.listTiesForCreator(account.id)) {
           // Mirrors the `none` branches of `slurpAudienceSubscriptionDecision` that ignore spend tier.
@@ -418,6 +454,7 @@ export async function advanceSlurpWorld(db: DB, until = new Date()): Promise<Slu
               interactions: tie.interactions,
               followedAt: tie.followedAt,
               renewChance: fanType.funnel.renewChance,
+              closed: closedPages.has(account.id),
             },
             until,
             tuning.funnel,
@@ -463,6 +500,7 @@ export async function advanceSlurpWorld(db: DB, until = new Date()): Promise<Slu
       // The quote reads the brief: a quick sketch costs less than a detailed scene with two people.
       const automatedCreatorIds = new Set<string>();
       for (const commission of await messages.listAutomatedBriefCommissions()) {
+        await yieldToEngine();
         automatedCreatorIds.add(commission.creatorAccountId);
         const pricing = await messages.getCreatorMessaging(commission.creatorAccountId);
         await messages
@@ -471,6 +509,7 @@ export async function advanceSlurpWorld(db: DB, until = new Date()): Promise<Slu
       }
       // A persona Creator can let its own pricing answer the audience instead of quoting each brief.
       for (const commission of await messages.listAudienceBriefCommissions()) {
+        await yieldToEngine();
         const pricing = await messages.getCreatorMessaging(commission.creatorAccountId);
         if (!pricing.autoQuote) continue;
         await messages
@@ -483,10 +522,12 @@ export async function advanceSlurpWorld(db: DB, until = new Date()): Promise<Slu
       // generated fans are not one, so this path handles their decision without a wallet debit.
       //
       // Deterministic per commission, so the same quote does not flip its answer between two ticks,
-      // and gated on a day's thinking time so a price is never answered the instant it is named.
+      // and gated on thinking time ("Time before fans answer a quote", a day by default) so a price
+      // is not answered the instant it is named unless the player wants that.
       for (const commission of await messages.listQuotedCommissions()) {
-        const quotedFor = (until.getTime() - Date.parse(commission.updatedAt)) / 86_400_000;
-        if (!Number.isFinite(quotedFor) || quotedFor < 1) continue;
+        await yieldToEngine();
+        const quotedForMinutes = (until.getTime() - Date.parse(commission.updatedAt)) / 60_000;
+        if (!Number.isFinite(quotedForMinutes) || quotedForMinutes < settings.messagesQuoteAnswerMinutes) continue;
         const member = await population.get(commission.viewerAccountId).catch(() => null);
         const invitedCharacter = invitedCharacters.find((entry) => entry.account.id === commission.viewerAccountId);
         if (!member && !invitedCharacter) continue;
@@ -515,6 +556,8 @@ export async function advanceSlurpWorld(db: DB, until = new Date()): Promise<Slu
           .settleAudienceCommission(commission.id, answer.kind === "accept" ? "accept" : "decline")
           .catch(() => null);
       }
+      // Paid commissions get delivered and unanswerable requests expire (7c M-005, M-009).
+      await settleSlurpStuckMessages(db, automatedCreatorIds, until).catch(() => undefined);
 
       // Counted after churn, so reach reflects the audience that is left rather than the one that
       // just drifted out.
@@ -536,7 +579,10 @@ export async function advanceSlurpWorld(db: DB, until = new Date()): Promise<Slu
               },
               until,
               tuning.reach,
-            ) * (await noodle.arcEffectMultiplier(account.id, "growth")),
+            ) *
+              (await noodle.arcEffectMultiplier(account.id, "growth")) *
+              // "feed.reach" events widen or narrow who sees this Creator's posts (R1-112).
+              (await noodle.platformInfluenceMultiplier("feed.reach", account.id, until)),
           ),
           recentPostIds: slurpQuestionPostIds(
             postsByAccount.get(account.id) ?? [],
@@ -581,7 +627,7 @@ export async function advanceSlurpWorld(db: DB, until = new Date()): Promise<Slu
                 creatorAccountId: creator.id,
                 postId: post.id,
                 ageHours: (until.getTime() - Date.parse(post.createdAt)) / 3_600_000,
-                creatorReach: creator.followers,
+                creatorReach: creator.followers * slurpCoupleBuzz(post.metadata),
               })),
           ),
         },
@@ -591,6 +637,7 @@ export async function advanceSlurpWorld(db: DB, until = new Date()): Promise<Slu
       // A follow is the rare one that actually moves the funnel, so it is worth more than a like.
       const landedBy = new Map<string, number>();
       for (const action of pulse) {
+        await yieldToEngine();
         try {
           if (
             await applyPulse(db, action, settings.audienceReactionBank, settings.fanTypes, characterFanPinnedTypeIds)
@@ -631,6 +678,7 @@ export async function advanceSlurpWorld(db: DB, until = new Date()): Promise<Slu
       // that makes them comment again.
       let replied = 0;
       for (const account of automaticCreators) {
+        await yieldToEngine();
         if (replied >= SLURP_MAX_CREATOR_REPLIES_PER_TICK) break;
         const recent = (postsByAccount.get(account.id) ?? []).filter((post) => post.access !== "draft").slice(0, 4);
         if (recent.length === 0) continue;
@@ -675,14 +723,25 @@ export async function advanceSlurpWorld(db: DB, until = new Date()): Promise<Slu
       // the creator's recent posts. A cheap invitation to a real conversation.
       let opened = 0;
       for (const account of automaticCreators) {
+        await yieldToEngine();
         if (opened >= SLURP_MAX_CREATOR_OPENERS_PER_TICK) break;
         const messaging = await messages.getCreatorMessaging(account.id);
         if (!messaging.proactiveMessages) continue;
         for (const tie of await population.listTiesForCreator(account.id)) {
           if (opened >= SLURP_MAX_CREATOR_OPENERS_PER_TICK) break;
+          // Generated fans never read or answer, so an opener to one is a thread nobody sees.
+          if (tie.memberId.startsWith("slurp-fan:")) continue;
           const daysSinceSeen = (until.getTime() - Date.parse(tie.lastSeenAt)) / 86_400_000;
           if (!Number.isFinite(daysSinceSeen)) continue;
           const existingThread = await messages.getThread(tie.memberId, account.id);
+          // A quiet chat that exists: now and then the Creator writes first in it (G5).
+          if (existingThread) {
+            const isPlayer = async (memberId: string) => Boolean(await noodle.getViewer(memberId));
+            const at = { creatorAccountId: account.id, tie, thread: existingThread, until };
+            const input = { ...at, messages, isPlayer, unit: slurpDeterministicUnit };
+            if (await planSlurpCreatorCheckIn(input).catch(() => false)) opened += 1;
+            continue;
+          }
           const kind = slurpCreatorOpenerKind({
             tie,
             daysSinceSeen,
@@ -718,8 +777,9 @@ export async function advanceSlurpWorld(db: DB, until = new Date()): Promise<Slu
       );
       let applied = 0;
       for (const action of plan) {
+        await yieldToEngine();
         try {
-          if (await applyAction(db, action, until, noodle, settings.fanTypes, characterFanPinnedTypeIds)) applied += 1;
+          if (await applyAction(db, action, until, noodle, settings, characterFanPinnedTypeIds)) applied += 1;
         } catch (error) {
           // One failed action must not abandon the rest of the tick, and must never stop the mark
           // being written — otherwise the same stretch of time is replayed on every call.

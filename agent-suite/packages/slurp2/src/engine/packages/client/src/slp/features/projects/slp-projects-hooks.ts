@@ -26,7 +26,8 @@ export function useDirectSlurpProject() {
       creatorAccountId: string;
       projectId: string;
       personaId: string;
-      action: "pause" | "resume" | "skip" | "back" | "label" | "twist" | "end" | "choose";
+      action:
+        "pause" | "resume" | "skip" | "back" | "label" | "twist" | "end" | "choose" | "hold" | "release" | "insert";
       value?: string;
     }) =>
       api.post<{ project: SlurpProject }>(

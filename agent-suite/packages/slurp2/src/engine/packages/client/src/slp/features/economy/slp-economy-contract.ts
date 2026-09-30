@@ -19,6 +19,8 @@ export type SlurpWalletEntry = {
   amount: number;
   at: string;
   note?: string;
+  /** Spends name who was paid, so a profile can tell "you were subscribed here" from "never". */
+  binding?: { viewerAccountId: string; creatorAccountId: string };
 };
 export type SlurpWallet = {
   coins: number;
@@ -29,7 +31,8 @@ export type SlurpWallet = {
   nextRefillAt?: string;
   ledger: SlurpWalletEntry[];
   earnedToday: { ad: number; engagement: number };
-  subscriptions: Record<string, { paidThroughAt: string; price: number }>;
+  /** `cancelled`: access runs to `paidThroughAt`, then it ends instead of renewing. */
+  subscriptions: Record<string, { paidThroughAt: string; price: number; cancelled?: boolean }>;
 };
 export type SlurpTopFan = {
   id: string;
@@ -76,12 +79,18 @@ export type SlurpStudioCreator = {
   };
   milestone: { reached: number | null; next: number | null; progress: number; remaining: number };
   goal: SlurpGoalProgress | null;
-  /** Coins this Creator may still withdraw today. */
+  /** Earnings (platform dollars) this Creator may still withdraw today; always whole coins' worth. */
   payoutAllowance: number;
+  /** The SlurpCoins that payout brings into the Wallet. */
+  payoutCoins: number;
   topFans: SlurpTopFan[];
   /** Null on a first visit: "no change yet" and "measured no change" are different. */
   followersDelta: number | null;
+  /** Null until a visit has recorded a subscriber count to compare with. */
+  subscribersDelta: number | null;
   earningsDelta: number | null;
+  /** Likes on posts put up this week and the week before (the "Likes this week" tile). */
+  likes?: { thisWeek: number; lastWeek: number };
   milestonesCrossed: number[];
   posts: SlurpStudioPost[];
 };

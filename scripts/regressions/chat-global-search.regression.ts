@@ -56,7 +56,8 @@ try {
   // Storage-backed search across chats.
   const { createFileNativeDB } = await import("../../packages/server/src/db/file-backed-store.js");
   const { chats, messages, characters } = await import("../../packages/server/src/db/schema/index.js");
-  const { searchAllChats } = await import("../../packages/server/src/services/chat-insights/chat-insights.service.js");
+  const { searchAllChats, isReaderVisibleMessage } = await import("../../packages/server/src/services/chat-insights/chat-insights.service.js");
+  assert.equal(isReaderVisibleMessage({ role: "assistant", content: "private", extra: '{"hidden\\u0046romUser":true}' }), false, "escaped JSON privacy keys stay hidden");
   const { chatInsightsRoutes } = await import("../../packages/server/src/routes/chat-insights.routes.js");
   const db = await createFileNativeDB();
 
@@ -117,11 +118,13 @@ try {
       createdAt: at(4),
     },
     { id: "rp-4", chatId: "chat-rp", role: "narrator", content: "The silver moon sets.", createdAt: at(10) },
+    { id: "rp-system", chatId: "chat-rp", role: "system", content: "silver moon internal setup", createdAt: at(11) },
     { id: "cv-1", chatId: "chat-convo", role: "user", content: "no match here", createdAt: at(4) },
     { id: "cv-2", chatId: "chat-convo", role: "assistant", content: "Silver moon trivia!", createdAt: at(5) },
     { id: "mari-1", chatId: "chat-mari", role: "assistant", content: "silver moon secrets", createdAt: at(11) },
   ]);
 
+  assert.deepEqual((await searchAllChats(db, { query: "internal setup" })).results, [], "system messages stay out of search");
   const all = await searchAllChats(db, { query: '"silver moon"' });
   assert.deepEqual(
     all.results.map((result) => result.messageId),
@@ -195,6 +198,13 @@ try {
   );
   assert.equal((await app.inject({ method: "GET", url: "/api/chat-insights/search?q=%20" })).statusCode, 400);
 
+  for (const field of ["characterId", "from", "to"]) {
+    const repeated = await app.inject({
+      method: "GET",
+      url: `/api/chat-insights/search?q=moon&${field}=one&${field}=two`,
+    });
+    assert.equal(repeated.statusCode, 400, `duplicate ${field} values are rejected`);
+  }
   await app.close();
   await db._fileStore.close();
   process.stdout.write("chat-global-search regression passed\n");

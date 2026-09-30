@@ -1,3 +1,4 @@
+import { currentRoomGeneration, roomGenerationMetadata, roomToolAllowed } from "../multiplayer/generation-policy.js";
 import {
   BUILT_IN_TOOLS,
   DEFAULT_AGENT_TOOLS,
@@ -485,7 +486,7 @@ function appendPackageToolDefs(
   registeredToolSources: Map<string, "built-in" | "custom" | "package">,
   nativeToolsAvailable: boolean,
 ): LLMToolDefinition[] {
-  if (!nativeToolsAvailable) return [];
+  if (!nativeToolsAvailable || currentRoomGeneration()) return [];
   const packageToolDefs = capabilityToolDefs().filter((tool) => {
     const existingSource = registeredToolSources.get(tool.function.name);
     if (existingSource) {
@@ -523,7 +524,7 @@ async function loadToolDefinitions(args: {
   if (!args.resolveTools && (!args.nativeToolsAvailable || capabilityToolDefs().length === 0)) {
     return { toolDefs, allToolDefs, customToolDefs };
   }
-  const enabledCustomTools = await args.customToolsStore.listEnabled();
+  const enabledCustomTools = currentRoomGeneration() ? [] : await args.customToolsStore.listEnabled();
 
   // A package's tools are attached even when every built-in and custom tool is switched off: the
   // user's tool switches are about the Engine's tools, not about whether an installed package can
@@ -543,6 +544,7 @@ async function loadToolDefinitions(args: {
   }
 
   for (const tool of BUILT_IN_TOOLS) {
+    if (!roomToolAllowed(tool.name)) continue;
     const existingSource = registeredToolSources.get(tool.name);
     if (existingSource) {
       throw new Error(
@@ -1035,7 +1037,9 @@ async function resolveToolRuntime(
       return patch;
     });
     const hasUpdatedMetadata = updatedChat && Object.prototype.hasOwnProperty.call(updatedChat, "metadata");
-    const updatedMeta = hasUpdatedMetadata ? parseExtra(updatedChat.metadata) : { ...chatMetadata, ...emittedPatch };
+    const updatedMeta = roomGenerationMetadata(
+      hasUpdatedMetadata ? parseExtra(updatedChat.metadata) : { ...chatMetadata, ...emittedPatch },
+    );
     if (hasUpdatedMetadata) {
       for (const key of Object.keys(chatMetadata)) {
         if (!(key in updatedMeta)) {

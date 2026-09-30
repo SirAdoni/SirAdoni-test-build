@@ -1,9 +1,13 @@
 // Slurp opt-in surface: explain the feature, then require an explicit adult confirmation.
 // The explainer runs first because this modal is the opt-in — the user has to be able to learn
 // what NoodleR is, and back out, before Creator setup starts.
-import { Check, CreditCard, Loader2, Lock, Sparkles, Users } from "lucide-react";
+import { Check, CreditCard, Loader2, Users } from "lucide-react";
+import { SlpLockGlyph, SlpSparkleGlyph } from "../../base/chrome/SlpGlyphs";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { cn } from "../../../lib/utils";
+import { SLP_GROUP_CLASS, SLP_TYPE } from "../../base/chrome/SlpChrome";
+import { SlpButton, SlpPrimaryButton, SlpSquareCheck } from "../../modules/chrome/SlpButton";
 
 interface Props {
   personaName: string;
@@ -119,93 +123,93 @@ export function SlurpAgeGate({ personaName, onComplete, onCelebrate, onLeave, is
 
   if (!explained) {
     return (
-      <div className="mx-auto flex w-full max-w-md flex-col gap-5">
+      <div className="mx-auto flex w-full max-w-md flex-col gap-5 text-[var(--slurp-text)]">
         <div className="text-center">
-          <h2 className="text-lg font-black">{t("ui.noodle.noodlerwizard.intro.what.title")}</h2>
-          <p className="mt-1 text-xs text-[var(--muted-foreground)]">{t("ui.noodle.noodlerwizard.intro.what.help")}</p>
+          <h2 tabIndex={-1} data-autofocus className={cn(SLP_TYPE.screen, "text-balance outline-none")}>
+            {t("ui.noodle.noodlerwizard.intro.what.title")}
+          </h2>
+          <p className={cn(SLP_TYPE.body, "mt-1 text-pretty text-[var(--muted-foreground)]")}>
+            {t("ui.noodle.noodlerwizard.intro.what.help")}
+          </p>
         </div>
 
-        <ul className="space-y-2.5">
+        <ul className={SLP_GROUP_CLASS}>
           {[
-            { icon: <Users size={15} />, key: "noodle" },
-            { icon: <Lock size={15} />, key: "noodler" },
-            { icon: <Sparkles size={15} />, key: "you" },
+            { icon: <Users size={18} />, key: "noodle" },
+            { icon: <SlpLockGlyph size={18} />, key: "noodler" },
+            { icon: <SlpSparkleGlyph size={18} />, key: "you" },
           ].map((row) => (
-            <li
-              key={row.key}
-              className="flex items-start gap-3 rounded-lg border border-[var(--border)] px-3 py-2.5 text-sm leading-6"
-            >
-              <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--noodle-accent)]/12 text-[var(--noodle-accent)]">
+            <li key={row.key} className={cn(SLP_TYPE.body, "flex items-start gap-3 px-4 py-3")}>
+              <span aria-hidden="true" className="mt-px shrink-0 text-[var(--noodle-accent-foreground)]">
                 {row.icon}
               </span>
-              <span>{t(`ui.noodle.noodlerwizard.intro.what.${row.key}`)}</span>
+              <span className="text-pretty">{t(`ui.noodle.noodlerwizard.intro.what.${row.key}`)}</span>
             </li>
           ))}
         </ul>
 
-        <button
-          type="button"
-          onClick={() => setExplained(true)}
-          className="h-12 rounded-lg bg-[var(--noodle-accent)] text-base font-black uppercase tracking-wide text-zinc-950 transition-[opacity,transform] [&_svg]:!text-zinc-950 hover:opacity-90 active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)] motion-reduce:transition-none motion-reduce:active:scale-100"
-        >
-          {tt("explainerContinue", "Got it, continue")}
-        </button>
-        {onLeave && (
-          <button
-            type="button"
-            onClick={onLeave}
-            className="min-h-11 rounded-lg text-sm font-semibold text-[var(--muted-foreground)] transition-[color,transform] hover:text-[var(--foreground)] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)] motion-reduce:transition-none motion-reduce:active:scale-100"
-          >
-            {t("ui.slurp.ageGate.leave", { defaultValue: "Leave Slurp" })}
-          </button>
-        )}
+        <div className="flex flex-col items-stretch gap-1">
+          <SlpPrimaryButton onClick={() => setExplained(true)} className="h-12 text-[15px]">
+            {tt("explainerContinue", "Got it, continue")}
+          </SlpPrimaryButton>
+          {onLeave && (
+            <SlpButton variant="tertiary" onClick={onLeave} className="self-center text-[var(--muted-foreground)]">
+              {t("ui.slurp.ageGate.leave", { defaultValue: "Leave Slurp" })}
+            </SlpButton>
+          )}
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="relative mx-auto flex w-full max-w-md flex-col gap-5">
+    <div className="relative mx-auto flex w-full max-w-md flex-col gap-5 text-[var(--slurp-text)]">
       {confetti && <SlurpConfetti />}
       <div className="text-center">
-        <h2 className="text-lg font-black">{tt("cardTitle", "Confirm that you are 18 or older")}</h2>
-        <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+        <h2 className={cn(SLP_TYPE.screen, "text-balance")}>{tt("cardTitle", "Confirm that you are 18 or older")}</h2>
+        <p className={cn(SLP_TYPE.body, "mt-1 text-pretty text-[var(--muted-foreground)]")}>
           {tt("cardSub", "This confirmation is required to enter Slurp. No payment information is collected.")}
         </p>
       </div>
 
-      <div className="relative aspect-[16/10] overflow-hidden rounded-xl bg-gradient-to-br from-zinc-800 to-zinc-950 p-4 text-zinc-100 shadow-lg">
+      <div className="relative mx-auto flex aspect-[1.586/1] w-full max-w-sm flex-col justify-between overflow-hidden rounded-2xl bg-gradient-to-br from-zinc-800 to-zinc-950 p-5 text-zinc-100 shadow-[var(--slurp-shadow-floating),inset_0_1px_0_rgb(255_255_255/0.12)]">
         <div className="flex items-center justify-between">
-          <CreditCard size={26} className="text-[var(--noodle-accent)]" />
+          <CreditCard size={26} className="text-[var(--noodle-accent-foreground)]" />
           <span className="text-xs font-bold uppercase tracking-widest text-zinc-400">
             {tt("cardBrand", "Pastapay")}
           </span>
         </div>
-        <p className="mt-6 font-mono text-lg tracking-[0.15em]">{shownNumber}</p>
-        <div className="mt-4 flex items-end justify-between text-xs">
+        <p className="font-mono text-lg tracking-[0.12em] tabular-nums">{shownNumber}</p>
+        <div className="flex items-end justify-between text-xs">
           <div>
-            <p className="text-[0.55rem] uppercase text-zinc-400">{tt("cardHolder", "Card Holder")}</p>
+            <p className="text-[11px] leading-[14px] uppercase text-zinc-400">{tt("cardHolder", "Card Holder")}</p>
             <p className="font-semibold uppercase">{displayName}</p>
           </div>
           <div>
-            <p className="text-[0.55rem] uppercase text-zinc-400">{tt("cardExp", "Expires")}</p>
+            <p className="text-[11px] leading-[14px] uppercase text-zinc-400">{tt("cardExp", "Expires")}</p>
             <p className="font-semibold">12 / 34</p>
           </div>
           <div>
-            <p className="text-[0.55rem] uppercase text-zinc-400">{tt("cardCvv", "CVV")}</p>
+            <p className="text-[11px] leading-[14px] uppercase text-zinc-400">{tt("cardCvv", "CVV")}</p>
             <p className="font-semibold">🍆</p>
           </div>
         </div>
       </div>
 
-      <p className="flex items-center justify-center gap-1.5 text-center text-xs text-[var(--muted-foreground)]">
+      <p
+        className={cn(
+          SLP_TYPE.meta,
+          "flex items-center justify-center gap-1.5 text-center text-[var(--muted-foreground)]",
+        )}
+      >
         {charged ? (
           <>
-            <Check size={13} className="text-emerald-500" />
-            {tt("cardFree", "Charged $0.00 — it's free, we can't afford servers.")}
+            <Check size={14} aria-hidden="true" className="text-[var(--slurp-success)]" />
+            {tt("cardFree", "Charged $0.00. It's free, we can't afford servers.")}
           </>
         ) : (
           <>
-            <Loader2 size={13} className="animate-spin" />
+            <Loader2 size={14} aria-hidden="true" className="animate-spin motion-reduce:animate-none" />
             {t("ui.noodle.agegate.cardCharging", {
               amount: chargeAmount,
               defaultValue: "Charging ${{amount}}...",
@@ -214,34 +218,41 @@ export function SlurpAgeGate({ personaName, onComplete, onCelebrate, onLeave, is
         )}
       </p>
 
-      <label className="flex items-start gap-3 rounded-lg border border-[var(--border)] px-3 py-3 text-sm leading-5">
+      <label
+        className={cn(
+          SLP_TYPE.body,
+          "flex min-h-11 cursor-pointer items-center gap-3 rounded-2xl bg-[var(--slurp-surface-raised)] px-4 py-3 shadow-[var(--slurp-shadow-raised),var(--slurp-highlight)] has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[var(--slurp-focus)]",
+        )}
+      >
         <input
           type="checkbox"
           checked={confirmedAdult}
           onChange={(event) => setConfirmedAdult(event.target.checked)}
-          className="mt-1 h-4 w-4 shrink-0 accent-[var(--noodle-accent)]"
+          className="sr-only"
         />
-        <span>{tt("adultConfirmation", "I confirm that I am 18 years of age or older.")}</span>
+        <SlpSquareCheck checked={confirmedAdult} />
+        <span className="text-pretty">{tt("adultConfirmation", "I confirm that I am 18 years of age or older.")}</span>
       </label>
 
-      <button
-        type="button"
-        onClick={enter}
-        disabled={!charged || !confirmedAdult || isPending}
-        className="h-12 rounded-lg bg-[var(--noodle-accent)] text-base font-black uppercase tracking-wide text-zinc-950 transition-[opacity,transform] [&_svg]:!text-zinc-950 hover:opacity-90 active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)] disabled:cursor-not-allowed disabled:opacity-40 motion-reduce:transition-none motion-reduce:active:scale-100"
-      >
-        {isPending ? <Loader2 size={18} className="mx-auto animate-spin" /> : tt("enter", "Enter Slurp")}
-      </button>
-      {onLeave && (
-        <button
-          type="button"
-          onClick={onLeave}
-          disabled={isPending}
-          className="min-h-11 rounded-lg text-sm font-semibold text-[var(--muted-foreground)] transition-[color,transform] hover:text-[var(--foreground)] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)] disabled:opacity-50 motion-reduce:transition-none motion-reduce:active:scale-100"
+      <div className="flex flex-col items-stretch gap-1">
+        <SlpPrimaryButton
+          onClick={enter}
+          disabled={!charged || !confirmedAdult || isPending}
+          className="h-12 text-[15px]"
         >
-          {t("ui.slurp.ageGate.leave", { defaultValue: "Leave Slurp" })}
-        </button>
-      )}
+          {isPending ? <Loader2 size={18} className="mx-auto animate-spin" /> : tt("enter", "Enter Slurp")}
+        </SlpPrimaryButton>
+        {onLeave && (
+          <SlpButton
+            variant="tertiary"
+            onClick={onLeave}
+            disabled={isPending}
+            className="self-center text-[var(--muted-foreground)]"
+          >
+            {t("ui.slurp.ageGate.leave", { defaultValue: "Leave Slurp" })}
+          </SlpButton>
+        )}
+      </div>
     </div>
   );
 }

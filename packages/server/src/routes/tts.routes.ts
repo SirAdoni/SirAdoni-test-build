@@ -1041,6 +1041,10 @@ export function resolveTTSPcmFormat(contentType: string | null, baseUrl: string)
     officialOpenAi = url.protocol === "https:" && url.hostname === "api.openai.com";
   } catch {
     // An invalid/custom URL cannot establish a provider-specific audio contract.
+    logger.debug(
+      { event: "tts.pcm_format.provider_url_invalid" },
+      "Cannot infer PCM defaults from provider identity; rate and channels metadata remain required",
+    );
   }
   const readParameter = (name: string, fallback: number, min: number, max: number) => {
     const value = parameters.get(name);
@@ -1846,10 +1850,17 @@ export async function ttsRoutes(app: FastifyInstance) {
           audioBuffer = wrapTTSPcm16AsWav(providerAudio, resolveTTSPcmFormat(contentType, base)).buffer;
         }
       } catch (error: unknown) {
-        return reply.status(502).send({
-          error: "TTS provider returned invalid PCM audio",
-          detail: error instanceof Error ? error.message : "Unknown PCM error",
-        });
+        return replySpeakFailure(
+          reply,
+          502,
+          error,
+          "ME_PROVIDER_ERROR",
+          { ...speakFields(), providerStatus: providerRes.status, audioBytes: providerAudio.byteLength },
+          {
+            message: "TTS provider returned invalid PCM audio",
+            detail: error instanceof Error ? error.message : "Unknown PCM error",
+          },
+        );
       }
     }
 

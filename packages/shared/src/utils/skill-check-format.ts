@@ -113,6 +113,17 @@ export interface SkillCheckTagExtras {
   /** `reason="untrained"` — the Engine did not roll the check, because the character cannot attempt
    *  it untrained. Only ever on an ask. */
   reason?: "untrained";
+  /** `effects="-1"` — what the character's conditions and worn or carried items added or took. */
+  effects?: number;
+  /** `from="Poisoned; Leather coat"` — the conditions and items that changed the check. */
+  from?: string[];
+  /** `automatic="true"` — the save failed without a roll. */
+  automatic?: boolean;
+}
+
+/** A name in `from=`: no brackets, which would end the tag, and no semicolons, which part the names. */
+function fromName(name: string): string {
+  return serializeSkillCheckAttribute(name.replace(/[[\];]/g, " ").replace(/\s+/g, " "));
 }
 
 function serializeSkillCheckExtras(extras: SkillCheckTagExtras | undefined): string {
@@ -144,6 +155,12 @@ function serializeSkillCheckExtras(extras: SkillCheckTagExtras | undefined): str
   }
   if (extras.reroll) parts.push(`reroll="${serializeSkillCheckAttribute(extras.reroll)}"`);
   if (extras.reason) parts.push(`reason="${extras.reason}"`);
+  if (extras.effects != null && Number.isFinite(extras.effects) && extras.effects !== 0) {
+    parts.push(`effects="${extras.effects > 0 ? "+" : ""}${extras.effects}"`);
+  }
+  const from = (extras.from ?? []).map(fromName).filter(Boolean);
+  if (from.length > 0) parts.push(`from="${from.join("; ")}"`);
+  if (extras.automatic) parts.push(`automatic="true"`);
   return parts.length > 0 ? ` ${parts.join(" ")}` : "";
 }
 
@@ -190,6 +207,9 @@ export function serializeResolvedSkillCheckTag(result: SkillCheckResult, extras?
     ...(result.complication ? { complication: true } : {}),
     ...(result.adjust ? { adjust: result.adjust } : {}),
     ...(result.reroll ? { reroll: result.reroll } : {}),
+    ...(result.effects ? { effects: result.effects } : {}),
+    ...(result.from?.length ? { from: result.from } : {}),
+    ...(result.automatic ? { automatic: true } : {}),
     // An extra a caller left undefined is absent, not an instruction to erase what the result says.
     ...Object.fromEntries(Object.entries(extras ?? {}).filter(([, value]) => value !== undefined)),
   };

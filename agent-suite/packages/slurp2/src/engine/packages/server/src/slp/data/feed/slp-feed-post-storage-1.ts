@@ -20,6 +20,7 @@ import { slpCreatorPostPageCondition } from "../host/slp-storage-queries.js";
 import type {
   SlpCreatorPostPageOptions,
   SlpCreatorPostPersistenceInput,
+  SlpCreatorStoryQueryOptions,
 } from "../../modules/records/slp-storage-model.js";
 import { snapshotForAccount, mapPost, mapManagedPost, imageClaimIsAvailable } from "../host/slp-storage-mappers.js";
 import type { SlurpStorageContext } from "../host/slp-storage-context.js";
@@ -114,7 +115,13 @@ export function createFeedPostStorage1(context: SlurpStorageContext) {
       for (const row of rows) {
         if (!accountIds.has(row.authorAccountId) || !imageClaimIsAvailable(row, at)) continue;
         const metadata = parseRecord(row.metadata);
-        if (metadata.imagePendingReview === true || metadata.imageGenerationFailed !== true) continue;
+        // A deferred picture (the connection was busy when the reserve drew) is still owed: it
+        // retries like a failed one, or it said "Drawing the picture…" forever (R1-046).
+        if (
+          metadata.imagePendingReview === true ||
+          (metadata.imageGenerationFailed !== true && metadata.imageGenerationDeferred !== true)
+        )
+          continue;
         if (slpCreatorPostImageRetryAttempts(metadata) >= SLP_CREATOR_POST_IMAGE_RETRY_LIMIT) continue;
         eligible.push(mapManagedPost(row));
         if (eligible.length >= Math.max(1, Math.floor(limit))) break;
@@ -181,6 +188,51 @@ export function createFeedPostStorage1(context: SlurpStorageContext) {
         }
       }
       return result;
+    },
+    async listNoodlerStories(options: SlpCreatorStoryQueryOptions): Promise<SlpCreatorManagedPost[]> {
+      if (options.accountIds.length === 0) return [];
+      const search = options.search?.trim().toLowerCase() ?? "";
+      const creatorMatches = new Set(options.creatorSearchAccountIds ?? []);
+      const stories: SlpCreatorManagedPost[] = [];
+      const batchSize = 200;
+      let cursor: { createdAt: string; id: string } | null = null;
+      while (true) {
+        const rows = await db
+          .select()
+          .from(slpPosts)
+          .where(
+            and(
+              inArray(slpPosts.authorAccountId, options.accountIds),
+              gt(slpPosts.createdAt, options.since),
+              ne(slpPosts.access, "draft"),
+              cursor
+                ? or(
+                    lt(slpPosts.createdAt, cursor.createdAt),
+                    and(eq(slpPosts.createdAt, cursor.createdAt), lt(slpPosts.id, cursor.id)),
+                  )
+                : undefined,
+            ),
+          )
+          .orderBy(desc(slpPosts.createdAt), desc(slpPosts.id))
+          .limit(batchSize);
+        const posts = rows.map(mapManagedPost);
+        stories.push(
+          ...posts
+            .filter((post) => post.metadata.noodlerPostType === "story")
+            .filter((post) => {
+              if (!search) return true;
+              return (
+                creatorMatches.has(post.authorAccountId) ||
+                (post.title ?? "").toLowerCase().includes(search) ||
+                post.content.toLowerCase().includes(search)
+              );
+            }),
+        );
+        const last = rows.at(-1);
+        if (!last || rows.length < batchSize) break;
+        cursor = { createdAt: last.createdAt, id: last.id };
+      }
+      return stories;
     },
     async listNoodlerPostPage(options: SlpCreatorPostPageOptions) {
       const limit = Math.max(1, Math.min(20, Math.floor(options.limit)));
@@ -314,10 +366,11 @@ export function createFeedPostStorage1(context: SlurpStorageContext) {
       if (accountIds.length === 0) return 0;
       return db.count(slpPosts, and(inArray(slpPosts.authorAccountId, accountIds), gt(slpPosts.createdAt, since)));
     },
-    async getNoodlerPostById(id: string): Promise<SlpCreatorManagedPost | null> {
+    async getNoodlerPostById(id: string, includeDeleted = false): Promise<SlpCreatorManagedPost | null> {
       const rows = await db.select().from(slpPosts).where(eq(slpPosts.id, id));
       const row = rows[0];
       if (!row || !(await this.getNoodlerAccountById(row.authorAccountId))) return null;
+      if (!includeDeleted && parseRecord(row.metadata).slurpDeletedAt) return null;
       return mapManagedPost(row);
     },
     async getNoodlerPostByWizardExecution(

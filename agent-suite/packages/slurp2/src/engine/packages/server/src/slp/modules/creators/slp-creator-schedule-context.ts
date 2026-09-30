@@ -238,6 +238,63 @@ const minutesOfDay = (time: string): number | null => {
 };
 
 /**
+ * Blocks nobody posts from. Narrower than `SLURP_AWAY_ACTIVITIES` on purpose: a Creator at the gym,
+ * on set, or in class cannot answer a DM quickly, but that is exactly where a post comes from.
+ */
+export const SLURP_NO_POST_ACTIVITIES = ["sleep", "asleep", "sleeping", "bed", "driving"] as const;
+
+/**
+ * Where the day stands at `localNow`: the block running now and the one before it. A block runs
+ * until the next one starts; before the first block, yesterday's last one is still running. Used
+ * for the post brief's day plan, from a schedule or from a routine extracted from the card.
+ *
+ * A post due while they sleep or drive was written just before: the moment steps back to the last
+ * block they could post from, and `queued` says so.
+ */
+export function slurpTimelineMoment(
+  blocks: readonly { time: string; activity: string }[],
+  localNow: Date,
+): { current: string; previous: string | null; queued: boolean } | null {
+  const timeline = blocks
+    .map((block) => ({ at: minutesOfDay(block.time), activity: block.activity.trim() }))
+    .filter((block): block is { at: number; activity: string } => block.at !== null && Boolean(block.activity))
+    .sort((left, right) => left.at - right.at);
+  if (timeline.length === 0) return null;
+  const nowMinutes = localNow.getHours() * 60 + localNow.getMinutes();
+  let index = -1;
+  for (const [position, block] of timeline.entries()) if (block.at <= nowMinutes) index = position;
+  if (index === -1) index = timeline.length - 1;
+  const at = (position: number) => timeline[(position + timeline.length) % timeline.length]!.activity;
+  const noPost = (activity: string) =>
+    SLURP_NO_POST_ACTIVITIES.some((needle) => activity.toLowerCase().includes(needle));
+  let steps = 0;
+  while (noPost(at(index - steps)) && steps < timeline.length - 1) steps += 1;
+  const current = at(index - steps);
+  // A day of nothing but sleep has no block to step back to; say nothing rather than "asleep".
+  if (noPost(current)) return null;
+  const previous = timeline.length > 1 ? at(index - steps - 1) : null;
+  return { current, previous: previous === current ? null : previous, queued: steps > 0 };
+}
+
+/** Today's schedule blocks for a character-backed Creator, or null when there is no usable schedule. */
+export async function resolveSlurpCreatorScheduleBlocks(
+  characters: { getById(id: string): Promise<ScheduleCharacter> },
+  source: CreatorSource,
+  now: Date = new Date(),
+  timeZone?: string,
+): Promise<{ blocks: { time: string; activity: string }[]; localNow: Date } | null> {
+  if (source.kind !== "character") return null;
+  const character = await characters.getById(source.entityId);
+  if (!scheduleEnabled(character)) return null;
+  const schedule = parseSlurpWeekSchedule(record(record(character?.data).extensions).conversationSchedule);
+  if (!schedule || schedule.enabled === false) return null;
+  const localNow = zonedDate(now, timeZone);
+  const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  const today = schedule.days[days[(localNow.getDay() + 6) % 7]!];
+  return today?.length ? { blocks: today, localNow } : null;
+}
+
+/**
  * Whether the creator is reachable right now, from the same parsed week schedule the prompt
  * context is built from. One parser, so the text a creator says about their day and the delay
  * before they answer can never disagree.
@@ -322,6 +379,15 @@ export async function resolveSlurpCreatorScheduleStatus(
   const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
   const today = schedule.days[days[(localNow.getDay() + 6) % 7]!];
   return today?.length ? { state: "active", blocks: today.length } : { state: "empty-today" };
+}
+
+/** The stored Conversation Schedule object, which also carries talkativeness. */
+export async function resolveSlurpCreatorScheduleTraits(
+  characters: { getById(id: string): Promise<ScheduleCharacter> },
+  source: CreatorSource,
+): Promise<unknown> {
+  if (source.kind !== "character") return null;
+  return record(record(record((await characters.getById(source.entityId))?.data).extensions).conversationSchedule);
 }
 
 export async function resolveSlurpCreatorAvailability(

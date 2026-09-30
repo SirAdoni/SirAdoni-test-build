@@ -27,28 +27,37 @@ const images = slurp2Source(
 assert.match(home, /useState<"list" \| "wall">\("list"\)/u, "The feed must default to the list layout");
 assert.match(home, /feedLayout === "wall" \? \(\s*<SlurpMediaWall/u, "The wall layout must replace the post list");
 
-// Small polish stays structural: icon-only mobile navigation, useful empty states, and no empty rail.
+// Small polish stays structural: the mobile navigation, useful empty states, and no empty rail.
+// Updated in redesign step 2 (user-approved): step 1 replaced the icon-only pink nav with the floating
+// pill — small visible labels, muted icons, pink ink + tint on the active tab.
 const mobileNavigation = shell.slice(
   shell.indexOf('data-component="NoodleView.MobileBottomNav"'),
   shell.indexOf("</nav>", shell.indexOf('data-component="NoodleView.MobileBottomNav"')),
 );
+// W: Hub · Discover · ✦ Stir · Inbox · Me ("More" became "Me", the own profile).
 for (const label of [
   "homeLabel",
-  "ui.slurp.navigation.profile",
-  "ui.slurp.navigation.messages",
   "ui.slurp.navigation.search",
-  "ui.slurp.navigation.more",
+  "ui.slurp.navigation.stir",
+  "ui.slurp.navigation.messages",
+  "ui.slurp.navigation.me",
 ]) {
-  assert.match(mobileNavigation, new RegExp(`aria-label=\\{[\\s\\S]*${label.replaceAll(".", "\\.")}`, "u"));
+  assert.match(mobileNavigation, new RegExp(`label=\\{[\\s\\S]*${label.replaceAll(".", "\\.")}`, "u"));
 }
+const navTab = shell.slice(shell.indexOf("function SlpNavTab"), shell.indexOf("export function SlpShell"));
+assert.match(navTab, /aria-label=\{badge > 0 \? `\$\{label\}, /u, "each tab is named by its label (plus the count)");
 // 48px: compact, and still above the 44px minimum touch target.
-assert.match(shell, /h-12 grid-flow-col/u, "mobile navigation must keep its touch-target height");
-assert.doesNotMatch(
-  mobileNavigation,
-  /<span className="max-w-full truncate px-1">/u,
-  "mobile navigation must hide text labels",
+assert.match(navTab, /relative flex h-12 min-w-11/u, "mobile navigation must keep its touch-target height");
+assert.match(
+  navTab,
+  /<span aria-hidden="true" className=\{cn\(SLP_TYPE\.caption/u,
+  "mobile navigation shows small labels",
 );
-assert.match(mobileNavigation, /!text-\[var\(--noodle-accent\)\]/u, "mobile navigation icons must stay pink");
+assert.match(
+  navTab,
+  /text-\[var\(--slurp-muted\)\][\s\S]*?active &&[\s\S]*?text-\[var\(--slurp-ink\)\]/u,
+  "icons stay muted; the active tab takes the pink ink",
+);
 assert.match(home, /ui\.slurp\.empty\.clearSearch/u, "empty search must offer a recovery action");
 assert.match(home, /ui\.slurp\.empty\.browseAll/u, "an empty Following feed must offer all creators");
 assert.match(
@@ -73,14 +82,28 @@ assert.match(
   "the Wallet balance must animate spending and earning",
 );
 assert.match(home, /function SlurpAccessTransition/u, "locked and revealed post shapes need a persistent shell");
-assert.match(home, /layout=\{reduceMotion \? false : "size"\}/u, "post height changes must animate instead of jumping");
+// 0.3.6: only a card that starts locked keeps the layout animation; the rest skip framer's measuring.
+assert.match(
+  home,
+  /layout=\{reduceMotion \|\| !mayReveal \? false : "size"\}/u,
+  "a revealed post's height change still animates",
+);
 assert.match(home, /mode="popLayout"/u, "the old post must remain while its revealed form enters");
 assert.match(creatorPostCard, /runTransaction/u, "the unlock sheet must stay mounted through payment");
 assert.match(creatorPostCard, /ui\.slurp\.unlocksheet\.bestValue/u, "the subscription offer must carry its value cue");
 assert.match(sparkle, /data-slurp-celebration-ring/u, "creator identity must share the reveal celebration");
 assert.match(sparkle, /new IntersectionObserver/u, "sparkles must observe their viewport visibility");
 assert.match(sparkle, /\{inViewport && \(/u, "off-screen sparkle particles must not remain mounted");
-assert.match(home, /contentVisibility: "auto"/u, "off-screen feed cards must skip unnecessary rendering work");
+assert.doesNotMatch(
+  home,
+  /contentVisibility: "auto"/u,
+  "feed cards never skip painting: a fast phone flick showed half-black pages (0.3.6)",
+);
+// 0.3.6: desktop keeps it (off-screen cards skip restyles); phones do not.
+assert.match(
+  slurp2Source(join(root, "packages/slurp2/src/engine/packages/client/src/slp/slp-client-entry.tsx")),
+  /@media \(min-width: 1024px\) \{\s*\[data-slurp-access-transition\]:not\(\[data-slp-menu-open\]\) \{\s*content-visibility: auto;/u,
+);
 assert.match(
   home,
   /const \{ moments, feed, searchResults, discoveredCreators, suggestedCreators \} = useMemo/u,

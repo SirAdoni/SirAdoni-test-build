@@ -26,13 +26,16 @@ import { ChapterMenuSection } from "./MessageChapters";
 type MarkableMessage = { id: string; chatId: string; extra?: unknown };
 
 const POPOVER_CLASS =
-  "marinara-chat-popover fixed z-[9999] w-[min(18rem,calc(100vw-1rem))] rounded-xl border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-panel-bg)] p-2 text-[var(--foreground)] shadow-xl";
+  "marinara-chat-popover fixed z-[9999] max-h-[calc(var(--mari-visual-viewport-height,100dvh)-1rem)] w-[min(18rem,calc(100vw-1rem))] overflow-y-auto overscroll-contain rounded-xl border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-panel-bg)] p-2 text-[var(--marinara-chat-chrome-panel-text)] shadow-xl";
 const MENU_ROW_CLASS =
   "flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)] disabled:pointer-events-none disabled:opacity-50";
 const FIELD_CLASS =
-  "w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-2 py-1 text-xs text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25";
+  "w-full rounded-md border border-[var(--marinara-chat-chrome-input-border)] bg-[var(--marinara-chat-chrome-input-bg)] px-2 py-1 text-xs text-[var(--marinara-chat-chrome-panel-text)] outline-none placeholder:text-[var(--marinara-chat-chrome-panel-muted)] focus:border-[var(--marinara-chat-chrome-input-border-focus)] focus:ring-2 focus:ring-[var(--marinara-chat-chrome-focus-ring)]";
 const ACTIVE_ICON_CLASS =
   "text-[var(--marinara-chat-chrome-button-text-active)] hover:text-[var(--marinara-chat-chrome-button-text-hover)]";
+// Darken even very bright accents on light panels while retaining their hue.
+const ACTIVE_MENU_ICON_CLASS =
+  "text-[color-mix(in_srgb,var(--marinara-chat-chrome-accent)_50%,black)] dark:text-[var(--marinara-chat-chrome-accent)]";
 
 export function readMessageMarks(message: { extra?: unknown }) {
   const bookmark = readMessageBookmark(message.extra);
@@ -116,6 +119,7 @@ export function MessageMarksAction({
         createPortal(
           <div
             ref={menuRef}
+            data-chat-floating-panel
             style={position}
             role="dialog"
             aria-label={localizeUi("ui.chat.messagemarks.menuTitle")}
@@ -130,7 +134,7 @@ export function MessageMarksAction({
             >
               <Bookmark
                 size="0.875rem"
-                className={cn("mt-px shrink-0", marks.bookmark && "text-[var(--primary)]")}
+                className={cn("mt-px shrink-0", marks.bookmark && ACTIVE_MENU_ICON_CLASS)}
                 fill={marks.bookmark ? "currentColor" : "none"}
               />
               <span>
@@ -168,14 +172,14 @@ export function MessageMarksAction({
               aria-pressed={marks.pinned}
               onClick={() => save({ pinnedToContext: !marks.pinned })}
             >
-              <Pin size="0.875rem" className={cn("mt-px shrink-0", marks.pinned && "text-[var(--primary)]")} />
+              <Pin size="0.875rem" className={cn("mt-px shrink-0", marks.pinned && ACTIVE_MENU_ICON_CLASS)} />
               <span className="flex min-w-0 flex-col">
                 <span>
                   {marks.pinned
                     ? localizeUi("ui.chat.messagemarks.unpinFromContext")
                     : localizeUi("ui.chat.messagemarks.pinToContext")}
                 </span>
-                <span className="text-[0.6875rem] leading-4 text-[var(--muted-foreground)]">
+                <span className="text-[0.6875rem] leading-4 text-[var(--marinara-chat-chrome-panel-muted)]">
                   {localizeUi("ui.chat.messagemarks.pinHint", { count: MAX_PINNED_CONTEXT_MESSAGES })}
                 </span>
               </span>
@@ -189,7 +193,7 @@ export function MessageMarksAction({
 
             <div className="mt-1 border-t border-[var(--marinara-chat-chrome-panel-divider)] px-2 pt-2">
               <label htmlFor={noteId} className="mb-1 flex items-center gap-1.5 text-xs">
-                <StickyNote size="0.875rem" className={cn("shrink-0", marks.note && "text-[var(--primary)]")} />
+                <StickyNote size="0.875rem" className={cn("shrink-0", marks.note && ACTIVE_MENU_ICON_CLASS)} />
                 {localizeUi("ui.chat.messagemarks.privateNote")}
               </label>
               <textarea
@@ -236,6 +240,9 @@ export function MessageMarkIndicators({ message, className }: { message: Markabl
   const { t: localizeUi } = useUiTranslation();
   const marks = readMessageMarks(message);
   const { open, setOpen, buttonRef, menuRef, position } = useMessageActionMenu("left");
+  useEffect(() => {
+    if (!marks.note) setOpen(false);
+  }, [marks.note, setOpen]);
   if (!marks.any) return null;
   const iconClass = "shrink-0 text-[var(--marinara-chat-chrome-highlight-text)]";
   const bookmarkTitle = marks.bookmark?.label
@@ -277,12 +284,13 @@ export function MessageMarkIndicators({ message, className }: { message: Markabl
             createPortal(
               <div
                 ref={menuRef}
+                data-chat-floating-panel
                 style={position}
                 role="note"
                 className={POPOVER_CLASS}
                 onClick={(event) => event.stopPropagation()}
               >
-                <p className="mb-1 flex items-center gap-1.5 text-[0.6875rem] font-semibold text-[var(--muted-foreground)]">
+                <p className="mb-1 flex items-center gap-1.5 text-[0.6875rem] font-semibold text-[var(--marinara-chat-chrome-panel-muted)]">
                   <StickyNote size="0.75rem" className="shrink-0" />
                   {localizeUi("ui.chat.messagemarks.privateNote")}
                 </p>

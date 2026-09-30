@@ -26,7 +26,12 @@ export async function resolveSlurpTextConnection(
   connections: ConnectionsStorage,
   preferredId?: string | null,
 ): Promise<ResolvedConnection | null> {
-  if (preferredId) return connections.getWithKey(preferredId);
+  // A chosen connection that was deleted falls through to the defaults, as Settings says ("Selected
+  // connection is unavailable. Using the default…"); returning null made posts and replies fail (R1-128).
+  if (preferredId) {
+    const chosen = await connections.getWithKey(preferredId);
+    if (chosen) return chosen;
+  }
   const agentDefault = await connections.getDefaultForAgents();
   if (agentDefault) return agentDefault;
   // `getDefault()` is not category-filtered, unlike `getDefaultForAgents()`, so check the provider

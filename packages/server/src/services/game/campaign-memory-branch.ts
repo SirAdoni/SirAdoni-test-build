@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { logger } from "../../lib/logger.js";
 import { z } from "zod";
 import { worldHistorySchema } from "@marinara-engine/shared";
 import type {
@@ -635,6 +636,7 @@ export async function projectCampaignMemoryBranch(
         try {
           target = typeof value.targetId === "string" ? JSON.parse(value.targetId) : undefined;
         } catch {
+          logger.debug("[campaign-memory] held malformed historical family-link target JSON");
           /* Held below. */
         }
         const tuple =

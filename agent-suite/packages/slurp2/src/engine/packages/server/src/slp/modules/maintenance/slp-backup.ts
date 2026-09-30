@@ -214,6 +214,20 @@ export function isRestoreInspectionExpired(expiresAt: number, at = Date.now()): 
   return expiresAt <= at;
 }
 
+/**
+ * The app-settings keys that are preferences, not data. Only these wait for "Also import settings";
+ * wallets, earnings, storylines, goals, wardrobe, prices and canon live in the same namespace and are
+ * restored with the tables, because a restore replaces all Slurp data.
+ */
+export function isSlurpPreferenceSettingKey(key: string): boolean {
+  return (
+    key === "slurp2.settings" ||
+    key === "slurp2.image-connections" ||
+    key === "slurp2.post-guidance" ||
+    /^slurp2\.viewer\.[^.]+\.settings$/u.test(key)
+  );
+}
+
 /** Settings restore is opt-in: only an explicit `importSettings=1` replaces settings. */
 export function restoreImportSettingsRequested(query: unknown): boolean {
   return (query as { importSettings?: unknown } | undefined)?.importSettings === "1";

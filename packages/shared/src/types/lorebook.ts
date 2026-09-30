@@ -137,6 +137,12 @@ export interface LorebookFolder {
   updatedAt: string;
 }
 
+/** An image attached to a lorebook entry; `path` is a local server path (see LOREBOOK_ENTRY_IMAGE_PATH_PATTERN). */
+export interface LorebookEntryImage {
+  path: string;
+  caption: string;
+}
+
 /**
  * One chat message an agent-authored entry was extracted from. `swipeIndex`
  * pins the assistant swipe the write came from — a regenerate that lands on a
@@ -248,6 +254,8 @@ export interface LorebookEntry {
   decisionStatement: string;
   /** How `decisionStatement` acts on activation; `off` ignores it. */
   decisionMode: LorebookDecisionMode;
+  /** Images sent to the model whenever the entry activates. Always an array from the server; legacy rows read as []. */
+  images?: LorebookEntryImage[];
 
   /** When true, bulk vectorization skips this entry and semantic matching ignores any stored vector */
   excludeFromVectorization: boolean;

@@ -245,3 +245,123 @@ console.info("game ruleset JSON Schema regression passed.");
   // And the three numbers are not required outright, or a creature with a sheet could never be valid.
   assert.deepEqual(node.required, ["tier"]);
 }
+
+// What a check outside a fight reads (#6832): a modifier may be a mode alone, and its mode, skills and
+// saves suit only some numbers; an item's worn or carried effect does something and changes only
+// checks and saves; and `skills` narrows something. Carried in `allOf`, for the reason above.
+{
+  const schema = JSON.parse(
+    readFileSync(fileURLToPath(new URL("../../docs/extending/ruleset.schema.json", import.meta.url)), "utf8"),
+  ) as Record<string, unknown>;
+  const modifierNodes: Array<Record<string, any>> = [];
+  const narrowingNodes: Array<Record<string, any>> = [];
+  const itemEffectNodes: Array<Record<string, any>> = [];
+  const find = (node: unknown): void => {
+    if (Array.isArray(node)) return node.forEach(find);
+    if (!node || typeof node !== "object") return;
+    const object = node as Record<string, any>;
+    const keys = Object.keys(object.properties ?? {});
+    if (["to", "flat", "dice", "times", "mode"].every((key) => keys.includes(key))) modifierNodes.push(object);
+    if (["effects", "modifiers", "failsSaves", "saves", "skills"].every((key) => keys.includes(key))) {
+      narrowingNodes.push(object);
+      if (!keys.includes("condition") && !keys.includes("track")) itemEffectNodes.push(object);
+    }
+    Object.values(object).forEach(find);
+  };
+  find(schema);
+  assert.ok(modifierNodes.length >= 4, "the schema describes the modifiers of conditions, levels and items");
+  for (const node of modifierNodes) {
+    assert.ok(
+      node.allOf?.some(
+        (rule: Record<string, any>) =>
+          JSON.stringify(rule.anyOf) ===
+          JSON.stringify(["flat", "dice", "times", "mode"].map((key) => ({ required: [key] }))),
+      ),
+      "a mode alone is a change",
+    );
+    for (const [key, to] of [
+      ["mode", { enum: ["checks", "saves"] }],
+      ["skills", { const: "checks" }],
+      ["saves", { const: "saves" }],
+    ] as const) {
+      assert.ok(
+        node.allOf?.some(
+          (rule: Record<string, any>) =>
+            rule.if?.required?.[0] === key && JSON.stringify(rule.then?.properties?.to) === JSON.stringify(to),
+        ),
+        `"${key}" suits only some numbers`,
+      );
+    }
+  }
+  assert.ok(narrowingNodes.length >= 4, "conditions, levels, and an item worn and carried");
+  for (const node of narrowingNodes) {
+    assert.ok(
+      node.allOf?.some((rule: Record<string, any>) => rule.if?.required?.[0] === "skills"),
+      "skills narrow something",
+    );
+  }
+  assert.equal(itemEffectNodes.length, 3, "an item's worn and carried effects, and what an unmet requirement applies");
+  for (const node of itemEffectNodes) {
+    assert.ok(
+      node.allOf?.some(
+        (rule: Record<string, any>) =>
+          JSON.stringify(rule.anyOf) ===
+          JSON.stringify([
+            { required: ["effects"] },
+            { required: ["modifiers"] },
+            { required: ["failsSaves"] },
+            { required: ["abilities"] },
+            { required: ["resist"] },
+            { required: ["vulnerable"] },
+            { required: ["immune"] },
+            { required: ["conditionImmunities"] },
+          ]),
+      ),
+      "an item's effect does something",
+    );
+    // Since 1.56 an item's modifiers change anything a condition's may, and its effects are every
+    // effect but the four a level cannot have.
+    assert.ok(
+      !node.properties.modifiers.items.allOf.some(
+        (rule: unknown) => JSON.stringify(rule) === '{"properties":{"to":{"enum":["checks","saves"]}}}',
+      ),
+    );
+    assert.ok(node.properties.effects.items.enum.includes("attacks-against-disadvantage"));
+    assert.ok(!node.properties.effects.items.enum.includes("ends-on-damage"));
+  }
+
+  // And 1.54's: what an unmet requirement applies changes no ability, an item's effect may be abilities
+  // alone, and a level reads a track or a derived value, one of them.
+  const requirements: Array<Record<string, any>> = [];
+  const levels: Array<Record<string, any>> = [];
+  const findMore = (node: unknown): void => {
+    if (Array.isArray(node)) return node.forEach(findMore);
+    if (!node || typeof node !== "object") return;
+    const object = node as Record<string, any>;
+    const keys = Object.keys(object.properties ?? {});
+    if (["value", "atLeast", "otherwise"].every((key) => keys.includes(key))) requirements.push(object);
+    if (["track", "derived", "at"].every((key) => keys.includes(key))) levels.push(object);
+    Object.values(object).forEach(findMore);
+  };
+  findMore(schema);
+  assert.equal(requirements.length, 1, "the schema describes an item's requirement");
+  assert.deepEqual(requirements[0]!.properties.otherwise.not, { required: ["abilities"] });
+  for (const node of itemEffectNodes) {
+    assert.ok(
+      node.allOf?.some((rule: Record<string, any>) =>
+        (rule.anyOf as Array<{ required?: string[] }> | undefined)?.some(
+          (member) => member.required?.[0] === "abilities",
+        ),
+      ),
+      "an item's effect may change abilities alone",
+    );
+  }
+  assert.equal(levels.length, 1, "the schema describes a level");
+  assert.ok(
+    levels[0]!.allOf?.some(
+      (rule: Record<string, any>) =>
+        JSON.stringify(rule.oneOf) === JSON.stringify([{ required: ["track"] }, { required: ["derived"] }]),
+    ),
+    "a level reads a track or a derived value",
+  );
+}

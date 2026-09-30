@@ -186,6 +186,9 @@ export const lorebookEntries = fileTable("lorebook_entries", {
   /** How the statement acts: "off", "require" (must also be true) or "trigger" (can activate alone). */
   decisionMode: text("decision_mode").notNull().default("off"),
 
+  /** Images attached to this entry (JSON array of { path, caption }), served from /api/lorebooks/entry-images/. */
+  images: text("images").notNull().default("[]"),
+
   /** Pre-computed embedding vector (JSON array of floats) for semantic matching; held in memory as a packed Float64Array (#5592). */
   embedding: vectorText("embedding"),
   /** Stable provider/model/profile identity for the stored embedding */

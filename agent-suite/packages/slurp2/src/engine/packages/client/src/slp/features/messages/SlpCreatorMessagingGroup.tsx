@@ -211,7 +211,7 @@ export function CreatorMessagingGroup({
                 { onError: (error) => toast.error(errorMessage(error)) },
               );
             }}
-            className="min-h-9 rounded-lg px-3 font-bold text-[var(--noodle-accent)] ring-1 ring-inset ring-[var(--noodle-accent)] focus-visible:outline-none focus-visible:ring-2 disabled:opacity-50"
+            className="min-h-9 rounded-lg px-3 font-bold text-[var(--noodle-accent-foreground)] ring-1 ring-inset ring-[var(--noodle-accent)] focus-visible:outline-none focus-visible:ring-2 disabled:opacity-50"
           >
             {t("ui.slurp.settings.creators.useSuggestedPrices", { defaultValue: "Use suggestions" })}
           </button>

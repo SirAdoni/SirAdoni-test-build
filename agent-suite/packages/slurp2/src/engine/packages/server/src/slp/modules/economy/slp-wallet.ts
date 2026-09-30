@@ -448,6 +448,24 @@ export function subscriptionPaidThrough(at: Date, economy: SlurpEconomy = SLURP_
   return new Date(at.getTime() + economy.subscriptionDays * 86_400_000).toISOString();
 }
 
+/**
+ * Resume a cancelled subscription inside the period already paid for: drop the `cancelled` flag and
+ * nothing else. No charge, no ledger entry, same `paidThroughAt` and locked price, so the renewal
+ * sweep bills the next period at the usual time. Returns the wallet unchanged when there is nothing
+ * to resume (not cancelled, or the period has run out, which is a new charge instead).
+ */
+export function resumeSubscription(wallet: SlurpWallet, creatorAccountId: string, at: Date): SlurpWallet {
+  const current = wallet.subscriptions[creatorAccountId];
+  if (!current?.cancelled || !(Date.parse(current.paidThroughAt) > at.getTime())) return wallet;
+  return {
+    ...wallet,
+    subscriptions: {
+      ...wallet.subscriptions,
+      [creatorAccountId]: { paidThroughAt: current.paidThroughAt, price: current.price },
+    },
+  };
+}
+
 export type SlurpRenewalResult = {
   wallet: SlurpWallet;
   /** Creators whose period was extended, and what each was charged. */
@@ -463,11 +481,24 @@ export type SlurpRenewalResult = {
  * ponytail: a viewer away for a month is charged one period, not four. Bill every missed period
  * only if back-billing ever turns out to matter.
  */
-export function renewSubscriptions(wallet: SlurpWallet, at: Date): SlurpRenewalResult {
+export function renewSubscriptions(
+  wallet: SlurpWallet,
+  at: Date,
+  /** Creators that no longer exist. Their subscriptions end without a charge (a removed Creator bills nobody). */
+  goneCreatorIds: ReadonlySet<string> = new Set(),
+  /** Binds each renewal line to its Creator, so the Wallet can offer Resubscribe (R1-090). */
+  viewerAccountId?: string,
+): SlurpRenewalResult {
   let next = wallet;
   const renewed: { creatorAccountId: string; price: number }[] = [];
   const lapsed: string[] = [];
   for (const [creatorAccountId, subscription] of Object.entries(wallet.subscriptions)) {
+    if (goneCreatorIds.has(creatorAccountId)) {
+      const remaining = { ...next.subscriptions };
+      delete remaining[creatorAccountId];
+      next = { ...next, subscriptions: remaining };
+      continue;
+    }
     if (Date.parse(subscription.paidThroughAt) > at.getTime()) continue;
     // Cancelled during the paid period: the period is over now, so it ends rather than renews.
     if (subscription.cancelled) {
@@ -477,7 +508,15 @@ export function renewSubscriptions(wallet: SlurpWallet, at: Date): SlurpRenewalR
       next = { ...next, subscriptions: remaining };
       continue;
     }
-    const charged = spend(next, "renew", subscription.price, at, creatorAccountId);
+    const charged = spend(
+      next,
+      "renew",
+      subscription.price,
+      at,
+      creatorAccountId,
+      undefined,
+      viewerAccountId ? { viewerAccountId, creatorAccountId } : undefined,
+    );
     if (!charged) {
       lapsed.push(creatorAccountId);
       const remaining = { ...next.subscriptions };

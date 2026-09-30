@@ -1,37 +1,45 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "capabilityApi": {
+    "major": 1,
+    "minor": 31
+  },
+  "builtAgainst": {
+    "engineVersion": "2.4.6",
+    "engineCommit": "c3ec876434ba25f5288a549afc292f1ca9b0e5c5"
+  },
   "id": "slurp2",
-  "name": "Slurp Remastered",
-  "version": "0.1.3",
-  "description": "The Slurp remaster. It installs beside Slurp Legacy and keeps its own separate data: create a local Creator profile from an Engine character or persona, publish public or locked posts, and simulate subscriptions and audience activity. Install it, restart Marinara Engine when prompted, then open Home → Slurp Remastered.",
+  "name": "Slurp",
+  "version": "0.3.7",
+  "description": "A private social app for your characters. Turn characters and personas into Creators, post public or locked photos, and watch a simulated audience follow, subscribe, unlock, comment, and message them. By default, it is tuned for an adult experience. Install it, restart Marinara Engine when prompted, then open Home → Slurp.",
   "localizations": {
     "de": {
-      "name": "Slurp Remastered",
-      "description": "Die Neufassung von Slurp. Sie wird neben Slurp Legacy installiert und behaelt eigene, getrennte Daten: Erstelle ein lokales Creator-Profil aus einem Engine-Charakter oder einer Engine-Persona, veroeffentliche oeffentliche oder gesperrte Beitraege und simuliere Abonnements und Publikumsaktivitaet.",
+      "name": "Slurp",
+      "description": "Eine private Social-App für deine Charaktere. Mache Charaktere und Personas zu Creators, poste öffentliche oder gesperrte Fotos und sieh zu, wie ein simuliertes Publikum ihnen folgt, sie abonniert, Inhalte freischaltet, kommentiert und ihnen schreibt. Standardmäßig ist sie auf ein Erlebnis für Erwachsene abgestimmt.",
       "homeBrowserTab": {
-        "label": "Slurp.",
-        "ariaLabel": "Slurp. oeffnen"
+        "label": "Slurp",
+        "ariaLabel": "Slurp öffnen"
       }
     },
     "ko": {
-      "name": "Slurp Remastered",
-      "description": "Slurp의 리메이스터입니다. Slurp Legacy와 함께 설치되며 데이터를 따로 보관합니다. Engine 캐릭터나 Engine 페르소나로 로컬 크리에이터 프로필을 만들고, 공개 또는 잠긴 게시물을 게시하며, 구독 및 청중 활동을 시뮬레이션합니다.",
+      "name": "Slurp",
+      "description": "캐릭터를 위한 비공개 소셜 앱입니다. 캐릭터와 페르소나를 크리에이터로 만들고, 공개 또는 잠긴 사진을 게시하고, 시뮬레이션된 청중이 팔로우하고 구독하고 잠금을 해제하고 댓글과 메시지를 남기는 모습을 지켜보세요. 기본적으로 성인용 경험에 맞춰져 있습니다.",
       "homeBrowserTab": {
-        "label": "Slurp.",
-        "ariaLabel": "Slurp. 열기"
+        "label": "Slurp",
+        "ariaLabel": "Slurp 열기"
       }
     },
     "pl": {
-      "name": "Slurp Remastered",
-      "description": "Odnowiona wersja Slurp. Instaluje sie obok Slurp Legacy i przechowuje wlasne, oddzielne dane: utworz lokalny profil tworcy z postaci silnika lub persony silnika, publikuj publiczne lub zablokowane posty i symuluj subskrypcje oraz aktywnosc publicznosci.",
+      "name": "Slurp",
+      "description": "Prywatna aplikacja społecznościowa dla Twoich postaci. Zamieniaj postacie i persony w twórców, publikuj publiczne lub zablokowane zdjęcia i patrz, jak symulowana publiczność je obserwuje, subskrybuje, odblokowuje posty, komentuje i pisze do nich wiadomości. Domyślnie jest dostrojona do treści dla dorosłych.",
       "homeBrowserTab": {
-        "label": "Slurp.",
-        "ariaLabel": "Otworz Slurp."
+        "label": "Slurp",
+        "ariaLabel": "Otwórz Slurp"
       }
     }
   },
   "engine": {
-    "min": "2.4.5",
+    "min": "2.4.6",
     "maxExclusive": "4.0.0"
   },
   "kind": [
@@ -47,28 +55,35 @@
       "home-browser-tab"
     ],
     "homeBrowserTab": {
-      "label": "Slurp.",
-      "ariaLabel": "Open Slurp.",
+      "label": "Slurp",
+      "ariaLabel": "Open Slurp",
       "iconPaths": [
         "slurp2-logo.png"
+      ]
+    },
+    "assets": {
+      "paths": [
+        "src/engine/packages/client/src/slp/locales/de.json",
+        "src/engine/packages/client/src/slp/locales/ko.json",
+        "src/engine/packages/client/src/slp/locales/pl.json"
       ]
     }
   },
   "files": [
     {
       "path": "agents.json",
-      "sha256": "8f6dffb7ebb68257303c3906fd283d4fad8d558c79a272c83eadda0d8328cca3",
-      "bytes": 685
+      "sha256": "a08668dbfcf82409d4fe9bae474c9f54b8fd81091bfae337cd994e686a7e631e",
+      "bytes": 689
     },
     {
       "path": "server.mjs",
-      "sha256": "40beb63d0ac7af3bd045636109bfbb100f2b2e5fd3ae9cc256aee9f25206d548",
-      "bytes": 2995167
+      "sha256": "70795a572b501f08b86917a12b4364972d92402f9aaac1d60a32b678641d3fec",
+      "bytes": 3397424
     },
     {
       "path": "client.js",
-      "sha256": "a7176eecf0426544767655f0091736e52591939f73e5dc797c072459bc8344d3",
-      "bytes": 3632319
+      "sha256": "7596b348deb80dd9cdd88aa62899f42f963820264ec89a1c978384dfcf60760c",
+      "bytes": 4692368
     },
     {
       "path": "slurp2-logo.png",
@@ -79,6 +94,21 @@
       "path": "slurp2agent.png",
       "sha256": "47805313b5ec8dbc608fec82c4d51f1f82020afe4f286a04919b59cc8ef06f37",
       "bytes": 120424
+    },
+    {
+      "path": "src/engine/packages/client/src/slp/locales/de.json",
+      "sha256": "680885ccbf54a7473461bdb0b2a7c182281a878416a6c7d0dd0c8d3b19c15102",
+      "bytes": 190720
+    },
+    {
+      "path": "src/engine/packages/client/src/slp/locales/ko.json",
+      "sha256": "d11de40892b9986210858fa611a48d92e9b7a5254fe821f57acc00ebfd9fac4d",
+      "bytes": 285876
+    },
+    {
+      "path": "src/engine/packages/client/src/slp/locales/pl.json",
+      "sha256": "ae4e6329118c0926aa0f2a1b2fa203c80f32a209bb08c2178e293ca1eb0e3527",
+      "bytes": 192674
     }
   ],
   "permissions": [

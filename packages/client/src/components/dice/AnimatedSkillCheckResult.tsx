@@ -86,6 +86,32 @@ export function AnimatedSkillCheckResult({
           </span>
         </div>
       )}
+      {/* What the character's conditions and worn or carried items did, and which ones: a player
+          cannot tell a creaking coat from a bad roll otherwise. */}
+      {result.effects !== undefined && result.effects !== 0 && (
+        <div className="skill-check-roll-meta">
+          <span>
+            {localizeUi(
+              result.resolution === "successes"
+                ? "ui.dice.animatedskillcheckresult.effectsDice"
+                : "ui.dice.animatedskillcheckresult.effects",
+              { value: result.effects > 0 ? `+${result.effects}` : `${result.effects}` },
+            )}
+          </span>
+        </div>
+      )}
+      {result.from !== undefined && result.from.length > 0 && (
+        <div className="skill-check-roll-meta">
+          <span>
+            {localizeUi(
+              result.automatic
+                ? "ui.dice.animatedskillcheckresult.automatic"
+                : "ui.dice.animatedskillcheckresult.changedBy",
+              { names: result.from.join(", ") },
+            )}
+          </span>
+        </div>
+      )}
       {/* A face the check moved off the ruleset's own, so extra dice or doubled faces are explained. */}
       {result.explodeFrom !== undefined && (
         <div className="skill-check-roll-meta">

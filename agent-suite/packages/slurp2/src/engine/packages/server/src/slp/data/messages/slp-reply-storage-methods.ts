@@ -8,15 +8,19 @@ import { isSlurpFileUniqueConstraintError } from "../../base/host/slp-file-error
 import type { SlurpThread } from "./slp-messages-storage-types.js";
 
 export function createSlurpReplyMethods(db: DB) {
-  /** The fan's newest message in a thread: the one a reply owes an answer to. */
+  /**
+   * The fan's newest message in a thread: the one a reply owes an answer to. A Support desk notice or
+   * note (`deskQuiet`) is no message to answer, so it never stands in for the line before it.
+   */
   const latestViewerMessageId = async (threadId: string): Promise<string | null> => {
     const rows = await db
       .select()
       .from(slurpMessages)
       .where(and(eq(slurpMessages.threadId, threadId), eq(slurpMessages.role, "viewer")))
       .orderBy(desc(slurpMessages.createdAt), desc(slurpMessages.id))
-      .limit(1);
-    return rows[0] ? String(rows[0].id) : null;
+      .limit(12);
+    const answerable = rows.find((row) => !String(row.metadata ?? "").includes('"deskQuiet":true'));
+    return answerable ? String(answerable.id) : null;
   };
   return {
     latestViewerMessageId,

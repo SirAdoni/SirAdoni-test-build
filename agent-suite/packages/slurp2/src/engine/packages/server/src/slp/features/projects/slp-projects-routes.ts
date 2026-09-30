@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { slpIsAdmissionFailure } from "../../base/host/slp-admission.js";
 import {
   SLURP_GOAL_LABEL_MAX_LENGTH,
   SLURP_GOAL_MIN_TARGET,
@@ -15,7 +16,7 @@ import {
   SLURP_ARC_PACES,
   SLURP_PROJECT_MAX_ACTIVE,
 } from "../../modules/projects/slp-project.js";
-import { SLURP_ARC_DIRECTOR_ACTIONS } from "../../modules/projects/slp-arc-progress.js";
+import { SLURP_ARC_CHAPTER_ACTIONS, SLURP_ARC_DIRECTOR_ACTIONS } from "../../modules/projects/slp-arc-progress.js";
 import { SLURP_ARC_TWIST_MAX_LENGTH } from "../../modules/projects/slp-project.js";
 import {
   SLURP_ARC_AUTO_MODES,
@@ -24,10 +25,11 @@ import {
   slurpArcTypeFromProject,
 } from "../../modules/projects/slp-arc-library.js";
 import { slurpCrossoverForViewer } from "../../modules/projects/slp-arc-crossover.js";
+import { slurpDisclosureMode } from "../../modules/creators/slp-disclosure.js";
+import { protectCreatorGeneratedIdentity, type PublicIdentity } from "../../base/identity/slp-identity-protection.js";
+import { resolveNoodlerPublicIdentity } from "../feed/slp-feed-contract.js";
 import { isSlurpViewerActorAccount } from "../../modules/settings/slp-settings.js";
-import { isCreatorHiddenFromViewer } from "../../base/identity/slp-access.js";
 import { generateSlurpArc, SlurpArcGenerationFailure } from "./slp-arc-generation-service.js";
-import { isConnectionAdmissionFailure } from "../../../services/generation/connection-admission.js";
 import type { FastifyInstance } from "fastify";
 import type { SlpRouteDeps } from "../viewer/slp-viewer-contract.js";
 
@@ -202,8 +204,8 @@ export async function slpProjectsRoutes(app: FastifyInstance, deps: SlpRouteDeps
   });
 
   /**
-   * One Director mode action on an arc. Refused with 403 while `arcDirectorMode` is off, so the
-   * arcs run by themselves unless the player turned directing on.
+   * One Director mode action on an arc. Chapter actions are always open; the rest are refused with
+   * 403 while `arcDirectorMode` is off, so the arcs run by themselves unless directing is on.
    */
   app.post("/slurp/accounts/:id/projects/:projectId/director", async (req, reply) => {
     const parsed = z
@@ -214,7 +216,9 @@ export async function slpProjectsRoutes(app: FastifyInstance, deps: SlpRouteDeps
       })
       .safeParse(req.body ?? {});
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    if (!(await noodle.getSettings()).arcDirectorMode) {
+    // Chapter control is the player's steering and always open; pausing, twists, votes and ending
+    // an arc stay Director tools.
+    if (!SLURP_ARC_CHAPTER_ACTIONS.includes(parsed.data.action) && !(await noodle.getSettings()).arcDirectorMode) {
       return reply.code(403).send({ error: "Turn on Director mode in Settings → Arcs to direct arcs." });
     }
     const viewer = await resolveViewerPersona(parsed.data.personaId);
@@ -250,8 +254,9 @@ export async function slpProjectsRoutes(app: FastifyInstance, deps: SlpRouteDeps
   /**
    * The arc timeline for a profile. Unlike `/projects`, any viewer may read it, but only the story
    * parts: title, tone, chapters, history. Never the direction, the twist, or suggestions. A Creator
-   * hidden from the viewer shows nothing, and a Creator with a protected identity shows arcs to the
-   * owner only, because arc text is typed by the player and is not passed through disclosure.
+   * hidden from the viewer shows nothing. Fans see the storylines of Hinted Creators too (user, fix
+   * phase 1b, R1-073): arc text is typed by the player or the model, so for anyone but the owner it
+   * goes through the same identity protection as posts, for the Creator and every Hinted participant.
    */
   app.get("/slurp/accounts/:id/arcs", async (req, reply) => {
     const parsed = z.object({ personaId: z.string().trim().min(1) }).safeParse(req.query ?? {});
@@ -260,13 +265,6 @@ export async function slpProjectsRoutes(app: FastifyInstance, deps: SlpRouteDeps
     if (!viewer) return reply.code(404).send({ error: "Slurp persona not found" });
     const creator = await noodle.getNoodlerAccountById((req.params as { id: string }).id);
     if (!creator || isSlurpViewerActorAccount(creator)) return { arcs: [] };
-    const owner = creatorBelongsToViewer(creator, viewer);
-    if (
-      !owner &&
-      (isCreatorHiddenFromViewer(creator, viewer.id) ||
-        (creator.settings.privacy.identityDisclosure ?? "open") !== "open")
-    )
-      return { arcs: [] };
     const projects = await noodle.listProjects(creator.id);
     // Crossover participants go through the same rules one by one: a participant hidden from this
     // viewer, or with a protected identity, is left out, and so are the posts they published.
@@ -275,26 +273,43 @@ export async function slpProjectsRoutes(app: FastifyInstance, deps: SlpRouteDeps
       const account = await noodle.getNoodlerAccountById(id);
       if (account) participants.set(id, account);
     }
-    const visible = (id: string) => {
-      const account = participants.get(id);
-      return Boolean(
-        account &&
-        (creatorBelongsToViewer(account, viewer) ||
-          (!isCreatorHiddenFromViewer(account, viewer.id) &&
-            (account.settings.privacy.identityDisclosure ?? "open") === "open")),
+    const visible = (id: string) => participants.has(id);
+    // Names the viewer may not read: the linked identity of every Hinted Creator they do not own.
+    const hidden: PublicIdentity[] = [];
+    for (const account of [creator, ...participants.values()]) {
+      if (creatorBelongsToViewer(account, viewer)) continue;
+      if (slurpDisclosureMode(account.settings.privacy.identityDisclosure ?? "open") === "open") continue;
+      const identity = await resolveNoodlerPublicIdentity(app.db, account).catch(() => null);
+      if (identity) hidden.push(identity);
+    }
+    const protect = (text: string) =>
+      hidden.reduce(
+        (current, identity) => protectCreatorGeneratedIdentity(current, "hinted", identity) ?? current,
+        text,
       );
-    };
     return {
       arcs: projects
         .filter((project) => project.status !== "suggested")
         .map((project) => {
-          const { id, title, tone, chapters, chapter, status, startedAt, completedAt, choices, pollClosesAt } = project;
-          const crossover = slurpCrossoverForViewer(project, creator.id, visible);
-          return {
+          const {
             id,
             title,
             tone,
             chapters,
+            chapter,
+            status,
+            startedAt,
+            completedAt,
+            choices,
+            pollClosesAt,
+            pollPostId,
+          } = project;
+          const crossover = slurpCrossoverForViewer(project, creator.id, visible);
+          return {
+            id,
+            title: protect(title),
+            tone,
+            chapters: chapters.map(protect),
             chapter,
             status,
             startedAt,
@@ -310,7 +325,14 @@ export async function slpProjectsRoutes(app: FastifyInstance, deps: SlpRouteDeps
               };
             }),
             // Only the open question, not the branches it would add.
-            openChoice: choices[chapter] ? { question: choices[chapter]!.question, closesAt: pollClosesAt } : null,
+            // The poll post itself: "the chapter's latest post" could be one whose votes never count (R1-067).
+            openChoice: choices[chapter]
+              ? {
+                  question: protect(choices[chapter]!.question),
+                  closesAt: pollClosesAt,
+                  pollPostId: pollPostId ?? null,
+                }
+              : null,
           };
         }),
     };
@@ -377,7 +399,7 @@ export async function slpProjectsRoutes(app: FastifyInstance, deps: SlpRouteDeps
     try {
       raw = await generateSlurpArc(app.db, creator.id, [], "", { kind: "foreground" });
     } catch (error) {
-      if (isConnectionAdmissionFailure(error)) return reply.code(409).send({ error: "Generation already in progress" });
+      if (slpIsAdmissionFailure(error)) return reply.code(409).send({ error: "Generation already in progress" });
       if (error instanceof SlurpArcGenerationFailure)
         return reply.code(502).send({ error: error.message, debug: { rawResponse: error.rawResponse } });
       throw error;
@@ -401,7 +423,7 @@ export async function slpProjectsRoutes(app: FastifyInstance, deps: SlpRouteDeps
     try {
       raw = await generateSlurpArc(app.db, creator.id, [], parsed.data.brief, { kind: "foreground" });
     } catch (error) {
-      if (isConnectionAdmissionFailure(error)) return reply.code(409).send({ error: "Generation already in progress" });
+      if (slpIsAdmissionFailure(error)) return reply.code(409).send({ error: "Generation already in progress" });
       if (error instanceof SlurpArcGenerationFailure)
         return reply.code(502).send({ error: error.message, debug: { rawResponse: error.rawResponse } });
       throw error;

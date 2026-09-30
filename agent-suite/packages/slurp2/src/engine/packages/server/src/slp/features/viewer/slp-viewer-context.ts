@@ -3,13 +3,15 @@ import type {
   SlpAccount,
   SlpCreatorManagedPost,
   SlpCreatorPostView,
+  SlpPostPartnership,
 } from "../../../../../shared/src/slp/slp-social.types.js";
 import { projectCreatorAudienceProfile } from "../../modules/creators/slp-disclosure.js";
 import { isSlurpViewerActorAccount } from "../../modules/settings/slp-settings.js";
-import { isCreatorHiddenFromViewer, canViewCreatorPost } from "../../base/identity/slp-access.js";
+import { canViewCreatorPost } from "../../base/identity/slp-access.js";
+import { readSlurpTieStamp } from "../../modules/projects/slp-tie-stamp.js";
 import { slurpGoalProgress } from "../../modules/projects/slp-goal.js";
 import { SLP_CREATOR_SUBSCRIPTION_COST, slpCreatorUnlockPriceFromMetadata } from "../../modules/economy/slp-prices.js";
-import { slurpPlatformScaleMultiplier } from "../../modules/audience/slp-scale.js";
+import { slurpPlatformScaleMultiplier } from "../../../../../shared/src/slp/slp-scale.js";
 import {
   slurpCreatorReach,
   slurpPostLikeCount,
@@ -17,7 +19,12 @@ import {
   slurpPostUnlockCount,
 } from "../../../../../shared/src/slp/slp-reach.js";
 import { NOODLER_FAN_IDENTITY_PREFIX } from "../../modules/audience/slp-fan-identity-provider.js";
-import { NOODLER_MEDIA_URL_PREFIX, slpCreatorPostMediaUrlForPersona } from "../../base/media/slp-media.js";
+import {
+  NOODLER_MEDIA_URL_PREFIX,
+  slpCreatorPostMediaUrlForPersona,
+  slpStoredMediaSize,
+} from "../../base/media/slp-media.js";
+import { slurpLockedPostTeaser } from "../../modules/feed/slp-post-purpose.js";
 import type { FastifyInstance } from "fastify";
 import type { SlpRouteHost } from "./slp-route-host.js";
 
@@ -64,10 +71,11 @@ export function createSlpViewerContext(
     const followedIds = new Set([...(viewer.settings.social.followingAccountIds ?? []), ...subscribedIds]);
     const unlockedIds = new Set(unlocks.map((item) => item.postId));
     const profileById = new Map(profiles.map((profile) => [profile.id, projectCreatorAudienceProfile(profile)]));
+    // Only accounts with a stage profile are Creators. A character fan in the audience (0.3.0) is an
+    // account without one; listed here it reached the client as a Creator with no `profile`, and the
+    // feed query threw on `creator.profile.id` ("Viewer access could not be loaded").
     const visibleAccounts = accounts.filter(
-      (account) =>
-        !isSlurpViewerActorAccount(account) &&
-        (creatorBelongsToViewer(account, viewer) || !isCreatorHiddenFromViewer(account, viewer.id)),
+      (account) => !isSlurpViewerActorAccount(account) && profileById.has(account.id),
     );
     // A tip goal exists to give a fan a reason to tip, and it was only ever visible to the Creator
     // who set it. It belongs on the profile the fan is looking at.
@@ -85,12 +93,16 @@ export function createSlpViewerContext(
     const subscriptionPrices = Object.fromEntries(
       await Promise.all(
         visibleAccounts.map(
-          async (account) => [account.id, await noodle.getCreatorSubscriptionPrice(account.id)] as const,
+          async (account) => [account.id, await noodle.getCreatorSubscriptionCharge(account.id)] as const,
         ),
       ),
     );
+    // The persona's fan account: likes, comments and votes on other Creators' posts are stored
+    // under it, so the client needs it to recognise them as the player's own (R1-020).
+    const fanActor = await noodle.getSlurpAccountForEntity("persona", viewer.entityId, "viewer").catch(() => null);
     return {
       viewer,
+      viewerActorAccountId: fanActor?.id ?? null,
       visibleAccounts,
       goalByAccountId,
       subscriptionPrices,
@@ -107,10 +119,13 @@ export function createSlpViewerContext(
   function buildViewerShell(context: ViewerContext) {
     return {
       viewer: context.viewer,
+      viewerActorAccountId: context.viewerActorAccountId,
       creators: context.visibleAccounts.map((account) => ({
         profile: context.profileById.get(account.id)!,
         subscribed: context.subscribedIds.has(account.id),
         followed: context.followedIds.has(account.id),
+        // The persona's own Creator, without exposing the source id the disclosure strips (R1-021).
+        ownedByViewer: creatorBelongsToViewer(account, context.viewer),
         // The creator's own weekly price when it has set one, else the Slurp-wide default.
         subscriptionPrice: context.subscriptionPrices[account.id] ?? SLP_CREATOR_SUBSCRIPTION_COST,
         goal: context.goalByAccountId.get(account.id) ?? null,
@@ -130,7 +145,11 @@ export function createSlpViewerContext(
     /** Social proof on the paywall. Null for a post the viewer can already read. */
     unlockCount: number | null;
     story: boolean;
+    /** This persona has watched the Story (the shelf ring means "not watched yet", R1-024). */
+    watched: boolean;
     linkedPostId: string | null;
+    /** The line under the lock (see `slurpLockedPostTeaser`). Null for a post the viewer can read. */
+    teaser: string | null;
   };
 
   async function projectViewerPosts(
@@ -196,6 +215,27 @@ export function createSlpViewerContext(
         const visibleInteractions = allInteractions.filter(
           (interaction) => !locked || !interaction.actorAccountId.startsWith(NOODLER_FAN_IDENTITY_PREFIX),
         );
+        const images = post.images.flatMap((image) => {
+          if (locked && !image.imageUrl.startsWith(NOODLER_MEDIA_URL_PREFIX)) return [];
+          // The primary picture's size from its file (V), so the frame is reserved in its ratio.
+          const size =
+            image.position === 0 && image.width === undefined
+              ? slpStoredMediaSize(post.metadata.noodlerMediaPath)
+              : null;
+          return [
+            {
+              ...image,
+              ...size,
+              imageUrl: slpCreatorPostMediaUrlForPersona(
+                image.imageUrl,
+                context.viewer.entityId,
+                locked ? "locked" : "original",
+                post.updatedAt,
+              ),
+              imagePrompt: locked ? null : image.imagePrompt,
+            },
+          ];
+        });
         return [
           post.id,
           {
@@ -205,7 +245,7 @@ export function createSlpViewerContext(
             locked,
             title: post.title,
             content: locked ? null : post.content,
-            hasImage: post.imageUrl !== null,
+            hasImage: post.images.length > 0,
             imageUrl:
               locked && !post.imageUrl?.startsWith(NOODLER_MEDIA_URL_PREFIX)
                 ? null
@@ -216,11 +256,18 @@ export function createSlpViewerContext(
                     post.updatedAt,
                   ),
             imagePrompt: locked ? null : post.imagePrompt,
+            images,
             metadata: locked ? null : post.metadata,
             // A locked post withholds its metadata, so the price travels as its own field. It is
             // The post's own price, which the unlock route charges when the wallet is enabled.
             unlockPrice: locked ? slpCreatorUnlockPriceFromMetadata(post.metadata) : null,
+            teaser: locked ? slurpLockedPostTeaser(post) : null,
             story: post.metadata.noodlerPostType === "story",
+            watched: (interactionsByPostId.get(post.id) ?? []).some(
+              (interaction) =>
+                interaction.type === "story_view" && interaction.actorAccountId === context.viewerActorAccountId,
+            ),
+            partnership: slurpPostPartnership(post, (id) => context.accountById.get(id)),
             linkedPostId:
               post.metadata.noodlerPostType === "story" && typeof post.metadata.noodlerLinkedPostId === "string"
                 ? post.metadata.noodlerLinkedPostId
@@ -235,7 +282,8 @@ export function createSlpViewerContext(
                 createdAt: post.createdAt,
                 creatorReach: reachByAccountId.get(post.authorAccountId) ?? 0,
                 accountId: post.authorAccountId,
-                realLikes: allInteractions.filter((item) => item.type === "like").length,
+                // Post likes only; a heart on a comment is not a like of the post (R1-030).
+                realLikes: allInteractions.filter((item) => item.type === "like" && !item.parentInteractionId).length,
               },
               projectedAt,
             ),
@@ -280,3 +328,39 @@ export type SlpViewerContext = ReturnType<typeof createSlpViewerContext>;
 
 /** Everything a Slurp route module receives from the server entry. */
 export type SlpRouteDeps = SlpRouteHost & SlpViewerContext;
+
+/**
+ * The public label of a joint or sponsored post. A rivalry post and a "turned it down" post carry
+ * none; a partner the viewer cannot see is left out.
+ */
+function slurpPostPartnership(
+  post: { authorAccountId: string; metadata: Record<string, unknown> },
+  account: (id: string) => { id: string; displayName: string; handle: string; avatarUrl?: string | null } | undefined,
+): SlpPostPartnership | null {
+  const stamp = readSlurpTieStamp(post.metadata);
+  if (!stamp || stamp.declined || stamp.kind === "rival") return null;
+  // A couple's own post carries no tag (U: couple = life); an old joint one (before U) and their shared
+  // page's posts still do (7b-couples).
+  if (stamp.kind === "couple" && !stamp.joint && !stamp.pageId) return null;
+  const author = account(stamp.pageId && stamp.hostId ? stamp.hostId : post.authorAccountId);
+  const host = author
+    ? { id: author.id, name: author.displayName, handle: author.handle, avatarUrl: author.avatarUrl ?? null }
+    : null;
+  if (stamp.kind === "sponsor")
+    return stamp.brand ? { host, withAccountId: null, withName: null, withHandle: null, brand: stamp.brand } : null;
+  const couple = stamp.kind === "couple" ? { couple: true } : stamp.announce ? { announce: true } : {};
+  // On the shared page the page is the author: the label names who wrote it ("by @mira").
+  if (stamp.pageId)
+    return host ? { host, withAccountId: null, withName: null, withHandle: null, brand: null, ...couple } : null;
+  const partner = stamp.partnerId ? account(stamp.partnerId) : undefined;
+  return partner
+    ? {
+        host,
+        withAccountId: partner.id,
+        withName: partner.displayName,
+        withHandle: partner.handle,
+        brand: null,
+        ...couple,
+      }
+    : null;
+}

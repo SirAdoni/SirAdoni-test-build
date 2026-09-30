@@ -1240,6 +1240,19 @@ export function ChatSidebar() {
           >
             {displayName}
           </span>
+          {chat.metadata?.multiplayer && (
+            <span className="mari-chrome-accent-text-muted block truncate text-[0.6875rem]">
+              {localizeUi(
+                (chat.metadata.multiplayer as { role?: string; status?: string }).role === "host"
+                  ? (chat.metadata.multiplayer as { status?: string }).status === "ended"
+                    ? "multiplayer.sidebar.stopped"
+                    : "multiplayer.sidebar.hosting"
+                  : (chat.metadata.multiplayer as { status?: string }).status === "joined"
+                    ? "multiplayer.sidebar.joined"
+                    : "multiplayer.sidebar.disconnected",
+              )}
+            </span>
+          )}
           {subtitle && (
             <span className="mari-chrome-accent-text-muted flex items-center gap-1 truncate text-[0.6875rem] leading-tight">
               {SubtitleIcon && (
@@ -1430,7 +1443,13 @@ export function ChatSidebar() {
               title={t(`navigation.chatSidebar.search.${activeTab}`)}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="mari-chrome-field h-10 w-full text-ellipsis py-0 pl-8 pr-2 text-xs md:h-9"
+              onKeyDown={(event) => {
+                if (event.key === "Escape" && !event.nativeEvent.isComposing && searchQuery) {
+                  event.preventDefault();
+                  setSearchQuery("");
+                }
+              }}
+              className="mari-chrome-field h-10 w-full text-ellipsis py-0 pl-8 pr-3 text-xs md:h-9"
             />
           </div>
           <div className="relative">
@@ -2090,6 +2109,7 @@ function UserStatusFooter({
             if (event.key === "Enter") {
               event.currentTarget.blur();
             } else if (event.key === "Escape") {
+              event.preventDefault();
               setActivityFocused(false);
               event.currentTarget.blur();
             }

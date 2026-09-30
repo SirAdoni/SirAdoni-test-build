@@ -474,5 +474,77 @@ export function slurpCreatorOpenerKind(input: {
   return null;
 }
 
+/**
+ * Why a Creator writes first in a chat that already exists, as guidance for the reply writer.
+ * On a creator site this is the business: the page pings the people who pay, tells them about a
+ * new set first, and asks what they want next.
+ */
+export const SLURP_CREATOR_CHECK_IN_REASONS = [
+  "You have been thinking about them. Say hi, short and personal, like you would to a regular.",
+  "You just finished a new set. Tell them first, tease it, and offer to send it to them.",
+  "Something in your day made you think of them. Tell them about it.",
+  "Ask them what they would like to see from you next.",
+  "You are bored and a little flirty. Start something.",
+] as const;
+
+/**
+ * Whether a Creator writes first in an existing, quiet chat, and why (`null`: not today).
+ *
+ * `slurpCreatorOpenerKind` only opens chats that do not exist yet, so a fan who had ever written
+ * never heard first from anyone: in a 7-day simulation no Creator wrote first once. A subscriber
+ * gets a message about every third quiet day; a follower now and then. The rolls are stable per
+ * pair and day; after it is sent the chat is no longer quiet, so it does not repeat.
+ */
+export function slurpCreatorCheckIn(input: {
+  stage: string;
+  hoursQuiet: number;
+  /** The fan is waiting for an answer; the answer comes first. */
+  needsReply: boolean;
+  /** Something is already planned for this chat. */
+  pending: boolean;
+  roll: number;
+  /** Second stable number in [0, 1), picks the reason. */
+  pick: number;
+}): string | null {
+  if (input.needsReply || input.pending) return null;
+  const paying = input.stage === "subscriber" || input.stage === "regular" || input.stage === "whale";
+  const chance = paying ? 0.35 : input.stage === "follower" || input.stage === "liker" ? 0.12 : 0;
+  if (input.hoursQuiet < (paying ? 20 : 36) || input.roll >= chance) return null;
+  return SLURP_CREATOR_CHECK_IN_REASONS[Math.floor(input.pick * SLURP_CREATOR_CHECK_IN_REASONS.length)] ?? null;
+}
+
 /** Unprompted creator messages per tick. Being messaged stops meaning anything in bulk. */
 export const SLURP_MAX_CREATOR_OPENERS_PER_TICK = 1;
+
+/**
+ * The first words of a commission brief the world writes on its own. Players can replace them in
+ * Messaging settings; the model rewrites the whole brief later when the budget allows.
+ */
+export const SLURP_COMMISSION_OPENERS: readonly string[] = [
+  "Would you take a request?",
+  "Hoping you have space for a commission.",
+  "Not sure if you do these, but",
+  "Been saving up for this one.",
+  "If your list is open,",
+  "Long shot, but",
+];
+
+/**
+ * An opening line from somebody who has never written before. Vague on purpose, like the briefs:
+ * a first message that pretends to know something specific about a post it has not read is worse
+ * than one that simply says hello. Players can replace them in Messaging settings.
+ */
+export const SLURP_FAN_OPENERS: readonly string[] = [
+  "hi — been reading for a while, finally said something",
+  "hope it is ok to message. just wanted to say I like what you do",
+  "you probably get this a lot but you seem genuinely nice",
+  "not asking for anything, just wanted to say hi",
+  "been meaning to write for weeks and kept chickening out",
+  "hey. long time reader, first time writing",
+  "sorry to appear out of nowhere. your last few posts got me",
+  "is it weird to message? felt weird not to",
+];
+
+/** Most custom openers a player may keep, and the longest one. The rewrite caps an opener at 240. */
+export const SLURP_CUSTOM_OPENERS_MAX = 40;
+export const SLURP_CUSTOM_OPENER_MAX_LENGTH = 200;

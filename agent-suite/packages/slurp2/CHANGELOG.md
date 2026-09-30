@@ -1,4 +1,495 @@
-# Slurp Remastered release notes
+# Slurp release notes
+
+## 0.3.7 — 2026-09-30
+
+Two-layer economy, faster rewrites, partners in pictures.
+
+- Economy: earnings are platform dollars. A paying fan stands for "People per paying fan" (5) in subscribers and earnings, less a 20% fee; Collect pays 1 coin per 5 dollars, 15–60 coins a day per persona. Old balances convert once.
+- Fixes: no Slurp coins for your own Creators from the desk; milestones use shown followers.
+- Rewrites: 10 per tick, a waiting count and "Rewrite all now".
+- Couple and collab pictures may show the partner when the post calls for it.
+- Messaging: quote delay and your own first lines. "Blur pictures until tapped".
+
+- Include saved moderation reports in package backups and restores; preserve legacy backup names and parent-first restore order.
+- Preserve default provider endpoints and existing fallback behavior when an optional connection URL or host integration is absent.
+
+## 0.3.6 — 2026-09-30
+
+Faster (measured on a slowed phone), and your own taps never spend the AI budget.
+
+- Speed: a fast scroll no longer restyles the whole feed or shows black gaps; Hub and profiles draw a few cards at a time; fewer polls, cached server work; Settings loads only what is open; other languages load on demand; new pictures are stored as WebP.
+- AI budget: only the world's own writing counts; anything you ask for never uses it and "Off" never blocks it. New AI limits page and a Creator Pages connection.
+- Slurp Support: attach or order an image, link a post or Story, ask for photo verification; a staff-console menu, no Commissions, one grey console, pictures that load.
+- Fixes: Stir's Support tools no longer grey out "Do it"; Creator Pages keep their blocks.
+
+## 0.3.5 — 2026-09-29
+
+Support desk, polyamory, character names in pictures. Design: `docs/SUPPORT-DESK.md`.
+
+- Support is no fan: each Creator gets a desk record (trust, suspicion and the risk of being caught, badges, feature or throttle, favours, a challenge, a contract, a ticket, leaving). Support is always "Slurp Support".
+- Stir gets a Support desk and eight desk actions; Support threads leave persona inboxes. Support chats get offers the Creator answers, perks, warnings, rumours, private notes and a ticket bar.
+- The world clock runs the desk on templates. New Settings › Stir.
+- Polyamory (off by default): couples of up to four, polyamorous Creators in several couples; each Creator is monogamous or polyamorous.
+- Pictures of a known character lead with their card name ("The image model knows this character", on by default); the enhancer learns who they are. See `docs/IMAGE-PROMPTS.md`.
+- Fixes: persona switcher hidden on desktop; Inbox badge disagreed with Messages; Inbox listed only three chats.
+
+## 0.3.4 — 2026-09-29
+
+Creator Pages, and Stir built out.
+
+- Profiles get a Page above the posts: six looks and ten blocks (quote, now, collage, list, this or that, Q&A, facts, prices, people, latest poll). It stores only choices and words; pictures, prices, facts, people and polls come from real data, and locked posts only appear as the server's teaser.
+- New character Creators design their own Page on a later open; any Creator can be asked to (one AI call, new "Creator pages" budget row) or the player builds it. A week-old AI Page may refresh after real news; a player's Page never changes by itself.
+- Stir: new levers (storyline, crossover, tip goal, new look, events), Recent plays with Undo that stays safe when the world moved on, steering what is in play, and suggestions of who would click.
+- Fixes: brand deals marked done too early, events started twice, plays twice in Pulse, lost Undo answers, Polish plurals, accessibility.
+
+## 0.3.3 — 2026-09-29
+
+- Renamed from Slurp Remastered to Slurp. The Home tab reads "Slurp" without the trailing period.
+- New catalog description; it states that the default guidance is tuned for an adult experience.
+- Slurp Legacy (`slurp`) is retired and no longer in the catalog. Its backups still restore here.
+
+## 0.3.2 — 2026-09-29
+
+- Fix "Viewer access could not be loaded" and an empty Home: the viewer feed listed character fan accounts (0.3.0 audience characters) as Creators without a profile, and the client threw on `creator.profile.id`. The feed now lists only accounts with a stage profile.
+- Fix "Slurp core storage factory is required" on "Start over, keep Creators" and on the Stir routes: both built the messages storage without its core factory.
+
+## 0.3.1 — 2026-09-29
+
+- New Backstage action "Start over, keep Creators" (`DELETE /api/slurp2/data/activity`): clears posts, post media, comments, messages, fans, world events, queued and stuck work, and the continuity and content plans built on them. It first refunds commissions that were paid and not delivered. Creators, their artwork and projects, follows, the wallet and every Slurp setting stay. For installs that stay empty or stuck after an update.
+- "Delete all Slurp data" now also clears post deep details, reports, message follow-ups, world claims and Creator planning rows, which it used to leave behind.
+- The empty Home feed says why: automatic posting is off (with a one-tap "Turn on automatic posting"), first posts are still being written, no Creators yet, or no persona yet.
+
+## 0.3.0 — 2026-09-29
+
+Small changes.
+
+- Stir, a new tab: make crushes, collabs, rivalries and events happen between your Creators, in your own words or with a card. Every play shows a preview first and has Undo.
+- Life and spice: collabs, couples with an optional shared page, rivalries, brand deals, teases that lead to drops, fan polls, steering with flavour and spice levels.
+- A new look for the whole app: floating phone nav, Hub, Stories, profiles, Discover, Wallet, the Dashboard, a role-play onboarding and a What's new sheet.
+- Messages rebuilt: a real inbox, full-screen chats, write as Slurp Support, AI fans sometimes get an answer, and promised messages arrive.
+- Pulse shows what runs, what is queued, what failed and why, and what comes next. Long actions run in the background and never lock the screen.
+- The AI budget grows with your Creators; limits you set yourself stay. Pictures keep their viewpoint and art style better, with an optional prompt enhancer.
+- 215 fixes.
+
+## 0.2.78 — 2026-09-27
+
+- bugfixing
+- Restyle the update sheet header with a larger animated G face, accent tint and integrated alpha reminder.
+- Replace the cost warning with a direct reminder that Slurp uses background image and text generation.
+
+## 0.2.77 — 2026-09-27
+
+- Restore G’s animated face, introduction and alpha reminder in the themed update sheet.
+- Remember Details edit mode per conversation and viewer in this browser. Turning it off keeps saved edits.
+- Expose the displayed state timestamps and conversation cooldown for inline editing too.
+
+## 0.2.76 — 2026-09-27
+
+- Added an edit toggle at the bottom of messaging Details → Advanced. Numbers become inline sliders, options become selectors, and context can be edited directly. Calculated values use saved overrides without changing payment records.
+
+## 0.2.75 — 2026-09-26
+
+- Fewer selfies and mirror shots: posts now use a propped-up phone, video stills or a friend with the camera more often. Mirror shots are rare, because the image model drew the Creator twice.
+- Pictures no longer show the phone: phone and selfie words are removed from every picture prompt, and the negative prompt names phones and doubled people.
+- Creators copy each other less: a post sees what the other Creators' pictures showed (clothes, room), and its own history lists subjects instead of camera words.
+- More variety: more places, moments, company and post ideas to draw from.
+- From staging 0.2.41: the world tick blocks the Engine much less. Slurp settings are validated once per change instead of on every read, and the tick now pauses between Creators, commissions, and actions so other pages and packages can respond.
+
+## 0.2.74 — 2026-09-26
+
+- Settings are rows: what a setting does on the left, its control on the right. Each page says its name once; Reset is at the bottom and resets only that page.
+- Overview is the only summary page, with fan and schedule buttons and more tiles. New names: Connections, Storylines (a Story is the short image post) and Writing. Maintenance is one page.
+- On a phone, settings open on a list of sections.
+- Connections has one row per job and the chat carryover. Creator pictures now sets the connection Creator pictures really use.
+- Images uses picture shapes instead of number fields. Story images moved to Publishing. Storyline types, ads and events are compact lists; long explanations fold under How this works.
+- Writing starts with Spice level and How far pictures go.
+
+## 0.2.73 — 2026-09-26
+
+- Your own messages no longer use the AI budget: a Creator answers a message you send or a tip you give at once, even when the hourly or daily limit is reached. Only answers that arrive while you are away count against it. The mode and the DM replies switch still apply.
+
+## 0.2.72 — 2026-09-26
+
+- Storylines, Publishing, Images, Audience, Messaging and Prompts show their current settings as a row of chips under the page title. Tap a chip to jump to that setting, even inside a folded block.
+- Creator settings tabs with several parts start with a "Jump to" row.
+
+## 0.2.71 — 2026-09-25
+
+- Bounded numbers are sliders with a value chip: weeks between storylines, storylines at once, wallet day start, weekly price change and creator revenue share. A slider saves when you let go.
+- Posts per day, storyline check interval and carryover limits have − and + buttons.
+- Messaging reply and away delays are four min–max rows instead of eight separate fields; the lower value can never pass the upper one.
+
+## 0.2.70 — 2026-09-25
+
+- Settings have new sections in order of use: Overview, Models & connections, Creators, Posting, Stories, World, Fans & money, Writing & content level, Maintenance.
+- Models & connections holds Connections and Image generation, right under Overview. World holds Events and Calendar; Fans & money holds Audience, Messaging rules, Coins and access, Ads and Discovery; Stories holds Storylines, Storyline types and Packs.
+- Old links and saved places open the page in its new section.
+
+## 0.2.69 — 2026-09-25
+
+- A Creator's posting schedule is a day list: each upcoming post shows its time, which you change in place and which saves when you leave the field. "Another day" moves a post to a new day at the same time. The 8 Save buttons are gone.
+
+## 0.2.68 — 2026-09-25
+
+- Creator settings open on an Overview status page: what needs review, whether the Creator posts (with a live Auto-post switch), the next post, running storylines, notes waiting in Memory, and a way into each part.
+
+## 0.2.67 — 2026-09-25
+
+- Creator settings have 7 tabs instead of 14: Overview, Profile (identity, appearance, wardrobe), Posting (automation, production, storylines, collaborations), Content rules, Fans & messages, Memory and Tools. Each merged tab shows its parts under their own headings.
+- Links and search results that named an old tab open the new tab and scroll to the right part.
+
+## 0.2.66 — 2026-09-25
+
+- Publishing, Images, Ads and Messaging show fixed choices as button rows instead of dropdowns: story rate, post ideas, free teasers, generation mode, image context, appearance updates, ad frequency, steering, content ceiling, era, tone and the default DM policy.
+- Every folded block in settings looks and works the same, and shows how many settings it holds.
+- The "Set Slurp's pace" wizard is gone from Publishing; the preset cards on the same page do the same job.
+
+## 0.2.65 — 2026-09-25
+
+- Life details sit right after "Waiting for you" in a Creator's Memory tab. People, places, work, things, habits and running jokes are chips: type and press Enter to add, tap the cross to remove.
+- The heat range of a card is picked with button rows, and the note filters fold away behind the search box, with the number of active filters shown.
+
+## 0.2.64 — 2026-09-25
+
+- A Creator's Storylines tab follows the Slurp settings by default and shows their values. Turn on "Own value" on a row to set it for this Creator; turn it off to follow Slurp again.
+- Storyline types for one Creator are picked with tappable chips, and all controls in the tab have full-size touch targets.
+
+## 0.2.63 — 2026-09-25
+
+- Storylines settings show every choice at once: story activity presets are cards with a short description, and the start, pace and source settings are button rows instead of dropdowns.
+- Audience presets, scale, tone and world activity use the same button rows.
+
+## 0.2.62 — 2026-09-25
+
+- The Identity tab in Creator settings uses the full width again; the Save bar sits at the bottom of the tab.
+- Memory shows readable names instead of raw ids such as multi_image_set, in Recent plans, filters, proposals and signals.
+
+## 0.2.61 — 2026-09-25
+
+- The Creator settings window no longer shows "{{name}}'s settings" while it loads.
+
+## 0.2.60 — 2026-09-25
+
+- The Storylines card in Posting and the storyline button in the Calendar now open the new Storylines page, and the Advanced block shows an arrow.
+
+## 0.2.59 — 2026-09-25
+
+- New Story activity preset on the Storylines page: Calm, Lively, or Hands-off sets events, storylines, and shared ideas in one step; your own mix shows as Custom.
+- Creator settings have a Storylines tab for that Creator's storyline overrides. The daily routine now says it sets where the Creator is and when they reply, not post times. Life details show only when post ideas come from the Creator's life, and the old audience mix appears only while it differs from the defaults.
+
+## 0.2.58 — 2026-09-25
+
+- Settings are easier to find: Stories & events has a new Storylines page with one "Start things by themselves" card for events and storylines, the storyline rules, and Shared ideas; Posting has a new "What gets posted" group with post ideas and free teaser posts.
+- Settings that have no effect right now stay visible and say why, for example "Only for automatic posting", instead of disappearing. Rarely needed storyline settings sit under Advanced.
+
+## 0.2.57 — 2026-09-25
+
+- Clearer names in Settings: arcs, plans, and projects are now called storylines, occasions are events, and the post planner is "Post ideas come from". Several help texts were corrected, among them the event automation text, which wrongly said it also starts storylines.
+
+## 0.2.56 — 2026-09-25
+
+- A Creator's limits and saved notes no longer drop out of post and message prompts after a week of Beats posts; only the newest few post notes stay active.
+- Beats no longer rejects correct short names such as Mia or Kai, or people an arc chapter or a callback names, so fewer posts are rewritten.
+- Posts that answer a promise or a campaign step keep it when they are retried or rewritten, and prepared posts are only rewritten when the character card or schedule really changed.
+- Several moments saved from one chat without a message id are all kept, and Canon anchors you edited are not replaced by a background read.
+- Smaller Beats fixes: the heat floor matches the card, a named person is never told to be alone, an arc teaser gets no second subject, and a locked post's moment is never a callback in a public post.
+
+## 0.2.55 — 2026-09-25
+
+- Beats is now the default post planner. Ordinary posts are built from each Creator's own card, day, and history instead of letting the model choose the subject. Classic stays available under Prompts.
+
+## 0.2.54 — 2026-09-25
+
+- Hinted and Secret Creators without an avatar or banner get their artwork drawn again. The automatic backfill failed for them every minute with a "creatorDetails" error in the log.
+
+## 0.2.53 — 2026-09-25
+
+- Each Creator's Continuity tab now lists their recent signals: everything around them in the last two weeks from every source (posts, notes, messages, promises, their schedule, platform events, and other Creators' posts) in one place. Private messages show only what kind of thing happened.
+
+## 0.2.52 — 2026-09-25
+
+- Posts prepared ahead of time are written again when the Creator's character card, Conversation Schedule, disclosure, or stage voice changes before they go out, instead of publishing what was true when they were prepared.
+
+## 0.2.51 — 2026-09-25
+
+- Each Creator's Continuity tab now shows what the Beats planner read from their card: people, places, work, things, habits, running jokes, their typical day, and their heat range. You can correct it, and your version is used until the card changes; Read card again starts over.
+
+## 0.2.50 — 2026-09-25
+
+- With Beats on, about one post in three may refer back to something real: an earlier post, an earlier set, a moment saved from a chat, or a request the Creator delivered. Slurp passes the fact itself, never an old caption, and Deep details show it.
+
+## 0.2.49 — 2026-09-25
+
+- With Beats on, each post plans how far it goes: most posts go as far as the Creator's explicit-level dial allows, some are softer, and none go below what the character's card is like. Caption and picture use the same level, and Deep details show it.
+
+## 0.2.48 — 2026-09-25
+
+- With Beats on, a Creator's schedule decides where they are: moments at the place or work they are at right now come first, and a moment about somewhere else is posted as a plan, a memory, or a wish.
+- A post due while the Creator sleeps or drives is written as if posted just before, and never mentions being awake or on the road. Gym, set, class, and similar blocks stay good post material.
+- On an arc's big day, such as moving day, the arc chapter decides what the Creator does, not the usual weekly schedule.
+
+## 0.2.47 — 2026-09-25
+
+- Slurp can now take a moment saved from an Engine chat and keep it as a private note for that character's Creator pages. The button in chats comes with a later Engine update.
+
+## 0.2.46 — 2026-09-25
+
+- Life-event arcs such as moving house, a new job, or a breakup now happen at most once per Creator when Slurp starts arcs by itself.
+- With Beats on, a post that continues an arc is about the arc's current chapter, instead of an unrelated moment beside it.
+
+## 0.2.45 — 2026-09-25
+
+- New with Beats: Shared ideas (off by default). Once a day Slurp collects a few seasonal and platform moments, and once a week typical moments per topic tag. Beats fill them in with each Creator's own places and work, and each idea is used by at most two Creators a day.
+- New with Shared ideas: Slurp-wide events (off by default). The daily idea call may start one short themed event for all Creators; it shows under Platform events and ends by itself.
+
+## 0.2.44 — 2026-09-25
+
+- With Beats on, each post knows where the Creator's day stands when it goes out and what they did just before, from their Conversation Schedule or, without one, from a typical day read once from their card.
+- Beats reads each card one more time after this update, to add that typical day.
+
+## 0.2.43 — 2026-09-25
+
+- With Beats on, what a published post was about becomes a note Slurp remembers for a week, so the next post can follow on from it without copying its caption.
+- With Beats on, no earlier caption is quoted to the writer any more; recent posts appear only as subjects.
+
+## 0.2.42 — 2026-09-25
+
+- New experimental post planner in Prompts: Beats. It picks what an ordinary post is about from the Creator's own card (a person, a place, their work, a running joke) instead of letting every Creator drift to the same subjects. Classic stays the default.
+- With Beats on, Slurp reads each Creator's card once in the background and reads it again only after the card changes. Until then, and whenever something goes wrong, posts use the classic planner.
+- Beats vary the kind of moment (a win, a showcase, a moment with someone, an opinion, a small mishap, and more) per Creator and across the whole feed, so no single kind takes over.
+- Beats tell the writer who is there, where, and when, and that it must not invent other people, past events, or life changes. If a post does anyway, it gets one rewrite; Deep details show the result.
+- Deep details now show the planner, the beat with its anchor and cast, the claim check, the picture's shot, and the subject a kept promise delivers.
+
+## 0.2.41 — 2026-09-25
+
+- Casual posts are no longer told to be dull; they share one thing from the Creator's day in their own way.
+- Camera choices describe framing instead of equipment, so pictures stop showing a phone unless it is a mirror shot.
+- The label you type on a fulfilled, teased, or delayed request now tells the promised post what to deliver.
+- Posts no longer see their own older captions word for word: only the last post is quoted, older ones appear as subjects, and other Creators' recent subjects are listed so the feed stops repeating one topic.
+- Pictures now vary their angle and crop with composition tags image models know (upper body, cowboy shot, from side, and more), chosen to fit who could have taken the shot.
+- The post prompt's timing, repetition, and scene rules are shorter, and the last texts that put a phone into scenes are gone.
+
+## 0.2.40 — 2026-09-25
+
+- Retained Moments use bounded Story reads and follow feed search and pagination rules.
+
+## 0.2.39 — 2026-09-25
+
+- Moments now remain available for the configured retention period even when newer feed posts fill the first page.
+- Follow-ups no longer retry forever when a Creator has no known return time.
+
+## 0.2.38 — 2026-09-24
+
+- Generated audience names now draw from one merged, much larger word bank (184,512 combinations, up from ~18,800) instead of a single fixed set of moody handles.
+- Generated names are CamelCase with no digits, spaces, or underscores (for example `MothHour` instead of `moth_hour_77`), so they read as a single word and two people never blur together in a dense list.
+
+## 0.2.37 — 2026-09-24
+
+- NanoGPT, xAI, and connections recognised only by their base URL now receive avatar reference images again.
+- Persona Creators can set Messages & Pricing again; the tab now uses the same viewer persona as the rest of Slurp.
+- Post cards, the picture viewer, and the redraw box show the exact prompt the picture was drawn from. A prompt you edit or keep in the redraw box is sent as written, not rewritten again.
+- Multi-picture posts plan every picture as its own complete scene, so a photo dump, a shoot, or a day out each gets pictures that make sense on their own.
+
+## 0.2.36 — 2026-09-24
+
+- Deep details opens as a flowchart of the whole generation: each step shows what happens, why, which connection and model ran it, and the exact text that went in and came out. A Canvas view shows the same diagram to drag and zoom in every direction.
+- Image runs now also record the prompt-rewrite model and its full chat, the fallback image connection, and which connection actually drew the picture.
+
+## 0.2.35 — 2026-09-24
+
+- Deep details shows each post as numbered steps. Every image run records its settings, style profile, prompt rewrite, final prompt, and provider attempts in order.
+- The Connections panel includes the AI writing connection used for replies, messages, and audience activity.
+
+## 0.2.34 — 2026-09-23
+
+- Manage text and image connections in one place. Missing saved connections stay visible until you choose a replacement, and connection load errors can be retried.
+- Image briefs now follow the Creator's production style, and future automatic posts survive Engine restarts and source snapshot changes.
+- Prompt Studio describes its output clearly, image appearance settings apply consistently, and valid model responses can include extra fields.
+
+## 0.2.29 — 2026-09-23
+
+- Scheduled timeline refresh uses the saved daily setting again.
+- Delayed chat replies finish during a cool-off, and strict model output supports comment threads and invited posts.
+- Pulse shows failed first posts and audience failure details. Arc edits keep imported story fields.
+
+## 0.2.28 — 2026-09-23
+
+- Creator settings now have a status overview and a mobile section picker.
+- Profile edits use the modal's shared save bar, and each Creator settings view has one scroll area.
+
+## 0.2.27 — 2026-09-23
+
+- Creator settings now keep profile drafts when you change sections and confirm before discarding them.
+- Creator settings are grouped by task, and the Creator roster shows attention reasons and bulk-change previews.
+
+## 0.2.26 — 2026-09-23
+
+- Image prompts preserve each Creator's appearance and follow the selected image guidance.
+- Choose an image style for each Creator, or let them use the global style.
+- Settings sections now use the shorter names Content and World.
+- Posts, messages, audience activity, story events, and image generation use clearer state and feedback handling.
+- Locked posts use each Creator's configured level, and occasions and story events reach posts and chats.
+- Owned posts are not sold again, audience activity reports results, and manual occasions can be started.
+- Callback posts preserve their shoot context, picture sets vary poses, and follow-ups handle reasoning models.
+
+## 0.2.25 — 2026-09-22
+
+- Every generated picture keeps the Creator's appearance, planned action, expression, and mood even when image-prompt interpretation is unavailable.
+- Creator personality and stage voice now shape visual presentation without being copied as private prompt text.
+
+## 0.2.24 — 2026-09-22
+
+- Payments: recovery no longer refunds a tip or unlock that is still going through, a refund is never marked paid again, and cancelling a commission with the wallet off no longer creates coins. A persona can no longer tip its own Creator.
+- Promised follow-ups arrive with default settings, stop after a second failure, and read "1.5 hours" and "2 days" correctly.
+- Locked content is hidden in every reply. A second unlock no longer triggers a second reaction. "Let them answer" works for a Creator you play.
+- Desktop chats no longer leak drafts, pending messages, tools or older pages into the next conversation. Editing a failed message sends the new text.
+- Enter no longer sends during input-method composition, in-chat search scrolls to its match, and a pending commission cancellation can be retried.
+
+## 0.2.23 — 2026-09-22
+
+- Restore after deleting a post now works. The feed reloaded on a timer and dropped the deleted post, taking the Restore row with it mid-countdown.
+- Share asks which chat to send a post to, with a search and a New chat button, instead of sending it to the Creator who wrote it. The chat card names the author; a locked post travels as a teaser.
+- "Download post card" includes the post image again when started from the opened post.
+- Reporting offers a real social network's range of reasons plus Slurp's own, and the menu item has its icon.
+- "Request a reply" now works on both sides of a chat: playing a Creator, ask the fan to write back.
+- Avatar references and source appearance are used by default, so a Creator looks like herself. Both stay switches in Backstage.
+
+## 0.2.22 — 2026-09-22
+
+- Everyday Slurp loading now requests feed data only on feed surfaces and defers profile-source and model-connection data until profile work starts.
+- Shell notification and message badges use lightweight count routes instead of loading full notification and inbox payloads.
+- Feed seen, follow, subscription, and unlock actions update visible cached state immediately and reconcile in the background.
+
+## 0.2.21 — 2026-09-22
+
+- Wardrobe import can scan whole selected lorebooks or only individually selected enabled entries, while retaining the same evidence-backed review before anything is saved.
+- Prompt Studio shows the exact final positive prompt sent to the image provider after appearance, selected clothing, camera, visual policy, style, and interpretation are applied.
+- Successful immediate and scheduled automatic images record that exact provider prompt only in the Creator-private Deep Details record, never public post metadata.
+- Scheduled posts now pass the same typed visual brief into image interpretation as immediate posts.
+
+## 0.2.20 — 2026-09-22
+
+- Creators now own up to 64 complete wardrobe looks with model summaries, exact image descriptions, tags, public/locked suitability, provenance, and timestamps.
+- AI imports from the linked character, selected lorebooks, pasted text, or the legacy wardrobe note stay in an editable evidence-backed review until confirmed.
+- Automatic image posts return a scene plan with wardrobe ID, setting, action, expression, and visual direction. Slurp validates the choice, falls back to the least-recent compatible look, and then expands its exact clothing.
+- Prompt Studio and Deep Details show the scene, fallback, typed visual brief, and assembled image brief. Expert overrides can rewrite or disable every prompt block.
+- Random variations no longer invent loneliness, interruption, sleeplessness, or a low-income mood. Real events and character traits still affect tone.
+
+## 0.2.19 — 2026-09-22
+
+- A Creator has her own appearance, usual wardrobe, and regular places, edited on her profile.
+- The appearance is sent with every picture. It used to be borrowed from the linked character card, which needed the Creator to be linked, the card to have an Appearance field, and "include descriptions" to be on. With any of those missing the image model got a scene with nobody in it and invented somebody new each post.
+- An appearance left blank is seeded from the linked card when the Creator is created.
+- Wardrobe and places reach both the caption and the picture, so clothes are hers and "somewhere other than where she usually posts" has something to be other than.
+
+## 0.2.18 — 2026-09-22
+
+- How far a Creator's pictures go is now a setting, globally and per Creator. Locked posts deliver that level, public posts sit one step below, and housekeeping posts stay non-sexual. Every locked post used to be briefed as non-sexual.
+- The image prompt no longer asks for a bad picture. "Badly framed, poorly lit, dull" meant candid rather than staged, but an image model reads it as an instruction and returns exactly that.
+- No point-of-view framing, and nobody in the picture the scene did not pay for.
+- Camera mix rebalanced: arm's-length self-shots drop from about two thirds of posts to about 45%.
+- Posts with no picture drop from about one in six to about one in twenty-five.
+- The image provider no longer receives personality traits or an "Appearance:" label in the prompt.
+- Removed the framing axis, drawn on every post and discarded before the prompt.
+
+## 0.2.17 — 2026-09-22
+
+- The opened post viewer now shows every picture of a multi-image post, with arrows, a counter, and mini previews. It used to show the first one only.
+- Feed cards mark multi-image posts with position dots beside the existing arrows.
+- Prompt Studio: every block can be switched off, not only the ones marked optional.
+- Prompt Studio: required blocks can be rewritten. The override starts from the text the preview Creator actually gets, and says plainly that a fixed text replaces what Slurp would have composed per Creator. Context blocks stay read-only because their text is the runtime data itself.
+- The prompt preview no longer discards a finished result when the settings query refetches in the background, and a run it cannot perform now says why instead of doing nothing.
+- Prompt Studio on a phone: the preview panel is reachable without scrolling past every recipe, recipe rows no longer wrap four lines of block chips, and the preset picker fits the width.
+
+## 0.2.16 — 2026-09-21
+
+- Restoring a deleted post no longer waits on a full feed refetch, so the card comes back at once instead of sitting on its countdown.
+- The server now keeps a deleted post for twice the undo window it offers, so a Restore near the end of the countdown no longer fails.
+- The share card is drawn in the browser instead of on the server. The server render needed fonts installed on the host, which most installs do not have, so cards came out as the bare post image with no name, title, or caption.
+- Share post no longer does nothing when no viewer persona is active: it falls back to downloading the share card.
+- The post viewer's side card no longer draws the picture the viewer already shows.
+
+## 0.2.15 — 2026-09-21
+
+- Exposed restore pending state through the Home screen model so restore feedback renders immediately.
+
+## 0.2.14 — 2026-09-21
+
+- Restored posts now return to the visible feed as soon as the restore response succeeds.
+
+## 0.2.13 — 2026-09-21
+
+- Restore now gives immediate progress feedback.
+- The restore countdown pauses while the server restores the post.
+
+## 0.2.12 — 2026-09-21
+
+- Fixed the deleted-post panel crash caused by missing restore state.
+- Wired post sharing to the active viewer persona.
+- Restored the report action on feed posts.
+
+## 0.2.11 — 2026-09-21
+
+- Deleted posts can be restored again, with pending and failure feedback.
+- Restore now pulls the deleted post's sparkles into the restore action.
+
+## 0.2.10 — 2026-09-21
+
+- Normal, locked, profile, media, Story, and reply surfaces now use consistent three-dot action menus.
+- Posts now support direct sharing to Slurp messages and durable post or reply reports with snapshots.
+- Slurp now uses one canonical post card renderer.
+
+## 0.2.9 — 2026-09-21
+
+- Post image prompts now use a typed visual brief and preserve the planned scene through image interpretation.
+- Deleted posts now leave a sparkling restore slot for 60 seconds before permanent cleanup.
+
+## 0.2.8 — 2026-09-21
+
+- Feed loading has a softer status animation, older drops show a progress state, and deleted posts leave the timeline with a short gentle exit.
+
+## 0.2.7 — 2026-09-21
+
+- The feed loads its first page first, older posts load on demand, and post edits and deletes update the visible feed without a full reload.
+
+## 0.2.6 — 2026-09-21
+
+- Creator posts now use the Engine's live Capability API generation integrations for text providers, image generation, fallback handling, and staged media writes.
+
+## 0.2.5 — 2026-09-21
+
+- Locked posts no longer tease what the reader already owns, and housekeeping posts stay public. The composer offers only the purposes that fit the post's audience.
+
+## 0.2.4 — 2026-09-21
+
+- Who holds the camera now follows what the post is for: a planned shoot is rarely a selfie, an ordinary day usually is.
+- Two Creators who shoot the same way no longer have identical effort on the same day.
+- Conversations start between strangers instead of as friends.
+- Creators answer a new message within the hour instead of after two, so the inbox no longer needs Reply now.
+
+## 0.2.3 — 2026-09-21
+
+- Every post's menu has Deep details: the plan, the draws, the full prompt, the model's raw answer, the picture brief, and every tag behind that post.
+
+## 0.2.2 — 2026-09-21
+
+- Removed viewer access. Every persona now sees every Creator; the per-Creator hide list is no longer used.
+
+## 0.2.1 — 2026-09-21
+
+- Posts no longer read private notes from direct messages.
+- Teasers, callbacks, and ordinary days stay short; only behind-the-scenes posts run long.
+- Stories can now be thank-yous and requests too, and a callback with nothing to continue becomes an ordinary post.
+- Prompt Studio shows every block in full and lets you edit it in place, with live text for the preview Creator and the compiled prompt kept current.
+
+## 0.2.0 — 2026-09-21
+
+- Creators now plan posts: teasers, photo sets of up to three images, Stories, cropped previews, reused pictures, text on purpose, and quiet slots. Classic mode became a prompt preset.
+- Shoots keep a set consistent, and a set can open a teaser-and-callback campaign.
+- Each Creator has a Posting strategy; the composer picks a one-off purpose and delivery.
+- Fan requests can be answered from the conversation, and the planner keeps promises.
+- Creators remember what they said and did; fan-private details never leak. Review it in the new Continuity tab or the Backstage queue.
+- Prompt Studio was redesigned, and Pulse shows background work.
 
 ## 0.1.3 — 2026-09-20
 

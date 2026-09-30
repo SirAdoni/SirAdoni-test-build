@@ -1573,6 +1573,7 @@ function ConnectionFolderRow({
                 setRenaming(false);
               }
               if (e.key === "Escape") {
+                e.preventDefault();
                 setRenaming(false);
                 setRenameValue(folder.name);
               }

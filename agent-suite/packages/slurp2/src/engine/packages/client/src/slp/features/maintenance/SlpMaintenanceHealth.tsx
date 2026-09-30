@@ -1,4 +1,5 @@
-import { AlertCircle, Database, HardDrive, Loader2, MessageCircle, Sparkles, UsersRound } from "lucide-react";
+import { AlertCircle, Database, HardDrive, Loader2, MessageCircle, UsersRound } from "lucide-react";
+import { SlpSparkleGlyph } from "../../base/chrome/SlpGlyphs";
 import { useTranslation } from "react-i18next";
 import type { SlurpAutopurgePreview, SlurpMaintenanceSummary } from "./slp-maintenance-hooks";
 import { formatBytes } from "../../modules/settings/slp-backstage-format";
@@ -51,7 +52,7 @@ export function SlurpMaintenanceHealth({
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--noodle-accent)]">
+          <p className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--noodle-accent-foreground)]">
             {t("ui.slurp.settings.maintenance.health.eyebrow", { defaultValue: "Maintenance health" })}
           </p>
           <h2 id="slurp-maintenance-health-title" className="mt-1 text-lg font-black text-balance">
@@ -116,7 +117,11 @@ export function SlurpMaintenanceHealth({
         </div>
         {preview && (
           <div className="rounded-lg bg-[color-mix(in_srgb,var(--noodle-accent)_8%,var(--slurp-canvas))] p-3 text-xs leading-5 ring-1 ring-inset ring-[var(--noodle-accent)]/25">
-            <Sparkles size={13} className="inline align-[-2px] text-[var(--noodle-accent)]" aria-hidden="true" />{" "}
+            <SlpSparkleGlyph
+              size={13}
+              className="inline align-[-2px] text-[var(--noodle-accent-foreground)]"
+              aria-hidden="true"
+            />{" "}
             {t("ui.slurp.settings.maintenance.purgePreview", {
               defaultValue: "This run removes {{posts}} posts and {{files}} media files, about {{size}}.",
               posts: preview.postsToDelete,

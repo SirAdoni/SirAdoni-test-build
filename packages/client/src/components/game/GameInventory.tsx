@@ -17,19 +17,25 @@ import {
   ChevronLeft,
   ChevronRight,
   Gift,
+  Link2,
   Minus,
   Package,
   Plus,
   Scissors,
   Search,
+  Shirt,
   Wand2,
   X,
 } from "lucide-react";
 import {
   gameInventoryBagKey,
+  gameInventoryBearerStatus,
   gameInventoryItemId,
   gameInventoryNameKey,
   gameInventoryStackLabel,
+  normalizeGameInventoryStacks,
+  type GameInventoryBearerStatus,
+  type GameInventoryWear,
   type RulesetDefinition,
   type RulesetItemBook,
   type RulesetItemBookEntry,
@@ -37,7 +43,7 @@ import {
 import { cn } from "../../lib/utils";
 import { defaultInventorySplitSize, parseInventoryAmount, parseInventoryCount } from "../../lib/game-inventory-amount";
 import { useTranslation as useUiTranslation } from "react-i18next";
-import { RulesetItemPicker, rulesetItemStatsLine } from "./RulesetItemPicker";
+import { RulesetItemPicker, rulesetItemEffectLines, rulesetItemStatsLine } from "./RulesetItemPicker";
 
 /** One stack. Two stacks may hold the same item, so a stack is told apart by its id, never its name. */
 export interface InventoryItem {
@@ -51,6 +57,14 @@ export interface InventoryItem {
   quantity: number;
   /** The party member who carries it. Absent for the player's own character. */
   holder?: string;
+  /** Worn by whoever carries it; a worn stack is one item. */
+  equipped?: true;
+  /** Bound to whoever carries it; a bound stack is one item. */
+  bound?: true;
+  /** What a weapon with a clip has loaded, as a fight left it. Absent reads as full. */
+  loaded?: number;
+  /** What an item that holds charges has left, as a fight left it. Absent reads as full. */
+  charges?: number;
 }
 
 /** One party member's bag: `holder` as a stack has it (absent for the player), and the name shown. */
@@ -71,7 +85,7 @@ interface GameInventoryProps {
   onClose: () => void;
   /** Called when the user adds an item by name, into the open tab's bag (the player's from the shared
    *  view): onto that bag's stack of the item when it has one. Resolves to the stack it went onto. */
-  onAddItem?: (name: string, holder?: string) => Promise<string | null> | string | null;
+  onAddItem?: (name: string, holder?: string, among?: readonly string[]) => Promise<string | null> | string | null;
   /** The items the game's ruleset lists (`useRulesetItemBook`), with the ruleset they are read
    *  against. With both, a stack of one shows what it is, and the Add row offers them in a picker;
    *  a ruleset that takes only its own items (`freeform: "refuse"`) offers only the picker. */
@@ -79,7 +93,18 @@ interface GameInventoryProps {
   rulesetDefinition?: RulesetDefinition;
   /** Called with the items picked from the ruleset, one of each, into the open tab's bag. Resolves to
    *  the stack the last one went onto. */
-  onAddRulesetItems?: (picks: RulesetItemBookEntry[], holder?: string) => Promise<string | null> | string | null;
+  onAddRulesetItems?: (
+    picks: RulesetItemBookEntry[],
+    holder?: string,
+    among?: readonly string[],
+  ) => Promise<string | null> | string | null;
+  /** Who an item added in the shared view may go to, in the order they are asked (the player's bag is
+   *  ""). In a ruleset that says what everyone carries, the server picks among them; otherwise an item
+   *  added there goes to the player. */
+  placeAmong?: readonly string[];
+  /** Called when the user puts an item on or takes it off, binds or unbinds it. Resolves to the stack
+   *  it is in afterwards (one item of a larger stack is taken into its own). */
+  onWearItem?: (stackId: string, wear: GameInventoryWear) => Promise<string | null> | string | null;
   /** Called when the user wants to use an item during input phase */
   onUseItem?: (itemName: string) => void;
   /** Called when the user gives a stack a nickname, or its own name back. Resolves to the stack's id. */
@@ -119,6 +144,8 @@ export function GameInventory({
   itemBook,
   rulesetDefinition,
   onAddRulesetItems,
+  placeAmong,
+  onWearItem,
   onUseItem,
   onRenameItem,
   onSetItemQuantity,
@@ -285,13 +312,15 @@ export function GameInventory({
   );
 
   const activeHolder = activeBag?.holder;
+  // From the shared view, an addition is put wherever it can be carried; from a tab, into that bag.
+  const addAmong = activeView.kind === "all" && itemBook?.bearer ? placeAmong : undefined;
   const handleAdd = useCallback(async () => {
     const name = newItemName.trim().replace(/\s+/g, " ");
     if (!onAddItem || !name) return;
 
     setAddPending(true);
     try {
-      const addedStackId = await onAddItem(name, activeHolder);
+      const addedStackId = await onAddItem(name, activeHolder, addAmong);
       if (addedStackId) {
         setNewItemName("");
         setSelectedItem(addedStackId);
@@ -299,21 +328,43 @@ export function GameInventory({
     } finally {
       setAddPending(false);
     }
-  }, [activeHolder, newItemName, onAddItem]);
+  }, [activeHolder, addAmong, newItemName, onAddItem]);
 
   const handleAddRulesetItems = useCallback(
     async (picks: RulesetItemBookEntry[]) => {
       if (!onAddRulesetItems || picks.length === 0) return;
       setAddPending(true);
       try {
-        const addedStackId = await onAddRulesetItems(picks, activeHolder);
+        const addedStackId = await onAddRulesetItems(picks, activeHolder, addAmong);
         if (addedStackId) setSelectedItem(addedStackId);
       } finally {
         setAddPending(false);
       }
     },
-    [activeHolder, onAddRulesetItems],
+    [activeHolder, addAmong, onAddRulesetItems],
   );
+  const [wearPending, setWearPending] = useState(false);
+  const handleWear = useCallback(
+    async (item: InventoryItem, wear: GameInventoryWear) => {
+      if (!onWearItem) return;
+      setWearPending(true);
+      try {
+        const wornId = await onWearItem(item.id, wear);
+        if (wornId) setSelectedItem(wornId);
+      } finally {
+        setWearPending(false);
+      }
+    },
+    [onWearItem],
+  );
+  // What the bag in view carries and wears against what its bearer can: the player's own in the
+  // shared view when there are no other bags.
+  const bindingLabel = rulesetDefinition?.items?.binding?.label;
+  const statusOf = (holder: string | undefined) =>
+    itemBook && (itemBook.bearer || itemBook.slots)
+      ? gameInventoryBearerStatus(normalizeGameInventoryStacks(items), holder, itemBook)
+      : undefined;
+  const bagStatus = activeBag ? statusOf(activeBag.holder) : !showBags ? statusOf(undefined) : undefined;
   // The picker is offered only with something to offer; a ruleset that takes only its own items has
   // no typed-in name to add.
   const picksItems = Boolean(itemBook && rulesetDefinition && onAddRulesetItems);
@@ -528,6 +579,33 @@ export function GameInventory({
             </div>
           )}
 
+          {/* What the bag in view carries and wears against what its bearer can; in the shared view with
+              several bags, each bag's load. */}
+          {bagStatus && <BearerStatusLine status={bagStatus} bindingLabel={bindingLabel} />}
+          {!bagStatus && activeView.kind === "all" && showBags && itemBook?.bearer && (
+            <div className="flex flex-wrap gap-1 border-b border-white/8 px-3 py-1.5">
+              {bags.map((bag) => {
+                const status = statusOf(bag.holder);
+                if (!status || status.encumberedAbove === undefined) return null;
+                return (
+                  <span
+                    key={gameInventoryBagKey(bag.holder) || "player"}
+                    className={cn(
+                      "rounded px-1.5 py-0.5 text-[0.6rem] tabular-nums",
+                      status.encumbered ? "bg-amber-500/15 text-amber-300" : "bg-white/8 text-white/70",
+                    )}
+                  >
+                    {localizeUi("ui.game.gameinventory.bagLoad", {
+                      who: bag.name,
+                      load: roundLoad(status.load),
+                      max: roundLoad(status.encumberedAbove),
+                    })}
+                  </span>
+                );
+              })}
+            </div>
+          )}
+
           {/* Item list */}
           <div className="flex-1 overflow-y-auto p-3">
             <div className="mb-3 flex items-center gap-2">
@@ -596,6 +674,7 @@ export function GameInventory({
                         item={item}
                         globalIndex={globalIndex}
                         holderName={showBags && activeView.kind === "all" && item ? bagName(item.holder) : undefined}
+                        bindingLabel={bindingLabel}
                         selected={Boolean(item && selectedItem === item.id)}
                         reorderEnabled={Boolean(onMergeItems || onGiveItem || reorderEnabled)}
                         onClick={() => item && handleItemClick(item)}
@@ -647,7 +726,14 @@ export function GameInventory({
                 )}
               </div>
             )}
-            {selectedRulesetItem && <RulesetItemDetails details={selectedRulesetItem} />}
+            {selectedRulesetItem && (
+              <RulesetItemDetails
+                details={selectedRulesetItem}
+                bound={selectedInventoryItem?.bound === true}
+                charges={selectedInventoryItem?.charges}
+                loaded={selectedInventoryItem?.loaded}
+              />
+            )}
             {onRenameItem && selectedInventoryItem && (
               <div className="mb-2.5 flex gap-1.5">
                 <input
@@ -900,6 +986,46 @@ export function GameInventory({
                   {localizeUi("ui.game.gameinventory.give")}
                 </button>
               )}
+              {selectedInventoryItem && selectedRulesetItem?.slots && onWearItem && (
+                <button
+                  type="button"
+                  aria-pressed={selectedInventoryItem.equipped === true}
+                  disabled={wearPending}
+                  onClick={() =>
+                    void handleWear(selectedInventoryItem, selectedInventoryItem.equipped ? "unequip" : "equip")
+                  }
+                  className={cn(
+                    "flex h-7 shrink-0 items-center justify-center gap-1 rounded border px-2 text-[0.7rem] transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+                    selectedInventoryItem.equipped
+                      ? "border-amber-500/20 bg-amber-500/10 font-semibold text-amber-300 hover:bg-amber-500/15"
+                      : "border-white/8 bg-white/[0.03] text-white/70 hover:bg-white/[0.06]",
+                  )}
+                  title={localizeUi("ui.game.gameinventory.equippedHint")}
+                >
+                  <Shirt size={12} />
+                  {localizeUi("ui.game.gameinventory.equipped")}
+                </button>
+              )}
+              {selectedInventoryItem && selectedRulesetItem?.binds && onWearItem && (
+                <button
+                  type="button"
+                  aria-pressed={selectedInventoryItem.bound === true}
+                  disabled={wearPending}
+                  onClick={() =>
+                    void handleWear(selectedInventoryItem, selectedInventoryItem.bound ? "unbind" : "bind")
+                  }
+                  className={cn(
+                    "flex h-7 shrink-0 items-center justify-center gap-1 rounded border px-2 text-[0.7rem] transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+                    selectedInventoryItem.bound
+                      ? "border-amber-500/20 bg-amber-500/10 font-semibold text-amber-300 hover:bg-amber-500/15"
+                      : "border-white/8 bg-white/[0.03] text-white/70 hover:bg-white/[0.06]",
+                  )}
+                  title={localizeUi("ui.game.gameinventory.boundHint")}
+                >
+                  <Link2 size={12} />
+                  {bindingLabel ?? localizeUi("ui.game.gameinventory.bound")}
+                </button>
+              )}
               {selectedInventoryItem && canInteract && onUseItem && (
                 <button
                   onClick={() => handleUse(selectedInventoryItem)}
@@ -972,11 +1098,68 @@ export function GameInventory({
   );
 }
 
+/** A load as it is shown: at most two decimals, for weights like a quarter of a pound. */
+function roundLoad(value: number): string {
+  return String(Math.round(value * 100) / 100);
+}
+
+/** One bag's load against what its bearer carries, its bound items and the slots its worn items take. */
+function BearerStatusLine({ status, bindingLabel }: { status: GameInventoryBearerStatus; bindingLabel?: string }) {
+  const { t: localizeUi } = useUiTranslation();
+  const chip = "rounded bg-white/8 px-1.5 py-0.5 text-[0.6rem] tabular-nums text-white/70";
+  return (
+    <div className="flex flex-wrap gap-1 border-b border-white/8 px-3 py-1.5">
+      {status.encumberedAbove !== undefined && (
+        <span className={cn(chip, status.encumbered && "bg-amber-500/15 text-amber-300")}>
+          {status.limit !== undefined
+            ? localizeUi("ui.game.gameinventory.loadWithLimit", {
+                load: roundLoad(status.load),
+                max: roundLoad(status.encumberedAbove),
+                limit: roundLoad(status.limit),
+              })
+            : localizeUi("ui.game.gameinventory.load", {
+                load: roundLoad(status.load),
+                max: roundLoad(status.encumberedAbove),
+              })}
+          {status.encumbered && ` · ${localizeUi("ui.game.gameinventory.encumbered")}`}
+        </span>
+      )}
+      {status.bindingMax !== undefined && (
+        <span className={chip}>
+          {localizeUi("ui.game.gameinventory.slotUse", {
+            label: bindingLabel ?? localizeUi("ui.game.gameinventory.bound"),
+            used: status.bound,
+            count: status.bindingMax,
+          })}
+        </span>
+      )}
+      {status.slots.map((slot) => (
+        <span key={slot.id} className={chip}>
+          {localizeUi("ui.game.gameinventory.slotUse", { label: slot.label, used: slot.used, count: slot.count })}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 /** What a ruleset item is: its category, rarity and tags, its stats, what it is, and how many one
- *  stack of it holds. */
-function RulesetItemDetails({ details }: { details: RulesetItemBookEntry }) {
+ *  stack of it holds. One that binds says who may bind it, and once bound, whether it is cursed. */
+function RulesetItemDetails({
+  details,
+  bound,
+  charges,
+  loaded,
+}: {
+  details: RulesetItemBookEntry;
+  bound: boolean;
+  charges?: number;
+  loaded?: number;
+}) {
   const { t: localizeUi } = useUiTranslation();
   const { facts } = details;
+  const chargesMax = facts.use?.charges?.max;
+  const clip = facts.attack?.clip;
+  const binds = details.entry.item?.binds;
   const kind = [facts.category, facts.rarity, ...facts.tags].filter((word): word is string => !!word);
   const stats = rulesetItemStatsLine(facts);
   return (
@@ -989,10 +1172,49 @@ function RulesetItemDetails({ details }: { details: RulesetItemBookEntry }) {
         ))}
       </div>
       {stats && <div className="text-[0.65rem] leading-tight text-white/70">{stats}</div>}
+      {rulesetItemEffectLines(facts, localizeUi).map((line) => (
+        <div key={line} className="text-[0.65rem] leading-tight text-white/70">
+          {line}
+        </div>
+      ))}
+      {clip && (
+        <div className="text-[0.65rem] leading-tight text-white/70">
+          {localizeUi("ui.game.gameinventory.loaded", { now: Math.min(loaded ?? clip.max, clip.max), max: clip.max })}
+        </div>
+      )}
+      {chargesMax !== undefined && (
+        <div className="text-[0.65rem] leading-tight text-white/70">
+          {localizeUi("ui.game.gameinventory.chargesLeft", {
+            now: Math.min(charges ?? chargesMax, chargesMax),
+            max: chargesMax,
+          })}
+        </div>
+      )}
       {details.summary && <div className="text-[0.65rem] leading-tight text-white/55">{details.summary}</div>}
+      {details.invented && (
+        <div className="text-[0.65rem] leading-tight text-white/45">
+          <div>{localizeUi("ui.game.gameinventory.invented")}</div>
+          {details.invented.notes.length > 0 && (
+            <details className="mt-0.5">
+              <summary className="cursor-pointer">{localizeUi("ui.game.gameinventory.inventedChanges")}</summary>
+              <ul className="mt-0.5 space-y-0.5 pl-2">
+                {details.invented.notes.map((note) => (
+                  <li key={note}>{note}</li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
+      )}
       {details.stack !== undefined && (
         <div className="text-[0.65rem] leading-tight text-white/45">
           {localizeUi("ui.game.gameinventory.stackHolds", { max: details.stack })}
+        </div>
+      )}
+      {binds?.restriction && <div className="text-[0.65rem] leading-tight text-white/45">{binds.restriction}</div>}
+      {bound && binds?.cursed && (
+        <div className="text-[0.65rem] font-semibold leading-tight text-amber-300">
+          {localizeUi("ui.game.gameinventory.cursed")}
         </div>
       )}
     </div>
@@ -1043,14 +1265,31 @@ interface InventorySlotProps {
   globalIndex: number;
   /** Who carries the stack, shown in the shared view. */
   holderName?: string;
+  /** The ruleset's word for bound, said of a bound stack. */
+  bindingLabel?: string;
   selected: boolean;
   reorderEnabled: boolean;
   onClick: () => void;
 }
 
-function InventorySlot({ item, globalIndex, holderName, selected, reorderEnabled, onClick }: InventorySlotProps) {
+function InventorySlot({
+  item,
+  globalIndex,
+  holderName,
+  bindingLabel,
+  selected,
+  reorderEnabled,
+  onClick,
+}: InventorySlotProps) {
   const { t: localizeUi } = useUiTranslation();
   const label = item ? gameInventoryStackLabel(item) : "";
+  // A worn or bound stack says so, after its name.
+  const marks = item
+    ? [
+        item.equipped ? localizeUi("ui.game.gameinventory.worn") : null,
+        item.bound ? (bindingLabel ?? localizeUi("ui.game.gameinventory.bound")) : null,
+      ].filter((mark): mark is string => Boolean(mark))
+    : [];
   const enabled = reorderEnabled && Boolean(item);
   const slotData = { id: item?.id };
   const {
@@ -1085,6 +1324,7 @@ function InventorySlot({ item, globalIndex, holderName, selected, reorderEnabled
               item.quantity > 1
                 ? localizeUi("ui.game.inventoryslot.value1Value2", { value1: label, value2: item.quantity })
                 : label,
+              ...marks,
               holderName ? localizeUi("ui.game.gameinventory.carriedBy", { value1: holderName }) : null,
             ]
               .filter(Boolean)
@@ -1097,6 +1337,7 @@ function InventorySlot({ item, globalIndex, holderName, selected, reorderEnabled
               item.quantity > 1
                 ? localizeUi("ui.game.inventoryslot.value1XValue2", { value1: label, value2: item.quantity })
                 : label,
+              ...marks,
               holderName ? localizeUi("ui.game.gameinventory.carriedBy", { value1: holderName }) : null,
             ]
               .filter(Boolean)
@@ -1119,6 +1360,12 @@ function InventorySlot({ item, globalIndex, holderName, selected, reorderEnabled
         isOver && !isDragging && "border-amber-400/70 ring-2 ring-amber-400/60",
       )}
     >
+      {item && (item.equipped || item.bound) && (
+        <span aria-hidden="true" className="absolute right-0.5 top-0.5 flex gap-0.5 text-amber-300/90">
+          {item.equipped && <Shirt size={9} />}
+          {item.bound && <Link2 size={9} />}
+        </span>
+      )}
       {item && holderName && (
         <span
           aria-hidden="true"

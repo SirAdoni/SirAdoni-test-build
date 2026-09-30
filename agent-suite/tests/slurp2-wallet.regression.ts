@@ -7,7 +7,7 @@ const source = readFileSync(
   "utf8",
 );
 
-assert.match(source, /import \{[^}]*\bLock\b[^}]*\} from "lucide-react";/u);
-assert.match(source, /icon: Lock/u);
+assert.match(source, /import \{ SlpLockGlyph \} from "..\/..\/base\/chrome\/SlpGlyphs";/u);
+assert.match(source, /icon: SlpLockGlyph/u);
 
 console.log("slurp2 wallet regression passed");

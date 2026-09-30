@@ -11,10 +11,13 @@
  *     recipientId = creator.sourceKind === "persona" ? creator.sourceEntityId : creator.id
  *
  * The two balances want opposite properties. Spending money must be **scarce**, or choosing what
- * to unlock means nothing — the daily stipend floor is 60 coins and an unlock costs 3. Earnings
- * must be **large and growing**, or running a Creator never feels like it worked. One number
- * cannot do both. With a real audience the point becomes sharp: a few hundred subscribers at 12
- * coins a week would end every spending decision in the game.
+ * to unlock means nothing — the daily refill is 15 coins and an unlock costs 3. Earnings must be
+ * **large and growing**, or running a Creator never feels like it worked. One number cannot do both.
+ *
+ * So they are two layers (0.3.7). Earnings are platform money, shown as dollars: one real paying fan
+ * stands for `crowdWeight` people on the platform (the same weight the shown subscriber count uses),
+ * and Slurp keeps its fee. The wallet is coins. A payout converts at `crowdWeight` dollars per coin,
+ * so a real fan's payment is worth what it always was in coins, less the fee.
  *
  * So earnings are keyed by **creator account**, not by persona. That is also the only correct
  * answer for a character-backed Creator, which has no operating persona to credit at all.
@@ -25,6 +28,7 @@
  * Existing installs keep whatever income already reached their persona wallets. Nothing is
  * migrated, because that money is already spent or already counted.
  */
+import { slurpDayKey } from "./slp-wallet.js";
 
 export type SlurpEarningsEntryKind =
   | "unlock"
@@ -34,6 +38,8 @@ export type SlurpEarningsEntryKind =
   | "messageRequest"
   | "ppv"
   | "commission"
+  /** A brand paid for a sponsored post. See `slp-brand-deals.ts`. */
+  | "sponsor"
   /** Moved out to spending money. Negative, and it must not touch `lifetime`. */
   | "payout"
   /** A failed charge being undone. Negative. */
@@ -63,9 +69,24 @@ export type SlurpEarnings = {
   receipts: Record<string, SlurpEarningsReceipt>;
   /** UTC day `paidOutToday` belongs to. A different day resets it. */
   payoutOn: string | null;
-  /** Coins already withdrawn today, against the daily allowance. */
+  /** Coins already withdrawn today, against the daily allowance (coins, so a weight change keeps the cap). */
   paidOutToday: number;
+  /** Stored in platform dollars (0.3.7). A record without it holds the older coin amounts. */
+  platform?: true;
 };
+
+/** Slurp's cut of every fan payment, in percent, like the real platform's 20%. */
+export const SLURP_PLATFORM_FEE_PERCENT = 20;
+
+/**
+ * The crowd weight older records were converted at: a balance held in coins before 0.3.7 becomes
+ * dollars at the default weight, so it pays out the same coins it would have.
+ */
+export const SLURP_EARNINGS_LEGACY_SCALE = 5;
+
+/** A real fan payment as platform earnings: the crowd it stands for, less Slurp's fee. */
+export const slurpPlatformEarnings = (amount: number, crowdWeight: number): number =>
+  Math.floor((amount * crowdWeight * (100 - SLURP_PLATFORM_FEE_PERCENT)) / 100);
 
 /**
  * The daily withdrawal ceiling.
@@ -75,31 +96,44 @@ export type SlurpEarnings = {
  * choice. If a successful Creator could move their entire balance across, the fan economy would
  * end the moment the first audience arrived.
  *
- * The floor sits at the daily stipend, so withdrawing is never worse than not bothering, and the
- * ceiling is a few multiples of it. A big Creator meaningfully improves their spending power —
- * roughly four times — rather than escaping the economy.
+ * Counted in coins and shared by every Creator one persona runs, so a second page does not double
+ * it. The floor is the daily refill (15), so withdrawing is never worse than not bothering; the
+ * ceiling is four times that. A big Creator about doubles what a fan earns in a week, rather than
+ * escaping the economy (a viewer earns at most about 270 coins a week).
  */
-const PAYOUT_FLOOR = 60;
-const PAYOUT_CEILING = 260;
+const PAYOUT_FLOOR_COINS = 15;
+const PAYOUT_CEILING_COINS = 60;
 
-/** Lifetime earnings at which the allowance reaches its ceiling. */
-const PAYOUT_REFERENCE = 20_000;
+/** Lifetime earnings (dollars) at which the allowance reaches its ceiling. */
+const PAYOUT_REFERENCE = 80_000;
+
+/** Coins a payout of this many dollars brings. */
+export const slurpPayoutCoins = (dollars: number, crowdWeight: number): number =>
+  Math.floor(Math.max(0, dollars) / Math.max(1, crowdWeight));
 
 /**
- * How much this Creator may still withdraw today.
+ * How many dollars this Creator may still withdraw today: always whole coins' worth.
  *
  * Grows on a square-root curve, so early success is felt immediately and later success keeps
- * mattering without ever running away.
+ * mattering without ever running away. `othersToday` is what the persona's other Creators already
+ * withdrew today, in coins.
  */
-export function slurpPayoutAllowance(earnings: SlurpEarnings, at: Date): number {
+export function slurpPayoutAllowance(earnings: SlurpEarnings, at: Date, crowdWeight: number, othersToday = 0): number {
+  const weight = Math.max(1, crowdWeight);
   const lifetime = Number.isFinite(earnings.lifetime) ? Math.max(0, earnings.lifetime) : 0;
   const scale = Math.min(1, Math.sqrt(lifetime / PAYOUT_REFERENCE));
-  const daily = Math.round(PAYOUT_FLOOR + (PAYOUT_CEILING - PAYOUT_FLOOR) * scale);
-  const takenToday = earnings.payoutOn === dayKey(at) ? Math.max(0, earnings.paidOutToday) : 0;
-  return Math.max(0, Math.min(daily - takenToday, earnings.coins));
+  const dailyCoins = Math.round(PAYOUT_FLOOR_COINS + (PAYOUT_CEILING_COINS - PAYOUT_FLOOR_COINS) * scale);
+  const leftCoins = dailyCoins - slurpPaidOutToday(earnings, at) - Math.max(0, othersToday);
+  return Math.max(0, Math.min(leftCoins, slurpPayoutCoins(earnings.coins, weight))) * weight;
 }
 
-const dayKey = (at: Date) => at.toISOString().slice(0, 10);
+/** Coins this Creator already withdrew today. */
+export const slurpPaidOutToday = (earnings: SlurpEarnings, at: Date): number =>
+  earnings.payoutOn === dayKey(at) ? Math.max(0, earnings.paidOutToday) : 0;
+
+// The Slurp day, like the wallet's refill (starts 08:00 host time), not the UTC day (R1-087).
+// ponytail: the default start hour; pass walletDayStartHour through if players move it.
+const dayKey = (at: Date) => slurpDayKey(at);
 
 const LEDGER_LIMIT = 60;
 
@@ -111,6 +145,7 @@ const EARNINGS_ENTRY_KINDS = new Set<SlurpEarningsEntryKind>([
   "messageRequest",
   "ppv",
   "commission",
+  "sponsor",
   "payout",
   "reversal",
 ]);
@@ -126,7 +161,7 @@ const intOrNull = (value: unknown): number | null =>
   typeof value === "number" && Number.isInteger(value) ? value : null;
 
 export function emptySlurpEarnings(): SlurpEarnings {
-  return { coins: 0, lifetime: 0, ledger: [], receipts: {}, payoutOn: null, paidOutToday: 0 };
+  return { coins: 0, lifetime: 0, ledger: [], receipts: {}, payoutOn: null, paidOutToday: 0, platform: true };
 }
 
 /**
@@ -172,7 +207,7 @@ export function readSlurpEarnings(raw: string | null): SlurpEarnings {
   const lifetime = intOrNull(value.lifetime);
   const ledger = readLedger(value.ledger);
   const paidOutToday = intOrNull(value.paidOutToday);
-  return {
+  const earnings: SlurpEarnings = {
     payoutOn: typeof value.payoutOn === "string" ? value.payoutOn : null,
     paidOutToday: paidOutToday !== null && paidOutToday >= 0 ? paidOutToday : 0,
     coins: coins !== null && coins >= 0 ? coins : 0,
@@ -180,6 +215,22 @@ export function readSlurpEarnings(raw: string | null): SlurpEarnings {
     lifetime: Math.max(lifetime !== null && lifetime >= 0 ? lifetime : 0, coins !== null && coins >= 0 ? coins : 0),
     ledger,
     receipts: readReceipts(value.receipts, ledger),
+    platform: true,
+  };
+  return value.platform === true ? earnings : scaleLegacyEarnings(earnings);
+}
+
+/** A pre-0.3.7 record, in coins, as platform dollars. Receipts too, so a later reversal matches its credit. */
+function scaleLegacyEarnings(earnings: SlurpEarnings): SlurpEarnings {
+  const x = (amount: number) => amount * SLURP_EARNINGS_LEGACY_SCALE;
+  return {
+    ...earnings,
+    coins: x(earnings.coins),
+    lifetime: x(earnings.lifetime),
+    ledger: earnings.ledger.map((entry) => ({ ...entry, amount: x(entry.amount) })),
+    receipts: Object.fromEntries(
+      Object.entries(earnings.receipts).map(([id, receipt]) => [id, { ...receipt, amount: x(receipt.amount) }]),
+    ),
   };
 }
 
@@ -251,19 +302,27 @@ export function reverse(earnings: SlurpEarnings, amount: number, at: Date, note?
  *
  * Returns `null` when the balance cannot cover it, so the caller must handle refusal rather than
  * assume success. `lifetime` is deliberately untouched: withdrawing what you earned does not mean
- * you earned less.
- *
-
+ * you earned less. `amount` is in dollars and must be whole coins' worth (a multiple of the weight).
  */
-export function payout(earnings: SlurpEarnings, amount: number, at: Date): SlurpEarnings | null {
-  if (!Number.isInteger(amount) || amount <= 0 || earnings.coins < amount) return null;
+export function payout(
+  earnings: SlurpEarnings,
+  amount: number,
+  at: Date,
+  crowdWeight: number,
+  othersToday = 0,
+): SlurpEarnings | null {
+  const weight = Math.max(1, crowdWeight);
+  if (!Number.isInteger(amount) || amount <= 0 || amount % weight !== 0 || earnings.coins < amount) return null;
   // Refused rather than clamped. A caller that asked for more than the day allows has misread the
   // state, and silently paying out less would leave the player believing they moved more.
-  if (amount > slurpPayoutAllowance(earnings, at)) return null;
-  const today = dayKey(at);
-  const takenToday = earnings.payoutOn === today ? Math.max(0, earnings.paidOutToday) : 0;
+  if (amount > slurpPayoutAllowance(earnings, at, weight, othersToday)) return null;
   return record(
-    { ...earnings, coins: earnings.coins - amount, payoutOn: today, paidOutToday: takenToday + amount },
+    {
+      ...earnings,
+      coins: earnings.coins - amount,
+      payoutOn: dayKey(at),
+      paidOutToday: slurpPaidOutToday(earnings, at) + amount / weight,
+    },
     { kind: "payout", amount: -amount, at: at.toISOString() },
   );
 }

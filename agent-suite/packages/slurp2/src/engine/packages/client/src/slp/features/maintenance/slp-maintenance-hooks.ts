@@ -69,7 +69,11 @@ export function useSlurpAutopurgePreview(settings: SlurpSettings | undefined, en
 export function useDeleteAllSlurpData() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => api.delete<{ deletedCreators: number; deletedPosts: number }>("/slurp2/data"),
+    // `keepCreators`: the recovery reset, which clears activity but keeps Creators and settings.
+    mutationFn: (keepCreators?: boolean) =>
+      api.delete<{ deletedCreators: number; deletedPosts: number }>(
+        keepCreators ? "/slurp2/data/activity" : "/slurp2/data",
+      ),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: slpKeys.all }),
   });
 }

@@ -1,10 +1,16 @@
-import { BriefcaseBusiness, Check, Loader2, Sparkles } from "lucide-react";
+import { BriefcaseBusiness, Check, Loader2 } from "lucide-react";
+import { SlpTextAssist } from "../../assist/slp-assist-contract";
+import { SlpSparkleGlyph } from "../../../base/chrome/SlpGlyphs";
 import { useEffect, useState } from "react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { cn } from "../../../../lib/utils";
 import { useSlurpMediaSrc } from "../../../base/media/slp-media-src";
 import { formatTime } from "../../../base/ui/slp-date-time";
-import { SlurpCoin, SlurpCoinAmount, SlurpCoinBurst } from "../../../modules/coin/SlpCoin";
+import { SlurpCoin, SlurpCoinAmount, SlpCoinText } from "../../../modules/coin/SlpCoin";
+import { SLP_IMG_FRAME_CLASS, slpImgFade } from "../../../base/chrome/SlpChrome";
+import { SlpButton, SlpPrimaryButton } from "../../../modules/chrome/SlpButton";
+import { playSlpSpendMoment } from "../../../modules/sparkle/SlpSparkle";
+
 import { useSlurpWallet } from "../../economy/slp-economy-contract";
 import {
   useAcceptSlurpCommission,
@@ -15,6 +21,9 @@ import {
 } from "./slp-commission-hooks";
 import { getApiErrorMessage } from "../../../../lib/api-client";
 import type { SlurpCommission, SlurpMessage } from "../slp-messages-contract";
+
+const AMOUNT_FIELD =
+  "flex h-11 items-center gap-1.5 rounded-xl bg-[var(--slurp-surface)] px-3 ring-1 ring-inset ring-[var(--noodle-divider)] focus-within:ring-2 focus-within:ring-[var(--slurp-focus)]";
 
 export function isCommissionRequest(content: string): boolean {
   return /\b(commission|custom\s+(art|piece|work)|request\s+(a|an)\s+(image|picture|piece))\b/i.test(content);
@@ -27,10 +36,13 @@ export function CommissionRequest({
   initialBrief,
   onSendAsMessage,
   onSubmit,
+  creatorId,
 }: {
   disabled: boolean;
   pending: boolean;
   initialBrief: string;
+  /** The Creator the brief goes to, so the writing help knows who it asks. */
+  creatorId?: string;
   onSendAsMessage: (() => void) | null;
   onSubmit: (brief: string) => void;
 }) {
@@ -42,11 +54,14 @@ export function CommissionRequest({
   }, [initialBrief]);
 
   return (
-    <div className="flex flex-col gap-2 rounded-xl bg-[var(--slurp-surface)] p-3 ring-1 ring-inset ring-[var(--noodle-divider)]">
-      <label className="text-xs font-bold" htmlFor="slurp-commission-brief">
-        {localizeUi("ui.slurp.messages.commissionLabel", { defaultValue: "Commission brief" })}
-      </label>
-      <p className="text-xs leading-5 text-[var(--muted-foreground)]">
+    <div className="flex flex-col gap-2 px-1">
+      <div className="flex flex-wrap items-center gap-x-2">
+        <label className="text-[13px] font-bold" htmlFor="slurp-commission-brief">
+          {localizeUi("ui.slurp.messages.commissionLabel", { defaultValue: "Commission brief" })}
+        </label>
+        <SlpTextAssist field="brief" value={brief} accountId={creatorId} disabled={disabled} onApply={setBrief} />
+      </div>
+      <p className="text-xs leading-4 text-[var(--slurp-muted)]">
         {localizeUi("ui.slurp.messages.commissionRequestDetail", {
           defaultValue: "Describe the finished piece. The Creator will quote a price before you pay.",
         })}
@@ -54,37 +69,31 @@ export function CommissionRequest({
       <textarea
         id="slurp-commission-brief"
         value={brief}
-        rows={2}
+        rows={4}
         maxLength={2000}
         onChange={(event) => setBrief(event.target.value)}
         placeholder={localizeUi("ui.slurp.messages.commissionPlaceholder", {
           defaultValue: "Describe what you want made…",
         })}
-        className="w-full resize-y rounded-lg bg-[var(--slurp-canvas,var(--background))] px-3 py-2 text-sm outline-none ring-1 ring-inset ring-[var(--noodle-divider)] focus:ring-2 focus:ring-[var(--noodle-accent)]"
+        className="w-full resize-y rounded-xl bg-[var(--slurp-surface)] px-3 py-2.5 text-base outline-none ring-1 ring-inset ring-[var(--noodle-divider)] placeholder:text-[var(--slurp-muted)] focus:ring-2 focus:ring-[var(--slurp-focus)] sm:text-sm"
       />
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-xs tabular-nums text-[var(--muted-foreground)]">{brief.length}/2000</span>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs tabular-nums text-[var(--slurp-muted)]">{brief.length}/2000</span>
         <div className="flex items-center gap-2">
           {onSendAsMessage && (
-            <button
-              type="button"
-              onClick={onSendAsMessage}
-              className="min-h-11 rounded-xl px-3 text-xs font-bold ring-1 ring-inset ring-[var(--noodle-divider)]"
-            >
-              Send as message
-            </button>
+            <SlpButton variant="tertiary" onClick={onSendAsMessage}>
+              {localizeUi("ui.slurp.messages.sendAsMessage", { defaultValue: "Send as message" })}
+            </SlpButton>
           )}
-          <button
-            type="button"
+          <SlpPrimaryButton
             disabled={disabled || pending || !brief.trim()}
             onClick={() => {
               onSubmit(brief.trim());
               setBrief("");
             }}
-            className="min-h-11 rounded-xl bg-[var(--noodle-accent)] px-4 text-xs font-bold text-zinc-950 [&_svg]:!text-zinc-950 transition-transform active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)] disabled:opacity-50 motion-reduce:transition-none motion-reduce:active:scale-100"
           >
             {localizeUi("ui.slurp.messages.commissionSend", { defaultValue: "Send request" })}
-          </button>
+          </SlpPrimaryButton>
         </div>
       </div>
     </div>
@@ -103,11 +112,14 @@ export function CommissionRow({
   deliveryMessage,
   personaId,
   ownsCreator,
+  compact = false,
 }: {
   commission: SlurpCommission;
   deliveryMessage: SlurpMessage | null;
   personaId: string;
   ownsCreator: boolean;
+  /** One line with the next step (the thread header strip); the full card everywhere else. */
+  compact?: boolean;
 }) {
   const { t: localizeUi, i18n } = useUiTranslation();
   const quote = useQuoteSlurpCommission();
@@ -116,7 +128,10 @@ export function CommissionRow({
   const deliver = useDeliverSlurpCommission();
   const decline = useDeclineSlurpCommission();
   const [price, setPrice] = useState(commission.price > 0 ? commission.price : (commission.suggestedPrice ?? 25));
-  const [offer, setOffer] = useState(Math.max(1, Math.round(commission.price * 0.8)));
+  // Derived until the fan edits it: a row mounted as a brief has price 0, and a fixed initial
+  // state kept offering 1 coin after the quote arrived.
+  const [offerInput, setOffer] = useState<number | null>(null);
+  const offer = offerInput ?? Math.max(1, Math.round(commission.price * 0.8));
   const pendingOffer = commission.counterPrice ?? null;
   const canOffer = pendingOffer === null && (commission.haggleRounds ?? 0) < 3;
   const canEnd =
@@ -124,7 +139,9 @@ export function CommissionRow({
     commission.state === "quoted" ||
     (!ownsCreator &&
       commission.state === "accepted" &&
-      (!commission.deliverAt || commission.deliverAt <= new Date().toISOString()));
+      (!commission.deliverAt || commission.deliverAt <= new Date().toISOString())) ||
+    // A cancellation whose refund failed part-way; the server lets the fan retry it.
+    (!ownsCreator && commission.state === "cancellation_pending");
   const [generateImage, setGenerateImage] = useState(false);
   const [delivery, setDelivery] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -132,7 +149,10 @@ export function CommissionRow({
   const busy = quote.isPending || counter.isPending || accept.isPending || deliver.isPending || decline.isPending;
   const wallet = useSlurpWallet(personaId);
   const steps = ["brief", "quoted", "accepted", "delivered"] as const;
-  const currentStep = commission.state === "declined" ? -1 : steps.indexOf(commission.state);
+  const currentStep =
+    commission.state === "declined"
+      ? -1
+      : steps.indexOf(commission.state === "cancellation_pending" ? "accepted" : commission.state);
   const deliveryImage = useSlurpMediaSrc(
     deliveryMessage?.imageUrl
       ? `${deliveryMessage.imageUrl}${deliveryMessage.imageUrl.includes("?") ? "&" : "?"}personaId=${encodeURIComponent(personaId)}`
@@ -153,32 +173,100 @@ export function CommissionRow({
       });
   };
 
+  const stateLabel = localizeUi(`ui.slurp.messages.commissionState.${commission.state}`, {
+    defaultValue: commission.state,
+  });
+  // The next thing to do is the one primary button. For a fan with a quote waiting that is paying.
+  const acceptButton = !ownsCreator && commission.state === "quoted" && (
+    <SlpPrimaryButton
+      disabled={busy}
+      onClick={(event) => {
+        const origin = event.currentTarget.getBoundingClientRect();
+        run(
+          accept.mutateAsync({ commissionId: commission.id, personaId }).then(() => {
+            playSlpSpendMoment(origin);
+            return wallet.refetch();
+          }),
+          localizeUi("ui.slurp.messages.commissionAcceptFailed", { defaultValue: "Unable to process payment." }),
+          localizeUi("ui.slurp.messages.commissionAccepted", {
+            defaultValue: "Payment sent. Your commission is now in progress.",
+          }),
+        );
+      }}
+      className={compact ? "h-10 min-h-10 shrink-0 gap-1.5 px-3.5 text-[13px]" : "w-full"}
+    >
+      {accept.isPending && <Loader2 size={15} className="animate-spin" aria-hidden="true" />}
+      {accept.isPending
+        ? localizeUi("ui.slurp.messages.commissionAcceptPending", { defaultValue: "Processing payment…" })
+        : localizeUi("ui.slurp.messages.commissionAccept", { defaultValue: "Accept and pay" })}
+      {!accept.isPending && <SlurpCoinAmount amount={commission.price} className="tabular-nums" />}
+    </SlpPrimaryButton>
+  );
+  const feedback = (
+    <>
+      {success && (
+        <p role="status" className="mt-2 text-xs text-[var(--slurp-ink)]">
+          {success}
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="mt-2 text-xs text-[var(--slurp-danger)]">
+          {error}
+        </p>
+      )}
+    </>
+  );
+
+  if (compact) {
+    // One line in the thread header: what it is, where it stands, and the next step.
+    return (
+      <div className="min-w-0">
+        <div className="flex min-h-10 min-w-0 items-center gap-2.5">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--slurp-tint)]">
+            <BriefcaseBusiness size={16} className="text-[var(--slurp-ink)]" aria-hidden="true" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[13px] font-bold leading-5">
+              {commission.state === "delivered"
+                ? localizeUi("ui.slurp.messages.commissionDeliveredHint", {
+                    defaultValue: "The finished commission is in this chat",
+                  })
+                : commission.brief}
+            </span>
+            <span className="flex min-w-0 items-center gap-1.5 text-xs text-[var(--slurp-muted)]">
+              <span className="truncate">{stateLabel}</span>
+              {commission.price > 0 && !acceptButton && (
+                <SlurpCoinAmount amount={commission.price} className="shrink-0 tabular-nums text-[var(--slurp-warm)]" />
+              )}
+            </span>
+          </span>
+          {acceptButton}
+        </div>
+        {feedback}
+      </div>
+    );
+  }
+
   return (
-    <article className="min-w-0 max-w-full overflow-hidden rounded-xl bg-[color-mix(in_srgb,var(--slurp-violet)_5%,var(--slurp-surface))] p-3 text-xs ring-1 ring-inset ring-[var(--slurp-violet)]/20 sm:p-4">
-      <div className="flex min-w-0 items-start justify-between gap-2 sm:gap-3">
+    <article className="min-w-0 max-w-full overflow-hidden rounded-2xl bg-[var(--slurp-surface-raised)] p-4 text-xs shadow-[var(--slurp-highlight),var(--slurp-shadow-raised)]">
+      <div className="flex min-w-0 items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="flex items-center gap-1.5 text-sm font-black">
-            <Sparkles size={15} className="text-[var(--noodle-accent)]" aria-hidden="true" />
+          <p className="flex items-center gap-1.5 text-[15px] font-bold leading-5">
+            <SlpSparkleGlyph size={16} className="text-[var(--slurp-ink)]" aria-hidden="true" />
             {localizeUi("ui.slurp.messages.commissionTitle", { defaultValue: "Commission" })}
           </p>
-          <p className="mt-1 break-words font-semibold text-[var(--muted-foreground)]">
-            {localizeUi(`ui.slurp.messages.commissionState.${commission.state}`, { defaultValue: commission.state })}
-          </p>
+          <p className="mt-0.5 break-words text-xs font-semibold text-[var(--slurp-muted)]">{stateLabel}</p>
         </div>
         {commission.price > 0 && (
-          <span className="shrink-0 rounded-full bg-[var(--slurp-surface-raised)] px-2.5 py-1 font-bold tabular-nums text-[var(--noodle-accent)] ring-1 ring-inset ring-[var(--noodle-accent)]/20">
+          <span className="inline-flex h-7 shrink-0 items-center rounded-full bg-[color-mix(in_srgb,var(--slurp-warm)_12%,transparent)] px-2.5 text-[13px] font-bold tabular-nums text-[var(--slurp-warm)]">
             <SlurpCoinAmount amount={commission.price} />
           </span>
         )}
       </div>
-      <div className="mt-3 rounded-xl bg-[var(--slurp-surface)]/70 p-3 ring-1 ring-inset ring-[var(--noodle-divider)]">
-        <p className="font-bold">
-          {localizeUi("ui.slurp.messages.commissionLabel", { defaultValue: "Commission brief" })}
-        </p>
-        <p className="mt-1 whitespace-pre-wrap break-words leading-5 text-[var(--muted-foreground)]">
-          {commission.brief}
-        </p>
-      </div>
+      {/* The brief once, as plain text: no box inside the card. */}
+      <p className="mt-3 whitespace-pre-wrap break-words text-[13px] leading-[19px] text-[var(--slurp-text)]">
+        {commission.brief}
+      </p>
 
       {currentStep >= 0 && (
         <ol
@@ -186,27 +274,36 @@ export function CommissionRow({
           aria-label={localizeUi("ui.slurp.messages.commissionProgress", { defaultValue: "Commission progress" })}
         >
           {steps.map((step, index) => (
-            <li key={step} className="relative flex min-w-0 max-w-full flex-col items-center gap-1 text-center">
+            <li
+              key={step}
+              aria-current={index === currentStep ? "step" : undefined}
+              className="relative flex min-w-0 max-w-full flex-col items-center gap-1 text-center"
+            >
               {index > 0 && (
                 <span
                   aria-hidden="true"
                   className={cn(
-                    "absolute right-1/2 top-2.5 h-px w-full",
-                    index <= currentStep ? "bg-[var(--noodle-accent)]" : "bg-[var(--noodle-divider)]",
+                    "absolute right-1/2 top-2 h-0.5 w-full rounded-full",
+                    index <= currentStep ? "bg-[var(--noodle-accent)]" : "bg-[var(--slurp-outline)]",
                   )}
                 />
               )}
               <span
                 className={cn(
-                  "relative z-10 flex h-6 w-6 items-center justify-center rounded-full text-xs font-black ring-2 ring-[var(--slurp-surface)]",
+                  "relative z-10 flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-bold ring-2 ring-[var(--slurp-surface-raised)]",
                   index <= currentStep
-                    ? "bg-[var(--noodle-accent)] text-zinc-950 [&_svg]:!text-zinc-950"
-                    : "bg-[var(--slurp-surface-raised)] text-[var(--muted-foreground)]",
+                    ? "bg-[var(--noodle-accent)] text-[var(--slurp-on-accent)] [&_svg]:!text-[var(--slurp-on-accent)]"
+                    : "bg-[var(--slurp-surface)] text-[var(--slurp-muted)]",
                 )}
               >
                 {index < currentStep ? <Check size={11} aria-hidden="true" /> : index + 1}
               </span>
-              <span className="min-w-0 max-w-full break-words text-[0.65rem] font-semibold leading-4 text-[var(--muted-foreground)] sm:text-xs">
+              <span
+                className={cn(
+                  "min-w-0 max-w-full break-words text-[11px] font-semibold leading-[14px]",
+                  index === currentStep ? "text-[var(--slurp-text)]" : "text-[var(--slurp-muted)]",
+                )}
+              >
                 {localizeUi(`ui.slurp.messages.commissionStep.${step}`, {
                   defaultValue: step === "accepted" ? "Paid" : step[0]?.toUpperCase() + step.slice(1),
                 })}
@@ -216,7 +313,7 @@ export function CommissionRow({
         </ol>
       )}
 
-      <p className="mt-3 leading-5 text-[var(--muted-foreground)]">
+      <p className="mt-3 leading-4 text-[var(--slurp-muted)]">
         {localizeUi(`ui.slurp.messages.commissionNext.${commission.state}.${ownsCreator ? "creator" : "viewer"}`, {
           defaultValue:
             commission.state === "brief"
@@ -233,20 +330,37 @@ export function CommissionRow({
                     : "Paid. The Creator is working on your request."
                   : commission.state === "delivered"
                     ? "The finished commission is in this chat."
-                    : "This commission is closed.",
+                    : commission.state === "cancellation_pending"
+                      ? ownsCreator
+                        ? "The fan cancelled. The refund is still being processed."
+                        : "Your refund is not finished yet. Cancel again to retry it."
+                      : "This commission is closed.",
         })}
       </p>
 
-      {ownsCreator && commission.state === "quoted" && pendingOffer !== null && (
-        <div className="mt-3 flex min-w-0 flex-wrap items-center gap-2 rounded-xl bg-[var(--noodle-accent)]/10 p-3">
-          <span className="font-semibold">
-            {localizeUi("ui.slurp.messages.commissionOfferReceived", {
-              defaultValue: "The fan offers {{amount}} coins.",
-              amount: pendingOffer,
+      {acceptButton && <div className="mt-3">{acceptButton}</div>}
+      {!ownsCreator && commission.state === "quoted" && wallet.data && wallet.data.coins < commission.price && (
+        <p className="mt-2 text-xs text-[var(--slurp-danger)]">
+          <SlpCoinText>
+            {localizeUi("ui.slurp.messages.commissionBalanceShort", {
+              defaultValue: "You need {{amount}} <coin/> more.",
+              amount: commission.price - wallet.data.coins,
             })}
+          </SlpCoinText>
+        </p>
+      )}
+
+      {ownsCreator && commission.state === "quoted" && pendingOffer !== null && (
+        <div className="mt-3 flex min-w-0 flex-wrap items-center gap-2 rounded-xl bg-[var(--slurp-tint)] p-3">
+          <span className="font-semibold">
+            <SlpCoinText>
+              {localizeUi("ui.slurp.messages.commissionOfferReceived", {
+                defaultValue: "The fan offers {{amount}} <coin/>.",
+                amount: pendingOffer,
+              })}
+            </SlpCoinText>
           </span>
-          <button
-            type="button"
+          <SlpPrimaryButton
             disabled={busy}
             onClick={() =>
               run(
@@ -255,11 +369,10 @@ export function CommissionRow({
                 localizeUi("ui.slurp.messages.commissionOfferTaken", { defaultValue: "Offer accepted." }),
               )
             }
-            className="min-h-11 rounded-xl bg-[var(--noodle-accent)] px-4 font-bold text-zinc-950 [&_svg]:!text-zinc-950 transition-transform active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)] disabled:opacity-50 motion-reduce:transition-none motion-reduce:active:scale-100"
           >
             {localizeUi("ui.slurp.messages.commissionTakeOffer", { defaultValue: "Accept offer" })}
-          </button>
-          <span className="text-xs text-[var(--muted-foreground)]">
+          </SlpPrimaryButton>
+          <span className="text-xs text-[var(--slurp-muted)]">
             {localizeUi("ui.slurp.messages.commissionCounterHint", {
               defaultValue: "Or send a new quote below to meet in the middle.",
             })}
@@ -267,25 +380,24 @@ export function CommissionRow({
         </div>
       )}
 
-      {ownsCreator &&
-        (commission.state === "brief" || commission.state === "quoted") &&
-        (commission.suggestedPrice !== undefined && commission.state === "brief" ? (
-          <p className="mt-3 text-xs text-[var(--muted-foreground)]">
+      {ownsCreator && commission.suggestedPrice !== undefined && commission.state === "brief" && (
+        <p className="mt-3 text-xs text-[var(--slurp-muted)]">
+          <SlpCoinText>
             {localizeUi("ui.slurp.messages.commissionSuggestedQuote", {
-              defaultValue: "Your pricing suggests {{amount}} coins for this brief.",
+              defaultValue: "Your pricing suggests {{amount}} <coin/> for this brief.",
               amount: commission.suggestedPrice,
             })}
-          </p>
-        ) : null)}
+          </SlpCoinText>
+        </p>
+      )}
 
       {ownsCreator && (commission.state === "brief" || commission.state === "quoted") && (
         <div className="mt-3 flex min-w-0 flex-wrap items-end gap-2">
-          <label htmlFor={`slurp-quote-${commission.id}`} className="flex flex-col gap-1 font-bold">
+          <label htmlFor={`slurp-quote-${commission.id}`} className="flex flex-col gap-1 font-semibold">
             {localizeUi("ui.slurp.messages.commissionQuoteLabel", {
               defaultValue: commission.state === "quoted" ? "Update quote" : "Quote price",
             })}
-            <span className="flex h-11 items-center gap-1.5 rounded-xl bg-[var(--slurp-canvas,var(--background))] px-3 ring-1 ring-inset ring-[var(--noodle-divider)] focus-within:ring-2 focus-within:ring-[var(--noodle-accent)]">
-              <SlurpCoin size={15} />
+            <span className={AMOUNT_FIELD}>
               <input
                 id={`slurp-quote-${commission.id}`}
                 type="number"
@@ -295,101 +407,51 @@ export function CommissionRow({
                 onChange={(event) => setPrice(Math.max(1, Math.floor(Number(event.target.value) || 0)))}
                 className="w-20 bg-transparent text-sm tabular-nums outline-none"
               />
+              <SlurpCoin size={15} />
             </span>
           </label>
-          <button
-            type="button"
-            disabled={busy || price <= 0}
-            onClick={() =>
+          {/* With a fan's offer on the table, accepting it is the primary; a new quote is the alternative. */}
+          {(() => {
+            const quoteLabel = quote.isPending
+              ? localizeUi("ui.slurp.messages.commissionQuotePending", { defaultValue: "Sending quote…" })
+              : localizeUi("ui.slurp.messages.commissionQuote", {
+                  defaultValue: commission.state === "quoted" ? "Send new quote" : "Send quote",
+                });
+            const sendQuote = () =>
               run(
                 quote.mutateAsync({ commissionId: commission.id, personaId, price }),
                 localizeUi("ui.slurp.messages.commissionQuoteFailed", { defaultValue: "Could not send that quote." }),
                 localizeUi("ui.slurp.messages.commissionQuoteSent", { defaultValue: "Quote sent." }),
-              )
-            }
-            className="min-h-11 max-w-full rounded-xl bg-[var(--noodle-accent)] px-4 font-bold text-zinc-950 [&_svg]:!text-zinc-950 transition-transform active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)] disabled:opacity-50 motion-reduce:transition-none motion-reduce:active:scale-100"
-          >
-            {quote.isPending
-              ? localizeUi("ui.slurp.messages.commissionQuotePending", { defaultValue: "Sending quote…" })
-              : localizeUi("ui.slurp.messages.commissionQuote", {
-                  defaultValue: commission.state === "quoted" ? "Send new quote" : "Send quote",
-                })}
-          </button>
-        </div>
-      )}
-
-      {/* A brief with no exit sat in the thread forever. Either side may end it until it is paid. */}
-      {canEnd && (
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() =>
-            run(
-              decline.mutateAsync({ commissionId: commission.id, personaId }),
-              localizeUi("ui.slurp.messages.commissionDeclineFailed", {
-                defaultValue: "Could not end that commission.",
-              }),
-            )
-          }
-          className="mt-3 min-h-11 rounded-xl px-3 font-bold text-[var(--muted-foreground)] transition-[background-color,transform] hover:bg-[var(--accent)] hover:text-[var(--foreground)] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)] disabled:opacity-50 motion-reduce:transition-none motion-reduce:active:scale-100"
-        >
-          {ownsCreator
-            ? localizeUi("ui.slurp.messages.commissionDecline", { defaultValue: "Decline" })
-            : commission.state === "accepted"
-              ? localizeUi("ui.slurp.messages.commissionCancel", { defaultValue: "Cancel and refund" })
-              : localizeUi("ui.slurp.messages.commissionWithdraw", { defaultValue: "Withdraw request" })}
-        </button>
-      )}
-
-      {!ownsCreator && commission.state === "quoted" && (
-        <div className="mt-3 flex min-w-0 flex-wrap items-center gap-2">
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() =>
-              run(
-                accept.mutateAsync({ commissionId: commission.id, personaId }).then(() => wallet.refetch()),
-                localizeUi("ui.slurp.messages.commissionAcceptFailed", { defaultValue: "Unable to process payment." }),
-                localizeUi("ui.slurp.messages.commissionAccepted", {
-                  defaultValue: "Payment sent. Your commission is now in progress.",
-                }),
-              )
-            }
-            className="relative inline-flex min-h-11 max-w-full items-center gap-1.5 overflow-visible rounded-xl bg-[var(--noodle-accent)] px-4 font-bold text-zinc-950 [&_svg]:!text-zinc-950 transition-transform active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)] disabled:opacity-50 motion-reduce:transition-none motion-reduce:active:scale-100"
-          >
-            <SlurpCoinBurst active={accept.isPending} />
-            {accept.isPending && <Loader2 size={15} className="animate-spin" aria-hidden="true" />}
-            {accept.isPending
-              ? localizeUi("ui.slurp.messages.commissionAcceptPending", { defaultValue: "Processing payment…" })
-              : localizeUi("ui.slurp.messages.commissionAccept", { defaultValue: "Accept and pay" })}
-            {!accept.isPending && <SlurpCoinAmount amount={commission.price} />}
-          </button>
-          {wallet.data && wallet.data.coins < commission.price && (
-            <span className="text-xs text-red-600 dark:text-red-400">
-              {localizeUi("ui.slurp.messages.commissionBalanceShort", {
-                defaultValue: "You need {{amount}} more coins.",
-                amount: commission.price - wallet.data.coins,
-              })}
-            </span>
-          )}
+              );
+            return pendingOffer !== null ? (
+              <SlpButton disabled={busy || price <= 0} onClick={sendQuote}>
+                {quoteLabel}
+              </SlpButton>
+            ) : (
+              <SlpPrimaryButton disabled={busy || price <= 0} onClick={sendQuote}>
+                {quoteLabel}
+              </SlpPrimaryButton>
+            );
+          })()}
         </div>
       )}
 
       {!ownsCreator && commission.state === "quoted" && pendingOffer !== null && (
-        <p className="mt-3 font-semibold text-[var(--muted-foreground)]">
-          {localizeUi("ui.slurp.messages.commissionOfferPending", {
-            defaultValue: "You offered {{amount}} coins. Waiting for the Creator.",
-            amount: pendingOffer,
-          })}
+        <p className="mt-3 font-semibold text-[var(--slurp-muted)]">
+          <SlpCoinText>
+            {localizeUi("ui.slurp.messages.commissionOfferPending", {
+              defaultValue: "You offered {{amount}} <coin/>. Waiting for the Creator.",
+              amount: pendingOffer,
+            })}
+          </SlpCoinText>
         </p>
       )}
 
       {!ownsCreator && commission.state === "quoted" && canOffer && (
         <div className="mt-3 flex min-w-0 flex-wrap items-end gap-2">
-          <label htmlFor={`slurp-offer-${commission.id}`} className="flex flex-col gap-1 font-bold">
+          <label htmlFor={`slurp-offer-${commission.id}`} className="flex flex-col gap-1 font-semibold">
             {localizeUi("ui.slurp.messages.commissionOfferLabel", { defaultValue: "Offer a lower price" })}
-            <span className="flex h-11 items-center gap-1.5 rounded-xl bg-[var(--slurp-canvas,var(--background))] px-3 ring-1 ring-inset ring-[var(--noodle-divider)] focus-within:ring-2 focus-within:ring-[var(--noodle-accent)]">
-              <SlurpCoin size={15} />
+            <span className={AMOUNT_FIELD}>
               <input
                 id={`slurp-offer-${commission.id}`}
                 type="number"
@@ -399,10 +461,11 @@ export function CommissionRow({
                 onChange={(event) => setOffer(Math.max(1, Math.floor(Number(event.target.value) || 0)))}
                 className="w-20 bg-transparent text-sm tabular-nums outline-none"
               />
+              <SlurpCoin size={15} />
             </span>
           </label>
-          <button
-            type="button"
+          <SlpButton
+            variant="quiet"
             disabled={busy || offer >= commission.price}
             onClick={() =>
               run(
@@ -411,12 +474,11 @@ export function CommissionRow({
                 localizeUi("ui.slurp.messages.commissionOfferSent", { defaultValue: "Offer sent." }),
               )
             }
-            className="min-h-11 rounded-xl px-4 font-bold ring-1 ring-inset ring-[var(--noodle-accent)] transition-transform active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)] disabled:opacity-50 motion-reduce:transition-none motion-reduce:active:scale-100"
           >
             {counter.isPending
               ? localizeUi("ui.slurp.messages.commissionOfferPendingSend", { defaultValue: "Sending offer…" })
               : localizeUi("ui.slurp.messages.commissionMakeOffer", { defaultValue: "Make offer" })}
-          </button>
+          </SlpButton>
         </div>
       )}
 
@@ -425,7 +487,7 @@ export function CommissionRow({
         with the time it is due, is the difference between a wait and a screen that looks stuck.
       */}
       {commission.state === "accepted" && (
-        <p className="mt-2 text-[var(--muted-foreground)]">
+        <p className="mt-2 leading-4 text-[var(--slurp-muted)]">
           {localizeUi("ui.slurp.messages.commissionDeliveryTime", {
             defaultValue: "Automatic Creators deliver in about 5 to 45 minutes.",
           })}{" "}
@@ -436,7 +498,7 @@ export function CommissionRow({
       )}
 
       {commission.state === "accepted" && commission.deliverAt && (
-        <p className="mt-3 flex items-center gap-1.5 font-semibold text-[var(--noodle-accent)]">
+        <p className="mt-3 flex items-center gap-1.5 font-semibold text-[var(--slurp-ink)]">
           <Loader2 size={13} className="animate-spin motion-reduce:hidden" aria-hidden="true" />
           {localizeUi("ui.slurp.messages.commissionArriving", {
             defaultValue: "Being made. Arriving around {{time}}.",
@@ -447,21 +509,21 @@ export function CommissionRow({
 
       {ownsCreator && commission.state === "accepted" && !commission.deliverAt && (
         <div className="mt-3 flex flex-col gap-2">
-          <label className="font-bold" htmlFor={`slurp-deliver-${commission.id}`}>
+          <label className="font-semibold" htmlFor={`slurp-deliver-${commission.id}`}>
             {localizeUi("ui.slurp.messages.commissionDeliverLabel", { defaultValue: "Delivery" })}
           </label>
           <textarea
             id={`slurp-deliver-${commission.id}`}
             value={delivery}
-            rows={2}
+            rows={3}
             maxLength={2000}
             onChange={(event) => setDelivery(event.target.value)}
             placeholder={localizeUi("ui.slurp.messages.commissionDeliverPlaceholder", {
               defaultValue: "Deliver the finished piece…",
             })}
-            className="w-full resize-y rounded-xl bg-[var(--slurp-canvas,var(--background))] px-3 py-2.5 text-sm outline-none ring-1 ring-inset ring-[var(--noodle-divider)] focus:ring-2 focus:ring-[var(--noodle-accent)]"
+            className="w-full resize-y rounded-xl bg-[var(--slurp-surface)] px-3 py-2.5 text-sm outline-none ring-1 ring-inset ring-[var(--noodle-divider)] focus:ring-2 focus:ring-[var(--slurp-focus)]"
           />
-          <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-xl px-2 text-[var(--muted-foreground)] hover:bg-[var(--slurp-surface)]">
+          <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-xl px-2 text-[var(--slurp-muted)] hover:bg-[var(--accent)]">
             <input
               type="checkbox"
               checked={generateImage}
@@ -472,8 +534,7 @@ export function CommissionRow({
               defaultValue: "Generate the commissioned image from the brief",
             })}
           </label>
-          <button
-            type="button"
+          <SlpPrimaryButton
             disabled={busy || !delivery.trim()}
             onClick={() =>
               run(
@@ -491,26 +552,50 @@ export function CommissionRow({
                 localizeUi("ui.slurp.messages.commissionDeliverFailed", { defaultValue: "Could not deliver that." }),
               )
             }
-            className="ml-auto min-h-11 rounded-xl bg-[var(--noodle-accent)] px-4 font-bold text-zinc-950 [&_svg]:!text-zinc-950 transition-transform active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)] disabled:opacity-50 motion-reduce:transition-none motion-reduce:active:scale-100"
+            className="self-end"
           >
             {localizeUi("ui.slurp.messages.commissionDeliver", { defaultValue: "Deliver" })}
-          </button>
+          </SlpPrimaryButton>
         </div>
       )}
 
+      {/* A brief with no exit sat in the thread forever. Either side may end it until it is paid. */}
+      {canEnd && (
+        <SlpButton
+          variant="tertiary"
+          disabled={busy}
+          onClick={() =>
+            run(
+              decline.mutateAsync({ commissionId: commission.id, personaId }),
+              localizeUi("ui.slurp.messages.commissionDeclineFailed", {
+                defaultValue: "Could not end that commission.",
+              }),
+            )
+          }
+          className="mt-2 -ms-2 text-[13px]"
+        >
+          {ownsCreator
+            ? localizeUi("ui.slurp.messages.commissionDecline", { defaultValue: "Decline" })
+            : commission.state === "accepted"
+              ? localizeUi("ui.slurp.messages.commissionCancel", { defaultValue: "Cancel and refund" })
+              : localizeUi("ui.slurp.messages.commissionWithdraw", { defaultValue: "Withdraw request" })}
+        </SlpButton>
+      )}
+
       {commission.state === "delivered" && deliveryMessage && (
-        <div className="mt-3 overflow-hidden rounded-xl bg-[var(--slurp-surface)] ring-1 ring-inset ring-[var(--noodle-divider)]">
-          {deliveryMessage.imageUrl && !deliveryImage && (
-            <div className="flex min-h-40 items-center justify-center px-4 text-center text-xs text-[var(--muted-foreground)]">
-              {localizeUi("ui.slurp.messages.commissionImageLoading", { defaultValue: "Loading the finished image…" })}
-            </div>
-          )}
-          {deliveryImage && (
-            <img
-              src={deliveryImage}
-              alt={localizeUi("ui.slurp.messages.attachedImage", { defaultValue: "Commission delivery" })}
-              className="max-h-[32rem] w-full object-contain outline outline-1 outline-black/10 dark:outline-white/10"
-            />
+        <div className="mt-3 overflow-hidden rounded-xl bg-[var(--slurp-surface)]">
+          {deliveryMessage.imageUrl && (
+            <span className={cn(SLP_IMG_FRAME_CLASS, "relative block min-h-40 w-full")}>
+              {deliveryImage && (
+                <img
+                  key={deliveryImage}
+                  src={deliveryImage}
+                  alt={localizeUi("ui.slurp.messages.attachedImage", { defaultValue: "Commission delivery" })}
+                  {...slpImgFade}
+                  className="max-h-[32rem] w-full object-contain"
+                />
+              )}
+            </span>
           )}
           {deliveryMessage.content && (
             <p className="whitespace-pre-wrap break-words px-3.5 py-3 text-sm leading-relaxed">
@@ -520,17 +605,7 @@ export function CommissionRow({
         </div>
       )}
 
-      {success && (
-        <p role="status" className="mt-2 text-[var(--noodle-accent)]">
-          {success}
-        </p>
-      )}
-
-      {error && (
-        <p role="alert" className="mt-2 text-red-600 dark:text-red-400">
-          {error}
-        </p>
-      )}
+      {feedback}
     </article>
   );
 }
@@ -554,25 +629,11 @@ export function SlurpCommissionsPanel({
 }) {
   const { t: localizeUi } = useUiTranslation();
   if (!personaId) return null;
+  // Asking for a new one is the primary only while nothing is open; an open one's next step leads.
+  const open = commissions.some((commission) => ["brief", "quoted", "accepted"].includes(commission.state));
+  const askLabel = localizeUi("ui.slurp.messages.askCommission", { defaultValue: "Ask for commission" });
   return (
-    <div className="flex flex-col gap-2 p-3">
-      {onAskCommission && (
-        <button
-          type="button"
-          onClick={onAskCommission}
-          className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[var(--noodle-accent)] px-4 text-xs font-bold text-zinc-950 [&_svg]:!text-zinc-950"
-        >
-          <BriefcaseBusiness size={15} aria-hidden="true" />
-          Ask for commission
-        </button>
-      )}
-      {commissions.length === 0 && (
-        <p className="px-1 py-2 text-xs text-[var(--muted-foreground)]">
-          {localizeUi("ui.slurp.messages.commissionsEmpty", {
-            defaultValue: "No commissions in this conversation yet.",
-          })}
-        </p>
-      )}
+    <div className="flex flex-col gap-3 p-2">
       {[...commissions]
         .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
         .map((commission) => (
@@ -583,6 +644,25 @@ export function SlurpCommissionsPanel({
             personaId={personaId}
             ownsCreator={ownsCreator}
           />
+        ))}
+      {commissions.length === 0 && (
+        <p className="px-2 py-2 text-[13px] text-[var(--slurp-muted)]">
+          {localizeUi("ui.slurp.messages.commissionsEmpty", {
+            defaultValue: "No commissions in this conversation yet.",
+          })}
+        </p>
+      )}
+      {onAskCommission &&
+        (open ? (
+          <SlpButton onClick={onAskCommission}>
+            <BriefcaseBusiness size={16} aria-hidden="true" />
+            {askLabel}
+          </SlpButton>
+        ) : (
+          <SlpPrimaryButton onClick={onAskCommission}>
+            <BriefcaseBusiness size={16} aria-hidden="true" />
+            {askLabel}
+          </SlpPrimaryButton>
         ))}
     </div>
   );

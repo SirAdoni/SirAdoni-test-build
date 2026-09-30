@@ -1,50 +1,42 @@
-import { type ReactNode } from "react";
-import {
-  AlertTriangle,
-  Check,
-  ChevronLeft,
-  ChevronRight,
-  Clock,
-  Coins,
-  Cpu,
-  Eye,
-  Image as ImageIcon,
-  Loader2,
-  Lock,
-  SlidersHorizontal,
-  Sparkles,
-} from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ChevronRight, Coins, Cpu, Image as ImageIcon, Loader2, MessagesSquare, SlidersHorizontal } from "lucide-react";
+import { SlpSparkleGlyph } from "../../base/chrome/SlpGlyphs";
 import type { SlpCreatorOnboardingCompletion } from "../../../../../shared/src/slp/slp-creator-onboarding.js";
 import type {
   SlpCreatorPostView,
   SlpCreatorStageProfile,
   SlpIdentityDisclosure,
 } from "../../../../../shared/src/slp/slp-social.types.js";
-import { SLP_CREATOR_POSTS_PER_DAY_MAX } from "../../../../../shared/src/slp/slp-social.schema.js";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { cn } from "../../../lib/utils";
 import { Modal } from "../../../components/ui/Modal";
-import { Avatar, getSlpAccentStyle, SLP_PINK } from "../../base/chrome/SlpChrome";
+import { Avatar, getSlpAccentStyle, SLP_GROUP_CLASS, SLP_PINK, SLP_TYPE } from "../../base/chrome/SlpChrome";
 import {
   SLURP_ACTIVITY_PRESETS,
   SLURP_DEFAULT_ACTIVITY_PRESET,
   slurpActivityPresetPatch,
 } from "../../modules/creator/slp-activity-presets";
 import { LockedSlurpPostCard } from "../../modules/post/SlpLockedPostCard";
+import { SlpButton, SlpPrimaryButton } from "../../modules/chrome/SlpButton";
+import { SlpWizardFooter, SlpWizardProgress } from "../../modules/chrome/SlpWizardChrome";
+import { ChoiceSetting } from "../../modules/settings/SlpSettingsInputs";
+import { Toggle } from "../../modules/settings/SlpSettingsControls";
 import { useSlurpOnboardingWizardModel } from "./slp-onboarding-wizard-model";
+import { SLP_SETUP_STEPS, slpOnboardingProgress } from "./slp-onboarding-progress";
 import { SlpOnboardingSteps } from "./SlpOnboardingSteps";
+import { SlpSceneOnboarding } from "./SlpSceneOnboarding";
+import { SlpSiteWelcome } from "./SlpSiteWelcome";
 
 export type Step = 1 | 2 | 3 | 4 | 5;
 /** The teaching screens that run ahead of the numbered steps on first run. */
 export type Intro = 0 | 1 | 2 | 3 | 4 | null;
-export type SetupLane = "easy" | "customize" | null;
+/** "scene" is the role-play sign-up; "easy" is Quick setup. */
+export type SetupLane = "scene" | "easy" | "customize" | null;
 export const LAST_INTRO = 4;
 /** "creationFailed" is local to the wizard: the shared resolver reports it as "failed", which
- * reads as a first-post problem even when no creator was ever set up. */
-export type CompletionKind = SlpCreatorOnboardingCompletion | "creationFailed";
-
-export const clampPostsPerDay = (raw: string) =>
-  Math.max(1, Math.min(SLP_CREATOR_POSTS_PER_DAY_MAX, Math.round(Number(raw)) || 1));
+ * reads as a first-post problem even when no creator was ever set up. "writing" is the wait while
+ * the first posts are written one by one; it used to show as "partial", which read as a failure. */
+export type CompletionKind = SlpCreatorOnboardingCompletion | "creationFailed" | "writing";
 
 export const DISCLOSURES: SlpIdentityDisclosure[] = ["open", "hinted"];
 export const DEFAULT_ACTIVITY_PATCH = slurpActivityPresetPatch(SLURP_DEFAULT_ACTIVITY_PRESET);
@@ -62,7 +54,11 @@ export const DEMO_PROFILE: SlpCreatorStageProfile = {
   avatarCrop: null,
   disclosureMode: "open",
   stagePersonality: "",
+  appearance: "",
+  wardrobe: "",
+  locations: "",
   publicIdentity: null,
+  page: null,
   createdAt: "",
   updatedAt: "",
 };
@@ -114,6 +110,7 @@ export function SlurpOnboardingWizard(props: WizardProps) {
     setPostExplored,
     activityChoice,
     selected,
+    accounts,
     disclosure,
     setDisclosure,
     postsPerDay,
@@ -133,16 +130,115 @@ export function SlurpOnboardingWizard(props: WizardProps) {
     performFinish,
     finish,
     pending,
-    summaries,
   } = model;
+  const progress = slpOnboardingProgress({ intro, setupLane, step });
+  const scene = intro === null && setupLane === "scene";
+  // The first-run welcome is the sign-up scene with the roles swapped; the old tour is one tap away.
+  const [tour, setTour] = useState(false);
+  useEffect(() => {
+    if (open) setTour(false);
+  }, [open]);
+  const welcome = intro !== null && !tour && !selectionOnly;
+  // The Engine Modal focuses its X on open, which rings it after a tap. Move the first focus to the
+  // screen heading once the Modal has run its own focus step (two frames).
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    let second = 0;
+    const first = window.requestAnimationFrame(() => {
+      second = window.requestAnimationFrame(() =>
+        frameRef.current?.querySelector<HTMLElement>("[data-autofocus]")?.focus({ preventScroll: true }),
+      );
+    });
+    return () => {
+      window.cancelAnimationFrame(first);
+      window.cancelAnimationFrame(second);
+    };
+  }, [open]);
+  // Short screens (the tour, the lane choice) sit in the middle of a phone instead of under the title.
+  const centred = intro !== null || setupLane === null;
+  const running =
+    bulkCreate.isPending || enqueueFirstPosts.isPending
+      ? t("ui.noodle.noodlerwizard.progressCreating")
+      : refreshTargeted.isPending || firstPostsQueued
+        ? t("ui.noodle.noodlerwizard.progressWriting")
+        : "";
+  const back =
+    intro !== null
+      ? intro > 0
+        ? () => setIntro((intro - 1) as Intro)
+        : undefined
+      : setupLane === null
+        ? selectionOnly
+          ? undefined
+          : () => setIntro(LAST_INTRO)
+        : (step > 1 && step < 5) || (step === 5 && completion === "creationFailed")
+          ? () => {
+              if (step === 5) returnToSetup();
+              else returnToPreviousStep();
+            }
+          : step === 1
+            ? () => setSetupLane(null)
+            : undefined;
+  const introBlocked = intro === 3 && !postExplored;
+  const setupBlocked = step === 1 && selected.size === 0;
+  const primary =
+    intro !== null ? (
+      <SlpPrimaryButton
+        disabled={introBlocked}
+        onClick={() => setIntro(intro < LAST_INTRO ? ((intro + 1) as Intro) : null)}
+      >
+        {intro < LAST_INTRO ? t("ui.noodle.noodlerwizard.continue") : t("ui.noodle.noodlerwizard.introDone")}
+        <ChevronRight size={16} aria-hidden="true" className="shrink-0 rtl:rotate-180" />
+      </SlpPrimaryButton>
+    ) : setupLane === null ? null : step < 5 ? (
+      <SlpPrimaryButton
+        disabled={pending || setupBlocked}
+        onClick={() => {
+          if (step === 4) void finish();
+          else if (setupLane === "easy" && step === 1) setStep(4);
+          else setStep((step + 1) as Step);
+        }}
+      >
+        {pending && <Loader2 size={16} aria-hidden="true" className="animate-spin" />}
+        {step === 4
+          ? t("ui.noodle.noodlerwizard.createCount", {
+              count: selected.size,
+            })
+          : setupLane === "easy"
+            ? t("ui.noodle.noodlerwizard.reviewSetup")
+            : step === 1
+              ? t("ui.noodle.noodlerwizard.setIdentities")
+              : step === 2
+                ? t("ui.noodle.noodlerwizard.setActivity")
+                : t("ui.noodle.noodlerwizard.setImages")}
+        {!pending && step !== 4 && <ChevronRight size={16} aria-hidden="true" className="shrink-0 rtl:rotate-180" />}
+      </SlpPrimaryButton>
+    ) : (
+      <SlpPrimaryButton
+        onClick={() => {
+          onSeeFeed?.();
+          if (!onSeeFeed) onClose();
+        }}
+      >
+        {t("ui.noodle.noodlerwizard.openAllCreators")}
+      </SlpPrimaryButton>
+    );
+  // Every disabled primary says why, in one line under it.
+  const reason =
+    intro !== null && introBlocked
+      ? t("ui.slurp.wizard.revealToContinue", { defaultValue: "Unlock Mari's post to continue." })
+      : intro === null && setupLane !== null && step === 1 && setupBlocked && accounts.length > 0
+        ? t("ui.slurp.wizard.pickOne", { defaultValue: "Pick at least one creator to continue." })
+        : "";
   return (
     <>
       <Modal
         open={open}
         onClose={onClose}
-        closeDisabled={pending}
         title={selectionOnly ? t("ui.noodle.noodlerwizard.addCreators") : t("ui.noodle.noodlerwizard.title")}
-        width="max-w-3xl"
+        // The sign-up scene gets a wider stage on desktop: the chat plus the phone that builds up.
+        width={scene ? "max-w-4xl" : "max-w-3xl"}
         mobileFullscreen
         contentClassName="max-sm:flex max-sm:flex-col max-sm:overflow-hidden max-sm:px-4 max-sm:py-2"
         panelStyle={getSlpAccentStyle(SLP_PINK, {
@@ -155,433 +251,316 @@ export function SlurpOnboardingWizard(props: WizardProps) {
           "--accent": "color-mix(in srgb, var(--noodle-accent) 12%, transparent)",
         })}
       >
-        <div className="flex max-h-[min(78vh,46rem)] min-h-[26rem] flex-col max-sm:min-h-0 max-sm:max-h-none max-sm:flex-1 max-sm:self-stretch">
-          {intro !== null && (
-            <div
-              className="-mx-5 flex items-center gap-2 border-b border-[var(--noodle-accent)]/25 bg-gradient-to-r from-[var(--noodle-accent)]/20 via-[var(--noodle-accent)]/8 to-transparent px-5 pb-3 pt-2 max-sm:-mx-4 max-sm:gap-1.5 max-sm:px-4 max-sm:pb-2"
-              aria-hidden="true"
-            >
-              {[0, 1, 2, 3, 4].map((dot) => (
-                <span
-                  key={dot}
-                  className={cn(
-                    "h-1.5 rounded-full transition-all",
-                    dot === intro ? "w-6 bg-[var(--noodle-accent)]" : "w-1.5 bg-[var(--slurp-outline)]",
-                  )}
-                />
-              ))}
-            </div>
+        <div
+          ref={frameRef}
+          className={cn(
+            "flex max-h-[min(78vh,46rem)] min-h-[26rem] flex-col text-[var(--slurp-text)] max-sm:min-h-0 max-sm:max-h-none max-sm:flex-1 max-sm:self-stretch",
+            // The scene's chat scrolls inside a fixed frame instead of growing the dialog.
+            (scene || welcome) && "h-[min(78vh,46rem)] max-sm:h-auto",
           )}
-          {intro === null && setupLane !== null && step < 5 && (
-            <div className="-mx-5 border-b border-[var(--noodle-accent)]/25 bg-gradient-to-r from-[var(--noodle-accent)]/20 via-[var(--noodle-accent)]/8 to-transparent px-5 pb-3 pt-1.5 max-sm:-mx-4 max-sm:px-4 max-sm:pb-1.5">
-              {/* Progress rail: done steps stay reachable, later ones stay locked until you get there. */}
-              <ol className="flex gap-1.5">
-                {summaries.map((item) => {
-                  const reachable = item.step <= step;
-                  return (
-                    <li key={item.step} className="min-w-0 flex-1">
-                      <button
-                        type="button"
-                        disabled={!reachable}
-                        aria-current={step === item.step ? "step" : undefined}
-                        onClick={() => setStep(item.step)}
-                        className={cn(
-                          "w-full min-w-0 rounded-lg px-2 pb-1.5 pt-2 text-left transition-colors max-sm:px-1 max-sm:pb-1 max-sm:pt-1.5",
-                          reachable ? "hover:bg-[var(--slurp-surface-raised)]" : "cursor-default opacity-45",
-                        )}
-                      >
-                        <span
-                          className={cn(
-                            "block h-1 rounded-full transition-colors",
-                            step === item.step
-                              ? "bg-[var(--noodle-accent)]"
-                              : item.step < step
-                                ? "bg-[var(--noodle-accent)]/45"
-                                : "bg-[var(--slurp-outline)]",
-                          )}
-                        />
-                        <span className="mt-1.5 block truncate text-[0.7rem] font-bold max-sm:mt-1">{item.label}</span>
-                        <span className="block truncate text-[0.7rem] text-[var(--slurp-muted)] max-sm:hidden">
-                          {item.value}
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ol>
-            </div>
-          )}
-
-          <div className="min-h-0 flex-1 overflow-y-auto py-4 max-sm:py-2.5">
-            {intro === 0 && (
-              <div className="space-y-4 max-sm:space-y-3">
-                <StepHeading
-                  icon={<Sparkles size={18} />}
-                  title={t("ui.noodle.noodlerwizard.intro.info.title")}
-                  help={t("ui.noodle.noodlerwizard.intro.info.help")}
+        >
+          {welcome ? (
+            <SlpSiteWelcome
+              settings={model}
+              onSignUp={() => {
+                setIntro(null);
+                setSetupLane("scene");
+              }}
+              onFeed={() => void skip()}
+              onTour={() => setTour(true)}
+            />
+          ) : scene ? (
+            <SlpSceneOnboarding
+              accounts={accounts}
+              connectionId={model.generationConnectionId || undefined}
+              onBack={() => setSetupLane(null)}
+              onQuickSetup={() => {
+                setSetupLane("easy");
+                setStep(1);
+              }}
+              defaultDisclosure={disclosure}
+              onFinished={() => {
+                // The pace, nights and pictures picked on the way in are saved like Quick setup saves them.
+                void model.saveSettings("completed");
+                props.onComplete?.();
+              }}
+              onSeeFeed={() => {
+                onSeeFeed?.();
+                if (!onSeeFeed) onClose();
+              }}
+            />
+          ) : (
+            <>
+              {progress && (
+                <SlpWizardProgress
+                  current={progress.current}
+                  total={progress.total}
+                  stepOf={t("ui.slurp.wizard.stepOf", {
+                    current: progress.current,
+                    total: progress.total,
+                    defaultValue: "Step {{current}} of {{total}}",
+                  })}
+                  label={t(`ui.slurp.wizard.label.${progress.label}`)}
                 />
-                <div className="flex items-center gap-4 rounded-xl border border-[var(--noodle-accent)]/25 bg-[var(--noodle-accent)]/10 p-4 max-sm:items-start max-sm:gap-3 max-sm:p-3">
-                  <img
-                    src="/sprites/mari/Mari_wave.png"
-                    alt=""
-                    className="h-36 w-auto shrink-0 object-contain max-sm:h-24"
-                  />
-                  <div className="space-y-3 text-sm leading-6 max-sm:space-y-1.5 max-sm:leading-5">
-                    <p className="font-semibold">{t("ui.noodle.noodlerwizard.intro.info.lead")}</p>
-                    <p className="text-[var(--slurp-muted)]">{t("ui.noodle.noodlerwizard.intro.info.detail")}</p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {intro === 1 && (
-              <div className="space-y-4 max-sm:space-y-3">
-                <StepHeading
-                  icon={<AlertTriangle size={18} />}
-                  title={t("ui.noodle.noodlerwizard.intro.attention.title")}
-                  help={t("ui.noodle.noodlerwizard.intro.attention.help")}
-                />
-                <div className="space-y-2.5">
-                  {[
-                    { icon: <Coins size={15} />, key: "cost" },
-                    { icon: <ImageIcon size={15} />, key: "images" },
-                    { icon: <Cpu size={15} />, key: "context" },
-                  ].map((item) => (
-                    <div
-                      key={item.key}
-                      className="flex items-start gap-3 rounded-lg border border-[var(--noodle-accent)]/35 bg-[var(--noodle-accent)]/10 px-3 py-2.5 text-sm leading-6"
-                    >
-                      <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--noodle-accent)]/15 text-[var(--noodle-accent)]">
-                        {item.icon}
-                      </span>
-                      <span>{t(`ui.noodle.noodlerwizard.intro.attention.${item.key}`)}</span>
-                    </div>
-                  ))}
-                </div>
-                <p className="rounded-lg border border-[var(--slurp-outline)] px-3 py-2.5 text-xs leading-5 text-[var(--slurp-muted)]">
-                  {t("ui.noodle.noodlerwizard.intro.attention.footer")}
-                </p>
-              </div>
-            )}
-
-            {intro === 2 && (
-              <div className="space-y-4 max-sm:space-y-3">
-                <StepHeading
-                  icon={<Eye size={18} />}
-                  title={t("ui.noodle.noodlerwizard.intro.identity.title")}
-                  help={t("ui.noodle.noodlerwizard.intro.identity.help")}
-                />
-                <div className="grid gap-3 max-sm:grid-cols-[5.5rem_minmax(0,1fr)] sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
-                  <div className="flex flex-col items-center justify-center rounded-xl border border-[var(--noodle-accent)]/25 bg-[var(--noodle-accent)]/10 p-4 text-center max-sm:p-2">
-                    <Avatar
-                      account={{
-                        displayName: demoProfile.displayName,
-                        avatarUrl: demoProfile.avatarUrl,
-                        avatarCrop: demoProfile.avatarCrop,
-                      }}
-                      size="lg"
-                    />
-                    <p className="mt-3 font-bold max-sm:mt-2 max-sm:text-xs">{demoProfile.displayName}</p>
-                    <p className="text-xs text-[var(--slurp-muted)]">@{demoProfile.handle}</p>
-                    <p className="mt-2 text-xs font-semibold text-[var(--noodle-accent)] max-sm:mt-1 max-sm:text-[0.625rem]">
-                      {t(`ui.noodle.noodlerwizard.identityPreview.${disclosure}.connection`)}
-                    </p>
-                  </div>
-                  <div className="space-y-2">
-                    {DISCLOSURES.map((value) => (
-                      <button
-                        key={value}
-                        type="button"
-                        aria-pressed={disclosure === value}
-                        onClick={() => {
-                          setDisclosure(value);
-                          setPostExplored(false);
-                        }}
-                        className={cn(
-                          "w-full rounded-lg border px-3 py-2.5 text-left transition-colors max-sm:px-2.5 max-sm:py-2",
-                          disclosure === value
-                            ? "border-[var(--noodle-accent)] bg-[var(--noodle-accent)]/15 text-[var(--slurp-text)] ring-2 ring-[var(--noodle-accent)]/45"
-                            : "border-[var(--slurp-outline)] hover:border-[var(--noodle-accent)]/40 hover:bg-[var(--noodle-accent)]/8",
-                        )}
-                      >
-                        <span className="flex items-center justify-between gap-2 text-sm font-bold">
-                          {t(`ui.noodle.noodlerwizard.disclosure.${value}.title`)}
-                          {disclosure === value && <Check size={15} className="shrink-0 text-[var(--noodle-accent)]" />}
-                        </span>
-                        <span className="mt-0.5 block text-xs leading-5 text-[var(--slurp-muted)] max-sm:line-clamp-2 max-sm:leading-4">
-                          {t(`ui.noodle.noodlerwizard.disclosure.${value}.detail`)}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {intro === 3 && (
-              <div className="space-y-4 max-sm:space-y-3">
-                <StepHeading
-                  icon={<Lock size={18} />}
-                  title={t("ui.noodle.noodlerwizard.intro.locked.title")}
-                  help={t("ui.noodle.noodlerwizard.intro.locked.help")}
-                />
-                {/* Capped width: the wizard modal is 3xl, and a full-bleed card makes the demo post
-                  read as a page rather than as one item in a feed. */}
-                <div className="mx-auto max-w-sm overflow-hidden rounded-xl border border-[var(--noodle-divider)] max-sm:max-w-[18rem]">
-                  <LockedSlurpPostCard
-                    key={disclosure}
-                    post={{
-                      ...DEMO_POST,
-                      title: t("ui.noodle.noodlerwizard.demoPost.walkthrough.title"),
-                      imageUrl: DEMO_POST.imageUrl,
-                    }}
-                    profile={DEMO_PROFILE}
-                    subscribed={false}
-                    unlockPending={false}
-                    subscriptionPending={false}
-                    onUnlock={() => {}}
-                    onToggleSubscription={() => {}}
-                    demo={{
-                      body: t("ui.noodle.noodlerwizard.demoPost.walkthrough.body"),
-                      lockedTitle: t("ui.noodle.noodlerwizard.demoPost.walkthrough.lockedTitle"),
-                      unlockedLabel: t("ui.noodle.postaccess.unlocked"),
-                      unlockedImageUrl: "/sprites/mari/Mari_noodler_teaser_unlocked.webp",
-                      onReveal: () => setPostExplored(true),
-                    }}
-                  />
-                </div>
-              </div>
-            )}
-
-            {intro === 4 && (
-              <div className="space-y-4 max-sm:space-y-3">
-                <StepHeading
-                  icon={<Clock size={18} />}
-                  title={t("ui.noodle.noodlerwizard.intro.activity.title")}
-                  help={t("ui.noodle.noodlerwizard.intro.activity.help")}
-                />
-                <div className="grid gap-2 sm:grid-cols-2">
-                  {SLURP_ACTIVITY_PRESETS.map((choice) => (
-                    <button
-                      key={choice}
-                      type="button"
-                      onClick={() => chooseActivity(choice)}
-                      className={cn(
-                        "rounded-lg border px-3 py-2.5 text-left transition-colors max-sm:py-2",
-                        activityChoice === choice
-                          ? "border-[var(--noodle-accent)] bg-[var(--noodle-accent)]/10"
-                          : "border-[var(--slurp-outline)] hover:border-[var(--noodle-accent)]/40 hover:bg-[var(--noodle-accent)]/8",
-                      )}
-                    >
-                      <span className="block text-sm font-bold">
-                        {t(`ui.noodle.noodlerwizard.activityChoice.${choice}.title`)}
-                      </span>
-                      <span className="mt-0.5 block text-xs leading-5 text-[var(--slurp-muted)]">
-                        {t(`ui.noodle.noodlerwizard.activityChoice.${choice}.detail`)}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-                <div className="flex flex-wrap gap-x-5 gap-y-2 rounded-lg border border-[var(--noodle-accent)]/30 bg-[var(--noodle-accent)]/[0.06] px-3 py-2.5">
-                  <label className="flex items-center gap-2 text-sm font-semibold">
-                    <input
-                      type="checkbox"
-                      checked={nightQuiet}
-                      onChange={(event) => setNightQuiet(event.target.checked)}
-                      className="h-4 w-4 accent-[var(--noodle-accent)]"
-                    />
-                    {t("ui.noodle.noodlerwizard.nightQuiet")}
-                  </label>
-                  <label className="flex items-center gap-2 text-sm font-semibold">
-                    <input
-                      type="checkbox"
-                      checked={imagesEnabled}
-                      onChange={(event) => setImagesEnabled(event.target.checked)}
-                      className="h-4 w-4 accent-[var(--noodle-accent)]"
-                    />
-                    {t("ui.noodle.noodlerwizard.imagesShort")}
-                  </label>
-                </div>
-                <div className="flex items-center gap-3 rounded-lg border border-[var(--noodle-accent)]/30 bg-[var(--noodle-accent)]/8 px-3 py-2.5 max-sm:py-2">
-                  <img
-                    src="/sprites/mari/Mari_explaining.png"
-                    alt=""
-                    className="h-16 w-auto object-contain max-sm:h-12"
-                  />
-                  <p className="text-sm leading-5">
-                    {activityChoice === "manual"
-                      ? t("ui.noodle.noodlerwizard.intro.activity.manualPreview")
-                      : t("ui.noodle.noodlerwizard.intro.activity.preview", {
-                          count: postsPerDay,
-                        })}
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {intro === null && setupLane === null && (
-              <div className="space-y-5">
-                <StepHeading
-                  icon={<Sparkles size={18} />}
-                  title={t("ui.noodle.noodlerwizard.handoff.title")}
-                  help={t("ui.noodle.noodlerwizard.handoff.help")}
-                />
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSetupLane("easy");
-                      setStep(1);
-                    }}
-                    className="group rounded-xl border border-[var(--noodle-accent)]/60 bg-gradient-to-br from-[var(--noodle-accent)]/22 to-[var(--noodle-accent)]/6 p-5 text-left shadow-sm shadow-[var(--noodle-accent)]/15 transition-[transform,box-shadow,background-color] hover:-translate-y-0.5 hover:shadow-md hover:shadow-[var(--noodle-accent)]/25 motion-reduce:transform-none"
-                  >
-                    <span className="flex items-center gap-2 text-base font-bold">
-                      <Sparkles size={17} className="text-[var(--noodle-accent)]" />
-                      {t("ui.noodle.noodlerwizard.handoff.easy.title")}
-                    </span>
-                    <span className="mt-2 block text-sm leading-6 text-[var(--slurp-muted)]">
-                      {t("ui.noodle.noodlerwizard.handoff.easy.detail")}
-                    </span>
-                    <span className="mt-4 flex items-center gap-1 text-sm font-bold text-[var(--noodle-accent)]">
-                      {t("ui.noodle.noodlerwizard.handoff.easy.action")}
-                      <ChevronRight size={15} />
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSetupLane("customize");
-                      setStep(1);
-                    }}
-                    className="group rounded-xl border border-[var(--noodle-accent)]/35 bg-[var(--noodle-accent)]/[0.06] p-5 text-left transition-[transform,background-color] hover:-translate-y-0.5 hover:bg-[var(--noodle-accent)]/12 motion-reduce:transform-none"
-                  >
-                    <span className="flex items-center gap-2 text-base font-bold">
-                      <SlidersHorizontal size={17} />
-                      {t("ui.noodle.noodlerwizard.handoff.customize.title")}
-                    </span>
-                    <span className="mt-2 block text-sm leading-6 text-[var(--slurp-muted)]">
-                      {t("ui.noodle.noodlerwizard.handoff.customize.detail")}
-                    </span>
-                    <span className="mt-4 flex items-center gap-1 text-sm font-bold text-[var(--slurp-text)]">
-                      {t("ui.noodle.noodlerwizard.handoff.customize.action")}
-                      <ChevronRight size={15} />
-                    </span>
-                  </button>
-                </div>
-              </div>
-            )}
-
-            <SlpOnboardingSteps model={model} />
-          </div>
-
-          <div className="border-t border-[var(--slurp-outline)] pt-3 max-sm:pt-2">
-            <div className="flex items-center justify-between gap-3 max-sm:gap-1.5">
-              <div className="flex items-center gap-2 max-sm:gap-0.5">
-                {intro !== null && intro > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setIntro((intro - 1) as Intro)}
-                    className="flex min-h-10 items-center gap-1 rounded-lg border border-[var(--slurp-outline)] px-3 text-sm font-bold max-sm:px-2"
-                  >
-                    <ChevronLeft size={15} />
-                    {t("ui.noodle.noodlerwizard.back")}
-                  </button>
-                )}
-                {intro === null &&
-                  setupLane !== null &&
-                  ((step > 1 && step < 5) || (step === 5 && completion === "creationFailed")) && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (step === 5) returnToSetup();
-                        else returnToPreviousStep();
-                      }}
-                      className="flex min-h-10 items-center gap-1 rounded-lg border border-[var(--slurp-outline)] px-3 text-sm font-bold max-sm:px-2"
-                    >
-                      <ChevronLeft size={15} />
-                      {t("ui.noodle.noodlerwizard.back")}
-                    </button>
-                  )}
-                {intro === null && setupLane !== null && step === 1 && !selectionOnly && (
-                  <button
-                    type="button"
-                    onClick={() => setSetupLane(null)}
-                    className="flex min-h-10 items-center gap-1 rounded-lg border border-[var(--slurp-outline)] px-3 text-sm font-bold max-sm:px-2"
-                  >
-                    <ChevronLeft size={15} />
-                    {t("ui.noodle.noodlerwizard.back")}
-                  </button>
-                )}
-                {!selectionOnly && step < 5 && (intro !== null || setupLane !== null) && (
-                  <button
-                    type="button"
-                    disabled={pending}
-                    onClick={() => (intro === null ? void skip() : setIntro(null))}
-                    className="min-h-10 rounded-lg px-2 text-sm font-semibold text-[var(--slurp-muted)] hover:text-[var(--slurp-text)] disabled:opacity-50 max-sm:px-1.5 max-sm:text-xs"
-                  >
-                    {intro === null ? t("ui.noodle.noodlerwizard.skip") : t("ui.noodle.noodlerwizard.skipIntro")}
-                  </button>
-                )}
-              </div>
-              {intro !== null ? (
-                <button
-                  type="button"
-                  disabled={intro === 3 && !postExplored}
-                  onClick={() => setIntro(intro < LAST_INTRO ? ((intro + 1) as Intro) : null)}
-                  className="flex min-h-10 items-center gap-2 rounded-lg bg-[var(--noodle-accent)] px-4 text-sm font-bold text-zinc-950 [&_svg]:!text-zinc-950 disabled:opacity-50 max-sm:px-3"
-                >
-                  {intro < LAST_INTRO ? t("ui.noodle.noodlerwizard.continue") : t("ui.noodle.noodlerwizard.introDone")}
-                  <ChevronRight size={15} />
-                </button>
-              ) : setupLane === null ? null : step < 5 ? (
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    disabled={pending || (step === 1 && selected.size === 0)}
-                    onClick={() => {
-                      if (step === 4) void finish();
-                      else if (setupLane === "easy" && step === 1) setStep(4);
-                      else setStep((step + 1) as Step);
-                    }}
-                    className="flex min-h-10 items-center gap-2 rounded-lg bg-[var(--noodle-accent)] px-4 text-sm font-bold text-zinc-950 [&_svg]:!text-zinc-950 disabled:opacity-50 max-sm:px-3 max-sm:text-xs"
-                  >
-                    {pending && <Loader2 size={15} className="animate-spin" />}
-                    {step === 4
-                      ? t("ui.noodle.noodlerwizard.createCount", {
-                          count: selected.size,
-                        })
-                      : setupLane === "easy"
-                        ? t("ui.noodle.noodlerwizard.reviewSetup")
-                        : step === 1
-                          ? t("ui.noodle.noodlerwizard.setIdentities")
-                          : step === 2
-                            ? t("ui.noodle.noodlerwizard.setActivity")
-                            : t("ui.noodle.noodlerwizard.setImages")}
-                    {!pending && step !== 4 && <ChevronRight size={15} />}
-                  </button>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => {
-                    onSeeFeed?.();
-                    if (!onSeeFeed) onClose();
-                  }}
-                  className="min-h-10 rounded-lg bg-[var(--noodle-accent)] px-4 text-sm font-bold text-zinc-950 [&_svg]:!text-zinc-950"
-                >
-                  {t("ui.noodle.noodlerwizard.openAllCreators")}
-                </button>
               )}
-            </div>
-            {/* Creating profiles then writing first posts can take a while; say which half we are in. */}
-            <p aria-live="polite" className="mt-2 min-h-4 text-xs text-[var(--slurp-muted)] max-sm:mt-1">
-              {bulkCreate.isPending || enqueueFirstPosts.isPending
-                ? t("ui.noodle.noodlerwizard.progressCreating")
-                : refreshTargeted.isPending || firstPostsQueued
-                  ? t("ui.noodle.noodlerwizard.progressWriting")
-                  : ""}
-            </p>
-          </div>
+
+              <div className="flex min-h-0 flex-1 flex-col overflow-y-auto py-4 max-sm:py-2.5">
+                <div className={cn("w-full", centred && "my-auto")}>
+                  {intro === 0 && (
+                    <div className="mx-auto flex max-w-md flex-col items-center gap-4 text-center">
+                      <img
+                        src="/sprites/mari/Mari_wave.png"
+                        alt=""
+                        className="h-40 w-auto object-contain drop-shadow-[0_12px_28px_color-mix(in_srgb,var(--noodle-accent)_35%,transparent)] max-sm:h-36"
+                      />
+                      <StepHeading
+                        centred
+                        title={t("ui.noodle.noodlerwizard.intro.info.title")}
+                        help={t("ui.noodle.noodlerwizard.intro.info.help")}
+                      />
+                      <p className={cn(SLP_TYPE.body, "text-pretty text-[var(--slurp-muted)]")}>
+                        <span className="font-semibold text-[var(--slurp-text)]">
+                          {t("ui.noodle.noodlerwizard.intro.info.lead")}
+                        </span>{" "}
+                        {t("ui.noodle.noodlerwizard.intro.info.detail")}
+                      </p>
+                    </div>
+                  )}
+
+                  {intro === 1 && (
+                    <div className="mx-auto max-w-md space-y-4">
+                      <StepHeading
+                        centred
+                        title={t("ui.noodle.noodlerwizard.intro.attention.title")}
+                        help={t("ui.noodle.noodlerwizard.intro.attention.help")}
+                      />
+                      <ul className={SLP_GROUP_CLASS}>
+                        {[
+                          { icon: <Coins size={18} />, key: "cost" },
+                          { icon: <ImageIcon size={18} />, key: "images" },
+                          { icon: <Cpu size={18} />, key: "context" },
+                        ].map((item) => (
+                          <li key={item.key} className={cn(SLP_TYPE.body, "flex items-start gap-3 px-4 py-3")}>
+                            <span aria-hidden="true" className="mt-px shrink-0 text-[var(--noodle-accent-foreground)]">
+                              {item.icon}
+                            </span>
+                            <span className="text-pretty">
+                              {t(`ui.noodle.noodlerwizard.intro.attention.${item.key}`)}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                      <p className={cn(SLP_TYPE.meta, "text-center text-pretty text-[var(--slurp-muted)]")}>
+                        {t("ui.noodle.noodlerwizard.intro.attention.footer")}
+                      </p>
+                    </div>
+                  )}
+
+                  {intro === 2 && (
+                    <div className="mx-auto max-w-2xl space-y-4">
+                      <StepHeading
+                        centred
+                        title={t("ui.noodle.noodlerwizard.intro.identity.title")}
+                        help={t("ui.noodle.noodlerwizard.intro.identity.help")}
+                      />
+                      <div className="grid items-center gap-4 sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
+                        <div className="flex flex-col items-center text-center">
+                          <Avatar
+                            account={{
+                              displayName: demoProfile.displayName,
+                              avatarUrl: demoProfile.avatarUrl,
+                              avatarCrop: demoProfile.avatarCrop,
+                            }}
+                            size="lg"
+                          />
+                          <p className={cn(SLP_TYPE.title, "mt-2")}>{demoProfile.displayName}</p>
+                          <p className={cn(SLP_TYPE.meta, "text-[var(--slurp-muted)]")}>@{demoProfile.handle}</p>
+                          <p className={cn(SLP_TYPE.meta, "mt-1 font-semibold text-[var(--noodle-accent-foreground)]")}>
+                            {t(`ui.noodle.noodlerwizard.identityPreview.${disclosure}.connection`)}
+                          </p>
+                        </div>
+                        <DisclosureChoice
+                          value={disclosure}
+                          onChange={(value) => {
+                            setDisclosure(value);
+                            setPostExplored(false);
+                          }}
+                          t={t}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {intro === 3 && (
+                    <div className="space-y-4">
+                      <StepHeading
+                        centred
+                        title={t("ui.noodle.noodlerwizard.intro.locked.title")}
+                        help={t("ui.noodle.noodlerwizard.intro.locked.help")}
+                      />
+                      {/* Capped width: the wizard modal is 3xl, and a full-bleed card makes the demo post
+                    read as a page rather than as one item in a feed. */}
+                      <div className="mx-auto max-w-sm overflow-hidden rounded-2xl shadow-[var(--slurp-shadow-raised),var(--slurp-highlight)] max-sm:max-w-[20rem]">
+                        <LockedSlurpPostCard
+                          key={disclosure}
+                          post={{
+                            ...DEMO_POST,
+                            title: t("ui.noodle.noodlerwizard.demoPost.walkthrough.title"),
+                            imageUrl: DEMO_POST.imageUrl,
+                          }}
+                          profile={DEMO_PROFILE}
+                          subscribed={false}
+                          unlockPending={false}
+                          subscriptionPending={false}
+                          onUnlock={() => {}}
+                          onToggleSubscription={() => {}}
+                          demo={{
+                            body: t("ui.noodle.noodlerwizard.demoPost.walkthrough.body"),
+                            lockedTitle: t("ui.noodle.noodlerwizard.demoPost.walkthrough.lockedTitle"),
+                            unlockedLabel: t("ui.noodle.postaccess.unlocked"),
+                            unlockedImageUrl: "/sprites/mari/Mari_noodler_teaser_unlocked.webp",
+                            onReveal: () => setPostExplored(true),
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {intro === 4 && (
+                    <div className="mx-auto max-w-2xl space-y-4">
+                      <StepHeading
+                        centred
+                        title={t("ui.noodle.noodlerwizard.intro.activity.title")}
+                        help={t("ui.noodle.noodlerwizard.intro.activity.help")}
+                      />
+                      <ChoiceSetting
+                        label={t("ui.noodle.noodlerwizard.intro.activity.title")}
+                        labelHidden
+                        variant="cards"
+                        value={activityChoice}
+                        onChange={chooseActivity}
+                        options={SLURP_ACTIVITY_PRESETS.map((choice) => ({
+                          value: choice,
+                          label: t(`ui.noodle.noodlerwizard.activityChoice.${choice}.title`),
+                          detail: t(`ui.noodle.noodlerwizard.activityChoice.${choice}.detail`),
+                        }))}
+                      />
+                      <div className={SLP_GROUP_CLASS}>
+                        <div className="px-4">
+                          <Toggle
+                            compact
+                            label={t("ui.noodle.noodlerwizard.nightQuiet")}
+                            value={nightQuiet}
+                            onChange={setNightQuiet}
+                          />
+                        </div>
+                        <div className="px-4">
+                          <Toggle
+                            compact
+                            label={t("ui.noodle.noodlerwizard.imagesShort")}
+                            value={imagesEnabled}
+                            onChange={setImagesEnabled}
+                          />
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3 rounded-2xl bg-[var(--slurp-tint)] px-3 py-2.5">
+                        <img
+                          src="/sprites/mari/Mari_explaining.png"
+                          alt=""
+                          className="h-14 w-auto shrink-0 object-contain max-sm:h-12"
+                        />
+                        <p className={cn(SLP_TYPE.body, "text-pretty")}>
+                          {activityChoice === "manual"
+                            ? t("ui.noodle.noodlerwizard.intro.activity.manualPreview")
+                            : t("ui.noodle.noodlerwizard.intro.activity.preview", {
+                                count: postsPerDay,
+                              })}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {intro === null && setupLane === null && (
+                    <div className="mx-auto max-w-2xl space-y-5">
+                      <StepHeading
+                        centred
+                        title={t("ui.noodle.noodlerwizard.handoff.title")}
+                        help={t("ui.noodle.noodlerwizard.handoff.help")}
+                      />
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        {(
+                          [
+                            { lane: "scene", icon: <MessagesSquare size={18} />, lead: true },
+                            { lane: "easy", icon: <SlpSparkleGlyph size={18} />, lead: false },
+                            { lane: "customize", icon: <SlidersHorizontal size={18} />, lead: false },
+                          ] as const
+                        ).map((card) => (
+                          <button
+                            key={card.lane}
+                            type="button"
+                            onClick={() => {
+                              setSetupLane(card.lane);
+                              setStep(1);
+                            }}
+                            className={cn(
+                              card.lane === "scene" && "sm:col-span-2",
+                              "group flex flex-col rounded-2xl p-5 text-start transition-[transform,background-color] duration-[var(--slurp-motion-fast)] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)] motion-reduce:transform-none",
+                              card.lead
+                                ? "bg-[image:var(--slurp-nav-active)] shadow-[var(--slurp-glow),var(--slurp-highlight)] ring-1 ring-inset ring-[var(--noodle-accent)]/45"
+                                : "bg-[var(--slurp-surface-raised)] shadow-[var(--slurp-shadow-raised),var(--slurp-highlight)] hover:bg-[var(--accent)]",
+                            )}
+                          >
+                            <span className={cn(SLP_TYPE.title, "flex items-center gap-2")}>
+                              <span aria-hidden="true" className="text-[var(--noodle-accent-foreground)]">
+                                {card.icon}
+                              </span>
+                              {t(`ui.noodle.noodlerwizard.handoff.${card.lane}.title`)}
+                            </span>
+                            <span className={cn(SLP_TYPE.body, "mt-1.5 block text-pretty text-[var(--slurp-muted)]")}>
+                              {t(`ui.noodle.noodlerwizard.handoff.${card.lane}.detail`)}
+                            </span>
+                            <span className="mt-4 flex items-center justify-between gap-2">
+                              <span className={cn(SLP_TYPE.meta, "text-[var(--slurp-muted)]")}>
+                                {card.lane === "scene"
+                                  ? t("ui.slurp.scene.laneMeta")
+                                  : t("ui.slurp.wizard.stepCount", {
+                                      count: SLP_SETUP_STEPS[card.lane].length,
+                                      defaultValue: "{{count}} steps",
+                                    })}
+                              </span>
+                              <span className="flex items-center gap-1 text-[13px] font-bold text-[var(--noodle-accent-foreground)]">
+                                {t(`ui.noodle.noodlerwizard.handoff.${card.lane}.action`)}
+                                <ChevronRight size={16} aria-hidden="true" className="shrink-0 rtl:rotate-180" />
+                              </span>
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <SlpOnboardingSteps model={model} />
+                </div>
+              </div>
+
+              <SlpWizardFooter
+                back={back && { label: t("ui.noodle.noodlerwizard.back"), onClick: back }}
+                skip={
+                  !selectionOnly && step < 5 && (intro !== null || setupLane !== null)
+                    ? {
+                        label:
+                          intro === null ? t("ui.noodle.noodlerwizard.skip") : t("ui.noodle.noodlerwizard.skipIntro"),
+                        onClick: () => (intro === null ? void skip() : setIntro(null)),
+                        disabled: pending,
+                      }
+                    : undefined
+                }
+                primary={primary}
+                // Creating profiles then writing first posts can take a while; say which half we are in.
+                note={running ? `${running} ${t("ui.slurp.pulse.task.canClose")}` : reason}
+              />
+            </>
+          )}
         </div>
       </Modal>
       <Modal
@@ -598,29 +577,23 @@ export function SlurpOnboardingWizard(props: WizardProps) {
           "--accent": "rgba(255, 126, 193, 0.12)",
         })}
       >
-        <div className="space-y-4">
-          <p className="text-sm leading-6 text-[var(--muted-foreground)]">
+        <div className="space-y-4 text-[var(--slurp-text)]">
+          <p className={cn(SLP_TYPE.body, "text-pretty text-[var(--muted-foreground)]")}>
             {t("ui.slurp.providerDisclosure.onboardingDetail")}
           </p>
-          <div className="flex justify-end gap-2 border-t border-[var(--border)] pt-4">
-            <button
-              type="button"
-              onClick={() => setProviderConfirmationOpen(false)}
-              className="min-h-10 rounded-lg border border-[var(--border)] px-4 text-xs font-semibold"
-            >
+          <div className="flex justify-end gap-2">
+            <SlpButton variant="tertiary" onClick={() => setProviderConfirmationOpen(false)}>
               {t("ui.slurp.actions.cancel")}
-            </button>
-            <button
-              type="button"
+            </SlpButton>
+            <SlpPrimaryButton
               disabled={pending}
               onClick={() => {
                 setProviderConfirmationOpen(false);
                 void performFinish();
               }}
-              className="min-h-10 rounded-lg bg-[var(--noodle-accent)] px-4 text-xs font-bold !text-zinc-950 [&_svg]:!text-zinc-950"
             >
               {t("ui.slurp.actions.continue")}
-            </button>
+            </SlpPrimaryButton>
           </div>
         </div>
       </Modal>
@@ -628,16 +601,43 @@ export function SlurpOnboardingWizard(props: WizardProps) {
   );
 }
 
-export function StepHeading({ icon, title, help }: { icon: ReactNode; title: string; help: string }) {
+/** A screen heading: screen-size title, one muted line under it. Centred on the short tour screens. */
+export function StepHeading({ title, help, centred = false }: { title: string; help: string; centred?: boolean }) {
   return (
-    <div className="flex gap-3 max-sm:gap-2">
-      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[var(--noodle-accent)] to-[var(--noodle-accent)]/70 text-zinc-950 shadow-sm shadow-[var(--noodle-accent)]/30 max-sm:h-8 max-sm:w-8">
-        {icon}
-      </span>
-      <div className="min-w-0">
-        <h3 className="text-xl font-bold leading-snug max-sm:text-lg">{title}</h3>
-        <p className="mt-1 max-w-[70ch] text-sm leading-6 text-[var(--slurp-muted)] max-sm:leading-5">{help}</p>
-      </div>
+    <div className={cn("min-w-0", centred && "text-center")}>
+      {/* The first thing focused when the wizard opens, so a pointer open shows no ring on the X. */}
+      <h3 tabIndex={-1} data-autofocus className={cn(SLP_TYPE.screen, "text-balance outline-none")}>
+        {title}
+      </h3>
+      <p className={cn(SLP_TYPE.body, "mt-1 text-pretty text-[var(--slurp-muted)]", centred && "mx-auto max-w-md")}>
+        {help}
+      </p>
     </div>
+  );
+}
+
+/** Open / Hinted as the settings kit's cards (one radio group), used by the tour and step 2. */
+export function DisclosureChoice({
+  value,
+  onChange,
+  t,
+}: {
+  value: SlpIdentityDisclosure;
+  onChange: (value: SlpIdentityDisclosure) => void;
+  t: ReturnType<typeof useUiTranslation>["t"];
+}) {
+  return (
+    <ChoiceSetting
+      label={t("ui.noodle.noodlerwizard.disclosure.question")}
+      labelHidden
+      variant="cards"
+      value={value}
+      onChange={onChange}
+      options={DISCLOSURES.map((option) => ({
+        value: option,
+        label: t(`ui.noodle.noodlerwizard.disclosure.${option}.title`),
+        detail: t(`ui.noodle.noodlerwizard.disclosure.${option}.detail`),
+      }))}
+    />
   );
 }

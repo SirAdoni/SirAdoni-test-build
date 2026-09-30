@@ -78,7 +78,7 @@ export function ChatSettings({ props }: { props: CapabilityProps }) {
             aria-labelledby={recallStyleLabelId}
             data-ltm-control="select"
             className={compactInputClass}
-            style={compactInputStyle}
+            style={{ ...compactInputStyle, height: "2.25rem" }}
             disabled={pending || readOnly}
             value={effectiveStyle}
             onChange={(event) => update({ longTermMemoryRecallStyle: event.target.value })}

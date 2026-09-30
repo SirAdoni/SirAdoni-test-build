@@ -56,6 +56,10 @@ try {
     { messageTrash: false },
     "only well-formed known keys survive",
   );
+  assert.deepEqual(
+    normalizeFeatureSettings({ stableLorebookGroupPicks: true, providerRetry: "yes", messageTrash: true, other: true }),
+    { stableLorebookGroupPicks: true, messageTrash: true },
+  );
   assert.deepEqual(normalizeFeatureSettings({ backgroundCallsPerHour: 42, messageTrashDays: 7 }), {
     backgroundCallsPerHour: 42,
     messageTrashDays: 7,
@@ -147,6 +151,16 @@ try {
   const unknown = await app.inject({ method: "PUT", url: "/api/app-settings/features", payload: { surprise: true } });
   assert.ok(unknown.statusCode >= 400, "unknown keys are rejected");
   assert.equal(isFeatureEnabled("messageTrash"), false, "a rejected save keeps the old value");
+
+  const savedWithTrash = await app.inject({
+    method: "PUT",
+    url: "/api/app-settings/features",
+    payload: { providerRetry: true, messageTrash: true },
+  });
+  assert.equal(savedWithTrash.statusCode, 200);
+  assert.deepEqual(savedWithTrash.json().settings, { providerRetry: true, messageTrash: true });
+  assert.equal(isFeatureEnabled("messageTrash"), true, "a saved trash switch takes effect at once");
+  assert.equal(JSON.parse((await storage.get(FEATURE_SETTINGS_KEY))!).messageTrash, true, "messageTrash persists");
 
   process.env.MARINARA_BACKGROUND_CALLS_PER_HOUR = "120";
   const locked = await app.inject({ method: "GET", url: "/api/app-settings/features" });

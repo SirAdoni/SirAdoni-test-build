@@ -30,6 +30,7 @@ export interface SlpFanActivityDayPlanRun {
   acceptedActivities: SlpFanAcceptedActivity[];
   claimedAt: string | null;
   finishedAt: string | null;
+  error?: string | null;
   manual?: boolean;
 }
 
@@ -125,7 +126,8 @@ function validRun(value: unknown): value is SlpFanActivityDayPlanRun {
     Array.isArray(row.acceptedActivities) &&
     row.acceptedActivities.every(validActivity) &&
     (row.claimedAt === null || isTimestamp(row.claimedAt)) &&
-    (row.finishedAt === null || isTimestamp(row.finishedAt))
+    (row.finishedAt === null || isTimestamp(row.finishedAt)) &&
+    (row.error === undefined || row.error === null || typeof row.error === "string")
   );
 }
 
@@ -206,10 +208,26 @@ export function reconcileSlpFanActivityDayPlan(
       run.creatorIds = Array.from({ length: count }, (_, index) => creators[(offset + index) % creators.length]!);
       offset = creators.length === 0 ? 0 : (offset + count) % creators.length;
     }
+    // The plan was made with the Creators of that moment. A Creator made (or switched on) since
+    // then joins today's remaining runs, and a removed one leaves them, instead of waiting for
+    // tomorrow; a fresh install gets its first fans the same day (R1-102).
+    const eligible = new Set(creators);
+    const pending = [...retainedScheduledRuns, ...addedRuns].map((run) => ({
+      ...run,
+      creatorIds: run.creatorIds.filter((id) => eligible.has(id)),
+    }));
+    const covered = new Set([...usedRuns, ...pending].flatMap((run) => run.creatorIds));
+    const missing = creators.filter((id) => !covered.has(id));
+    for (let index = 0, slot = 0; index < missing.length && pending.length > 0; slot += 1) {
+      const run = pending[slot % pending.length]!;
+      if (run.creatorIds.length < NOODLE_FAN_ACTIVITY_MAX_CREATORS_PER_RUN) run.creatorIds.push(missing[index++]!);
+      else if (pending.every((candidate) => candidate.creatorIds.length >= NOODLE_FAN_ACTIVITY_MAX_CREATORS_PER_RUN))
+        break;
+    }
     return reconcileOverdueSlpFanActivityRuns(
       {
         ...current,
-        runs: [...usedRuns, ...retainedScheduledRuns, ...addedRuns, ...manualRuns],
+        runs: [...usedRuns, ...pending, ...manualRuns],
         nextCreatorOffset: offset,
       },
       at,
@@ -332,13 +350,18 @@ export function finishSlpFanActivityRun(
   runId: string,
   status: "completed" | "skipped" | "abandoned",
   at: Date,
+  error?: string | null,
 ): PersistedSlpFanActivityDayPlan {
   if (status !== "completed" && status !== "skipped" && status !== "abandoned") {
     throw new Error("Invalid Slurp fan activity finish status.");
   }
   return {
     ...plan,
-    runs: plan.runs.map((run) => (run.id === runId ? { ...run, status, finishedAt: at.toISOString() } : run)),
+    runs: plan.runs.map((run) =>
+      run.id === runId
+        ? { ...run, status, finishedAt: at.toISOString(), ...(error !== undefined ? { error } : {}) }
+        : run,
+    ),
   };
 }
 

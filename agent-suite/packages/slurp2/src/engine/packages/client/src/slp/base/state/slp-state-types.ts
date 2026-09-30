@@ -10,13 +10,16 @@ export type SlurpPromptBlockOverride = {
   id: string;
   enabled?: boolean;
   text?: string;
+  instructionId?: string;
 };
+export type SlurpReusablePromptInstruction = { id: string; name: string; text: string; builtin?: boolean };
 export type SlurpDiscoveryGender = "male" | "female" | "other";
 export type SlurpStageProfileInput = SlpStageProfileInput & {
   gender: SlurpDiscoveryGender | null;
   tags: string[];
 };
 export type SlurpManagedStageProfile = SlpCreatorManagedStageProfile & {
+  bannerUrl: string | null;
   gender: SlurpDiscoveryGender | null;
   tags: string[];
 };

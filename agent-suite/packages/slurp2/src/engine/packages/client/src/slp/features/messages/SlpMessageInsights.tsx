@@ -1,3 +1,5 @@
+import { SlpMessageDetailsEditor, SlpEditableDetail, useSlpDetailEditing } from "./SlpMessageDetailsEditor";
+import { Toggle } from "../../modules/settings/SlpSettingsControls";
 import {
   Activity,
   BriefcaseBusiness,
@@ -6,23 +8,21 @@ import {
   Coffee,
   Crown,
   Handshake,
-  Heart,
-  Lock,
   MessageCircle,
   Palette,
   Search,
   ShieldCheck,
-  Sparkles,
   Star,
-  Trash2,
   UserRound,
 } from "lucide-react";
+import { SlpHeartGlyph, SlpLockGlyph, SlpSparkleGlyph } from "../../base/chrome/SlpGlyphs";
 import { useState, type ReactNode } from "react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { cn } from "../../../lib/utils";
+import { SlpSegment } from "../../modules/chrome/SlpButton";
 import { SlurpPromptDebugPanel, useDismissablePopover } from "./SlpMessageInsightParts";
 export { SlurpPromptDebugPanel, useDismissablePopover };
-import type { SlurpRapport, SlurpThreadRelationship } from "./slp-messages-contract";
+import type { SlurpRapport, SlurpFanRelationship } from "./slp-messages-contract";
 
 const ADULT_LEVELS = ["ordinary", "suggestive", "provocative", "intimate", "explicit"] as const;
 const ADULT_LEVEL_HINT: Record<string, string> = {
@@ -37,7 +37,7 @@ const PANEL_TONES = {
   accent: {
     fill: "bg-[var(--noodle-accent)]",
     track: "bg-[color-mix(in_srgb,var(--noodle-accent)_18%,transparent)]",
-    text: "text-[var(--noodle-accent)]",
+    text: "text-[var(--noodle-accent-foreground)]",
     ring: "ring-[color-mix(in_srgb,var(--noodle-accent)_40%,transparent)]",
   },
   good: {
@@ -81,25 +81,30 @@ function Meter({
   hint?: string;
 }) {
   const tones = PANEL_TONES[tone];
+  const editing = useSlpDetailEditing(label);
   return (
     <div>
-      <div className="mb-1 flex items-baseline justify-between gap-2">
+      <div className="mb-1 flex items-center justify-between gap-2">
         <span className="text-[0.7rem] text-[var(--muted-foreground)]">{label}</span>
-        <span className="text-[0.72rem] font-bold tabular-nums">{value}</span>
+        <span className="min-w-0 flex-1 text-right text-[0.72rem] font-bold tabular-nums">
+          <SlpEditableDetail label={label}>{value}</SlpEditableDetail>
+        </span>
       </div>
-      <div
-        role="meter"
-        aria-valuenow={clampPercent(value)}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-label={label}
-        className={cn("h-1.5 overflow-hidden rounded-full", tones.track)}
-      >
+      {!editing && (
         <div
-          className={cn("h-full rounded-r-[4px] transition-[width] motion-reduce:transition-none", tones.fill)}
-          style={{ width: `${clampPercent(value)}%` }}
-        />
-      </div>
+          role="meter"
+          aria-valuenow={clampPercent(value)}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label={label}
+          className={cn("h-1.5 overflow-hidden rounded-full", tones.track)}
+        >
+          <div
+            className={cn("h-full rounded-r-[4px] transition-[width] motion-reduce:transition-none", tones.fill)}
+            style={{ width: `${clampPercent(value)}%` }}
+          />
+        </div>
+      )}
       {hint && <p className="mt-1 text-[0.65rem] leading-snug text-[var(--muted-foreground)]">{hint}</p>}
     </div>
   );
@@ -112,6 +117,7 @@ function DivergingBar({
   negativeLabel,
   positiveLabel,
   reading,
+  fieldKey,
 }: {
   label: string;
   value: number;
@@ -119,24 +125,33 @@ function DivergingBar({
   negativeLabel?: string;
   positiveLabel?: string;
   reading?: string;
+  fieldKey?: string;
 }) {
+  const editing = useSlpDetailEditing(fieldKey ?? label);
   const share = max > 0 ? Math.min(1, Math.abs(value) / max) : 0;
   const tones = value < 0 ? PANEL_TONES.serious : PANEL_TONES.accent;
   return (
     <div>
-      <div className="mb-1 flex items-baseline justify-between gap-2">
+      <div className="mb-1 flex items-center justify-between gap-2">
         <span className="text-[0.7rem] text-[var(--muted-foreground)]">{label}</span>
-        <span className={cn("text-[0.72rem] font-bold", value < 0 && tones.text)}>
-          {reading ?? (value > 0 ? `+${value}` : String(value))}
+        <span className={cn("min-w-0 flex-1 text-right text-[0.72rem] font-bold", value < 0 && tones.text)}>
+          <SlpEditableDetail label={label} fieldKey={fieldKey}>
+            {reading ?? (value > 0 ? `+${value}` : String(value))}
+          </SlpEditableDetail>
         </span>
       </div>
-      <div className="relative h-1.5 rounded-full bg-[color-mix(in_srgb,var(--muted-foreground)_16%,transparent)]">
-        <div className="absolute inset-y-[-2px] left-1/2 w-px -translate-x-1/2 bg-[var(--muted-foreground)]/45" />
-        <div
-          className={cn("absolute inset-y-0 rounded-full transition-[width] motion-reduce:transition-none", tones.fill)}
-          style={value < 0 ? { right: "50%", width: `${share * 50}%` } : { left: "50%", width: `${share * 50}%` }}
-        />
-      </div>
+      {!editing && (
+        <div className="relative h-1.5 rounded-full bg-[color-mix(in_srgb,var(--muted-foreground)_16%,transparent)]">
+          <div className="absolute inset-y-[-2px] left-1/2 w-px -translate-x-1/2 bg-[var(--muted-foreground)]/45" />
+          <div
+            className={cn(
+              "absolute inset-y-0 rounded-full transition-[width] motion-reduce:transition-none",
+              tones.fill,
+            )}
+            style={value < 0 ? { right: "50%", width: `${share * 50}%` } : { left: "50%", width: `${share * 50}%` }}
+          />
+        </div>
+      )}
       {(negativeLabel || positiveLabel) && (
         <div className="mt-1 flex justify-between text-[0.6rem] text-[var(--muted-foreground)]">
           <span>{negativeLabel}</span>
@@ -151,9 +166,11 @@ function Stepper({ steps, current, label }: { steps: readonly string[]; current:
   const index = steps.indexOf(current);
   return (
     <div>
-      <div className="mb-1 flex items-baseline justify-between gap-2">
+      <div className="mb-1 flex items-center justify-between gap-2">
         <span className="text-[0.7rem] text-[var(--muted-foreground)]">{label}</span>
-        <span className="text-[0.72rem] font-bold capitalize">{humanizeValue(current)}</span>
+        <span className="min-w-0 flex-1 text-right text-[0.72rem] font-bold capitalize">
+          <SlpEditableDetail label={label}>{humanizeValue(current)}</SlpEditableDetail>
+        </span>
       </div>
       <ol className="flex gap-[2px]" aria-label={`${label}: ${humanizeValue(current)}`}>
         {steps.map((step, position) => (
@@ -199,8 +216,10 @@ function StatusRow({
 function Field({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <div className="min-w-0 rounded-xl bg-[var(--slurp-surface-raised)] px-2.5 py-2">
-      <div className="text-[0.6rem] uppercase tracking-[0.08em] text-[var(--muted-foreground)]">{label}</div>
-      <div className="mt-0.5 break-words font-bold capitalize">{value}</div>
+      <div className="text-xs text-[var(--slurp-muted)]">{label}</div>
+      <div className="mt-0.5 break-words font-bold capitalize">
+        <SlpEditableDetail label={label}>{value}</SlpEditableDetail>
+      </div>
       {hint && <div className="mt-1 text-[0.65rem] leading-snug text-[var(--muted-foreground)]">{hint}</div>}
     </div>
   );
@@ -223,7 +242,7 @@ function PanelSection({
     <details open={defaultOpen} className="border-b border-[var(--noodle-divider)] last:border-b-0">
       <summary className="group flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 py-2.5 font-bold [&::-webkit-details-marker]:hidden">
         <span className="flex min-w-0 items-center gap-2">
-          <Icon size={15} className="shrink-0 text-[var(--noodle-accent)]" aria-hidden="true" />
+          <Icon size={15} className="shrink-0 text-[var(--noodle-accent-foreground)]" aria-hidden="true" />
           <span className="truncate">{title}</span>
         </span>
         <span className="flex shrink-0 items-center gap-1.5">
@@ -252,7 +271,7 @@ export function SlurpRapportBadge({ rapport, ownsCreator }: { rapport: SlurpRapp
         ownsCreator ? `ui.slurp.rapport.creatorHint.${rapport.tier}` : `ui.slurp.rapport.viewerHint.${rapport.tier}`,
       )}
       aria-label={localizeUi(`ui.slurp.rapport.tier.${rapport.tier}`)}
-      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--noodle-accent)]/15 text-[var(--noodle-accent)]"
+      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--noodle-accent)]/15 text-[var(--noodle-accent-foreground)]"
     >
       <Icon size={12} aria-hidden="true" />
     </span>
@@ -260,7 +279,7 @@ export function SlurpRapportBadge({ rapport, ownsCreator }: { rapport: SlurpRapp
 }
 
 const SLURP_TIERS = ["stranger", "acquaintance", "regular", "favourite", "whale"] as const;
-const SLURP_TIER_ICONS: Record<SlurpRapport["tier"], typeof Heart> = {
+const SLURP_TIER_ICONS: Record<SlurpRapport["tier"], typeof SlpHeartGlyph> = {
   stranger: UserRound,
   acquaintance: Handshake,
   regular: Coffee,
@@ -293,7 +312,7 @@ export function SlurpTierLadder({ tier, className }: { tier: SlurpRapport["tier"
               className={cn(
                 "flex h-9 w-9 items-center justify-center rounded-full ring-2 transition-transform motion-reduce:transition-none",
                 reached
-                  ? "bg-[var(--noodle-accent)] ring-[var(--noodle-accent)] [&_svg]:!text-zinc-950"
+                  ? "bg-[var(--noodle-accent)] ring-[var(--noodle-accent)] [&_svg]:!text-[var(--slurp-on-accent)]"
                   : "bg-[var(--slurp-surface-raised)] ring-[var(--slurp-outline)] [&_svg]:!text-[var(--muted-foreground)]",
                 isCurrent &&
                   "scale-110 shadow-[0_0_0_4px_color-mix(in_srgb,var(--noodle-accent)_25%,transparent),0_0_18px_color-mix(in_srgb,var(--noodle-accent)_55%,transparent)]",
@@ -303,7 +322,7 @@ export function SlurpTierLadder({ tier, className }: { tier: SlurpRapport["tier"
             </span>
             <span
               className={cn(
-                "w-full truncate text-center text-[0.62rem] leading-tight",
+                "w-full hyphens-auto break-words text-center text-[11px] leading-[13px]",
                 isCurrent ? "font-black text-[var(--foreground)]" : "text-[var(--muted-foreground)]",
               )}
             >
@@ -316,78 +335,108 @@ export function SlurpTierLadder({ tier, className }: { tier: SlurpRapport["tier"
   );
 }
 
+const ESCALATION_BLOCK_TEXT: Record<
+  Exclude<NonNullable<NonNullable<SlurpFanRelationship["escalation"]>["blockedBy"]>, "top">,
+  string
+> = {
+  falling: "Comfort or desire has dropped below this step, so it is easing back one.",
+  respect: "Not thinking well enough of this fan yet.",
+  resentment: "Holding a grudge against this fan.",
+  posture: "Gone guarded with this fan.",
+  comfort: "Not comfortable enough with this fan yet.",
+  desire: "Not wanting more from this conversation right now.",
+};
+
+const PICTURE_BLOCK_TEXT: Record<NonNullable<NonNullable<SlurpFanRelationship["pictures"]>["blockedBy"]>, string> = {
+  support: "Slurp Support's chat never gets pictures.",
+  cooling_off: "Taking space from this conversation.",
+  images_off: "This Creator's Images switch is off.",
+  stance: "Not warm enough toward this fan for a picture yet.",
+  energy: "Too tired for a picture right now.",
+  posture: "Guarded with this fan right now.",
+  comfort: "Not comfortable enough with this fan for a spicy picture.",
+  respect: "Not thinking well enough of this fan for a spicy picture.",
+};
+
 export function SlurpRelationshipPanel({
   relationship,
-  onReset,
-  resetting,
+  threadId,
+  personaId,
 }: {
-  relationship: NonNullable<SlurpThreadRelationship>;
-  onReset: (() => void) | null;
-  resetting: boolean;
+  relationship: NonNullable<SlurpFanRelationship>;
+  threadId: string | null;
+  personaId: string | null;
 }) {
-  const [advanced, setAdvanced] = useState(false);
+  const editKey = `slurp2:details-edit:${personaId}:${threadId}`;
+  const [editable, setEditable] = useState(() => {
+    try {
+      return localStorage.getItem(editKey) === "true";
+    } catch {
+      return false;
+    }
+  });
+  const [advanced, setAdvanced] = useState(editable);
+  const changeEditable = (value: boolean) => {
+    setEditable(value);
+    try {
+      localStorage.setItem(editKey, String(value));
+    } catch {
+      /* Editing still works without storage. */
+    }
+  };
   const { t: localizeUi } = useUiTranslation();
   const { creatorState, threadState, availability } = relationship;
   const cooling = Boolean(relationship.coolUntil && relationship.coolUntil > new Date().toISOString());
   const mood = relationship.mood ?? 0;
-  const blockedBy =
-    threadState.posture === "rejecting" || threadState.posture === "defensive"
-      ? "She has gone guarded with this fan."
-      : threadState.sexualComfort < 36
-        ? "She is not comfortable enough with this fan yet."
-        : threadState.respect < 36
-          ? "She does not think well enough of this fan."
-          : null;
+  // The server's verdicts (R1-012). "top" is not a block: there is simply no step left.
+  const riseBlock = relationship.escalation?.blockedBy ?? null;
+  const blockedBy = riseBlock && riseBlock !== "top" ? ESCALATION_BLOCK_TEXT[riseBlock] : null;
+  const pictures = relationship.pictures ?? { mode: relationship.imageMode, blockedBy: null };
   const modifiers = creatorState.modifiers ?? [];
 
   return (
-    <div className="mx-3 mt-2 flex max-h-[min(78vh,44rem)] min-h-0 shrink-0 flex-col overflow-hidden rounded-2xl bg-[var(--slurp-surface)] text-xs ring-1 ring-inset ring-[var(--noodle-divider)]">
-      <header className="shrink-0 border-b border-[var(--noodle-divider)] p-3">
+    <SlpMessageDetailsEditor
+      relationship={relationship}
+      threadId={threadId}
+      personaId={personaId}
+      enabled={advanced && editable}
+    >
+      <header className="shrink-0 border-b border-[var(--noodle-divider)] p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="text-sm font-bold">Conversation overview</h2>
-            <p className="mt-1 text-3xl font-bold capitalize leading-none">{humanizeValue(relationship.tier)}</p>
-            <p className="mt-1.5 text-[0.68rem] text-[var(--muted-foreground)]">
+            <h2 className="text-xs font-semibold text-[var(--slurp-muted)]">Conversation overview</h2>
+            <p className="mt-0.5 text-xl font-extrabold capitalize leading-[26px]">
+              {humanizeValue(relationship.tier)}
+            </p>
+            <p className="mt-0.5 text-xs text-[var(--slurp-muted)]">
               {advanced
                 ? `Rapport ${relationship.score}/100 · mood ${mood > 0 ? `+${mood}` : mood}`
                 : `Where you stand with them · ${moodWord(mood)} right now`}
             </p>
-            <div
-              className="mt-3"
-              role="meter"
-              aria-label={localizeUi("ui.slurp.messages.relationshipLevel", { defaultValue: "Relationship level" })}
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={relationship.score}
-              aria-valuetext={humanizeValue(relationship.tier)}
-            >
-              <SlurpTierLadder tier={relationship.tier as SlurpRapport["tier"]} />
-            </div>
           </div>
           {/* Both words are on screen, one selected. A single button that swapped its own label
               left it ambiguous whether it named the current mode or the one it would switch to. */}
-          <div
-            role="group"
-            aria-label="Detail level"
-            className="flex shrink-0 gap-0.5 rounded-lg bg-[var(--slurp-surface-raised)] p-0.5"
-          >
-            {([false, true] as const).map((mode) => (
-              <button
-                key={String(mode)}
-                type="button"
-                aria-pressed={advanced === mode}
-                onClick={() => setAdvanced(mode)}
-                className={cn(
-                  "min-h-9 rounded-[7px] px-2.5 text-[0.7rem] font-bold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)] motion-reduce:transition-none",
-                  advanced === mode
-                    ? "bg-[var(--noodle-accent)] text-zinc-950 [&_svg]:!text-zinc-950"
-                    : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
-                )}
-              >
-                {mode ? "Advanced" : "Basic"}
-              </button>
-            ))}
-          </div>
+          <SlpSegment
+            label="Detail level"
+            value={advanced ? "advanced" : "basic"}
+            onChange={(value) => setAdvanced(value === "advanced")}
+            options={[
+              { value: "basic", label: "Basic" },
+              { value: "advanced", label: "Advanced" },
+            ]}
+            className="shrink-0"
+          />
+        </div>
+        <div
+          className="mt-4"
+          role="meter"
+          aria-label={localizeUi("ui.slurp.messages.relationshipLevel", { defaultValue: "Relationship level" })}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={relationship.score}
+          aria-valuetext={humanizeValue(relationship.tier)}
+        >
+          <SlurpTierLadder tier={relationship.tier as SlurpRapport["tier"]} />
         </div>
       </header>
 
@@ -420,26 +469,28 @@ export function SlurpRelationshipPanel({
               />
               <div>
                 <p className="mb-1 text-[0.7rem] text-[var(--muted-foreground)]">True right now ({modifiers.length})</p>
-                {modifiers.length === 0 ? (
-                  <p className="text-[0.68rem] text-[var(--muted-foreground)]">Nothing in particular today.</p>
-                ) : (
-                  <ul className="flex flex-wrap gap-1.5">
-                    {modifiers.map((modifier) => (
-                      <li
-                        key={`${modifier.kind}-${modifier.until}`}
-                        title={modifier.source || undefined}
-                        className="rounded-full bg-[color-mix(in_srgb,var(--noodle-accent)_15%,transparent)] px-2 py-0.5 text-[0.65rem] font-bold text-[var(--noodle-accent)]"
-                      >
-                        {humanizeValue(modifier.kind)}
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                <SlpEditableDetail label="True right now">
+                  {modifiers.length === 0 ? (
+                    <p className="text-[0.68rem] text-[var(--muted-foreground)]">Nothing in particular today.</p>
+                  ) : (
+                    <ul className="flex flex-wrap gap-1.5">
+                      {modifiers.map((modifier) => (
+                        <li
+                          key={`${modifier.kind}-${modifier.until}`}
+                          title={modifier.source || undefined}
+                          className="rounded-full bg-[color-mix(in_srgb,var(--noodle-accent)_15%,transparent)] px-2 py-0.5 text-[0.65rem] font-bold text-[var(--noodle-accent-foreground)]"
+                        >
+                          {humanizeValue(modifier.kind)}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </SlpEditableDetail>
               </div>
             </PanelSection>
 
             <PanelSection
-              icon={Sparkles}
+              icon={SlpSparkleGlyph}
               title="This conversation"
               summary={`${humanizeValue(threadState.posture)} · ${humanizeValue(threadState.adultLevel)}`}
               defaultOpen
@@ -474,16 +525,22 @@ export function SlurpRelationshipPanel({
                 icon={ShieldCheck}
                 tone={blockedBy ? "serious" : "good"}
                 title={blockedBy ? "Adult escalation blocked" : "Adult escalation allowed"}
-                detail={blockedBy ?? "Comfort, respect and posture all clear the bar she sets."}
+                detail={
+                  blockedBy ??
+                  (riseBlock === "top"
+                    ? "Already at the top step."
+                    : "Comfort, respect and posture all clear the bar she sets.")
+                }
               />
               {cooling && (
                 <StatusRow
-                  icon={Lock}
+                  icon={SlpLockGlyph}
                   tone="warning"
                   title="Taking space from this conversation"
                   detail="She is not answering until the cool-off ends."
                 />
               )}
+              <Field label="Cool-off until" value={relationship.coolUntil ?? "Not cooling off"} />
               <Meter
                 label="Sexual comfort"
                 value={threadState.sexualComfort}
@@ -520,6 +577,7 @@ export function SlurpRelationshipPanel({
                     .map((entry) => (
                       <DivergingBar
                         key={entry.key}
+                        fieldKey={`contribution:${entry.key}`}
                         label={entry.detail}
                         value={entry.points}
                         max={Math.max(...relationship.contributions.map((row) => Math.abs(row.points)), 1)}
@@ -533,20 +591,21 @@ export function SlurpRelationshipPanel({
               <div className="grid grid-cols-2 gap-2">
                 <Field label="Availability" value={availability.online ? "Available" : "Away"} />
                 <Field label="Activity" value={availability.activity ?? "Nothing recorded"} />
-                {availability.minutesUntilOnline !== null && !availability.online && (
+                {(editable || (availability.minutesUntilOnline !== null && !availability.online)) && (
                   <Field
                     label="Back in"
                     value={
-                      availability.minutesUntilOnline < 60
-                        ? `~${Math.round(availability.minutesUntilOnline)}min`
-                        : `~${Math.round(availability.minutesUntilOnline / 60)}hr`
+                      (availability.minutesUntilOnline ?? 0) < 60
+                        ? `~${Math.round(availability.minutesUntilOnline ?? 0)}min`
+                        : `~${Math.round((availability.minutesUntilOnline ?? 0) / 60)}hr`
                     }
                   />
                 )}
                 <Field label="Audience tone" value={humanizeValue(relationship.audienceTone)} />
                 <Field
                   label="Pictures"
-                  value={relationship.imageMode === "none" ? "Not now" : humanizeValue(relationship.imageMode)}
+                  value={pictures.mode === "none" ? "Not now" : humanizeValue(pictures.mode)}
+                  hint={pictures.blockedBy ? PICTURE_BLOCK_TEXT[pictures.blockedBy] : undefined}
                 />
               </div>
               <Field label="Day vibe" value={relationship.dayVibe ?? "An ordinary day"} />
@@ -572,20 +631,40 @@ export function SlurpRelationshipPanel({
                     ["Spent", `${relationship.spentCoins} coins`],
                   ] as const
                 ).map(([term, value]) => (
-                  <div key={term} className="flex justify-between gap-2 border-b border-[var(--noodle-divider)] py-0.5">
+                  <div
+                    key={term}
+                    className={cn(
+                      "flex justify-between gap-2 border-b border-[var(--noodle-divider)] py-0.5",
+                      editable && "flex-col",
+                    )}
+                  >
                     <dt className="text-[var(--muted-foreground)]">{term}</dt>
-                    <dd className="font-bold">{value}</dd>
+                    <dd className="min-w-0 flex-1 text-right font-bold">
+                      <SlpEditableDetail label={term}>{value}</SlpEditableDetail>
+                    </dd>
                   </div>
                 ))}
               </dl>
               <p className="text-[0.65rem] text-[var(--muted-foreground)]">
-                Creator state updated {creatorState.updatedAt}. Conversation state updated {threadState.updatedAt}.
+                Creator state updated{" "}
+                <SlpEditableDetail label="Creator updated at">{creatorState.updatedAt}</SlpEditableDetail>. Conversation
+                state updated{" "}
+                <SlpEditableDetail label="Conversation updated at">{threadState.updatedAt}</SlpEditableDetail>.
               </p>
             </PanelSection>
+            <Toggle
+              compact
+              label={localizeUi("ui.slurp.messages.editDetails")}
+              value={editable}
+              onChange={changeEditable}
+              disabledReason={
+                !threadId || !personaId ? localizeUi("ui.slurp.messages.editDetailsNeedsThread") : undefined
+              }
+            />
           </div>
         ) : (
           <div className="flex flex-col">
-            <PanelSection icon={Sparkles} title="Right now" summary={humanizeValue(moodWord(mood))} defaultOpen>
+            <PanelSection icon={SlpSparkleGlyph} title="Right now" summary={humanizeValue(moodWord(mood))} defaultOpen>
               <DivergingBar
                 label="How this conversation is going"
                 value={mood}
@@ -596,7 +675,7 @@ export function SlurpRelationshipPanel({
               />
               {cooling ? (
                 <StatusRow
-                  icon={Lock}
+                  icon={SlpLockGlyph}
                   tone="warning"
                   title="Taking space from this conversation"
                   detail="Give them some time. They will pick it back up afterwards."
@@ -618,7 +697,7 @@ export function SlurpRelationshipPanel({
                     {modifiers.map((modifier) => (
                       <li
                         key={`${modifier.kind}-${modifier.until}`}
-                        className="rounded-full bg-[color-mix(in_srgb,var(--noodle-accent)_15%,transparent)] px-2 py-0.5 text-[0.65rem] font-bold text-[var(--noodle-accent)]"
+                        className="rounded-full bg-[color-mix(in_srgb,var(--noodle-accent)_15%,transparent)] px-2 py-0.5 text-[0.65rem] font-bold text-[var(--noodle-accent-foreground)]"
                       >
                         {humanizeValue(modifier.kind)}
                       </li>
@@ -644,9 +723,15 @@ export function SlurpRelationshipPanel({
                 {ADULT_LEVEL_HINT[threadState.adultLevel]}
               </p>
               <StatusRow
-                icon={blockedBy ? Lock : Heart}
+                icon={blockedBy ? SlpLockGlyph : SlpHeartGlyph}
                 tone={blockedBy ? "warning" : "good"}
-                title={blockedBy ? "This is as far as it goes for now" : "There is room for this to go further"}
+                title={
+                  blockedBy
+                    ? "This is as far as it goes for now"
+                    : riseBlock === "top"
+                      ? "This has gone as far as it goes"
+                      : "There is room for this to go further"
+                }
                 detail={
                   blockedBy
                     ? `${blockedBy} It moves when that does, and it never skips a step.`
@@ -655,14 +740,14 @@ export function SlurpRelationshipPanel({
               />
               <StatusRow
                 icon={Palette}
-                tone={relationship.imageMode === "none" ? "accent" : "good"}
-                title={
-                  relationship.imageMode === "none" ? "Not sending pictures right now" : "Open to sending pictures"
-                }
+                tone={pictures.mode === "none" ? "accent" : "good"}
+                title={pictures.mode === "none" ? "Not sending pictures right now" : "Open to sending pictures"}
                 detail={
-                  relationship.imageMode === "none"
-                    ? "This changes as the conversation warms up."
-                    : "She will send one if the conversation calls for it."
+                  pictures.blockedBy
+                    ? PICTURE_BLOCK_TEXT[pictures.blockedBy]
+                    : pictures.mode === "none"
+                      ? "This changes as the conversation warms up."
+                      : "She will send one if the conversation calls for it."
                 }
               />
             </PanelSection>
@@ -682,7 +767,7 @@ export function SlurpRelationshipPanel({
               </div>
               {relationship.strikes > 0 && (
                 <StatusRow
-                  icon={Lock}
+                  icon={SlpLockGlyph}
                   tone="warning"
                   title={`${relationship.strikes} strike${relationship.strikes === 1 ? "" : "s"} on this conversation`}
                   detail="Two inside a fortnight and they stop answering for good."
@@ -692,23 +777,6 @@ export function SlurpRelationshipPanel({
           </div>
         )}
       </div>
-
-      {onReset && (
-        <footer className="shrink-0 border-t border-[var(--noodle-divider)] p-3">
-          <button
-            type="button"
-            disabled={resetting}
-            onClick={onReset}
-            className="inline-flex min-h-9 items-center gap-1.5 rounded-lg px-2 text-[0.7rem] font-bold text-red-600 ring-1 ring-inset ring-red-500/30 hover:bg-red-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)] disabled:opacity-50 dark:text-red-400"
-          >
-            <Trash2 size={14} aria-hidden="true" /> Clear conversation
-          </button>
-          <p className="mt-1.5 text-[0.65rem] text-[var(--muted-foreground)]">
-            Deletes every message here and closes any unfinished commission. What they remember of you is kept, and so
-            are coins, unlocks and finished commissions.
-          </p>
-        </footer>
-      )}
-    </div>
+    </SlpMessageDetailsEditor>
   );
 }

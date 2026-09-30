@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,6 +15,9 @@ const { validateTacticalEncounterBlueprint } =
 const { injectGameGmPromptRuntime } =
   await import("../../packages/server/src/services/generation/game-gm-prompt-runtime.js");
 const { summarizeTacticalBattlefield } = await import("../../packages/shared/src/index.js");
+const { createGameRulesetsStorage } =
+  await import("../../packages/server/src/services/storage/game-rulesets.storage.js");
+const { createChatsStorage } = await import("../../packages/server/src/services/storage/chats.storage.js");
 
 const db = await getDB();
 const app = Fastify();
@@ -404,6 +407,62 @@ try {
   assert.equal(legacyStarted.statusCode, 200, legacyStarted.body);
   assert.equal(legacyStarted.json().state.seed, 0);
   assert.equal(legacyStarted.json().state.grid.width, 12, "Legacy callers retain unit-count sizing");
+
+  // A ruleset that turns Game Mode's own items off (#6822) keeps them out of these fights too: no item
+  // does anything in one, while every other action still does.
+  const ember = JSON.parse(
+    readFileSync(new URL("../../docs/examples/rulesets/ember-roads.json", import.meta.url), "utf8"),
+  ) as Record<string, any>;
+  const closed = { ...ember, id: "ember-no-items", items: { ...ember.items, native: false } };
+  await createGameRulesetsStorage(db).put({
+    rulesetId: "local/ember-no-items",
+    version: closed.version,
+    sourceKind: "local",
+    definition: JSON.stringify(closed),
+  });
+  await createChatsStorage(db).patchMetadata(session.id, {
+    gameRuleset: { id: "local/ember-no-items", version: closed.version, packageId: null, options: {} },
+  });
+  const combatants = [
+    { ...party[0], side: "player" },
+    { ...enemies[0], side: "enemy" },
+  ];
+  const itemRound = await app.inject({
+    method: "POST",
+    url: "/api/game/combat/round",
+    payload: { chatId: session.id, round: 1, combatants, playerAction: { type: "item", itemId: "Potion" } },
+  });
+  assert.equal(itemRound.statusCode, 400, itemRound.body);
+  assert.match(itemRound.body, /keeps its items out of fights/);
+  const allyItem = await app.inject({
+    method: "POST",
+    url: "/api/game/combat/round",
+    payload: { chatId: session.id, round: 1, combatants, partyActions: { hero: { type: "item", itemId: "Potion" } } },
+  });
+  assert.equal(allyItem.statusCode, 400, allyItem.body);
+  const defendRound = await app.inject({
+    method: "POST",
+    url: "/api/game/combat/round",
+    payload: { chatId: session.id, round: 1, combatants, playerAction: { type: "defend" } },
+  });
+  assert.equal(defendRound.statusCode, 200, defendRound.body);
+  const noItemsStart = await app.inject({
+    method: "POST",
+    url: "/api/game/combat/tactical/start",
+    payload: { chatId: session.id, party, enemies, seed: 5 },
+  });
+  assert.equal(noItemsStart.statusCode, 200, noItemsStart.body);
+  const tacticalItem = await app.inject({
+    method: "POST",
+    url: "/api/game/combat/tactical/action",
+    payload: {
+      chatId: session.id,
+      state: noItemsStart.json().state,
+      action: { type: "item", unitId: "hero", itemName: "Potion", targetId: "hero" },
+    },
+  });
+  assert.equal(tacticalItem.statusCode, 400, tacticalItem.body);
+  assert.match(tacticalItem.body, /keeps its items out of fights/);
 } finally {
   await app.close();
   await closeDB();

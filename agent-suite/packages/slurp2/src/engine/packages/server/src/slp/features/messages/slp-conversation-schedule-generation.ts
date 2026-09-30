@@ -2,6 +2,7 @@ import { resolveBaseUrl } from "../../../services/generation/connection-base-url
 import { createLLMProvider } from "../../../services/llm/provider-registry.js";
 import type { createConnectionsStorage } from "../../../services/storage/connections.storage.js";
 import { composeSlurpPromptBlocks, type SlurpPromptBlockOverrides } from "../../base/prompting/slp-prompt-blocks.js";
+import { slpWithProviderRetry } from "../../base/model/slp-provider-retry.js";
 
 type GenerationConnection = NonNullable<Awaited<ReturnType<ReturnType<typeof createConnectionsStorage>["getWithKey"]>>>;
 
@@ -133,16 +134,18 @@ export async function generateSlurpConversationSchedule(
   promptBlocks?: SlurpPromptBlockOverrides,
 ): Promise<GeneratedSchedule> {
   // The route hands over the stored connection row; it is not a provider until built here.
-  const provider = createLLMProvider(
-    connection.provider,
-    resolveBaseUrl(connection),
-    connection.apiKey,
-    connection.maxContext,
-    connection.openrouterProvider,
-    connection.maxTokensOverride,
-    connection.claudeFastMode === "true",
-    connection.treatAsLocalEndpoint === "true",
-    connection.defaultParameters,
+  const provider = slpWithProviderRetry(
+    createLLMProvider(
+      connection.provider,
+      resolveBaseUrl(connection),
+      connection.apiKey,
+      connection.maxContext,
+      connection.openrouterProvider,
+      connection.maxTokensOverride,
+      connection.claudeFastMode === "true",
+      connection.treatAsLocalEndpoint === "true",
+      connection.defaultParameters,
+    ),
   );
   const messages = [
     {

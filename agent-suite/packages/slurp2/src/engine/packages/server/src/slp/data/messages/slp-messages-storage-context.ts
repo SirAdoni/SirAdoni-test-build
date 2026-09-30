@@ -176,10 +176,11 @@ export function createSlurpMessagesContext(db: DB, createCore: SlurpMessagesCore
           .from(slurpPaymentCompensations)
           .where(eq(slurpPaymentCompensations.creditOperationId, payment.creditOperationId));
         const recordedAmount = related.find((row) => row.creditedAmount != null)?.creditedAmount;
+        // The receipt is what was credited. A row recorded before 0.3.7 holds coins; the receipt holds
+        // the dollars the earnings now count, so it wins whenever it exists.
         const creditedAmount =
-          recordedAmount == null
-            ? await slurp.getCreatorIncomeOperationAmount(payment.creatorAccountId, payment.creditOperationId)
-            : Number(recordedAmount);
+          (await slurp.getCreatorIncomeOperationAmount(payment.creatorAccountId, payment.creditOperationId)) ??
+          (recordedAmount == null ? null : Number(recordedAmount));
         if (creditedAmount === null) throw new Error("Matching creator income credit amount was not found");
         if (!Number.isInteger(creditedAmount) || creditedAmount < 0)
           throw new Error("Stored creator income credit amount is invalid");
@@ -189,7 +190,9 @@ export function createSlurpMessagesContext(db: DB, createCore: SlurpMessagesCore
           .set({ creditedAmount: String(creditedAmount), updatedAt: now() })
           .where(eq(slurpPaymentCompensations.id, compensationId));
       } else {
-        reversal = Number(current.creditedAmount);
+        reversal =
+          (await slurp.getCreatorIncomeOperationAmount(payment.creatorAccountId, payment.creditOperationId)) ??
+          Number(current.creditedAmount);
         if (!Number.isInteger(reversal) || reversal < 0)
           throw new Error("Stored creator income credit amount is invalid");
       }
@@ -455,7 +458,14 @@ export function createSlurpMessagesContext(db: DB, createCore: SlurpMessagesCore
     await db
       .update(slurpPaymentCompensations)
       .set({ status: "settled", updatedAt: now() })
-      .where(eq(slurpPaymentCompensations.id, compensationId));
+      // A compensated intent stays compensated. Settling it again after recovery refunded the fan
+      // counted the payment as both refunded and paid.
+      .where(
+        and(
+          eq(slurpPaymentCompensations.id, compensationId),
+          inArray(slurpPaymentCompensations.status, ["created", "charging", "charged", "settled"]),
+        ),
+      );
   }
 
   async function applySlurpTipEffects(slurp: ReturnType<SlurpMessagesCoreFactory>, paymentId: string): Promise<void> {

@@ -1,4 +1,4 @@
-import type { FastifyInstance, InjectOptions } from "fastify";
+import type { FastifyInstance, InjectOptions, LightMyRequestResponse as InjectResponse } from "fastify";
 import { logger } from "../../lib/logger.js";
 import { createNoodleStorage } from "../storage/noodle.storage.js";
 import { AUTOMATIC_GENERATION_HEADER } from "../generation/connection-admission.js";
@@ -53,7 +53,7 @@ export function nextNoodleSchedulerPollDelayMs(schedule: PersistedNoodleRefreshS
 
 export function startNoodleRefreshScheduler(
   app: FastifyInstance,
-  runInternalRoute?: (options: InjectOptions | string) => ReturnType<FastifyInstance["inject"]>,
+  runInternalRoute?: (options: InjectOptions | string) => Promise<InjectResponse>,
 ) {
   const noodle = createNoodleStorage(app.db);
   let stopped = false;

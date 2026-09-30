@@ -18,7 +18,12 @@ import {
   SlurpProject,
 } from "../../modules/projects/slp-project.js";
 import { slurpArcEffectMultiplier } from "../../modules/projects/slp-arc-progress.js";
+import { SLP_STORY_OCCURRENCES_KEY, readSlpOccurrences } from "../../modules/world/events/slp-story-runtime.js";
+import { slurpInfluenceMultiplier } from "../../../../../shared/src/slp/slp-platform-events.js";
 import { isSlurpCrossover } from "../../modules/projects/slp-project.js";
+import { readSlurpCouples, slurpCoupleOfPage } from "../../modules/projects/slp-creator-couples.js";
+import { slurpCoupleMembers, slurpCouplePageSplit } from "../../modules/projects/slp-couple-group.js";
+import { SLURP_CREATOR_TIES_KEY } from "../projects/slp-creator-ties-storage.js";
 import {
   readSlurpCrossoverRef,
   slurpCrossoverMerge,
@@ -26,13 +31,14 @@ import {
 } from "../../modules/projects/slp-arc-crossover.js";
 import {
   earn as earnCreatorIncome,
+  slurpPlatformEarnings,
   readSlurpEarnings,
   slurpEarningsKey,
   SlurpEarnings,
   SlurpEarningsEntryKind,
 } from "../../modules/economy/slp-earnings.js";
 import { logger } from "../../../lib/logger.js";
-import { canViewCreatorPost, isCreatorHiddenFromViewer } from "../../base/identity/slp-access.js";
+import { canViewCreatorPost } from "../../base/identity/slp-access.js";
 import {
   slpAccounts,
   slpAccountSubscriptions,
@@ -254,23 +260,56 @@ export function createSlurpStorageContext(db: DB) {
     await settingsStore.set(key, JSON.stringify(mutate(state)));
   };
 
+  const couplePageOf = async (accountId: string) => {
+    try {
+      const raw = await settingsStore.get(SLURP_CREATOR_TIES_KEY);
+      const parsed = raw ? (JSON.parse(raw) as { couples?: unknown }) : null;
+      return slurpCoupleOfPage(readSlurpCouples(parsed?.couples), accountId);
+    } catch {
+      return null;
+    }
+  };
+
   const creditEarningsNow = async (
     creatorAccountId: string,
     kind: Exclude<SlurpEarningsEntryKind, "payout" | "reversal">,
     amount: number,
     note?: string,
     id?: string,
-  ) => {
+  ): Promise<void> => {
+    // A couple's shared page earns for all of them: equal shares, straight into their own earnings.
+    // ponytail: the page keeps no receipt of its own, so an operation-amount read on the page is empty.
+    const couple = await couplePageOf(creatorAccountId);
+    if (couple) {
+      const members = slurpCoupleMembers(couple);
+      const shares = slurpCouplePageSplit(amount, members.length);
+      for (const [index, memberId] of members.entries())
+        await creditEarningsNow(memberId, kind, shares[index]!, note, id && `${id}:${"abcd"[index]}`);
+      return;
+    }
     const settings = normalizeSlurpSettings(await settingsStore.get(SLURP_SETTINGS_KEY));
+    // Fan money is platform money (0.3.7): a real payment stands for the crowd, less Slurp's fee. A
+    // brand's fee is already priced on the shown audience, so it is not scaled again.
+    // The mood reads the payment itself: dollars would make every small unlock feel like being paid well.
+    const paidCoins = amount;
+    if (kind !== "sponsor") amount = slurpPlatformEarnings(amount, settings.simulationTuning.economy.crowdWeight);
+    // Storyline effects and platform events aimed at this Creator both move earnings (R1-112).
+    // ponytail: no tags here, so a date-only event aimed at tags misses; occurrences carry tag targets.
+    const occurrences = readSlpOccurrences(await settingsStore.get(SLP_STORY_OCCURRENCES_KEY));
     amount = Math.floor(
-      amount * slurpArcEffectMultiplier(await loadProjects(creatorAccountId), "earnings", settings.arcStatEffects),
+      amount *
+        slurpArcEffectMultiplier(await loadProjects(creatorAccountId), "earnings", settings.arcStatEffects) *
+        slurpInfluenceMultiplier(settings.platformEvents, new Date(), "economy.creator-earnings", {
+          occurrences,
+          creator: { id: creatorAccountId },
+        }),
     );
     const current = readSlurpEarnings(await settingsStore.get(slurpEarningsKey(creatorAccountId)));
     const next = earnCreatorIncome(current, kind, amount, new Date(), note, id);
     if (next === current) return;
     await writeEarnings(creatorAccountId, next);
     try {
-      if (amount >= SLURP_PAID_WELL_COINS) {
+      if (paidCoins >= SLURP_PAID_WELL_COINS) {
         await mutateCreatorStateNow(creatorAccountId, (state) => addSlurpModifier(state, "paid_well", note ?? kind));
       }
       const goal = readSlurpGoal(await settingsStore.get(slurpGoalKey(creatorAccountId)));
@@ -469,7 +508,7 @@ export function createSlurpStorageContext(db: DB) {
       const currentActor = actorRows[0] ? mapAccount(actorRows[0]) : actor;
       if (authorPlatform === "noodler") {
         const currentAuthor = mapAccount(authorRows[0]);
-        if (currentActor.kind !== "persona" || isCreatorHiddenFromViewer(currentAuthor, viewerPersonaId)) {
+        if (currentActor.kind !== "persona") {
           return null;
         }
         const currentPostView = mapPost(currentPost);

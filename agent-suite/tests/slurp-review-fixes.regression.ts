@@ -168,10 +168,8 @@ assert.match(
   /if \(!hasMedia\) delete preparedMetadata\.noodlerPostType;/u,
   "publishing a prepared post without an image must drop the story flag",
 );
-assert.match(
-  generation,
-  /\.\.\.\(storyVariation \? \{ width: settings\.storyImageWidth, height: settings\.storyImageHeight \} : \{\}\)/u,
-);
+// The Story size is chosen in the shared image run from this flag (R1-052), so every path uses it.
+assert.match(generation, /negativePromptAdditions: negativePrompt,\s*story: storyVariation,/u);
 
 const cropEditor = read(join(client, "components/slurp/PostImageCropEditor.tsx"));
 // An uploaded Story is cropped to the same ratio an automatic one is drawn at, whatever the player

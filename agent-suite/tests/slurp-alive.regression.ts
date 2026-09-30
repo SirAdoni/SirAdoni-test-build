@@ -156,11 +156,22 @@ const worldOperation = read("server/src/services/slurp/slurp-world.operation.ts"
 assert.match(worldOperation, /listQuotedCommissions/u);
 assert.match(
   worldOperation,
-  /slurpFanTypeCommissionBudget\(slurpResolveFanType\(settings\.fanTypes, member\), member\.id\)/u,
-  "the member’s configured Fan Type must decide their commission budget",
+  /const member = await population\.get\(commission\.viewerAccountId\)/u,
+  "the quoted viewer must resolve to its audience member",
 );
-// Never the instant the price is named.
-assert.match(worldOperation, /quotedFor < 1/u);
+assert.match(
+  worldOperation,
+  /const fanType = member\s*\?\s*slurpResolveFanType\(settings\.fanTypes, member\)/u,
+  "the member configured Fan Type must decide their commission budget",
+);
+assert.match(
+  worldOperation,
+  /slurpFanTypeCommissionBudget\(fanType, commission\.viewerAccountId\)/u,
+  "the quote budget must use the resolved Fan Type for that viewer",
+);
+// Never the instant the price is named, unless the player sets "Time before fans answer a quote" to 0.
+assert.match(worldOperation, /quotedForMinutes < settings\.messagesQuoteAnswerMinutes/u);
+assert.match(read("server/src/slp/modules/settings/slp-settings.ts"), /messagesQuoteAnswerMinutes: 1440,/u);
 
 // ── Creators answer their audience, and who they answer means something ──────
 // A creator answered only the player, and only when the player ticked a box. Everyone else wrote
@@ -196,7 +207,17 @@ assert.ok(bank.size > 300, `the reaction bank is too small to hide repetition ($
 // comment; without them the endpoint hands back text about a locked post they never paid for.
 // Audience replies get a second, narrower door rather than a hole in that one.
 assert.match(slurpStorage, /async claimNoodlerAudienceReply\(/u);
-assert.match(slurpStorage, /canViewNoodlerPost\(\{/u, "the player-facing access check must survive");
+const playerFacingClaim = slurpStorage.slice(
+  slurpStorage.indexOf("async claimNoodlerCreatorReply("),
+  slurpStorage.indexOf("async claimNoodlerAudienceReply("),
+);
+const accessCheckStart = playerFacingClaim.indexOf("canViewCreatorPost({");
+const accessCheckEnd = playerFacingClaim.indexOf("const cutoff =", accessCheckStart);
+assert.ok(accessCheckStart >= 0 && accessCheckEnd > accessCheckStart, "player-facing access check must survive");
+const playerFacingAccess = playerFacingClaim.slice(accessCheckStart, accessCheckEnd);
+assert.match(playerFacingAccess, /subscribed: subscriptions\.length > 0/u);
+assert.match(playerFacingAccess, /unlockedPostIds: new Set\(unlocks\.map\(\(unlock\) => unlock\.postId\)\)/u);
+assert.match(playerFacingAccess, /return \{ status: "ineligible" \}/u);
 const audienceClaim = slurpStorage.slice(
   slurpStorage.indexOf("async claimNoodlerAudienceReply("),
   slurpStorage.indexOf("Release a claim whose generation never produced a reply"),

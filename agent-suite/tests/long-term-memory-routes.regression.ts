@@ -2535,9 +2535,41 @@ async function main(routeScenario: RouteScenario) {
         payload: { chatId: "chat-a", applyLowRisk: true },
       });
       assert.equal(autoApplied.statusCode, 200, autoApplied.body);
-      assert.equal(autoApplied.json().appliedMutationIds.length > 0, true);
+      assert.equal(autoApplied.json().draft.reviewRequired, true);
+      assert.deepEqual(autoApplied.json().appliedMutationIds, []);
+      assert.equal(autoApplied.json().draft.summary, "Extracted observatory facts.");
+      assert.equal(
+        autoApplied
+          .json()
+          .draft.mutations.some((mutation: any) =>
+            Object.values(mutation.note?.sections ?? {}).some((section: any) =>
+              section.text.includes("Mara sealed the observatory gate at dusk."),
+            ),
+          ),
+        true,
+      );
       assert.equal(autoApplied.json().draft.indexRebuildStatus, "not_requested");
       assert.equal(modelCalls > 2, true);
+      const extractionReview = autoApplied.json().draft;
+      const extractionMutationIds = extractionReview.mutations.map((mutation: any) => mutation.id);
+      const extractionPreflight = await app.inject({
+        method: "POST",
+        url: `/api/long-term-memory/drafts/${extractionReview.id}/preflight`,
+        headers,
+        payload: { mutationIds: extractionMutationIds },
+      });
+      assert.equal(extractionPreflight.statusCode, 200, extractionPreflight.body);
+      assert.deepEqual(extractionPreflight.json().blockedMutationIds, []);
+      const extractionAccepted = await app.inject({
+        method: "POST",
+        url: `/api/long-term-memory/drafts/${extractionReview.id}/accept`,
+        headers,
+        payload: { mutationIds: extractionPreflight.json().readyMutationIds },
+      });
+      assert.equal(extractionAccepted.statusCode, 200, extractionAccepted.body);
+      assert.equal(extractionAccepted.json().draft.status, "accepted");
+      assert.equal(extractionAccepted.json().appliedMutationIds.length > 0, true);
+      assert.equal((await storageService.storage.getNote("char_mara"))?.type, "character");
       for (const [id, createdAt, text] of [
         ["char_mara_legacy_a", "2026-07-15T00:00:00.000Z", "Mara guards the eastern gate."],
         ["char_mara_legacy_b", "2026-07-16T00:00:00.000Z", "Mara seals the western gate."],
@@ -3118,7 +3150,7 @@ async function main(routeScenario: RouteScenario) {
       emptyModelResponse = false;
       assert.equal(emptyResponseImport.statusCode, 200, emptyResponseImport.body);
       assert.equal(emptyResponseImport.json().imported[0].extractionStatus, "failed");
-      assert.equal(emptyResponseImport.json().imported[0].error.code, "extract_failed");
+      assert.equal(emptyResponseImport.json().imported[0].error.code, "ltm_model_output_empty");
       assert.match(emptyResponseImport.json().imported[0].error.message, /empty_output/u);
       assert.equal(emptyResponseImport.json().imported[0].retryable, true);
       assert.equal(emptyResponseImport.json().imported[0].draft, null);
@@ -3276,6 +3308,7 @@ async function main(routeScenario: RouteScenario) {
                     typeof message.content === "string" &&
                     (message.content.includes("cross-extract") ||
                       message.content.includes("persona-write-scope") ||
+                      message.content.includes("chat-only-default") ||
                       message.content.includes("destination")),
                 );
                 let requiredEvidence = ["source"];
@@ -3628,7 +3661,19 @@ async function main(routeScenario: RouteScenario) {
       for (const schema of [ltmExtractionSettingsSchema, ltmExtractionSettingsPatchSchema]) {
         assert.throws(() => schema.parse({ unknownExtractionField: true }));
         assert.throws(() => schema.parse({ maxOutputTokens: 511 }));
+        // Issue #1086 removed the broad existing-note prompt budget; a stale value
+        // must be discarded, not rejected, and must never surface again.
+        const migratedExistingNoteBudget = schema.parse({ version: 1, maxExistingNoteTokens: 4096 });
+        assert.equal("maxExistingNoteTokens" in migratedExistingNoteBudget, false);
       }
+      const legacyExistingNoteBudget = await app.inject({
+        method: "PUT",
+        url: "/api/long-term-memory/extraction-settings",
+        headers,
+        payload: { version: 1, maxExistingNoteTokens: 4096 },
+      });
+      assert.equal(legacyExistingNoteBudget.statusCode, 200, legacyExistingNoteBudget.body);
+      assert.equal("maxExistingNoteTokens" in legacyExistingNoteBudget.json(), false);
       const invalidExtractionTemplate = await app.inject({
         method: "PUT",
         url: "/api/long-term-memory/extraction-settings",
@@ -4685,6 +4730,11 @@ async function main(routeScenario: RouteScenario) {
           enabled: true,
         },
         {
+          id: "summary-chat-only-default",
+          content: "A grouped chat defaults to chat-only availability.",
+          enabled: true,
+        },
+        {
           id: "summary-cross-conflict-batch",
           content: "A conflicting destination must not stop other source notes.",
           enabled: true,
@@ -5012,6 +5062,23 @@ async function main(routeScenario: RouteScenario) {
         chatId: "chat-persona-a",
         chatIds: ["chat-persona-a"],
       });
+      const groupedChatImport = await app.inject({
+        method: "POST",
+        url: "/api/long-term-memory/import/source-notes",
+        headers,
+        payload: { source: "chats", sourceIds: ["chat-a:summary-chat-only-default"], chatId: "chat-a" },
+      });
+      assert.equal(groupedChatImport.statusCode, 200, groupedChatImport.body);
+      assert.equal(groupedChatImport.json().imported.length, 1, groupedChatImport.body);
+      const groupedChatResult = groupedChatImport.json().imported[0];
+      const groupedChatScope = { chatId: "chat-a", chatIds: ["chat-a"] };
+      assert.deepEqual(groupedChatResult.note.destinationScope, groupedChatScope);
+      assert.deepEqual(groupedChatResult.draft.scope, groupedChatScope);
+      const groupedCreateNotes = groupedChatResult.draft.mutations.filter(
+        (mutation: any) => mutation.kind === "create_note",
+      );
+      assert.ok(groupedCreateNotes.length > 0, groupedChatImport.body);
+      for (const mutation of groupedCreateNotes) assert.deepEqual(mutation.note.scope, groupedChatScope);
       const implicitPersonaCreateNotes = implicitPersonaResult.draft.mutations.filter(
         (mutation: any) => mutation.kind === "create_note",
       );

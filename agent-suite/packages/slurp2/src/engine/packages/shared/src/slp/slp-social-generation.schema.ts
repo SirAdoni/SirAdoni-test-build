@@ -2,7 +2,14 @@
 // Slurp generation schemas. Split from slp-social.schema.ts to stay under the architecture
 // line budget; copied from the Engine Noodle schemas with values unchanged.
 // ──────────────────────────────────────────────
+import {
+  SLURP_CONTENT_DELIVERIES,
+  SLURP_CONTENT_INTENTS,
+  slurpContentDeliveryFits,
+  slurpIntentFitsAccess,
+} from "./slp-content-axes.js";
 import { z } from "zod";
+import { slpSceneShotSchema, slpWardrobeSceneSchema } from "./slp-wardrobe.js";
 import {
   SLP_CREATOR_POST_CONTENT_MAX_LENGTH,
   SLP_CREATOR_POST_GUIDE_MAX_LENGTH,
@@ -72,11 +79,39 @@ const slpCreatorGenerationRequestShape = {
   uploadedImageUrl: z.string().trim().url().max(2000).optional(),
   imageCrop: slpPostImageCropSchema.optional(),
   poll: slpPollInputSchema.nullable().optional(),
+  /** A one-shot post purpose from the composer. Outranks the Creator's strategy for this post only. */
+  contentIntent: z.enum(SLURP_CONTENT_INTENTS).optional(),
+  /** One-shot delivery. It is paired with an intent so incompatible combinations fail early. */
+  contentDelivery: z.enum(SLURP_CONTENT_DELIVERIES).optional(),
+  /** The Locked price the player set in the composer; absent uses the Creator's own (R1-026). */
+  unlockPrice: z.number().int().min(1).max(100_000).optional(),
 };
 
 export const slpCreatorGenerationRequestSchema = z
   .object({ ...slpCreatorGenerationRequestShape, access: slpPostAccessSchema.default("public") })
-  .strict();
+  .strict()
+  .superRefine((input, ctx) => {
+    if (input.contentIntent && !slurpIntentFitsAccess(input.contentIntent, input.access)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["contentIntent"],
+        message: "That purpose does not fit a locked post.",
+      });
+    }
+    if (input.contentDelivery && !input.contentIntent) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["contentDelivery"], message: "Choose a post purpose too." });
+    } else if (
+      input.contentDelivery &&
+      input.contentIntent &&
+      !slurpContentDeliveryFits(input.contentIntent, input.contentDelivery)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["contentDelivery"],
+        message: "That delivery does not fit this post purpose.",
+      });
+    }
+  });
 
 export const slpGenerationRequestSchema = z.union([
   slpPublicGenerationRequestSchema,
@@ -97,19 +132,34 @@ export const slpGeneratedPostSchema = z.object({
   poll: slpPollInputSchema.nullable().optional(),
 });
 
+/** A locked post's teaser line: one short sentence. */
+export const SLP_LOCKED_TEASER_MAX_LENGTH = 120;
+
 export const slpGeneratedCreatorPostSchema = z
   .object({
     title: slpCreatorPostTitleSchema,
     content: z.string().trim().min(1).max(SLP_CREATOR_POST_CONTENT_MAX_LENGTH),
     imagePrompt: z.string().max(2000).nullable().optional(),
+    scene: slpWardrobeSceneSchema.nullable().optional(),
+    // Extra pictures are a bonus: a malformed list falls back to generic alternates, never fails the post.
+    shots: z.array(slpSceneShotSchema).max(3).nullable().optional().catch(null),
     poll: slpPollInputSchema.nullable().optional(),
+    // The line a non-subscriber reads under a locked post. A bonus: a bad one never fails the post.
+    teaser: z.string().trim().min(1).max(SLP_LOCKED_TEASER_MAX_LENGTH).nullable().optional().catch(null),
   })
-  .strict()
-  .transform(({ title, content, imagePrompt }) => ({ title, content, imagePrompt: imagePrompt ?? null }));
+  .strip()
+  .transform(({ title, content, imagePrompt, scene, shots, teaser }) => ({
+    title,
+    content,
+    imagePrompt: imagePrompt ?? null,
+    scene: scene ?? null,
+    shots: shots ?? [],
+    teaser: teaser ?? null,
+  }));
 
 export const slpGeneratedCreatorReplySchema = z
   .object({ content: z.string().trim().min(1).max(SLP_CREATOR_REPLY_CONTENT_MAX_LENGTH) })
-  .strict();
+  .strip();
 
 export const slpGeneratedInteractionSchema = z
   .object({
@@ -139,6 +189,7 @@ export const slpGeneratedInteractionSchema = z
       .nullish()
       .transform((value) => value ?? undefined),
   })
+  .strip()
   .superRefine((interaction, ctx) => {
     if (interaction.type === "vote" && interaction.pollOptionIndex === undefined) {
       ctx.addIssue({
@@ -156,23 +207,29 @@ export const slpGeneratedInteractionSchema = z
     }
   });
 
-export const slpGeneratedFanActivitySchema = z.object({
-  actorHandle: z.string().min(1),
-  creatorAccountId: z.string().min(1),
-  targetPostId: z.string().min(1),
-  type: z.enum(["like", "reply", "repost"]),
-  content: z.string().trim().max(2000).nullable().optional(),
-});
+export const slpGeneratedFanActivitySchema = z
+  .object({
+    actorHandle: z.string().min(1),
+    creatorAccountId: z.string().min(1),
+    targetPostId: z.string().min(1),
+    type: z.enum(["like", "reply", "repost"]),
+    content: z.string().trim().max(2000).nullable().optional(),
+  })
+  .strip();
 
-export const slpGeneratedFollowSchema = z.object({
-  actorHandle: z.string().min(1),
-  targetHandle: z.string().min(1),
-});
+export const slpGeneratedFollowSchema = z
+  .object({
+    actorHandle: z.string().min(1),
+    targetHandle: z.string().min(1),
+  })
+  .strip();
 
-export const slpGeneratedDigestSchema = z.object({
-  accountEntityIds: z.array(z.string().min(1)).default([]),
-  content: z.string().min(1).max(1200),
-});
+export const slpGeneratedDigestSchema = z
+  .object({
+    accountEntityIds: z.array(z.string().min(1)).default([]),
+    content: z.string().min(1).max(1200),
+  })
+  .strip();
 
 function boundedGeneratedProfileText(maxLength: number, minimumLength = 0) {
   return z
@@ -186,30 +243,38 @@ function boundedGeneratedProfileText(maxLength: number, minimumLength = 0) {
     .pipe(z.string().min(minimumLength).max(maxLength));
 }
 
-export const slpGeneratedProfileSchema = z.object({
-  entityId: z.string().min(1),
-  name: boundedGeneratedProfileText(120, 1),
-  handle: boundedGeneratedProfileText(40, 1),
-  bio: boundedGeneratedProfileText(500).default(""),
-  location: boundedGeneratedProfileText(120).default(""),
-});
+export const slpGeneratedProfileSchema = z
+  .object({
+    entityId: z.string().min(1),
+    name: boundedGeneratedProfileText(120, 1),
+    handle: boundedGeneratedProfileText(40, 1),
+    bio: boundedGeneratedProfileText(500).default(""),
+    location: boundedGeneratedProfileText(120).default(""),
+  })
+  .strip();
 
-export const slpGeneratedRefreshSchema = z.object({
-  posts: z.array(slpGeneratedPostSchema).default([]),
-  interactions: z.array(slpGeneratedInteractionSchema).default([]),
-  follows: z.array(slpGeneratedFollowSchema).default([]),
-  digests: z.array(slpGeneratedDigestSchema).default([]),
-});
+export const slpGeneratedRefreshSchema = z
+  .object({
+    posts: z.array(slpGeneratedPostSchema).default([]),
+    interactions: z.array(slpGeneratedInteractionSchema).default([]),
+    follows: z.array(slpGeneratedFollowSchema).default([]),
+    digests: z.array(slpGeneratedDigestSchema).default([]),
+  })
+  .strip();
 
-export const slpGeneratedFanRefreshSchema = z.object({
-  activities: z.array(slpGeneratedFanActivitySchema).default([]),
-});
+export const slpGeneratedFanRefreshSchema = z
+  .object({
+    activities: z.array(slpGeneratedFanActivitySchema).default([]),
+  })
+  .strip();
 
 export type SlpGeneratedFanRefresh = z.infer<typeof slpGeneratedFanRefreshSchema>;
 
-export const slpGeneratedProfilesSchema = z.object({
-  profiles: z.array(slpGeneratedProfileSchema).default([]),
-});
+export const slpGeneratedProfilesSchema = z
+  .object({
+    profiles: z.array(slpGeneratedProfileSchema).default([]),
+  })
+  .strip();
 
 export type SlpSettingsInput = z.infer<typeof slpSettingsSchema>;
 export type SlpSettingsUpdateInput = z.infer<typeof slpSettingsUpdateSchema>;

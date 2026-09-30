@@ -7,11 +7,19 @@
 // createdAt, which puts them back at their original position in the timeline.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { type MessageTrashEntry } from "@marinara-engine/shared";
+import { MAX_PINNED_CONTEXT_MESSAGES, isMessagePinnedToContext, type MessageTrashEntry } from "@marinara-engine/shared";
 import type { DB } from "../../db/connection.js";
 import { encodeShardKey, isLazyUnitTable } from "../../db/file-backed-store.js";
-import { and, desc, eq, gt, inArray, isNull, lt } from "../../db/file-query.js";
-import { chats, memoryChunks, messages, messageSwipes, messageTrash } from "../../db/schema/index.js";
+import { and, desc, eq, gt, inArray, isNull, lte } from "../../db/file-query.js";
+import {
+  chats,
+  gameStateSnapshots,
+  memoryChunks,
+  messages,
+  messageSwipes,
+  messageTrash,
+} from "../../db/schema/index.js";
+import { logger } from "../../lib/logger.js";
 import { newId, now } from "../../utils/id-generator.js";
 import { createChatsStorage } from "./chats.storage.js";
 import { getFeatureNumber } from "../features/feature-settings.js";
@@ -24,7 +32,7 @@ type TrashSnapshot = { message: MessageRow; swipes: SwipeRow[] };
 /** Retention window from Settings > Features "Message trash" days (default 30). */
 const retentionMs = () => getFeatureNumber("messageTrashDays") * 24 * 60 * 60 * 1000;
 const CHUNK = 500;
-
+const MESSAGE_TRASH_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 function parseSnapshot(row: TrashRow): TrashSnapshot | null {
   try {
     const parsed = JSON.parse(row.snapshot) as Partial<TrashSnapshot> | null;
@@ -54,9 +62,16 @@ export function toMessageTrashEntry(row: TrashRow): MessageTrashEntry {
 
 export type RestoreTrashResult = {
   restoredMessageIds: string[];
-  /** Entries left in the trash because a message with the same id exists again. */
+  /** Entries that could not be restored; retained snapshots can be retried. */
   conflictEntryIds: string[];
 };
+
+export class MessageTrashPinnedLimitError extends Error {
+  constructor() {
+    super(`Restore would exceed the limit of ${MAX_PINNED_CONTEXT_MESSAGES} pinned messages. Unpin one first.`);
+    this.name = "MessageTrashPinnedLimitError";
+  }
+}
 
 export function createMessageTrashStorage(db: DB) {
   const chatsStorage = createChatsStorage(db);
@@ -76,7 +91,7 @@ export function createMessageTrashStorage(db: DB) {
       const expired = await db
         .select({ id: messageTrash.id })
         .from(messageTrash)
-        .where(and(eq(messageTrash.chatId, chatId), lt(messageTrash.deletedAt, cutoff)));
+        .where(and(eq(messageTrash.chatId, chatId), lte(messageTrash.deletedAt, cutoff)));
       if (expired.length === 0) return 0;
       await db.delete(messageTrash).where(
         inArray(
@@ -109,100 +124,161 @@ export function createMessageTrashStorage(db: DB) {
       const uniqueIds = [...new Set(messageIds)];
       if (uniqueIds.length === 0) return [];
       await this.purgeExpired(chatId);
-      const rows: MessageRow[] = [];
-      for (let i = 0; i < uniqueIds.length; i += CHUNK) {
-        rows.push(
-          ...(await db
-            .select()
-            .from(messages)
-            .where(and(eq(messages.chatId, chatId), inArray(messages.id, uniqueIds.slice(i, i + CHUNK))))),
-        );
-      }
-      if (rows.length === 0) return [];
-      const ids = rows.map((row) => row.id);
-      const swipesByMessage = new Map<string, SwipeRow[]>();
-      for (const swipe of await chatsStorage.listSwipesByMessageIds(ids)) {
-        const list = swipesByMessage.get(swipe.messageId) ?? [];
-        list.push(swipe);
-        swipesByMessage.set(swipe.messageId, list);
-      }
-      const deletedAt = now();
-      const entries = rows.map((row) => ({
-        id: newId(),
-        chatId,
-        messageId: row.id,
-        role: row.role,
-        characterId: row.characterId ?? null,
-        content: row.content,
-        snapshot: JSON.stringify({
-          message: row,
-          swipes: (swipesByMessage.get(row.id) ?? []).sort((a, b) => a.index - b.index),
-        } satisfies TrashSnapshot),
-        messageCreatedAt: row.createdAt,
-        deletedAt,
-      }));
-      for (let i = 0; i < entries.length; i += CHUNK) {
-        await db.insert(messageTrash).values(entries.slice(i, i + CHUNK));
-      }
+      const trashedIds: string[] = [];
+      const insertedEntryIds: string[] = [];
       try {
-        await chatsStorage.removeMessages(ids, chatId);
+        await chatsStorage.removeMessages(uniqueIds, chatId, async (rows) => {
+          if (rows.length === 0) return;
+          const gameSnapshots = await db
+            .select({ messageId: gameStateSnapshots.messageId })
+            .from(gameStateSnapshots)
+            .where(
+              and(
+                eq(gameStateSnapshots.chatId, chatId),
+                inArray(
+                  gameStateSnapshots.messageId,
+                  rows.map((row) => row.id),
+                ),
+              ),
+            );
+          const permanentIds = new Set(gameSnapshots.map((snapshot) => snapshot.messageId));
+          const recoverableRows = rows.filter((row) => !permanentIds.has(row.id));
+          if (recoverableRows.length === 0) return;
+          const swipesByMessage = new Map<string, SwipeRow[]>();
+          for (const swipe of await chatsStorage.listSwipesByMessageIds(recoverableRows.map((row) => row.id))) {
+            const list = swipesByMessage.get(swipe.messageId) ?? [];
+            list.push(swipe);
+            swipesByMessage.set(swipe.messageId, list);
+          }
+          const deletedAt = now();
+          const entries = recoverableRows.map((row) => ({
+            id: newId(),
+            chatId,
+            messageId: row.id,
+            role: row.role,
+            characterId: row.characterId ?? null,
+            content: row.content,
+            snapshot: JSON.stringify({
+              message: row,
+              swipes: (swipesByMessage.get(row.id) ?? []).sort((a, b) => a.index - b.index),
+            } satisfies TrashSnapshot),
+            messageCreatedAt: row.createdAt,
+            deletedAt,
+          }));
+          insertedEntryIds.push(...entries.map((entry) => entry.id));
+          if (entries.length > 0) await db.insert(messageTrash).values(entries);
+          trashedIds.push(...recoverableRows.map((row) => row.id));
+        });
       } finally {
-        // A partially failed delete must not leave trash copies of messages that still exist.
-        const survivors = new Set(
-          (
+        if (insertedEntryIds.length > 0) {
+          const survivors = new Set(
+            (
+              await db
+                .select({ id: messages.id })
+                .from(messages)
+                .where(and(eq(messages.chatId, chatId), inArray(messages.id, uniqueIds)))
+            ).map((row) => row.id),
+          );
+          const orphaned = (
             await db
-              .select({ id: messages.id })
-              .from(messages)
-              .where(and(eq(messages.chatId, chatId), inArray(messages.id, ids)))
-          ).map((row) => row.id),
-        );
-        const orphaned = entries.filter((entry) => survivors.has(entry.messageId)).map((entry) => entry.id);
-        if (orphaned.length > 0) await db.delete(messageTrash).where(inArray(messageTrash.id, orphaned));
+              .select({ id: messageTrash.id, messageId: messageTrash.messageId })
+              .from(messageTrash)
+              .where(and(eq(messageTrash.chatId, chatId), inArray(messageTrash.id, insertedEntryIds)))
+          )
+            .filter((entry) => survivors.has(entry.messageId))
+            .map((entry) => entry.id);
+          if (orphaned.length > 0) await db.delete(messageTrash).where(inArray(messageTrash.id, orphaned));
+        }
       }
-      return ids;
+      return trashedIds;
     },
 
     /** Put trashed messages back at their original position (same id, createdAt, swipes and extra). */
     async restore(chatId: string, entryIds: string[]): Promise<RestoreTrashResult> {
       const result: RestoreTrashResult = { restoredMessageIds: [], conflictEntryIds: [] };
-      const rows = (await readTrash(chatId, [...new Set(entryIds)])).sort((a, b) =>
-        a.messageCreatedAt.localeCompare(b.messageCreatedAt),
-      );
+      await this.purgeExpired(chatId);
+      const uniqueEntryIds = [...new Set(entryIds)];
+      const rows: TrashRow[] = [];
+      for (let i = 0; i < uniqueEntryIds.length; i += CHUNK) {
+        rows.push(...(await readTrash(chatId, uniqueEntryIds.slice(i, i + CHUNK))));
+      }
+      rows.sort((a, b) => a.messageCreatedAt.localeCompare(b.messageCreatedAt));
+      const currentMessages = await db
+        .select({ id: messages.id, extra: messages.extra })
+        .from(messages)
+        .where(eq(messages.chatId, chatId));
+      const currentIds = new Set(currentMessages.map((message) => message.id));
+      const currentPinCount = currentMessages.filter((message) => isMessagePinnedToContext(message.extra)).length;
+      const incomingPinnedIds = new Set<string>();
+      for (const row of rows) {
+        if (currentIds.has(row.messageId)) continue;
+        const snapshot = parseSnapshot(row);
+        if (snapshot && isMessagePinnedToContext(snapshot.message.extra)) incomingPinnedIds.add(row.messageId);
+      }
+      if (currentPinCount + incomingPinnedIds.size > MAX_PINNED_CONTEXT_MESSAGES) {
+        throw new MessageTrashPinnedLimitError();
+      }
       let earliest: string | null = null;
       let latest: string | null = null;
+      let restoreFailed = false;
+      let firstRestoreError: unknown;
       for (const row of rows) {
         const snapshot = parseSnapshot(row);
-        if (!snapshot || (await chatsStorage.getMessage(row.messageId))) {
+        if (!snapshot || currentIds.has(row.messageId)) {
           result.conflictEntryIds.push(row.id);
           continue;
         }
         const message = { ...snapshot.message, chatId, id: row.messageId };
-        await db.insert(messages).values({
-          id: message.id,
-          chatId,
-          role: message.role,
-          characterId: message.characterId ?? null,
-          content: message.content ?? "",
-          activeSwipeIndex: message.activeSwipeIndex ?? 0,
-          extra: typeof message.extra === "string" ? message.extra : JSON.stringify(message.extra ?? {}),
-          createdAt: message.createdAt,
-        });
-        // Swipe ids are reused as-is: they left with their message. Probing them by id would be an
-        // unscopable query that leases the whole lazy message_swipes table and can resurrect
-        // stale rows from disk, which then duplicated every restored swipe.
-        if (snapshot.swipes.length > 0) {
-          await db.insert(messageSwipes).values(
-            snapshot.swipes.map((swipe) => ({
-              id: typeof swipe.id === "string" && swipe.id ? swipe.id : newId(),
-              messageId: message.id,
-              index: swipe.index,
-              content: swipe.content ?? "",
-              extra: typeof swipe.extra === "string" ? swipe.extra : JSON.stringify(swipe.extra ?? {}),
-              createdAt: swipe.createdAt,
-            })),
-          );
+        // Message, swipes and trash removal form one restore unit. A swipe ID conflict or write
+        // failure must roll back the message insert so the trash entry remains retryable.
+        let inserted: boolean;
+        try {
+          inserted = await db.transaction(async (tx) => {
+            // A purge or permanent deletion may have removed the entry after the initial read.
+            const retained = await tx
+              .select({ id: messageTrash.id })
+              .from(messageTrash)
+              .where(eq(messageTrash.id, row.id));
+            if (retained.length === 0) return false;
+            const existing = await tx.select({ id: messages.id }).from(messages).where(eq(messages.id, message.id));
+            if (existing.length > 0) return false;
+            await tx.insert(messages).values({
+              id: message.id,
+              chatId,
+              role: message.role,
+              characterId: message.characterId ?? null,
+              content: message.content ?? "",
+              activeSwipeIndex: message.activeSwipeIndex ?? 0,
+              extra: typeof message.extra === "string" ? message.extra : JSON.stringify(message.extra ?? {}),
+              createdAt: message.createdAt,
+            });
+            if (snapshot.swipes.length > 0) {
+              await tx.insert(messageSwipes).values(
+                snapshot.swipes.map((swipe) => ({
+                  id: typeof swipe.id === "string" && swipe.id ? swipe.id : newId(),
+                  messageId: message.id,
+                  index: swipe.index,
+                  content: swipe.content ?? "",
+                  extra: typeof swipe.extra === "string" ? swipe.extra : JSON.stringify(swipe.extra ?? {}),
+                  createdAt: swipe.createdAt,
+                })),
+              );
+            }
+            await tx.delete(messageTrash).where(eq(messageTrash.id, row.id));
+            return true;
+          });
+        } catch (error) {
+          if (rows.length === 1) throw error;
+          if (!restoreFailed) firstRestoreError = error;
+          restoreFailed = true;
+          logger.warn({ err: error, chatId, entryId: row.id }, "Could not restore a message trash entry");
+          result.conflictEntryIds.push(row.id);
+          continue;
         }
-        await db.delete(messageTrash).where(eq(messageTrash.id, row.id));
+        if (!inserted) {
+          result.conflictEntryIds.push(row.id);
+          continue;
+        }
         result.restoredMessageIds.push(message.id);
         if (!earliest || message.createdAt < earliest) earliest = message.createdAt;
         if (!latest || message.createdAt > latest) latest = message.createdAt;
@@ -241,6 +317,7 @@ export function createMessageTrashStorage(db: DB) {
           }
         }
       }
+      if (result.restoredMessageIds.length === 0 && restoreFailed) throw firstRestoreError;
       return result;
     },
 
@@ -272,7 +349,7 @@ function shardHasExpiredEntry(path: string, cutoff: string): boolean {
     const value = stack.pop();
     if (!value || typeof value !== "object") continue;
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      if ((key === "deletedAt" || key === "deleted_at") && typeof child === "string" && child < cutoff) return true;
+      if ((key === "deletedAt" || key === "deleted_at") && typeof child === "string" && child <= cutoff) return true;
       if (child && typeof child === "object") stack.push(child);
     }
   }
@@ -283,7 +360,7 @@ function shardHasExpiredEntry(path: string, cutoff: string): boolean {
  * Purge expired trash in chats nobody has opened. Listing a chat's trash purges it too, but
  * without this sweep a never-reopened chat would keep expired entries forever. Resident chats
  * are purged in memory; for the rest only chats whose trash shard file holds an expired entry
- * are loaded, at most `maxChats` per sweep so one pass never loads the whole library.
+ * are loaded, up to `maxChats` cold trash shards per sweep.
  */
 export async function sweepExpiredMessageTrash(
   db: DB,
@@ -303,10 +380,50 @@ export async function sweepExpiredMessageTrash(
     if (lazy && !resident.has(id)) {
       if (touched >= maxChats) continue;
       const shardPath = join(shardDir, `${encodeShardKey(id)}.json`);
-      if (!existsSync(shardPath) || !shardHasExpiredEntry(shardPath, cutoff)) continue;
+      const inspectionPath = existsSync(shardPath)
+        ? shardPath
+        : existsSync(`${shardPath}.bak`)
+          ? `${shardPath}.bak`
+          : null;
+      if (!inspectionPath || !shardHasExpiredEntry(inspectionPath, cutoff)) continue;
       touched += 1;
     }
     purged += await store.purgeExpired(id, nowMs);
   }
   return { purged, chats: touched };
+}
+
+/** Run cleanup at startup and periodically, without overlapping writes or closing storage under one. */
+export function startMessageTrashMaintenance(
+  runSweep: () => Promise<{ purged: number }>,
+  logger: { info: (purged: number) => void; warn: (error: unknown) => void },
+  intervalMs = MESSAGE_TRASH_SWEEP_INTERVAL_MS,
+): { sweep: () => Promise<void>; stop: () => Promise<void> } {
+  let inFlight: Promise<void> | undefined;
+  let stopped = false;
+  const sweep = (): Promise<void> => {
+    if (stopped) return inFlight ?? Promise.resolve();
+    if (inFlight) return inFlight;
+    inFlight = Promise.resolve()
+      .then(runSweep)
+      .then(({ purged }) => {
+        if (purged > 0) logger.info(purged);
+      })
+      .catch((error: unknown) => logger.warn(error))
+      .finally(() => {
+        inFlight = undefined;
+      });
+    return inFlight;
+  };
+  const timer = setInterval(() => void sweep(), intervalMs);
+  timer.unref();
+  void sweep();
+  return {
+    sweep,
+    async stop() {
+      stopped = true;
+      clearInterval(timer);
+      await inFlight;
+    },
+  };
 }

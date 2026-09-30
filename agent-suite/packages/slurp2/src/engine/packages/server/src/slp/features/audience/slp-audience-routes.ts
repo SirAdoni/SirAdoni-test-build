@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { slpIsAdmissionFailure } from "../../base/host/slp-admission.js";
 import { createSlurpPopulationStorage } from "../../data/audience/slp-audience-storage-funnel.js";
 import {
   planSlurpFanTypeRebalance,
@@ -20,19 +21,20 @@ import {
   isSlurpPopulationMemberId,
 } from "../../../../../shared/src/slp/slp-population.js";
 import { slurpCreatorReach } from "../../../../../shared/src/slp/slp-reach.js";
-import { slurpPlatformScaleMultiplier } from "../../modules/audience/slp-scale.js";
+import { slurpPlatformScaleMultiplier } from "../../../../../shared/src/slp/slp-scale.js";
 import {
   slurpCharacterIdFromFanEntityId,
   slurpAudienceCharacterFanTypeId,
   slurpAudienceCharacterTraits,
 } from "../../../../../shared/src/slp/slp-audience-characters.js";
-import { isCreatorHiddenFromViewer } from "../../base/identity/slp-access.js";
 import { runCreatorFanActivity, getCreatorFanActivityStatus } from "./slp-fan-activity-operation.js";
-import { isConnectionAdmissionFailure } from "../../../services/generation/connection-admission.js";
 import { getErrorMessage } from "../../modules/creators/slp-public-support.js";
 import { logger } from "../../../lib/logger.js";
 import type { FastifyInstance } from "fastify";
 import type { SlpRouteDeps } from "../viewer/slp-viewer-contract.js";
+import { slurpPromptContext } from "../../base/prompting/slp-prompt-blocks.js";
+import { slpFanVoiceDraftSchema } from "../../modules/audience/slp-fan-voice-draft.js";
+import { draftSlpFanTypeVoice } from "./slp-fan-voice-draft-service.js";
 
 /** The `identity` lock is shared by refresh, reroll, and profile edits, so the 409 stays operation-neutral. */
 const SLP_IDENTITY_LOCK_BUSY = "Another Slurp identity operation is already running. Wait for it to finish.";
@@ -78,7 +80,13 @@ export async function slpAudienceRoutes(app: FastifyInstance, deps: SlpRouteDeps
           }
         })(),
       })),
-      characters: await characters.listSummariesByIds(page.items.map((row) => row.id)),
+      // A character that is already a Creator says so, so it is not imported a second time as a fan.
+      characters: await Promise.all(
+        (await characters.listSummariesByIds(page.items.map((row) => row.id))).map(async (summary: { id: string }) => ({
+          ...summary,
+          creatorAccountId: (await noodle.getNoodlerAccountForSource("character", summary.id))?.id ?? null,
+        })),
+      ),
       limit: parsed.data.limit,
       offset: parsed.data.offset,
       hasMore: page.hasMore,
@@ -108,6 +116,18 @@ export async function slpAudienceRoutes(app: FastifyInstance, deps: SlpRouteDeps
   app.get("/fan-types/rebalance/preview", async () => {
     const plan = await planFanTypeRebalance();
     return { changed: plan.changes.length, counts: plan.counts };
+  });
+  // "Draft voice" in the fan type editor: one model call, the "Fan type voice drafts" budget row (R1-107).
+  app.post("/fan-types/voice-draft", async (req, reply) => {
+    const parsed = slpFanVoiceDraftSchema.safeParse(req.body ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    try {
+      const result = await draftSlpFanTypeVoice(app.db, parsed.data);
+      return result.ok ? { voice: result.voice } : reply.code(result.status).send({ error: result.error });
+    } catch (error) {
+      req.log.warn({ err: error }, "Fan type voice draft failed");
+      return reply.code(502).send({ error: getErrorMessage(error) });
+    }
   });
   app.post("/fan-types/rebalance", async () => {
     const plan = await planFanTypeRebalance();
@@ -191,7 +211,7 @@ export async function slpAudienceRoutes(app: FastifyInstance, deps: SlpRouteDeps
           accounts,
           connection,
           debugMode: parsed.data.debugMode ?? false,
-          promptBlocks: settings.promptBlocks,
+          promptBlocks: slurpPromptContext(settings).blocks,
         }),
       };
     });
@@ -336,12 +356,7 @@ export async function slpAudienceRoutes(app: FastifyInstance, deps: SlpRouteDeps
     const { id } = req.params as { id: string };
     const viewer = await resolveViewerPersona(body.personaId);
     const creator = await noodle.getNoodlerAccountById(id);
-    if (
-      !viewer ||
-      !creator ||
-      creatorBelongsToViewer(creator, viewer) ||
-      isCreatorHiddenFromViewer(creator, viewer.id)
-    ) {
+    if (!viewer || !creator || creatorBelongsToViewer(creator, viewer)) {
       return reply.code(404).send({ error: "Slurp stage profile not found" });
     }
     const updated = await noodle.updateViewerFollow(viewer.id, creator.id, body.followed);
@@ -367,10 +382,13 @@ export async function slpAudienceRoutes(app: FastifyInstance, deps: SlpRouteDeps
         mode: "manual",
         debugMode: (req.body as { debugMode?: unknown } | undefined)?.debugMode === true,
       });
-      if (result.status === "disabled") return reply.code(404).send({ error: "Not Found" });
       if (result.status === "busy") return reply.code(409).send({ error: "Slurp fan activity is already running." });
       if (result.status === "limit_reached")
         return reply.code(429).send({ error: "Today's audience activity limit has been reached." });
+      if (result.status === "ai_off")
+        return reply
+          .code(409)
+          .send({ error: "AI budget is set to Off, so the audience cannot run. Change it under AI budget." });
       if (result.status === "connection_required") {
         return reply.code(400).send({ error: "Select a Slurp generation connection first." });
       }
@@ -379,9 +397,11 @@ export async function slpAudienceRoutes(app: FastifyInstance, deps: SlpRouteDeps
       }
       return result;
     } catch (error) {
-      if (isConnectionAdmissionFailure(error)) return reply.code(409).send({ error: getErrorMessage(error) });
+      if (slpIsAdmissionFailure(error)) return reply.code(409).send({ error: getErrorMessage(error) });
       logger.error(error, "[slurp] Fan activity generation failed");
-      return reply.code(500).send({ error: "Fan activity generation failed." });
+      return reply
+        .code(500)
+        .send({ error: error instanceof Error ? error.message.slice(0, 500) : "Fan activity generation failed." });
     }
   });
 

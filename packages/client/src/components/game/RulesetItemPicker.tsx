@@ -7,11 +7,13 @@
 import { useMemo, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import {
   defaultRulesetSheetBuild,
   type RulesetDefinition,
   type RulesetItemBook,
   type RulesetItemBookEntry,
+  type RulesetItemEffectFact,
   type RulesetItemFacts,
 } from "@marinara-engine/shared";
 import { useRulesetCatalog } from "../../hooks/use-capability-packages";
@@ -32,6 +34,227 @@ const chipClass =
 /** An item's stats as one line: "Damage 1d6 · Reach close". A yes-or-no stat that is yes is its label. */
 export function rulesetItemStatsLine(facts: RulesetItemFacts): string {
   return facts.stats.map((stat) => (stat.text !== undefined ? `${stat.label} ${stat.text}` : stat.label)).join(" · ");
+}
+
+/** A fight effect's localized words, by effect id. The ones about the holder's own checks, saves and
+ *  attacks are said as leans on those instead. */
+const FIGHT_EFFECT_KEYS: Record<string, string> = {
+  "attacks-against-advantage": "ui.game.gameinventory.effectAttacksAgainstAdvantage",
+  "attacks-against-disadvantage": "ui.game.gameinventory.effectAttacksAgainstDisadvantage",
+  "attacks-against-adjacent-advantage": "ui.game.gameinventory.effectAttacksAgainstAdjacentAdvantage",
+  "attacks-against-far-disadvantage": "ui.game.gameinventory.effectAttacksAgainstFarDisadvantage",
+  "attacks-from-adjacent-critical": "ui.game.gameinventory.effectAttacksFromAdjacentCritical",
+  "cannot-act": "ui.game.gameinventory.effectCannotAct",
+  "cannot-react": "ui.game.gameinventory.effectCannotReact",
+  "speed-zero": "ui.game.gameinventory.effectSpeedZero",
+  "resist-all": "ui.game.gameinventory.effectResistAll",
+};
+
+/** A weapon's attack, in two lines: what it adds to hit and deals ("Attack (Act): Brawn + 1 to hit,
+ *  1d6 + Brawn cut damage"), then how far it reaches and carries and what it deals with a hand free.
+ *  Empty for an item that is no weapon. */
+function rulesetItemAttackLines(facts: RulesetItemFacts, t: TFunction): string[] {
+  const attack = facts.attack;
+  if (!attack) return [];
+  const toHit = attack.proficiency
+    ? t("ui.game.gameinventory.attackProficiency", { toHit: attack.toHit })
+    : attack.toHit;
+  const damage = attack.type
+    ? t("ui.game.gameinventory.attackTyped", { damage: attack.damage, type: attack.type })
+    : attack.damage;
+  const first =
+    attack.target !== undefined
+      ? t("ui.game.gameinventory.attackAt", { budget: attack.budget, toHit, target: attack.target, damage })
+      : t("ui.game.gameinventory.attack", { budget: attack.budget, toHit, damage });
+  const distance = (value: number) => (attack.unit ? `${value} ${attack.unit}` : String(value));
+  const second = [
+    attack.reach !== undefined ? t("ui.game.gameinventory.attackReach", { distance: distance(attack.reach) }) : "",
+    attack.range
+      ? attack.range.long !== undefined
+        ? t("ui.game.gameinventory.attackRangeLong", {
+            normal: attack.range.normal,
+            long: distance(attack.range.long),
+          })
+        : t("ui.game.gameinventory.attackRange", { distance: distance(attack.range.normal) })
+      : "",
+    attack.versatile ? t("ui.game.gameinventory.attackVersatile", { dice: attack.versatile }) : "",
+  ].filter(Boolean);
+  const third = [
+    attack.ammo
+      ? t(attack.ammo.recover ? "ui.game.gameinventory.attackAmmoRecover" : "ui.game.gameinventory.attackAmmo", {
+          count: attack.ammo.per,
+          what: attack.ammo.what,
+          percent: Math.round((attack.ammo.recover ?? 0) * 100),
+        })
+      : "",
+    attack.clip ? t("ui.game.gameinventory.attackClip", { max: attack.clip.max, budget: attack.clip.reload }) : "",
+  ].filter(Boolean);
+  const signed = (value: number) => (value > 0 ? `+${value}` : String(value));
+  const modes = (attack.modes ?? []).map((mode) => {
+    const parts = [
+      mode.ammo !== undefined ? t("ui.game.gameinventory.modeShots", { count: mode.ammo }) : "",
+      mode.toHit !== undefined ? t("ui.game.gameinventory.modeToHit", { change: signed(mode.toHit) }) : "",
+      mode.target !== undefined ? t("ui.game.gameinventory.modeTarget", { change: signed(mode.target) }) : "",
+      mode.targets !== undefined ? t("ui.game.gameinventory.modeTargets", { count: mode.targets }) : "",
+    ].filter(Boolean);
+    return parts.length
+      ? t("ui.game.gameinventory.modeWith", { label: mode.label, parts: parts.join(", ") })
+      : mode.label;
+  });
+  const fourth = [
+    attack.offHand ? t("ui.game.gameinventory.attackOffHand", { budget: attack.offHand.budget }) : "",
+    attack.floor !== undefined ? t("ui.game.gameinventory.attackFloor", { floor: attack.floor }) : "",
+    ...(attack.onHit ?? []).map((entry) =>
+      entry.rounds !== undefined
+        ? t("ui.game.gameinventory.attackOnHitRounds", {
+            condition: entry.condition,
+            atLeast: entry.atLeast,
+            rounds: entry.rounds,
+          })
+        : t("ui.game.gameinventory.attackOnHit", { condition: entry.condition, atLeast: entry.atLeast }),
+    ),
+  ].filter(Boolean);
+  return [
+    first,
+    ...(second.length ? [second.join(", ")] : []),
+    ...(third.length ? [third.join(", ")] : []),
+    ...(modes.length ? [t("ui.game.gameinventory.attackModes", { modes: modes.join(", ") })] : []),
+    ...(fourth.length ? [fourth.join(", ")] : []),
+  ];
+}
+
+/** A use's save: "Steel save of 7 for half", or without its number where the item does not give it. */
+function rulesetItemUseSaveText(save: NonNullable<NonNullable<RulesetItemFacts["use"]>["save"]>, t: TFunction): string {
+  const saved =
+    save.difficulty !== undefined
+      ? t("ui.game.gameinventory.useSaveOf", { save: save.save, difficulty: save.difficulty })
+      : t("ui.game.gameinventory.useSave", { save: save.save });
+  if (save.onSuccess === "half") return t("ui.game.gameinventory.useSaveHalf", { save: saved });
+  if (save.onSuccess === "negates") return t("ui.game.gameinventory.useSaveNegates", { save: saved });
+  return saved;
+}
+
+/** What using an item does, in one line: "Use (Action): heals 1d4+1, used up". Empty for an item
+ *  nobody uses. */
+function rulesetItemUseLine(facts: RulesetItemFacts, t: TFunction): string {
+  const use = facts.use;
+  if (!use) return "";
+  const distance = (value: number) =>
+    use.unit ? t("game.ruleset.catalog.mechanics.distance", { value, unit: use.unit }) : String(value);
+  const parts = [
+    use.kind === "heal" && use.amount ? t("ui.game.gameinventory.useHeals", { amount: use.amount }) : "",
+    use.kind !== "heal" && use.amount
+      ? use.type
+        ? t("ui.game.gameinventory.useDamageTyped", { amount: use.amount, type: use.type })
+        : t("ui.game.gameinventory.useDamage", { amount: use.amount })
+      : "",
+    use.toHit
+      ? use.target !== undefined
+        ? t("ui.game.gameinventory.useToHitAt", { toHit: use.toHit, target: use.target })
+        : t("ui.game.gameinventory.useToHit", { toHit: use.toHit })
+      : "",
+    use.save ? rulesetItemUseSaveText(use.save, t) : "",
+    use.applies?.length ? t("ui.game.gameinventory.useApplies", { conditions: use.applies.join(", ") }) : "",
+    use.temporary ? t("ui.game.gameinventory.useTemporary", { amount: use.temporary }) : "",
+    use.range !== undefined ? t("game.ruleset.catalog.mechanics.range", { distance: distance(use.range) }) : "",
+    use.area
+      ? t("game.ruleset.catalog.mechanics.area", {
+          shape: t(`game.ruleset.catalog.shape.${use.area.shape}`),
+          distance: distance(use.area.size),
+        })
+      : "",
+    use.consumes ? t("ui.game.gameinventory.useConsumes") : "",
+    use.charges ? t("ui.game.gameinventory.useCharges", { cost: use.charges.cost, max: use.charges.max }) : "",
+  ].filter(Boolean);
+  return use.budget
+    ? t("ui.game.gameinventory.use", { budget: use.budget, does: parts.join(", ") })
+    : t("ui.game.gameinventory.useFree", { does: parts.join(", ") });
+}
+
+/** What an item does while worn, and while only carried, one line each: "While worn: -1 on Sneak
+ *  checks". Empty when it does nothing either way. */
+export function rulesetItemEffectLines(facts: RulesetItemFacts, t: TFunction): string[] {
+  const phrase = (fact: RulesetItemEffectFact) => {
+    const names = fact.names.join(", ");
+    if ("effect" in fact.change)
+      return t(FIGHT_EFFECT_KEYS[fact.change.effect] ?? "ui.game.gameinventory.effectFight", {
+        effect: fact.change.effect,
+      });
+    if ("hide" in fact.change) {
+      const key =
+        fact.change.hide === "resist"
+          ? "ui.game.gameinventory.effectResist"
+          : fact.change.hide === "vulnerable"
+            ? "ui.game.gameinventory.effectVulnerable"
+            : "ui.game.gameinventory.effectImmune";
+      return t(key, { names });
+    }
+    if ("times" in fact.change) {
+      return t(
+        fact.change.times === 0.5 ? "ui.game.gameinventory.effectSpeedHalf" : "ui.game.gameinventory.effectSpeedDouble",
+      );
+    }
+    if (fact.to === "speed" && "value" in fact.change) {
+      return t("ui.game.gameinventory.effectSpeed", { change: fact.change.value });
+    }
+    if (fact.to === "defense" && "value" in fact.change) {
+      return names
+        ? t("ui.game.gameinventory.effectDefenseNamed", { change: fact.change.value, names })
+        : t("ui.game.gameinventory.effectDefense", { change: fact.change.value });
+    }
+    if ("atLeast" in fact.change) {
+      return t("ui.game.gameinventory.effectAbilitySet", { names, value: fact.change.atLeast });
+    }
+    if (fact.to === "ability" && "value" in fact.change) {
+      return t("ui.game.gameinventory.effectAbilityAdd", { names, change: fact.change.value });
+    }
+    if ("fails" in fact.change) return t("ui.game.gameinventory.effectFailsSaves", { names });
+    const change =
+      "mode" in fact.change
+        ? t(
+            fact.change.mode === "advantage"
+              ? "ui.game.gameinventory.effectAdvantage"
+              : "ui.game.gameinventory.effectDisadvantage",
+          )
+        : fact.change.value;
+    if (fact.to === "checks") {
+      return names
+        ? t("ui.game.gameinventory.effectOnNamedChecks", { change, names })
+        : t("ui.game.gameinventory.effectOnChecks", { change });
+    }
+    if (fact.to === "attacks") return t("ui.game.gameinventory.effectOnAttacks", { change });
+    return names
+      ? t("ui.game.gameinventory.effectOnNamedSaves", { change, names })
+      : t("ui.game.gameinventory.effectOnSaves", { change });
+  };
+  const useLine = rulesetItemUseLine(facts, t);
+  return [
+    ...rulesetItemAttackLines(facts, t),
+    ...(useLine ? [useLine] : []),
+    ...(["worn", "carried"] as const).flatMap((when) =>
+      facts[when]?.length
+        ? [
+            t(when === "worn" ? "ui.game.gameinventory.whileWorn" : "ui.game.gameinventory.whileCarried", {
+              effects: facts[when]!.map(phrase).join("; "),
+            }),
+          ]
+        : [],
+    ),
+    ...(facts.requires ?? []).map((need) =>
+      t("ui.game.gameinventory.requires", {
+        what:
+          need.of === "modifier"
+            ? t("ui.game.gameinventory.requiresModifier", { name: need.what })
+            : need.of === "items"
+              ? need.what
+                ? t("ui.game.gameinventory.requiresItemsOf", { name: need.what })
+                : t("ui.game.gameinventory.requiresItems")
+              : need.what,
+        atLeast: need.atLeast,
+        effects: need.otherwise.map(phrase).join("; "),
+      }),
+    ),
+  ];
 }
 
 export function RulesetItemPicker({
@@ -199,6 +422,11 @@ export function RulesetItemPicker({
                       <span className="block text-[0.6875rem] text-[var(--muted-foreground)]">{each.summary}</span>
                     )}
                     {stats && <span className="block text-[0.6875rem] text-[var(--foreground)]">{stats}</span>}
+                    {rulesetItemEffectLines(facts, t).map((line) => (
+                      <span key={line} className="block text-[0.6875rem] text-[var(--foreground)]">
+                        {line}
+                      </span>
+                    ))}
                     {(facts.cost || each.stack) && (
                       <span className="block text-[0.6875rem] text-[var(--muted-foreground)]">
                         {[

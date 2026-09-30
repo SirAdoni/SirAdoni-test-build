@@ -21,11 +21,12 @@ export function useSlpMediaBackstageState({
 }) {
   const { t } = useTranslation();
   const imageSettingsQuery = useSlurpImageConnections(
-    section === "overview" || section === "automation" || section === "creators",
+    section === "overview" || section === "models" || section === "automation" || section === "creators",
   );
   const updateImages = useUpdateSlurpImageConnections();
   const connectionsQuery = useSlurpConnections(
     section === "overview" ||
+      section === "models" ||
       section === "automation" ||
       target === "images" ||
       target === "ads" ||
@@ -43,10 +44,17 @@ export function useSlpMediaBackstageState({
   );
   const imageSettings = imageSettingsQuery.data;
   const imageEnabledCreators = creators.filter((creator) => creator.autoPosting.imagesEnabled);
-  const imagesReady = imageConnections.length > 0 && imageEnabledCreators.length > 0;
   const selectedImageConnection = imageConnections.find(
     (connection) => connection.id === imageSettings?.defaultConnectionId,
   );
+  // Ready only when a picture can actually be drawn: the Slurp default resolves, or the Engine has a
+  // default image connection to fall back to, as the server does (R1-058). Any image connection
+  // existing was not enough.
+  const engineDefaultImageConnection = imageConnections.some(
+    (connection) => connection.defaultForAgents === true || connection.defaultForAgents === "true",
+  );
+  const imagesReady =
+    Boolean(selectedImageConnection || engineDefaultImageConnection) && imageEnabledCreators.length > 0;
   const imageConnectionLabel = selectedImageConnection
     ? (selectedImageConnection.name ?? selectedImageConnection.model ?? selectedImageConnection.id)
     : t("ui.slurp.settings.images.engineDefault");

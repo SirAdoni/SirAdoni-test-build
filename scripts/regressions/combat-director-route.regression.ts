@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DirectedCombatView, DirectedCommand } from "../../packages/shared/src/features/combat-director.js";
@@ -10,6 +10,8 @@ const { default: Fastify } = await import("../../packages/server/node_modules/fa
 const { getDB, closeDB } = await import("../../packages/server/src/db/connection.js");
 const { createChatsStorage } = await import("../../packages/server/src/services/storage/chats.storage.js");
 const { createGameStateStorage } = await import("../../packages/server/src/services/storage/game-state.storage.js");
+const { createGameRulesetsStorage } =
+  await import("../../packages/server/src/services/storage/game-rulesets.storage.js");
 const { createGameEngineStateStorage } =
   await import("../../packages/server/src/services/storage/game-engine-state.storage.js");
 const { combatDirectorRoutes, COMBAT_DIRECTOR_NAMESPACE } =
@@ -525,6 +527,129 @@ try {
     assert.deepEqual(JSON.parse((await chats.getById(kitChat.id))!.metadata).gameInventory, [
       { id: "st-tonic", name: "Potion", item: "kit/warming-tonic", quantity: 1 },
     ]);
+  }
+  // A bound cursed item stays with whoever it is bound to (#6801): the fight cannot use up the
+  // Widow's ring the player cannot part with, and the step is refused whole, so its effect is never
+  // had for nothing. An unbound ring beside it is the one a fight spends.
+  {
+    const gravewatch = {
+      ...JSON.parse(readFileSync(new URL("../../docs/examples/rulesets/gravewatch.json", import.meta.url), "utf8")),
+      id: "gravewatch-fight",
+    };
+    await createGameRulesetsStorage(db).put({
+      rulesetId: "local/gravewatch-fight",
+      version: gravewatch.version,
+      sourceKind: "local",
+      definition: JSON.stringify(gravewatch),
+    });
+    const ringChat = await chats.create({ name: "Director cursed item proof", mode: "game", characterIds: [] });
+    const ringAnchor = await chats.createMessage({
+      chatId: ringChat.id,
+      role: "assistant",
+      content: "[state: combat]",
+    });
+    const bound = [{ id: "st-ring", name: "Widow's ring", item: "kit/widows-ring", quantity: 1, bound: true }];
+    await chats.patchMetadata(ringChat.id, {
+      gameSetupConfig: { combatDirector: true },
+      gameRuleset: { id: "local/gravewatch-fight", version: gravewatch.version, packageId: null, options: {} },
+      gameInventory: bound,
+    });
+    const started = await post("/combat/start", {
+      ...input,
+      chatId: ringChat.id,
+      anchor: ringAnchor.id,
+      enemies: [unit("rat", "enemy")],
+      itemEffects: [{ name: "Widow's ring", target: "ally", type: "heal", description: "Heal", power: 1 }],
+    });
+    assert.equal(started.statusCode, 200, started.body);
+    let r: DirectedCombatView = started.json().session;
+    const ringCmd = (command: DirectedCommand) =>
+      post("/combat/command", {
+        chatId: ringChat.id,
+        anchor: ringAnchor.id,
+        id: r.id,
+        instanceId: r.instanceId,
+        revision: r.revision,
+        requestId: crypto.randomUUID(),
+        command,
+      });
+    const begun = await ringCmd({ type: "begin", unitId: "hero" });
+    assert.equal(begun.statusCode, 200, begun.body);
+    r = begun.json().session;
+    const use = {
+      type: "tactical",
+      action: { type: "item", unitId: "hero", itemName: "Widow's ring", targetId: "hero" },
+    } as const;
+    const refused = await ringCmd(use);
+    assert.equal(refused.statusCode, 400, refused.body);
+    assert.match(refused.body, /Widow's ring is cursed/);
+    assert.deepEqual(JSON.parse((await chats.getById(ringChat.id))!.metadata).gameInventory, bound);
+    const kept = (await store.getByChatAndMessage(ringChat.id, ringAnchor.id, 0, COMBAT_DIRECTOR_NAMESPACE))!;
+    assert.equal(JSON.parse(kept.state).revision, r.revision, "the refused step is not saved");
+    // With an unbound ring beside it, the fight spends that one and the bound ring stays.
+    await chats.patchMetadata(ringChat.id, {
+      gameInventory: [...bound, { id: "st-spare", name: "Widow's ring", item: "kit/widows-ring", quantity: 1 }],
+    });
+    const spent = await ringCmd(use);
+    assert.equal(spent.statusCode, 200, spent.body);
+    assert.deepEqual(JSON.parse((await chats.getById(ringChat.id))!.metadata).gameInventory, bound);
+  }
+  // A ruleset that turns Game Mode's own items off (#6822): the fight offers no item and uses none of
+  // what a model guessed, and the inventory stays as it was.
+  {
+    const ember = {
+      ...JSON.parse(readFileSync(new URL("../../docs/examples/rulesets/ember-roads.json", import.meta.url), "utf8")),
+      id: "ember-fight-no-items",
+    };
+    ember.items = { ...ember.items, native: false };
+    await createGameRulesetsStorage(db).put({
+      rulesetId: "local/ember-fight-no-items",
+      version: ember.version,
+      sourceKind: "local",
+      definition: JSON.stringify(ember),
+    });
+    const noItemsChat = await chats.create({ name: "Director without items", mode: "game", characterIds: [] });
+    const noItemsAnchor = await chats.createMessage({
+      chatId: noItemsChat.id,
+      role: "assistant",
+      content: "[state: combat]",
+    });
+    const potions = [{ id: "st-potion", name: "Potion", quantity: 2 }];
+    await chats.patchMetadata(noItemsChat.id, {
+      gameSetupConfig: { combatDirector: true },
+      gameRuleset: { id: "local/ember-fight-no-items", version: ember.version, packageId: null, options: {} },
+      gameInventory: potions,
+    });
+    const started = await post("/combat/start", {
+      ...input,
+      chatId: noItemsChat.id,
+      anchor: noItemsAnchor.id,
+      enemies: [unit("rat", "enemy")],
+    });
+    assert.equal(started.statusCode, 200, started.body);
+    let n: DirectedCombatView = started.json().session;
+    assert.deepEqual(n.inventory, [], "no item is offered");
+    const saved = (await store.getByChatAndMessage(noItemsChat.id, noItemsAnchor.id, 0, COMBAT_DIRECTOR_NAMESPACE))!;
+    assert.deepEqual(JSON.parse(saved.state).itemEffects, [], "nor is a guessed effect kept");
+    const noItemsCmd = (command: DirectedCommand) =>
+      post("/combat/command", {
+        chatId: noItemsChat.id,
+        anchor: noItemsAnchor.id,
+        id: n.id,
+        instanceId: n.instanceId,
+        revision: n.revision,
+        requestId: crypto.randomUUID(),
+        command,
+      });
+    const begun = await noItemsCmd({ type: "begin", unitId: "hero" });
+    assert.equal(begun.statusCode, 200, begun.body);
+    n = begun.json().session;
+    const refusedPotion = await noItemsCmd({
+      type: "tactical",
+      action: { type: "item", unitId: "hero", itemName: "Potion", targetId: "hero" },
+    });
+    assert.equal(refusedPotion.statusCode, 400, refusedPotion.body);
+    assert.deepEqual(JSON.parse((await chats.getById(noItemsChat.id))!.metadata).gameInventory, potions);
   }
   console.log(
     "Combat director route: authority, idempotency, terrain, atomic item costs, late GM output, restore identity and branch isolation passed.",

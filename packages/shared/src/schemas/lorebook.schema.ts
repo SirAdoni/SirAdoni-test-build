@@ -63,6 +63,17 @@ export const lorebookScheduleSchema = z.object({
   activeLocations: z.array(z.string()).default([]),
 });
 
+/** Max images an entry can carry; the upload route and every writer enforce it. */
+export const MAX_LOREBOOK_ENTRY_IMAGES = 4;
+/** The only path shape an entry image may have: a server-generated file served by the lorebooks routes. */
+export const LOREBOOK_ENTRY_IMAGE_PATH_PATTERN =
+  /^\/api\/lorebooks\/entry-images\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(png|jpg|webp)$/;
+
+export const lorebookEntryImageSchema = z.object({
+  path: z.string().regex(LOREBOOK_ENTRY_IMAGE_PATH_PATTERN),
+  caption: z.string().max(500).default(""),
+});
+
 const lorebookGeneratedBySchema = z
   .enum(["user", "agent", "import", "lorebook-maker"])
   .nullable()
@@ -224,6 +235,8 @@ export const createLorebookEntrySchema = z.object({
   activationConditions: z.array(activationConditionSchema).default([]),
   schedule: lorebookScheduleSchema.nullable().default(null),
   excludeFromVectorization: z.boolean().default(false),
+  /** Images sent to the model whenever the entry activates. Add files through the upload route; PATCH only reorders, captions or removes. */
+  images: z.array(lorebookEntryImageSchema).max(MAX_LOREBOOK_ENTRY_IMAGES).default([]),
   /** Decision activation (#6570): the statement, as long as an agent activation question. */
   decisionStatement: z.string().max(500).default(""),
   decisionMode: lorebookDecisionModeSchema.default("off"),

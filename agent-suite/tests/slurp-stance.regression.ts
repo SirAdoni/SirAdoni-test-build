@@ -124,7 +124,10 @@ assert.match(operation, /status: "cooling"/u);
 assert.match(operation, /thread\.coolUntil && thread\.coolUntil > new Date\(\)\.toISOString\(\)/u);
 // The words the creator left them with are written before the door closes.
 const recorded = operation.indexOf(".recordReplyOutcome(thread.id,");
-const boundary = operation.indexOf("await applyBoundary(messagesStore, thread.id, reply.latitude)");
+// Step 6.5: the boundary also takes the player's cool-off minutes.
+const boundary = operation.indexOf(
+  "await applyBoundary(messagesStore, thread.id, reply.latitude, settings.messagesCoolOffMinutes)",
+);
 assert.ok(recorded >= 0 && boundary > recorded, "The stored reply outcome must precede the boundary");
 
 console.log("slurp stance regression passed");

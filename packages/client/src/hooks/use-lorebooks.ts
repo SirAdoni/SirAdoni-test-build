@@ -31,6 +31,8 @@ export const lorebookKeys = {
   detail: (id: string) => [...lorebookKeys.all, "detail", id] as const,
   entries: (lorebookId: string) => [...lorebookKeys.all, "entries", lorebookId] as const,
   entry: (entryId: string) => [...lorebookKeys.all, "entry", entryId] as const,
+  imageChange: (lorebookId: string, entryId: string) =>
+    [...lorebookKeys.all, "image-change", lorebookId, entryId] as const,
   folders: (lorebookId: string) => [...lorebookKeys.all, "folders", lorebookId] as const,
   active: (chatId?: string | null) =>
     chatId ? ([...lorebookKeys.all, "active", chatId] as const) : ([...lorebookKeys.all, "active"] as const),
@@ -342,15 +344,19 @@ export function useCreateLorebookEntry() {
   });
 }
 
-export function useUpdateLorebookEntry() {
+export function useUpdateLorebookEntry(imageChange?: { lorebookId: string; entryId: string }) {
   const qc = useQueryClient();
   return useMutation({
+    mutationKey: imageChange ? lorebookKeys.imageChange(imageChange.lorebookId, imageChange.entryId) : undefined,
     mutationFn: ({ lorebookId, entryId, ...data }: { lorebookId: string; entryId: string } & Record<string, unknown>) =>
       api.patch<LorebookEntry>(`/lorebooks/${lorebookId}/entries/${entryId}`, data),
     onSuccess: (_data, variables) => {
-      qc.invalidateQueries({ queryKey: lorebookKeys.entries(variables.lorebookId) });
-      qc.invalidateQueries({ queryKey: lorebookKeys.entry(variables.entryId) });
-      qc.invalidateQueries({ queryKey: lorebookKeys.active() });
+      const invalidations = [
+        qc.invalidateQueries({ queryKey: lorebookKeys.entries(variables.lorebookId) }),
+        qc.invalidateQueries({ queryKey: lorebookKeys.entry(variables.entryId) }),
+        qc.invalidateQueries({ queryKey: lorebookKeys.active() }),
+      ];
+      return imageChange ? Promise.all(invalidations) : undefined;
     },
   });
 }
@@ -629,6 +635,24 @@ export function useActiveLorebookEntries(chatId: string | null, enabled = false)
   });
 }
 
+/** Uploads only the image field; entry text and keyword drafts keep their own autosave. */
+export function useUploadLorebookEntryImage(lorebookId: string, entryId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationKey: lorebookKeys.imageChange(lorebookId, entryId),
+    mutationFn: async ({ file, beforeUpload }: { file: File; beforeUpload?: () => Promise<void> }) => {
+      await beforeUpload?.();
+      const form = new FormData();
+      form.append("file", file);
+      return api.upload<LorebookEntry>(`/lorebooks/${lorebookId}/entries/${entryId}/images`, form);
+    },
+    onSuccess: () =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: lorebookKeys.entries(lorebookId) }),
+        qc.invalidateQueries({ queryKey: lorebookKeys.active() }),
+      ]),
+  });
+}
 // ── Lorebook tools: test scan and activation statistics ──
 
 export interface LorebookTestScanResult {

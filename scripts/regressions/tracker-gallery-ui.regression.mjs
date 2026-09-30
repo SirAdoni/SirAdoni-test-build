@@ -71,8 +71,13 @@ assert.match(
 );
 assert.match(
   roleplayHud,
-  /const HUD_ICON_BUTTON = getChatToolbarButtonClass\(\{ compact: true \}\)/u,
+  /const HUD_ICON_BUTTON = getChatTouchToolbarButtonClass\(\{ compact: true \}\)/u,
   "tracker widget controls must inherit the shared chat toolbar treatment",
+);
+assert.match(
+  chatToolbarControls,
+  /function getChatTouchToolbarButtonClass[^]*?return getChatToolbarButtonClass\(\{ \.\.\.input, className: cn\(CHAT_TOOLBAR_TOUCH_SIZE_CLASS, input\.className\) \}\)/u,
+  "touch toolbar controls must retain shared chat chrome while adding touch sizing",
 );
 assert.match(
   chatToolbarControls,
@@ -117,7 +122,7 @@ assert.match(
 );
 assert.match(
   roleplayHud,
-  /const hasWorldState =[\s\S]*?getChatToolbarButtonClass\([\s\S]*?hasWorldState \? "w-auto min-w-8 gap-1 px-2" : "group flex-col gap-0 overflow-hidden"[\s\S]*?!hasWorldState \? \([\s\S]*?<MapPin/u,
+  /const hasWorldState =[\s\S]*?getChatTouchToolbarButtonClass\([\s\S]*?hasWorldState \? "w-auto min-w-8 gap-1 px-2" : "group flex-col gap-0 overflow-hidden"[\s\S]*?!hasWorldState \? \([\s\S]*?<MapPin/u,
   "World State must use the shared toolbar treatment and stay compact until it has generated content",
 );
 assert.match(

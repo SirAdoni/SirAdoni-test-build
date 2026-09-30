@@ -469,7 +469,58 @@ const capabilityPackageManifestBaseSchema = z
 // 1.50: Professor Mari actions. A package holding the `mari-actions` permission may register
 //        `api.registerService("mari-actions:<package-id>", { list, run })`, and Professor Mari's
 //        `package_service` tool can list and run those actions. Requires the `mari-actions` permission.
-export const supportedCapabilityApi = Object.freeze({ major: 1, minor: 50 } as const);
+// 1.51: items the Game Master invents. A ruleset's `items` block may carry `rarityCaps` (the largest
+//        value of each number stat an invented item of a rarity may give) and `propose` (false forbids
+//        invention). Not a soft seam, for the same reason as 1.20 through 1.49: an Engine that cannot
+//        read these refuses the whole ruleset file, so a package that ships either declares 1.51. No
+//        permission.
+// 1.52: a value may read the items someone holds (`itemStat`: a stat over their worn, carried or
+//        all items, by sum, highest, lowest or count, optionally only one slot, category or tag).
+//        Not a soft seam, for the same reason as 1.20 through 1.51: an Engine that cannot read it
+//        refuses the whole ruleset or catalog file, so a package that ships one declares 1.52. No
+//        permission.
+// 1.53: conditions and items change checks outside a fight. An item may say what it does while
+//        `worn` and while only `carried` (advantage or disadvantage, modifiers to checks and saves,
+//        saves it fails), a condition or a level may narrow its check effects to some `skills`, a
+//        modifier may name its own `skills` or `saves` and roll twice (`mode`), and a rarity cap may
+//        hold a worn or carried `bonus`. Not a soft seam, for the same reason as 1.20 through 1.52: an
+//        Engine that cannot read these refuses the whole ruleset or catalog file, so a package that
+//        ships any of them declares 1.53. No permission.
+// 1.54: an item may ask something of whoever wears it (`requires`: a value off their sheet, the least
+//        it may be, and what applies while they fall short), a worn or carried effect may set or raise
+//        an ability (`abilities`), and a condition level may read a derived value (`derived`) instead
+//        of a live track. Not a soft seam, for the same reason as 1.20 through 1.53: an Engine that
+//        cannot read these refuses the whole ruleset or catalog file, so a package that ships any of
+//        them declares 1.54. No permission.
+// 1.55: an item may be a weapon (`attack`: what it adds to hit, deals, reaches and carries, each value
+//        written down or read off the item's own stat), offered in a ruleset fight while it is worn,
+//        and a creature's resistance or immunity may name the item tags a blow gets through it with
+//        (`{ type, except }`). Not a soft seam, for the same reason as 1.20 through 1.54: an Engine
+//        that cannot read these refuses the whole ruleset or catalog file, so a package that ships
+//        any of them declares 1.55. No permission.
+// 1.56: what an item does while worn or carried may change a fight (modifiers to defense, attacks and
+//        speed, the fight's condition effects, and the kinds of harm and conditions it keeps off:
+//        `resist`, `vulnerable`, `immune`, `conditionImmunities`), `combat.pool.hardness` reads a
+//        fighter's hardness, and a creature may have `hardness`. Not a soft seam, for the same reason
+//        as 1.20 through 1.55: an Engine that cannot read these refuses the whole ruleset or catalog
+//        file, so a package that ships any of them declares 1.56. No permission.
+// 1.57: a weapon's attack may shoot something (`ammo`: a carried item's tag, how many an attack, the
+//        share picked up after a won fight) and keep a loaded count (`clip`: how many it holds and
+//        the budget a reload spends), and a ruleset fight writes what it shot and loaded to the
+//        inventory. Not a soft seam, for the same reason as 1.20 through 1.56: an Engine that cannot
+//        read these refuses the whole ruleset or catalog file, so a package that ships any of them
+//        declares 1.57. No permission.
+// 1.58: a weapon's attack may have other `modes` of making it, be an `offHand` weapon (with the
+//        combat block's `offHand` budget), deal at least a `floor` on a hit, and put conditions on a
+//        target `onHit`. Not a soft seam, for the same reason as 1.20 through 1.57: an Engine that
+//        cannot read these refuses the whole ruleset or catalog file, so a package that ships any of
+//        them declares 1.58. No permission.
+// 1.59: an item may be `use`d in a fight (a heal, an attack, a buff or a debuff, on a budget or
+//        free, that is used up or spends the item's `charges`), and a ruleset fight writes what it
+//        used up and the charges left to the inventory. Not a soft seam, for the same reason as 1.20
+//        through 1.58: an Engine that cannot read these refuses the whole ruleset or catalog file, so
+//        a package that ships any of them declares 1.59. No permission.
+export const supportedCapabilityApi = Object.freeze({ major: 1, minor: 59 } as const);
 
 const capabilityApiVersionSchema = z
   .object({

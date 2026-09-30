@@ -85,8 +85,12 @@ The card is titled **Review Mari's changes**. It shows what she did and which da
 
 A few things to know:
 
-- Brand new items, like a fresh character or lorebook, usually skip this step. Nothing existing was overwritten, so there is nothing to undo.
-- A review card expires on its own after 10 minutes if you do not answer it.
+- New items, like a fresh character or lorebook, get a card too. **Restore** removes them again.
+- A card belongs to the Mari chat she made the change in. A new chat starts without the cards of other chats. Deleting a chat keeps its changes and removes its cards. A change made with the `mari` command in a terminal belongs to no chat, so its card shows in every Mari chat.
+- A card stays until you press **Keep** or **Restore**, for up to 14 days. After that it closes on its own and the change stays.
+- If **Restore** says the data changed after Mari made the change, something edited it since then, and restoring would overwrite that newer version. Press **Keep** to dismiss the card; the current data stays as it is.
+- An edit that would leave everything as it was is not saved and gets no card.
+- Mari cannot edit or delete her own card. Marinara resets it to the built-in version on every start.
 - Characters and personas also keep their own version history inside their editors. You can restore an older version there as a second safety net.
 
 Two higher-risk changes wait instead of being applied first:

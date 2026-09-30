@@ -1,16 +1,14 @@
-import { Loader2, Sparkles } from "lucide-react";
-
-import { toast } from "sonner";
+import { SlpSparkleGlyph } from "../../base/chrome/SlpGlyphs";
 
 import { Modal } from "../../../components/ui/Modal";
 
 import { Avatar, getSlpAccentStyle, SLP_PINK } from "../../base/chrome/SlpChrome";
-
-import { errorMessage } from "../../modules/settings/slp-backstage-format";
+import { startSlpTask } from "../../base/state/slp-task-store";
+import { countSlurpRefreshOutcomes } from "./slp-refresh-batch";
 
 import type { SlpBackstagePageProps } from "../backstage/slp-backstage-contract";
 
-/** Create posts now: pick Creators, pick access, and watch the run finish. */
+/** Create posts now: pick Creators and access; the run goes on in Pulse (task B). */
 export function SlpCreatorRefreshModal(page: SlpBackstagePageProps) {
   const {
     t,
@@ -18,10 +16,8 @@ export function SlpCreatorRefreshModal(page: SlpBackstagePageProps) {
     setRefreshModalOpen,
     refreshAccountIds,
     setRefreshAccountIds,
-    refreshRemaining,
     refreshAccess,
     setRefreshAccess,
-    accountsQuery,
     refreshCreators,
     automationCreators,
   } = page;
@@ -31,7 +27,6 @@ export function SlpCreatorRefreshModal(page: SlpBackstagePageProps) {
       onClose={() => setRefreshModalOpen(false)}
       title={t("ui.slurp.settings.refresh.title")}
       width="max-w-xl"
-      closeDisabled={refreshCreators.isPending}
       panelClassName="noodle-icon-scope"
       panelStyle={getSlpAccentStyle(SLP_PINK, {
         "--background": "var(--slurp-surface)",
@@ -49,15 +44,13 @@ export function SlpCreatorRefreshModal(page: SlpBackstagePageProps) {
               <button
                 type="button"
                 onClick={() => setRefreshAccountIds(new Set(automationCreators.map((creator) => creator.id)))}
-                disabled={refreshCreators.isPending}
-                className="text-[var(--noodle-accent)] hover:underline"
+                className="text-[var(--noodle-accent-foreground)] hover:underline"
               >
                 {t("ui.slurp.settings.refresh.selectAll")}
               </button>
               <button
                 type="button"
                 onClick={() => setRefreshAccountIds(new Set())}
-                disabled={refreshCreators.isPending}
                 className="text-[var(--muted-foreground)] hover:underline"
               >
                 {t("ui.slurp.settings.refresh.clear")}
@@ -73,7 +66,6 @@ export function SlpCreatorRefreshModal(page: SlpBackstagePageProps) {
                 <input
                   type="checkbox"
                   checked={refreshAccountIds.has(creator.id)}
-                  disabled={refreshCreators.isPending}
                   onChange={(event) =>
                     setRefreshAccountIds((current) => {
                       const next = new Set(current);
@@ -90,7 +82,7 @@ export function SlpCreatorRefreshModal(page: SlpBackstagePageProps) {
                   <span className="block truncate text-xs text-[var(--muted-foreground)]">@{creator.handle}</span>
                 </span>
                 {creator.autoPosting.enabled && (
-                  <span className="text-[0.625rem] font-semibold text-[var(--noodle-accent)]">
+                  <span className="text-[0.625rem] font-semibold text-[var(--noodle-accent-foreground)]">
                     {t("ui.slurp.settings.creators.autoPostShort")}
                   </span>
                 )}
@@ -106,11 +98,10 @@ export function SlpCreatorRefreshModal(page: SlpBackstagePageProps) {
                 key={access}
                 type="button"
                 aria-pressed={refreshAccess === access}
-                disabled={refreshCreators.isPending}
                 onClick={() => setRefreshAccess(access)}
-                className={`min-h-10 rounded-lg text-sm font-semibold capitalize ${refreshAccess === access ? "bg-[var(--noodle-accent)] text-zinc-950 [&_svg]:!text-zinc-950" : "text-[var(--muted-foreground)] hover:bg-[var(--accent)]"}`}
+                className={`min-h-10 rounded-lg text-sm font-semibold capitalize ${refreshAccess === access ? "bg-[var(--noodle-accent)] text-[var(--slurp-on-accent)] [&_svg]:!text-[var(--slurp-on-accent)]" : "text-[var(--muted-foreground)] hover:bg-[var(--accent)]"}`}
               >
-                {access}
+                {t(`ui.slurp.composer.audience.${access}`)}
               </button>
             ))}
           </div>
@@ -119,7 +110,6 @@ export function SlpCreatorRefreshModal(page: SlpBackstagePageProps) {
         <div className="flex justify-end gap-2 border-t border-[var(--border)] pt-4">
           <button
             type="button"
-            disabled={refreshCreators.isPending}
             onClick={() => setRefreshModalOpen(false)}
             className="min-h-10 rounded-lg border border-[var(--border)] px-4 text-xs font-semibold"
           >
@@ -127,50 +117,30 @@ export function SlpCreatorRefreshModal(page: SlpBackstagePageProps) {
           </button>
           <button
             type="button"
-            disabled={refreshCreators.isPending || refreshAccountIds.size === 0}
-            onClick={() =>
-              refreshCreators.mutate(
-                { accountIds: [...refreshAccountIds], access: refreshAccess },
-                {
-                  onSuccess: ({ outcomes }) => {
-                    const generated = outcomes.filter((outcome) => outcome.status === "generated").length;
-                    const skipped = outcomes.filter((outcome) => outcome.status === "skipped").length;
-                    const failed = outcomes.length - generated - skipped;
-                    setRefreshModalOpen(false);
-                    toast.success(t("ui.slurp.settings.refresh.result", { count: generated }));
-                    // Name the Creators that did not post, so a short batch is never a mystery.
-                    const names = (wanted: (status: string) => boolean) =>
-                      outcomes
-                        .filter((outcome) => wanted(outcome.status))
-                        .map(
-                          (outcome) =>
-                            accountsQuery.data?.find((creator) => creator.id === outcome.accountId)?.displayName ??
-                            outcome.accountId,
-                        )
-                        .join(", ");
-                    if (skipped)
-                      toast(t("ui.slurp.settings.refresh.skipped", { count: skipped }), {
-                        description: names((status) => status === "skipped"),
-                        duration: 10_000,
-                      });
-                    if (failed)
-                      toast.error(t("ui.slurp.settings.refresh.failed", { count: failed }), {
-                        description: names((status) => status !== "generated" && status !== "skipped"),
-                        duration: 10_000,
-                      });
-                  },
-                  onError: (error) => toast.error(errorMessage(error)),
-                },
-              )
-            }
-            className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-[var(--noodle-accent)] px-4 text-xs font-bold text-zinc-950 [&_svg]:!text-zinc-950 disabled:opacity-50"
+            disabled={refreshAccountIds.size === 0}
+            onClick={() => {
+              // B: "Generate" is a Pulse task. The modal closes at once; Pulse shows the run and each
+              // Creator's post, a toast says how it went.
+              const accountIds = [...refreshAccountIds];
+              setRefreshModalOpen(false);
+              void startSlpTask({
+                t,
+                kind: "generate-posts",
+                label: t("ui.slurp.pulse.task.generate", { count: accountIds.length }),
+                accountIds,
+                run: () => refreshCreators.mutateAsync({ accountIds, access: refreshAccess }),
+                done: (result) => ({
+                  result: t("ui.slurp.pulse.result.generated", {
+                    count: countSlurpRefreshOutcomes(result.outcomes).made,
+                  }),
+                  target: accountIds[0] ? { accountId: accountIds[0] } : undefined,
+                }),
+              });
+            }}
+            className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-[var(--noodle-accent)] px-4 text-xs font-bold text-[var(--slurp-on-accent)] [&_svg]:!text-[var(--slurp-on-accent)] disabled:opacity-50"
           >
-            {refreshCreators.isPending ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
-            <span role={refreshCreators.isPending ? "status" : undefined}>
-              {refreshCreators.isPending
-                ? t("ui.slurp.settings.refresh.remaining", { count: refreshRemaining })
-                : t("ui.slurp.settings.refresh.generate", { count: refreshAccountIds.size || "" })}
-            </span>
+            <SlpSparkleGlyph size={14} />
+            <span>{t("ui.slurp.settings.refresh.generate", { count: refreshAccountIds.size || "" })}</span>
           </button>
         </div>
       </div>

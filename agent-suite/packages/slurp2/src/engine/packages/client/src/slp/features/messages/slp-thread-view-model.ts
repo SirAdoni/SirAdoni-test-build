@@ -1,14 +1,34 @@
-import { BriefcaseBusiness, Image as ImageIcon, Lock, MessageCircle, Palette } from "lucide-react";
+import {
+  Aperture,
+  BriefcaseBusiness,
+  Gift,
+  Image as ImageIcon,
+  MessageCircle,
+  Newspaper,
+  NotebookPen,
+  Palette,
+  PenLine,
+  Stamp,
+} from "lucide-react";
+import type { SlpActionName } from "../../../../../shared/src/slp/slp-actions.js";
+import type { SlpActionPreview } from "../../../../../shared/src/slp/slp-stir.js";
+
+/** A desk step riding the next Support line: an Offer the Creator answers, or a move that happens now. */
+export type SlurpComposerDesk = { mode: "offer" | "now"; card: SlpActionPreview };
+import { SlpLockGlyph } from "../../base/chrome/SlpGlyphs";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { SlurpCoin } from "../../modules/coin/SlpCoin";
 import { useSlurpConnections } from "../../base/state/slp-host-connections";
 import { useCreateSlurpCommission } from "../../features/messages/commissions/slp-commission-hooks";
 import type { SlurpMessage } from "../../features/messages/slp-messages-contract";
+import { SLURP_SUPPORT_ACCOUNT_ID } from "../../../../../shared/src/slp/slp-support.js";
+
 import {
   useDraftSlurpCreatorReply,
   useForceSlurpReply,
   useRequestSlurpReply,
+  useRequestSlurpFanReply,
   useResetSlurpThread,
   useResolveSlurpMessageRequest,
   useSendSlurpCreatorReply,
@@ -20,6 +40,7 @@ import {
   useSlurpCompose,
   useSlurpMessagePrompt,
   useSlurpOlderMessages,
+  useSlurpMessageSearch,
   useSlurpThread,
 } from "../../features/messages/slp-messages-hooks";
 import { useSlurpSettings, useUpdateSlurpSettings } from "../../features/settings/slp-settings-contract";
@@ -33,6 +54,9 @@ import { useSlurpSettings, useUpdateSlurpSettings } from "../../features/setting
  */
 import { SLURP_MESSAGE_PAGE, type SlurpConversationDrawerMode } from "./SlpMessages";
 
+/** The one reading column for bubbles and composer on wide screens (~720 px). */
+export const SLP_THREAD_COLUMN_CLASS = "mx-auto w-full max-w-[45rem]";
+
 export interface SlurpThreadViewProps {
   threadId: string | null;
   creatorAccountId: string | null;
@@ -43,6 +67,13 @@ export interface SlurpThreadViewProps {
   onBack: () => void;
   onOpenProfile: (accountId: string) => void;
   desktopSplit?: boolean;
+  /** Opened from "Write as Slurp Support": Slurp Support's one thread with this Creator. */
+  startAsSupport?: boolean;
+  /**
+   * "Switch to Slurp Support" / "Back to your persona": the other voice is a different thread
+   * (Support has one thread per Creator, shared by every persona), so the inbox opens that one.
+   */
+  onSwitchVoice?: (creatorAccountId: string, asSupport: boolean) => void;
 }
 
 /**
@@ -62,16 +93,19 @@ export function useSlurpThreadViewState(props: SlurpThreadViewProps) {
     onBack,
     onOpenProfile,
     desktopSplit,
+    startAsSupport,
+    onSwitchVoice,
   } = props;
   const { t: localizeUi, i18n } = useUiTranslation();
   const byThread = useSlurpThread(threadId, personaId);
   const olderMessages = useSlurpOlderMessages();
-  const byCreator = useSlurpCompose(threadId ? null : creatorAccountId, personaId);
+  const byCreator = useSlurpCompose(threadId ? null : creatorAccountId, personaId, Boolean(startAsSupport));
   const threadQuery = threadId ? byThread : byCreator;
   const send = useSendSlurpMessage();
   const cheat = useSlurpCheatDirective();
   const forceReply = useForceSlurpReply();
   const requestReply = useRequestSlurpReply();
+  const requestFanReply = useRequestSlurpFanReply();
   const tip = useTipInSlurpThread();
   const resolveRequest = useResolveSlurpMessageRequest();
   const resetThread = useResetSlurpThread();
@@ -86,20 +120,35 @@ export function useSlurpThreadViewState(props: SlurpThreadViewProps) {
   const [toolsOpen, setToolsOpen] = useState(false);
   const [connectionPickerOpen, setConnectionPickerOpen] = useState(false);
   const [toolTab, setToolTab] = useState<
-    "tip" | "commission" | "photo" | "generated-photo" | "creator" | "request" | null
+    | "tip"
+    | "commission"
+    | "photo"
+    | "generated-photo"
+    | "creator"
+    | "request"
+    | "write"
+    | "offer"
+    | "move"
+    | "note"
+    | "show-post"
+    | "demand"
+    | null
   >(null);
+  // Slurp Support's desk step for the next line (docs/SUPPORT-DESK.md): an Offer or a move, and the
+  // lever whose play sheet is open to build one.
+  const [composerDesk, setComposerDesk] = useState<SlurpComposerDesk | null>(null);
+  // Support's "photo, right now" rides the next line like an Offer does (0.3.6).
+  const [photoDemand, setPhotoDemand] = useState(false);
+  const [deskPick, setDeskPick] = useState<{ action: SlpActionName; mode: "offer" | "now" } | null>(null);
   const [commissionPrefill, setCommissionPrefill] = useState("");
   const settingsQuery = useSlurpSettings();
   const connectionsQuery = useSlurpConnections(true);
   const updateSlurpSettings = useUpdateSlurpSettings();
-  const [tipMode, setTipMode] = useState<"now" | "with-message">("now");
   const [activeTipAmount, setActiveTipAmount] = useState<number | null>(null);
-  const [customTipAmount, setCustomTipAmount] = useState("");
-  const [customTipNote, setCustomTipNote] = useState("");
   const [standaloneTip, setStandaloneTip] = useState<SlurpMessage | null>(null);
   const [composerTipAmount, setComposerTipAmount] = useState(0);
   const [composerTipNote, setComposerTipNote] = useState("");
-  const [sendRequestId, setSendRequestId] = useState<string | null>(null);
+  const [sendRequest, setSendRequest] = useState<{ id: string; content: string } | null>(null);
   // The fan's own words, held on screen until the server's copy of them arrives.
   const [pending, setPending] = useState<{ content: string; id: string | null; startedAt: number } | null>(null);
   // Why no answer came. The send route has always reported this and nothing ever read it, so a
@@ -120,38 +169,49 @@ export function useSlurpThreadViewState(props: SlurpThreadViewProps) {
   // Set when older entries are about to mount, so the viewport can be pinned to what it was on.
   const growAnchorRef = useRef<number | null>(null);
   const landedAtBottomRef = useRef(false);
-  const drawerRef = useRef<HTMLDialogElement | null>(null);
-  const drawerTriggerRef = useRef<HTMLButtonElement | null>(null);
   const searchTriggerRef = useRef<HTMLButtonElement | null>(null);
   const headerMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const headerMenuRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
   const [tierOpen, setTierOpen] = useState(false);
   const tierTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const tierPopoverRef = useRef<HTMLDivElement | null>(null);
   const [awayFromBottom, setAwayFromBottom] = useState(false);
   const messageSearchInputRef = useRef<HTMLInputElement | null>(null);
   const thread = threadQuery.data?.thread ?? null;
   const activeConversationRef = useRef({ personaId, threadId });
   activeConversationRef.current = { personaId, threadId: thread?.id ?? threadId };
+  const messageSearchQuery = useSlurpMessageSearch(threadId, personaId, messageSearch);
+  const searchMessages = messageSearchQuery.data?.pages.flatMap((page) => page.messages) ?? [];
+  const searchMessageIds = useMemo(() => searchMessages.map((message) => message.id), [searchMessages]);
+  useEffect(() => {
+    if (
+      messageSearch &&
+      messageSearchIndex >= searchMessageIds.length - 1 &&
+      messageSearchQuery.hasNextPage &&
+      !messageSearchQuery.isFetchingNextPage
+    )
+      void messageSearchQuery.fetchNextPage();
+  }, [messageSearch, messageSearchIndex, searchMessageIds.length, messageSearchQuery]);
 
   const messages = useMemo(() => {
     const byId = new Map<string, SlurpMessage>();
     for (const message of loadedOlderMessages) byId.set(message.id, message);
     for (const message of threadQuery.data?.messages ?? []) byId.set(message.id, message);
+    for (const message of searchMessages) byId.set(message.id, message);
     return [...byId.values()].sort((left, right) =>
       left.createdAt === right.createdAt
         ? left.id.localeCompare(right.id)
         : left.createdAt.localeCompare(right.createdAt),
     );
-  }, [loadedOlderMessages, threadQuery.data?.messages]);
+  }, [loadedOlderMessages, searchMessages, threadQuery.data?.messages]);
   const creator = threadQuery.data?.creator;
   const counterpart = threadQuery.data?.counterpart ?? creator;
   const targetCreatorAccountId = thread?.creatorAccountId ?? creator?.id ?? creatorAccountId;
   const ownsCreator = Boolean(targetCreatorAccountId && ownedCreatorAccountIds.includes(targetCreatorAccountId));
   // A Creator answers many fans from one account, so on that side the draft belongs to the thread.
-  const draftStorageKey = `slurp2-message-draft:${personaId ?? "none"}:${targetCreatorAccountId ?? "none"}${ownsCreator && threadId ? `:${threadId}` : ""}`;
+  // Slurp Support's own thread (`slp-support.ts`): the player writes in it as Support, from any persona.
+  const supportThread = thread ? thread.viewerAccountId === SLURP_SUPPORT_ACCOUNT_ID : Boolean(startAsSupport);
+  const draftStorageKey = `slurp2-message-draft:${supportThread ? "support" : (personaId ?? "none")}:${targetCreatorAccountId ?? "none"}${ownsCreator && threadId ? `:${threadId}` : ""}`;
   const messaging = threadQuery.data?.messaging;
   const commissions = useMemo(() => threadQuery.data?.commissions ?? [], [threadQuery.data?.commissions]);
   const relationship = "relationship" in (threadQuery.data ?? {}) ? threadQuery.data?.relationship : undefined;
@@ -209,6 +269,14 @@ export function useSlurpThreadViewState(props: SlurpThreadViewProps) {
     .map(({ commission, at }) => `${commission.id}:${commission.state}:${commission.updatedAt}:${at}`)
     .join("|");
   const subscribed = thread?.subscribed ?? threadQuery.data?.subscribed ?? false;
+  // The player can write as Slurp Support (Slurp's staff) to any Creator they do not run. Support
+  // has its own thread; the name is the one the kept sign-up chat gave Support, so it stays one Support.
+  const asSupport = !ownsCreator && supportThread;
+  const setSupportChoice = (next: boolean) => {
+    if (targetCreatorAccountId && next !== asSupport) onSwitchVoice?.(targetCreatorAccountId, next);
+  };
+  // Support is a faceless team (docs/SUPPORT-DESK.md): always this name.
+  const supportName = "Slurp Support";
   const headerAccount = ownsCreator ? counterpart : creator;
   const headerProfileId = ownsCreator ? thread?.viewerAccountId : targetCreatorAccountId;
   const busy = send.isPending || tip.isPending || creatorReply.isPending || draftReply.isPending;
@@ -228,68 +296,165 @@ export function useSlurpThreadViewState(props: SlurpThreadViewProps) {
   // the Creator has no image request to make of herself.
   const toolTabs = useMemo(
     () =>
-      (ownsCreator
+      (asSupport
         ? ([
+            // Slurp's staff console (0.3.6): the player works at Slurp here, so the tools read like work tools.
             {
-              id: "generated-photo",
-              icon: Palette,
-              label: localizeUi("ui.slurp.messages.createPhoto", { defaultValue: "Create a photo" }),
-              detail: localizeUi("ui.slurp.messages.createPhotoDetail", { defaultValue: "Generate and send an image" }),
-              group: "media" as const,
+              id: "write",
+              icon: PenLine,
+              label: localizeUi("ui.slurp.desk.tools.write", { defaultValue: "Draft reply" }),
+              detail: localizeUi("ui.slurp.desk.tools.writeDetail", {
+                defaultValue: "Suggested wording for this ticket",
+              }),
+              group: "conversation" as const,
             },
             {
-              id: "creator",
-              icon: Lock,
-              label: localizeUi("ui.slurp.messages.lockedContent", { defaultValue: "Locked content" }),
-              detail: localizeUi("ui.slurp.messages.lockedContentDetail", { defaultValue: "Send a paid message" }),
-              group: "creator" as const,
+              id: "offer",
+              icon: Stamp,
+              label: localizeUi("ui.slurp.desk.tools.offer", { defaultValue: "Send offer" }),
+              detail: localizeUi("ui.slurp.desk.tools.offerDetail", {
+                defaultValue: "Deal, challenge or contract. Needs their answer",
+              }),
+              group: "conversation" as const,
             },
-          ] as const)
-        : ([
+            {
+              id: "move",
+              icon: Gift,
+              label: localizeUi("ui.slurp.desk.tools.move", { defaultValue: "Apply action" }),
+              detail: localizeUi("ui.slurp.desk.tools.moveDetail", {
+                defaultValue: "Perk, warning or rumour, sent with your reply",
+              }),
+              group: "conversation" as const,
+            },
+            {
+              id: "note",
+              icon: NotebookPen,
+              label: localizeUi("ui.slurp.desk.tools.note", { defaultValue: "Internal note" }),
+              detail: localizeUi("ui.slurp.desk.tools.noteDetail", { defaultValue: "Visible to staff only" }),
+              group: "conversation" as const,
+            },
             {
               id: "photo",
               icon: ImageIcon,
-              label: localizeUi("ui.slurp.messages.sendPhoto", { defaultValue: "Send a photo" }),
-              detail: localizeUi("ui.slurp.messages.sendPhotoDetail", {
-                defaultValue: "Choose an image from your device",
+              label: localizeUi("ui.slurp.desk.tools.attach", { defaultValue: "Attach image" }),
+              detail: localizeUi("ui.slurp.desk.tools.attachDetail", { defaultValue: "Upload a file to this ticket" }),
+              group: "media" as const,
+            },
+            {
+              id: "generated-photo",
+              icon: Palette,
+              label: localizeUi("ui.slurp.desk.tools.order", { defaultValue: "Studio image" }),
+              detail: localizeUi("ui.slurp.desk.tools.orderDetail", {
+                defaultValue: "Request an image from the content team",
               }),
               group: "media" as const,
             },
             {
-              id: "request",
-              icon: MessageCircle,
-              label: localizeUi("ui.slurp.messages.requestReply", { defaultValue: "Request a reply" }),
-              detail: localizeUi("ui.slurp.messages.requestReplyDetail", {
-                defaultValue: "Ask gently without forcing a reply",
+              id: "show-post",
+              icon: Newspaper,
+              label: localizeUi("ui.slurp.desk.tools.pullUp", { defaultValue: "Link a post" }),
+              detail: localizeUi("ui.slurp.desk.tools.pullUpDetail", {
+                defaultValue: "Reference one of their posts or Stories",
               }),
-              group: "conversation" as const,
+              group: "media" as const,
             },
             {
-              id: "commission",
-              icon: BriefcaseBusiness,
-              label: localizeUi("ui.slurp.messages.askCommission", { defaultValue: "Ask for commission" }),
-              detail: localizeUi("ui.slurp.messages.askCommissionDetail", {
-                defaultValue: "Request made-to-order work",
+              id: "demand",
+              icon: Aperture,
+              label: localizeUi("ui.slurp.desk.tools.photoCheck", { defaultValue: "Photo verification" }),
+              detail: localizeUi("ui.slurp.desk.tools.photoCheckDetail", {
+                defaultValue: "Creator must send a live photo now",
               }),
-              group: "conversation" as const,
-            },
-            {
-              id: "tip",
-              icon: SlurpCoin,
-              label: localizeUi("ui.slurp.messages.addTip", { defaultValue: "Add a tip" }),
-              detail: localizeUi("ui.slurp.messages.addTipDetail", {
-                defaultValue: "Attach coins to your next message",
-              }),
-              group: "payment" as const,
+              group: "media" as const,
             },
           ] as const)
+        : ownsCreator
+          ? ([
+              {
+                id: "write",
+                icon: PenLine,
+                label: localizeUi("ui.slurp.messages.helpWrite", { defaultValue: "Help me write" }),
+                detail: localizeUi("ui.slurp.messages.helpWriteDetail", {
+                  defaultValue: "Slurp writes or polishes your message",
+                }),
+                group: "conversation" as const,
+              },
+              {
+                id: "request",
+                icon: MessageCircle,
+                label: localizeUi("ui.slurp.messages.requestFanReply", { defaultValue: "Request a reply" }),
+                detail: localizeUi("ui.slurp.messages.requestFanReplyDetail", {
+                  defaultValue: "Ask the fan to write back",
+                }),
+                group: "conversation" as const,
+              },
+              {
+                id: "generated-photo",
+                icon: Palette,
+                label: localizeUi("ui.slurp.messages.createPhoto", { defaultValue: "Create a photo" }),
+                detail: localizeUi("ui.slurp.messages.createPhotoDetail", {
+                  defaultValue: "Generate and send an image",
+                }),
+                group: "media" as const,
+              },
+              {
+                id: "creator",
+                icon: SlpLockGlyph,
+                label: localizeUi("ui.slurp.messages.lockedContent", { defaultValue: "Locked content" }),
+                detail: localizeUi("ui.slurp.messages.lockedContentDetail", { defaultValue: "Send a paid message" }),
+                group: "creator" as const,
+              },
+            ] as const)
+          : ([
+              {
+                id: "photo",
+                icon: ImageIcon,
+                label: localizeUi("ui.slurp.messages.sendPhoto", { defaultValue: "Send a photo" }),
+                detail: localizeUi("ui.slurp.messages.sendPhotoDetail", {
+                  defaultValue: "Choose an image from your device",
+                }),
+                group: "media" as const,
+              },
+              {
+                id: "request",
+                icon: MessageCircle,
+                label: localizeUi("ui.slurp.messages.requestReply", { defaultValue: "Request a reply" }),
+                detail: localizeUi("ui.slurp.messages.requestReplyDetail", {
+                  defaultValue: "Ask gently without forcing a reply",
+                }),
+                group: "conversation" as const,
+              },
+              {
+                id: "write",
+                icon: PenLine,
+                label: localizeUi("ui.slurp.messages.helpWrite", { defaultValue: "Help me write" }),
+                detail: localizeUi("ui.slurp.messages.helpWriteDetail", {
+                  defaultValue: "Slurp writes or polishes your message",
+                }),
+                group: "conversation" as const,
+              },
+              {
+                id: "commission",
+                icon: BriefcaseBusiness,
+                label: localizeUi("ui.slurp.messages.askCommission", { defaultValue: "Ask for commission" }),
+                detail: localizeUi("ui.slurp.messages.askCommissionDetail", {
+                  defaultValue: "Request made-to-order work",
+                }),
+                group: "conversation" as const,
+              },
+              {
+                id: "tip",
+                icon: SlurpCoin,
+                label: localizeUi("ui.slurp.messages.addTip", { defaultValue: "Send a tip" }),
+                detail: localizeUi("ui.slurp.messages.addTipDetailNowOrLater", {
+                  defaultValue: "Now, or with your next message",
+                }),
+                group: "payment" as const,
+              },
+            ] as const)
       ).slice(),
-    [localizeUi, ownsCreator],
+    [localizeUi, ownsCreator, asSupport],
   );
-
-  useEffect(() => {
-    if (ownsCreator) setTipMode("now");
-  }, [ownsCreator]);
 
   const messageSearchMatches = useMemo(() => {
     const needle = messageSearch.trim().toLocaleLowerCase();
@@ -342,32 +507,6 @@ export function useSlurpThreadViewState(props: SlurpThreadViewProps) {
     if (visibleCreatorReply || (thread && !thread.needsReply && hiddenReplyIds.size === 0)) setReplyStatus(null);
   }, [hiddenReplyIds, messages, thread]);
 
-  // A different conversation must not inherit the last one's unsent echo.
-  useEffect(() => {
-    setPending(null);
-    setTyping(false);
-    setReplyStatus(null);
-    setDrawerMode(null);
-    setMessageSearchOpen(false);
-    setMessageSearch("");
-    setMessageSearchIndex(0);
-    setCommissionRibbonOpen(false);
-    setPreparingImage(false);
-    setError(null);
-    setComposerTipAmount(0);
-    setComposerTipNote("");
-    setCommissionPrefill("");
-    setCustomTipAmount("");
-    setCustomTipNote("");
-    setStandaloneTip(null);
-    setRequestHint("follow-up");
-    setVisibleCount(SLURP_MESSAGE_PAGE);
-    setAwayFromBottom(false);
-    setHeaderMenuOpen(false);
-    setTierOpen(false);
-    landedAtBottomRef.current = false;
-  }, [threadId, creatorAccountId]);
-
   useEffect(() => {
     setMessageSearchIndex(0);
   }, [messageSearch]);
@@ -378,46 +517,35 @@ export function useSlurpThreadViewState(props: SlurpThreadViewProps) {
   }, [messageSearchOpen]);
 
   // Searching reaches the whole conversation, not only the part that happens to be mounted.
+  // The id, not the list: each poll rebuilt the list and scrolled the reader back to the match.
+  const currentSearchMatch = searchMessageIds[messageSearchIndex] ?? null;
   useEffect(() => {
-    const match = messageSearchMatches[messageSearchIndex];
+    const match = currentSearchMatch;
     if (!match) return;
     const position = timeline.findIndex((entry) => entry.kind === "message" && entry.message.id === match);
     if (position < 0) return;
     const needed = timeline.length - position + SLURP_MESSAGE_PAGE;
     setVisibleCount((current) => (current >= needed ? current : needed));
-  }, [messageSearchIndex, messageSearchMatches, timeline]);
+  }, [currentSearchMatch, messageSearchIndex, searchMessageIds]);
 
   useEffect(() => {
-    const match = messageSearchMatches[messageSearchIndex];
+    const match = currentSearchMatch;
     if (match) {
       const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      document
-        .getElementById(`slurp-message-${match}`)
-        ?.scrollIntoView({ block: "center", behavior: reduceMotion ? "auto" : "smooth" });
+      // The id sits on a `display: contents` wrapper, which has no box to scroll to. Its last child
+      // is the message itself; the date and unread separators come before it.
+      const wrapper = document.getElementById(`slurp-message-${match}`);
+      (wrapper?.lastElementChild ?? wrapper)?.scrollIntoView({
+        block: "center",
+        behavior: reduceMotion ? "auto" : "smooth",
+      });
     }
-  }, [messageSearchIndex, messageSearchMatches]);
+    // `visibleCount`: a match in an older page only exists after the effect above mounts it.
+  }, [currentSearchMatch, messageSearchIndex, searchMessageIds, visibleCount]);
 
-  useEffect(() => {
-    const dialog = drawerRef.current;
-    if (!dialog) return;
-    if (drawerMode && !dialog.open) {
-      drawerTriggerRef.current = document.activeElement as HTMLButtonElement | null;
-      dialog.showModal();
-      document.body.style.overflow = "hidden";
-    } else if (!drawerMode && dialog.open) {
-      dialog.close();
-    }
-    return () => {
-      document.body.style.overflow = "";
-    };
-  }, [drawerMode]);
-
-  const closeDrawer = () => {
-    const trigger = drawerTriggerRef.current;
-    setDrawerMode(null);
-    document.body.style.overflow = "";
-    window.requestAnimationFrame(() => trigger?.focus());
-  };
+  // Details / Memories / Commissions: an SlpSheet (phones, tablets) or a docked column (desktop);
+  // the sheet traps and returns focus itself.
+  const closeDrawer = () => setDrawerMode(null);
 
   const messageScrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -461,7 +589,19 @@ export function useSlurpThreadViewState(props: SlurpThreadViewProps) {
     }
     const activeThreadId = thread?.id ?? threadId;
     if (!activeThreadId || !personaId || !nextOlderCursor || olderMessages.isPending) return;
-    const page = await olderMessages.mutateAsync({ threadId: activeThreadId, personaId, cursor: nextOlderCursor });
+    let page;
+    try {
+      page = await olderMessages.mutateAsync({ threadId: activeThreadId, personaId, cursor: nextOlderCursor });
+    } catch (cause) {
+      // A stale anchor would jump the view on the next unrelated page change.
+      growAnchorRef.current = null;
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : localizeUi("ui.slurp.messages.olderFailed", { defaultValue: "Could not load older messages." }),
+      );
+      return;
+    }
     setLoadedOlderMessages((current) => [...page.messages, ...current]);
     setOlderCursor(page.nextCursor);
     setVisibleCount((current) => current + SLURP_MESSAGE_PAGE);
@@ -473,14 +613,25 @@ export function useSlurpThreadViewState(props: SlurpThreadViewProps) {
     setVisibleCount(SLURP_MESSAGE_PAGE);
   }, [threadId, creatorAccountId, personaId]);
 
+  // Was the reader at the end before the new content arrived? Measured after the render, a tall
+  // reply or a picture put the distance past the limit and the view stayed where it was.
+  const pinnedToBottomRef = useRef(true);
+  useEffect(() => {
+    const container = messageScrollRef.current;
+    if (!container) return;
+    const onScroll = () => {
+      pinnedToBottomRef.current = container.scrollHeight - container.scrollTop - container.clientHeight <= 96;
+    };
+    container.addEventListener("scroll", onScroll, { passive: true });
+    return () => container.removeEventListener("scroll", onScroll);
+  }, [thread?.id]);
+
   // State refreshes must never move the message viewport. New content only scrolls when the user
   // was already reading the end of the conversation.
   useEffect(() => {
-    const container = messageScrollRef.current;
-    if (!container || !bottomRef.current) return;
-    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-    if (distanceFromBottom <= 96) bottomRef.current.scrollIntoView({ block: "end" });
-  }, [commissionTimelineKey, messages.length, typing, pending]);
+    if (!bottomRef.current || !pinnedToBottomRef.current) return;
+    bottomRef.current.scrollIntoView({ block: "end" });
+  }, [commissionTimelineKey, messages.length, typing, pending, hiddenReplyIds]);
 
   /**
    * Hold the reply behind a typing indicator for as long as the server said the creator would
@@ -499,6 +650,9 @@ export function useSlurpThreadViewState(props: SlurpThreadViewProps) {
   const canForceReply = Boolean(personaId && thread && !ownsCreator && (thread.needsReply || waitingNote === "queued"));
 
   return {
+    asSupport,
+    setSupportChoice,
+    supportName,
     threadId,
     creatorAccountId,
     personaId,
@@ -517,6 +671,7 @@ export function useSlurpThreadViewState(props: SlurpThreadViewProps) {
     cheat,
     forceReply,
     requestReply,
+    requestFanReply,
     tip,
     resolveRequest,
     resetThread,
@@ -543,22 +698,16 @@ export function useSlurpThreadViewState(props: SlurpThreadViewProps) {
     settingsQuery,
     connectionsQuery,
     updateSlurpSettings,
-    tipMode,
-    setTipMode,
     activeTipAmount,
     setActiveTipAmount,
-    customTipAmount,
-    setCustomTipAmount,
-    customTipNote,
-    setCustomTipNote,
     standaloneTip,
     setStandaloneTip,
     composerTipAmount,
     setComposerTipAmount,
     composerTipNote,
     setComposerTipNote,
-    sendRequestId,
-    setSendRequestId,
+    sendRequest,
+    setSendRequest,
     pending,
     setPending,
     replyStatus,
@@ -586,18 +735,14 @@ export function useSlurpThreadViewState(props: SlurpThreadViewProps) {
     bottomRef,
     growAnchorRef,
     landedAtBottomRef,
-    drawerRef,
-    drawerTriggerRef,
     searchTriggerRef,
     headerMenuTriggerRef,
-    headerMenuRef,
     composerRef,
     headerMenuOpen,
     setHeaderMenuOpen,
     tierOpen,
     setTierOpen,
     tierTriggerRef,
-    tierPopoverRef,
     awayFromBottom,
     setAwayFromBottom,
     messageSearchInputRef,
@@ -628,7 +773,13 @@ export function useSlurpThreadViewState(props: SlurpThreadViewProps) {
     promptDebug,
     activeCommission,
     toolTabs,
-    messageSearchMatches,
+    composerDesk,
+    setComposerDesk,
+    photoDemand,
+    setPhotoDemand,
+    deskPick,
+    setDeskPick,
+    messageSearchMatches: searchMessageIds,
     closeDrawer,
     messageScrollRef,
     nextOlderCursor,

@@ -21,7 +21,14 @@ const helperUrl = pathToFileURL(join(repositoryRoot, "packages/server/src/lib/sh
 function runChild(body: string, timeoutMs: number) {
   const dir = mkdtempSync(join(tmpdir(), "shutdown-deadline-"));
   const script = join(dir, "child.ts");
-  writeFileSync(script, body);
+  // Static imports finish before module-body timing starts; use sync output because process.exit drops async writes.
+  writeFileSync(
+    script,
+    `import { writeSync as writeShutdownTiming } from "node:fs";
+const activeStartedAt = performance.now();
+process.once("exit", () => writeShutdownTiming(1, "shutdown-active-ms=" + (performance.now() - activeStartedAt) + "\\n"));
+${body}`,
+  );
   const startedAt = Date.now();
   const result = spawnSync(process.execPath, [tsxCli, script], {
     cwd: repositoryRoot,
@@ -30,17 +37,29 @@ function runChild(body: string, timeoutMs: number) {
     windowsHide: true,
     // The children assert on logger.warn output, so their log level must not
     // inherit the invoking user's LOG_LEVEL (a documented knob) or the repo
-    // .env - dotenv never overrides pre-set variables, so these win. And
-    // NODE_ENV=production selects pino's synchronous stdout path instead of
-    // the pino-pretty worker thread, which can drop lines emitted right
-    // before process.exit().
-    env: { ...process.env, LOG_LEVEL: "warn", NODE_ENV: "production" },
+    // .env - dotenv never overrides pre-set variables, so these win.
+    // Isolate any diagnostic files from checkout data; the structured stderr
+    // and synchronous timing marker remain captured before the forced exit.
+    env: {
+      ...process.env,
+      LOG_LEVEL: "warn",
+      NODE_ENV: "production",
+      DATA_DIR: dir,
+      FILE_STORAGE_DIR: join(dir, "storage"),
+      LOG_DIR: join(dir, "logs"),
+    },
   });
   rmSync(dir, { recursive: true, force: true });
   // The shared logger writes structured diagnostics to stderr, including the
   // force-exit announcement. Keep the child streams separate for spawn
   // diagnostics, but assert against the actual combined log below.
-  return { ...result, output: `${result.stdout ?? ""}${result.stderr ?? ""}`, elapsedMs: Date.now() - startedAt };
+  const activeTiming = result.stdout?.match(/^shutdown-active-ms=(\d+(?:\.\d+)?)$/mu);
+  return {
+    ...result,
+    output: `${result.stdout ?? ""}${result.stderr ?? ""}`,
+    elapsedMs: Date.now() - startedAt,
+    activeElapsedMs: activeTiming ? Number(activeTiming[1]) : null,
+  };
 }
 
 // Budget arithmetic: the lane runner gives this whole file 30 s. Each child
@@ -63,7 +82,10 @@ setTimeout(() => process.exit(7), 8_000);
     9_000,
   );
   assert.equal(child.status, 0, `stage-2 force exit must exit 0 (got ${child.status}; stderr: ${child.stderr})`);
-  assert.ok(child.elapsedMs < 7_500, `force exit must beat the 8 s hang sentinel (took ${child.elapsedMs} ms)`);
+  assert.ok(
+    child.activeElapsedMs !== null && child.activeElapsedMs < 7_500,
+    `force exit must beat the 8 s hang sentinel (active ${child.activeElapsedMs} ms; launch-to-return ${child.elapsedMs} ms)`,
+  );
   assert.match(child.output, /forcing exit now/u, "the force exit is announced in the log");
 }
 
@@ -109,7 +131,10 @@ process.exit(0);
     9_000,
   );
   assert.equal(child.status, 0);
-  assert.ok(child.elapsedMs < 7_500, `explicit exit must preempt the ref'd watchdog (took ${child.elapsedMs} ms)`);
+  assert.ok(
+    child.activeElapsedMs !== null && child.activeElapsedMs < 7_500,
+    `explicit exit must preempt the ref\'d watchdog (active ${child.activeElapsedMs} ms; launch-to-return ${child.elapsedMs} ms)`,
+  );
 }
 
 // A managed restart still reaches its launcher if a close must be forced.

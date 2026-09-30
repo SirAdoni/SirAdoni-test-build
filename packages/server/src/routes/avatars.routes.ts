@@ -10,7 +10,10 @@ import { assertInsideDir, isAllowedImageBuffer } from "../utils/security.js";
 import { sendValidatedMediaFile, validateImageAssetFile } from "../utils/media-file-security.js";
 import { npcAvatarSlug } from "../services/game/npc-avatar-utils.js";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
-import type { GameNpc } from "@marinara-engine/shared";
+import { createCharactersStorage } from "../services/storage/characters.storage.js";
+import { readCharacterAvatarState, readGameNpcAvatarState } from "../services/game/npc-avatar-state.js";
+import { chats as chatRows } from "../db/schema/index.js";
+import type { GameNpc, GameNpcAvatarState } from "@marinara-engine/shared";
 
 const AVATAR_DIR = join(DATA_DIR, "avatars");
 const NPC_AVATAR_DIR = join(AVATAR_DIR, "npc");
@@ -174,9 +177,21 @@ export async function avatarsRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "Unsupported or invalid avatar image" });
     }
     const chats = createChatsStorage(app.db);
-    if (!(await chats.getById(chatId))) {
+    const initialChat = await chats.getById(chatId);
+    if (!initialChat) {
       return reply.status(404).send({ error: "Chat not found" });
     }
+    const initialMetadata = JSON.parse(initialChat.metadata || "{}") as Record<string, unknown>;
+    const initialNpc = Array.isArray(initialMetadata.gameNpcs)
+      ? (initialMetadata.gameNpcs as GameNpc[]).find((npc) => npc.id === normalizedNpcId)
+      : undefined;
+    const characterId = initialNpc?.characterId || undefined;
+    const expectedUnlinkedAvatarRevision = !characterId
+      ? (readGameNpcAvatarState(initialNpc?.avatarState)?.revision ?? 0)
+      : null;
+    const characters = createCharactersStorage(app.db);
+    const initialCharacter = characterId ? await characters.getById(characterId) : null;
+    const expectedAvatarRevision = readCharacterAvatarState(initialCharacter?.data)?.revision ?? 0;
     const npcDir = join(NPC_AVATAR_DIR, chatId);
     if (!existsSync(npcDir)) mkdirSync(npcDir, { recursive: true });
     const filename = buildNpcAvatarUploadFilename(normalizedNpcId, normalizedName, image.ext);
@@ -185,19 +200,78 @@ export async function avatarsRoutes(app: FastifyInstance) {
 
     const avatarPath = `/api/avatars/npc/${chatId}/${filename}?v=${Date.now()}`;
     let npcUpdated = false;
+    let avatarState: GameNpcAvatarState | null = null;
+    let characterAttached = false;
     if (normalizedNpcId) {
       try {
         let persistedNpc = false;
-        const updatedChat = await chats.patchMetadata(chatId, (freshMeta) => {
-          const patch = buildNpcAvatarMetadataPatch(freshMeta, normalizedNpcId, normalizedName, avatarPath);
-          if (!patch) return {};
-          persistedNpc = true;
-          return patch;
-        });
+        const latestChat = await chats.getById(chatId);
+        const latestMetadata = JSON.parse(latestChat?.metadata || "{}") as Record<string, unknown>;
+        const latestNpc = Array.isArray(latestMetadata.gameNpcs)
+          ? (latestMetadata.gameNpcs as GameNpc[]).find((npc) => npc.id === normalizedNpcId)
+          : undefined;
+        const eligiblePatch = latestChat
+          ? buildNpcAvatarMetadataPatch(latestMetadata, normalizedNpcId, normalizedName, avatarPath)
+          : null;
+        const eligibleNpc = eligiblePatch?.gameNpcs.find((npc) => npc.id === normalizedNpcId);
+        let accepted =
+          !!eligiblePatch && (!initialNpc || !!latestNpc) && (eligibleNpc?.characterId || undefined) === characterId;
+        if (accepted && characterId) {
+          // Take the avatar lifecycle lock before entering the chat metadata queue.
+          const character = await characters.updateAvatar(characterId, avatarPath, { expectedAvatarRevision });
+          accepted = !!character;
+          characterAttached = accepted;
+          avatarState = character ? readCharacterAvatarState(character.data) : null;
+        }
+        const updatedChat = accepted
+          ? await chats.patchMetadata(
+              chatId,
+              (freshMeta) => {
+                const currentNpc = Array.isArray(freshMeta.gameNpcs)
+                  ? (freshMeta.gameNpcs as GameNpc[]).find((npc) => npc.id === normalizedNpcId)
+                  : undefined;
+                if (initialNpc && !currentNpc) return {};
+                const patch = buildNpcAvatarMetadataPatch(freshMeta, normalizedNpcId, normalizedName, avatarPath);
+                if (!patch) return {};
+                const freshNpc = patch.gameNpcs.find((npc) => npc.id === normalizedNpcId);
+                if ((freshNpc?.characterId || undefined) !== characterId) return {};
+                if (freshNpc && avatarState) freshNpc.avatarState = avatarState;
+                persistedNpc = true;
+                return patch;
+              },
+              {
+                npcAvatarWriteIntents:
+                  expectedUnlinkedAvatarRevision === null
+                    ? undefined
+                    : [{ npcId: normalizedNpcId, expectedRevision: expectedUnlinkedAvatarRevision }],
+              },
+            )
+          : null;
         npcUpdated = !!updatedChat && persistedNpc;
+        if (npcUpdated && updatedChat) {
+          const savedMetadata = JSON.parse(updatedChat.metadata || "{}") as Record<string, unknown>;
+          const savedNpc = Array.isArray(savedMetadata.gameNpcs)
+            ? (savedMetadata.gameNpcs as GameNpc[]).find((npc) => npc.id === normalizedNpcId)
+            : undefined;
+          npcUpdated = savedNpc?.avatarUrl === avatarPath;
+          avatarState = readGameNpcAvatarState(savedNpc?.avatarState);
+          if (npcUpdated && expectedUnlinkedAvatarRevision !== null) {
+            npcUpdated =
+              !!avatarState && !avatarState.removed && avatarState.revision === expectedUnlinkedAvatarRevision + 1;
+          }
+        }
+        if (npcUpdated && characterId) {
+          for (const otherChat of await app.db.select().from(chatRows)) {
+            if (otherChat.id === chatId) continue;
+            const metadata = JSON.parse(otherChat.metadata || "{}") as Record<string, unknown>;
+            if (!Array.isArray(metadata.gameNpcs) || !metadata.gameNpcs.some((npc) => npc?.characterId === characterId))
+              continue;
+            await chats.patchMetadata(otherChat.id, (fresh) => ({ gameNpcs: fresh.gameNpcs }));
+          }
+        }
       } catch (error) {
         try {
-          unlinkSync(filePath);
+          if (!characterAttached) unlinkSync(filePath);
         } catch {
           // Best-effort cleanup; a unique unreferenced file is safer than altering the prior portrait.
         }
@@ -205,13 +279,14 @@ export async function avatarsRoutes(app: FastifyInstance) {
       }
       if (!npcUpdated) {
         try {
-          unlinkSync(filePath);
+          if (!characterAttached) unlinkSync(filePath);
         } catch {
           // Best-effort cleanup after a missing chat or freshly tombstoned NPC rejects the patch.
         }
+        return reply.status(409).send({ error: "NPC portrait changed during upload" });
       }
     }
 
-    return reply.send({ avatarPath, npcUpdated });
+    return reply.send({ avatarPath, npcUpdated, characterId, avatarState });
   });
 }

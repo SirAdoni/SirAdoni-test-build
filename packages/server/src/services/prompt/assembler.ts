@@ -485,6 +485,11 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
       ...entry,
       content: resolveReferenceMacros(entry.content),
     }));
+    if (result.imageEntries)
+      result.imageEntries = result.imageEntries.map((entry) => ({
+        ...entry,
+        content: resolveReferenceMacros(entry.content),
+      }));
     result.outlets = Object.fromEntries(
       Object.entries(result.outlets).map(([name, content]) => [name, resolveReferenceMacros(content)]),
     );
@@ -548,6 +553,7 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
   let lorebookDepthEntriesCount = 0;
   let hasChatSummaryMarker = false;
   let outletScanAttempted = false;
+  const usedImageOutlets = new Set<string>();
   let idMacroCardMarkerSection: ResolvedSection | null = null;
   const runtimeAgentTypesUsed = new Set<string>();
   const skippedSections: string[] = [];
@@ -626,6 +632,7 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
         wrapFormat,
         runtimeAgentData: input.runtimeAgentData ?? {},
         runtimeAgentTypesUsed,
+        usedImageOutlets,
       });
     } catch (err) {
       let markerType: string | undefined;
@@ -803,6 +810,21 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
     );
   }
 
+  if (markerCtx.lorebookScanResult?.imageEntries) {
+    markerCtx.lorebookScanResult = {
+      ...markerCtx.lorebookScanResult,
+      imageEntries: markerCtx.lorebookScanResult.imageEntries
+        .filter((entry) =>
+          entry.position === 7
+            ? usedImageOutlets.has(entry.outletName ?? "")
+            : entry.position === 2 ||
+              (entry.position <= 1 &&
+                markerCtx.lorebookPositionsEmitted?.has(entry.position <= 0 ? "before" : "after")),
+        )
+        .map((entry) => (entry.position === 7 ? { ...entry, outletUsed: true } : entry)),
+    };
+  }
+
   // ── Phase 8: Single user message mode ──
   // Collapses entire prompt into one user message.
   if (parameters.singleUserMessage && !input.deferMessagePostProcessing) {
@@ -868,6 +890,7 @@ interface ResolveSectionCtx {
   wrapFormat: WrapFormat;
   runtimeAgentData: Record<string, string | RuntimeAgentData>;
   runtimeAgentTypesUsed: Set<string>;
+  usedImageOutlets: Set<string>;
 }
 
 // ═══════════════════════════════════════════════
@@ -964,8 +987,25 @@ async function resolveSection(
     }
   }
 
+  // Track only outlets that macro resolution actually reads, so conditionals that drop one also drop its images.
+  const imageOutlets = new Set<string>();
+  const outlets = ctx.macroCtx.outlets;
+  const macroCtx = outlets
+    ? {
+        ...ctx.macroCtx,
+        outlets: new Proxy(outlets, {
+          get(target, key, receiver) {
+            if (typeof key === "string" && Object.hasOwn(target, key)) imageOutlets.add(key);
+            return Reflect.get(target, key, receiver);
+          },
+        }),
+      }
+    : ctx.macroCtx;
+
   // Resolve macros
-  content = contentMacrosResolved ? content : resolveMacros(content, ctx.macroCtx, macroOptions);
+  content = contentMacrosResolved ? content : resolveMacros(content, macroCtx, macroOptions);
+  // An image-only Outlet resolves to empty text but still claims its images.
+  for (const name of imageOutlets) ctx.usedImageOutlets.add(name);
   if (!content.trim()) return null;
   const shouldWrapRuntimeAgentSection = Boolean(
     runtimeAgentStartToken &&

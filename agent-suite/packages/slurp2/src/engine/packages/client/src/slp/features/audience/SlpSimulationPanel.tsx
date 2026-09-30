@@ -9,6 +9,7 @@
  * with no second list to keep in step. Editing any value stores the whole tuning object — the
  * server fills anything missing from Realistic — and moves the preset to `custom`.
  */
+import { SlpCoinText } from "../../modules/coin/SlpCoin";
 import { RotateCcw } from "lucide-react";
 import { useDeferredValue, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -17,7 +18,11 @@ import {
   slurpSimulationTuningSchema,
   type SlurpSimulationTuning,
 } from "../../../../../shared/src/slp/slp-tuning.js";
-import { estimateSlurpSimulation, SLURP_ESTIMATE_SAMPLE } from "../../modules/audience/slp-simulation-estimate";
+import {
+  estimateSlurpSimulation,
+  SLURP_ESTIMATE_SAMPLE,
+  type SlurpEstimateWorld,
+} from "../../modules/audience/slp-simulation-estimate";
 import { Field, NumberSetting, SectionTitle, SettingsGroup, Toggle } from "../../modules/settings/SlpSettingsControls";
 
 type Path = readonly string[];
@@ -30,11 +35,15 @@ type Group = (typeof GROUPS)[number];
 
 const FIELDS: Record<Group, NumberField[]> = {
   clock: [
-    { path: ["clock", "tickMinutes"], label: "Tick length", detail: "Minutes of world time one tick covers." },
+    {
+      path: ["clock", "tickMinutes"],
+      label: "Background tick every",
+      detail: "Real minutes between world ticks while Run in the background is on.",
+    },
     {
       path: ["clock", "catchUpHours"],
       label: "Catch-up limit",
-      detail: "Longest absence one tick simulates.",
+      detail: "Longest absence one tick catches up on.",
       advanced: true,
     },
     {
@@ -54,7 +63,7 @@ const FIELDS: Record<Group, NumberField[]> = {
     {
       path: ["reach", "ceiling"],
       label: "Follower ceiling",
-      detail: "The largest invented audience a creator grows into.",
+      detail: "The largest audience a creator grows into.",
     },
     {
       path: ["reach", "growthDays"],
@@ -207,6 +216,12 @@ const FIELDS: Record<Group, NumberField[]> = {
   ],
   economy: [
     {
+      path: ["economy", "crowdWeight"],
+      label: "People per paying fan",
+      detail:
+        "How many people on the platform one real paying fan stands for. It multiplies the subscribers you see and the dollars a Creator earns, and sets how many dollars make one SlurpCoin when you collect.",
+    },
+    {
       path: ["economy", "audienceCommissionPrice"],
       label: "Commission price",
       detail: "Coins an audience commission pays.",
@@ -233,7 +248,8 @@ const TOGGLES: Record<string, { path: Path; label: string; detail: string; advan
     {
       path: ["clock", "backgroundTimer"],
       label: "Run in the background",
-      detail: "Keep the world moving while Slurp is closed.",
+      detail:
+        "Tick the world on the background timer, even while Slurp is closed. Off, it still catches up when you open Slurp and about four times a day.",
     },
   ],
   world: [
@@ -291,9 +307,12 @@ function writePath(tuning: SlurpSimulationTuning, path: Path, value: number | bo
 
 export function SlurpSimulationSettings({
   tuning,
+  world,
   onSave,
 }: {
   tuning: SlurpSimulationTuning;
+  /** The settings outside the tuning the estimate reads (Fan Types, world dial, AI-written runs). */
+  world: SlurpEstimateWorld;
   onSave: (next: SlurpSimulationTuning) => void;
 }) {
   const { t } = useTranslation();
@@ -309,7 +328,10 @@ export function SlurpSimulationSettings({
   // Estimating is a few milliseconds of arithmetic, but it has no business running on every
   // keystroke. The deferred copy keeps typing responsive and the memo keeps it to one run.
   const deferred = useDeferredValue(draft);
-  const estimate = useMemo(() => estimateSlurpSimulation(deferred), [deferred]);
+  const estimate = useMemo(
+    () => estimateSlurpSimulation(deferred, SLURP_ESTIMATE_SAMPLE, undefined, world),
+    [deferred, world],
+  );
 
   const fieldLabel = (path: Path, label: string) =>
     t(`ui.slurp.settings.simulation.fields.${path.join(".")}`, { defaultValue: label });
@@ -326,10 +348,14 @@ export function SlurpSimulationSettings({
 
       <SettingsGroup title={t("ui.slurp.settings.simulation.estimate.title")}>
         <p className="text-xs leading-5 text-[var(--muted-foreground)]">
-          {t("ui.slurp.settings.simulation.estimate.detail", {
-            followers: SLURP_ESTIMATE_SAMPLE.realFollowers,
-            price: SLURP_ESTIMATE_SAMPLE.price,
-          })}
+          <SlpCoinText>
+            {t("ui.slurp.settings.simulation.estimate.detail", {
+              followers: SLURP_ESTIMATE_SAMPLE.realFollowers,
+              price: SLURP_ESTIMATE_SAMPLE.price,
+              lockedEvery: SLURP_ESTIMATE_SAMPLE.lockedEvery,
+              unlockPrice: SLURP_ESTIMATE_SAMPLE.unlockPrice,
+            })}
+          </SlpCoinText>
         </p>
         <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           {(
@@ -342,6 +368,8 @@ export function SlurpSimulationSettings({
               ["commissions", estimate.commissions],
               ["messages", estimate.messages],
               ["questions", estimate.questions],
+              ["tips", estimate.tips],
+              ["unlocks", estimate.unlocks],
             ] as const
           ).map(([key, value]) => (
             <div key={key} className="rounded-lg bg-[var(--slurp-surface,var(--background))] px-3 py-2">

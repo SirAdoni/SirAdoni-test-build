@@ -1,5 +1,6 @@
 // Persona identity card and switcher list, split out of components/slurp/SlurpShell.tsx in Slice 10.
-import { AtSign, Sparkles } from "lucide-react";
+import { AtSign } from "lucide-react";
+import { SlpSparkleGlyph } from "../../base/chrome/SlpGlyphs";
 
 import type { SlpAccount } from "../../../../../shared/src/slp/slp-social.types.js";
 import { cn } from "../../../lib/utils";
@@ -44,9 +45,9 @@ export function PersonaIdentityCard({
           strip washed out by a full-height fade. */}
       <div className="relative aspect-[3/1] min-h-16 overflow-hidden">
         {bannerSrc ? (
-          <img src={bannerSrc} alt="" decoding="async" className="h-full w-full object-cover" />
+          <img src={bannerSrc} alt="" decoding="async" className="slp-crop-top h-full w-full object-cover" />
         ) : (
-          <span className="block h-full w-full bg-[var(--slurp-hero)] opacity-80" aria-hidden="true" />
+          <span className="block h-full w-full bg-[image:var(--slurp-hero)] opacity-80" aria-hidden="true" />
         )}
         <span
           className="pointer-events-none absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-[var(--slurp-surface-raised)] to-transparent"
@@ -74,7 +75,7 @@ export function PersonaIdentityCard({
             </span>
           ) : (
             <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[var(--noodle-accent)]/15 ring-[3px] ring-[var(--slurp-surface-raised)]">
-              <AtSign size={24} className="text-[var(--noodle-accent)]" />
+              <AtSign size={24} className="text-[var(--noodle-accent-foreground)]" />
             </span>
           )}
           {/* Name sits below the avatar on the plain card, never over the banner art. */}
@@ -110,7 +111,7 @@ export function PersonaIdentityCard({
             onClick={action}
             className="mt-3 flex min-h-9 w-full items-center justify-center gap-1.5 rounded-lg bg-[var(--noodle-accent)]/12 text-xs font-bold text-[var(--noodle-accent-foreground)] ring-1 ring-inset ring-[var(--noodle-accent)]/30 transition-colors hover:bg-[var(--noodle-accent)]/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--noodle-accent)]"
           >
-            <Sparkles size={14} />
+            <SlpSparkleGlyph size={14} />
             {localizeUi("ui.slurp.account.becomeCreator", { defaultValue: "Become a creator" })}
           </button>
         )}
@@ -176,7 +177,7 @@ export function PersonaList({
               )}
               {linkedIds?.has(account.id) && (
                 <span
-                  className="mt-0.5 block text-[0.65rem] font-semibold text-[var(--noodle-accent)]"
+                  className="mt-0.5 block text-[11px] font-semibold text-[var(--noodle-accent-foreground)]"
                   aria-label={localizeUi("ui.noodle.noodleshell.noodlerProfileLinked")}
                 >
                   {localizeUi("ui.noodle.noodleshell.noodlerLinked")}
@@ -196,7 +197,7 @@ export function PersonaConnectionCounts({ counts }: { counts?: { fans: number; f
   const { t: localizeUi } = useUiTranslation();
   if (!counts) return null;
   return (
-    <span className="mt-0.5 flex items-center gap-1.5 text-[0.68rem] text-[var(--muted-foreground)]">
+    <span className="mt-0.5 flex items-center gap-1.5 text-xs text-[var(--muted-foreground)]">
       <span className="tabular-nums">{localizeUi("ui.slurp.account.fans", { amount: counts.fans })}</span>
       <span aria-hidden="true" className="h-3 w-px bg-[var(--noodle-divider)]" />
       <span className="tabular-nums">{localizeUi("ui.slurp.account.followers", { amount: counts.followers })}</span>

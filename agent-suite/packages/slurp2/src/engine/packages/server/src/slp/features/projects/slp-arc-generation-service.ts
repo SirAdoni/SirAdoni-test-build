@@ -26,8 +26,14 @@ import {
 import { SLURP_MODIFIER_KINDS } from "../../modules/creators/slp-creator-state.js";
 import { modelAnswerForCorrection, requireModelAnswer } from "../../base/model/slp-model-answer.js";
 import { slpSamplingOptions } from "../../base/prompting/slp-sampling-options.js";
-import { claimSlurpModelBudget, slurpModelWorkerAllows } from "../../base/model/slp-model-worker.js";
+import {
+  claimSlurpModelBudget,
+  slurpModelBudgetPaceOpen,
+  slurpModelWorkerAllows,
+} from "../../base/model/slp-model-worker.js";
 import { composeSlurpPromptBlocks, type SlurpPromptBlockOverrides } from "../../base/prompting/slp-prompt-blocks.js";
+import { slurpPromptContext } from "../../base/prompting/slp-prompt-blocks.js";
+import { slpWithProviderRetry } from "../../base/model/slp-provider-retry.js";
 
 export class SlurpArcGenerationFailure extends Error {
   constructor(
@@ -44,6 +50,8 @@ export function buildSlurpArcGenerationMessages(input: {
   gender: string | null;
   tags: readonly string[];
   brief?: string;
+  /** Open story hooks from occasions: tags to lean toward and facts to stay consistent with. */
+  storyHooks?: readonly string[];
   recentPosts: readonly string[];
   libraryNames: readonly string[];
   pastArcTitles: readonly string[];
@@ -113,6 +121,9 @@ export function buildSlurpArcGenerationMessages(input: {
         `Gender: ${input.gender ?? "not set"}`,
         `Tags: ${input.tags.join(", ") || "none"}`,
         ...(input.brief?.trim() ? ["", "# Player brief", input.brief.trim().slice(0, 2_000)] : []),
+        ...(input.storyHooks?.length
+          ? ["", "# Story hooks from recent world events (lean toward these when they fit)", ...input.storyHooks]
+          : []),
         "",
         "# Recent posts",
         ...(input.recentPosts.length ? input.recentPosts.map((post) => `- ${post}`) : ["None yet."]),
@@ -172,9 +183,12 @@ export async function generateSlurpArc(
           collab: slurpCollabPartners(collabs, creatorAccountId).find((entry) => entry.partnerId === id)?.content,
         });
     }
-    const workerContext = admissionMode.kind === "background" ? "background" : "present";
-    if (!slurpModelWorkerAllows(settings.modelBudget, workerContext)) return null;
-    if (!(await claimSlurpModelBudget(db, settings.modelBudget, "arc"))) return null;
+    // A storyline the world starts on its own is upkeep: the budget's mode, pace and caps apply. One the
+    // player asks for (the routes pass foreground) never spends the budget (0.3.6).
+    const world = admissionMode.kind === "background";
+    if (world && !slurpModelWorkerAllows(settings.modelBudget, "background")) return null;
+    if (world && !(await slurpModelBudgetPaceOpen(db, settings.modelBudget, "arc"))) return null;
+    if (world && !(await claimSlurpModelBudget(db, settings.modelBudget, "arc"))) return null;
     const connections = createConnectionsStorage(db);
     const connection = await resolveSlurpTextConnection(
       connections,
@@ -187,30 +201,45 @@ export async function generateSlurpArc(
       gender: creator.settings.profile.gender,
       tags: creator.settings.profile.tags,
       brief,
+      // Occasions leave arc opportunities and facts behind; arc generation never saw them.
+      storyHooks: [
+        ...(await slurp.listArcOpportunities().catch(() => []))
+          .filter(
+            (item) => item.creatorId === creator.id && (!item.expiresAt || Date.parse(item.expiresAt) > Date.now()),
+          )
+          .map((item) => `- Themes: ${item.storyTags.join(", ")}`),
+        ...(await slurp.listStoryFacts().catch(() => []))
+          .filter(
+            (fact) => fact.creatorId === creator.id && (!fact.expiresAt || Date.parse(fact.expiresAt) > Date.now()),
+          )
+          .map((fact) => `- Fact: ${fact.label}`),
+      ].slice(0, 10),
       recentPosts: posts.map((post) => `${post.title ? `${post.title} — ` : ""}${post.content}`.slice(0, 200)),
       libraryNames: settings.arcLibrary.filter((type) => !type.hidden).map((type) => type.name),
       pastArcTitles: (await slurp.listProjects(creator.id)).map((project) => project.title),
       partners,
-      promptBlocks: settings.promptBlocks,
+      promptBlocks: slurpPromptContext(settings).blocks,
     });
     const fallbackConnection = await connections.getFallbackForMain();
-    const fallbackProvider = withConnectionFallbackProvider({
-      primary: createLLMProvider(
-        connection.provider,
-        resolveBaseUrl(connection),
-        connection.apiKey,
-        connection.maxContext,
-        connection.openrouterProvider,
-        connection.maxTokensOverride,
-        connection.claudeFastMode === "true",
-        connection.treatAsLocalEndpoint === "true",
-        connection.defaultParameters,
-      ),
-      primaryConnectionId: connection.id,
-      fallbackConnection,
-      fallbackBaseUrl: fallbackConnection ? resolveBaseUrl(fallbackConnection) : "",
-      category: "main",
-    });
+    const fallbackProvider = slpWithProviderRetry(
+      withConnectionFallbackProvider({
+        primary: createLLMProvider(
+          connection.provider,
+          resolveBaseUrl(connection),
+          connection.apiKey,
+          connection.maxContext,
+          connection.openrouterProvider,
+          connection.maxTokensOverride,
+          connection.claudeFastMode === "true",
+          connection.treatAsLocalEndpoint === "true",
+          connection.defaultParameters,
+        ),
+        primaryConnectionId: connection.id,
+        fallbackConnection,
+        fallbackBaseUrl: fallbackConnection ? resolveBaseUrl(fallbackConnection) : "",
+        category: "main",
+      }),
+    );
     const provider = withConnectionAdmissionProvider(fallbackProvider, connection.id, admissionMode);
     const options = {
       model: connection.model,
@@ -234,7 +263,7 @@ export async function generateSlurpArc(
     } catch (firstError) {
       // One retry with the shape spelled out, same as the stage profile draft.
       const answer = modelAnswerForCorrection(response.content);
-      if (!(await claimSlurpModelBudget(db, settings.modelBudget, "arc"))) return null;
+      if (world && !(await claimSlurpModelBudget(db, settings.modelBudget, "arc"))) return null;
       const retry = await provider.chatComplete(
         [
           ...messages,

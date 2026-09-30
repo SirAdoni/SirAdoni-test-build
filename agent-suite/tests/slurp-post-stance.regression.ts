@@ -33,7 +33,7 @@ assert.deepEqual(resolve({}).instructions, []);
 assert.equal(slurpPostStanceInstruction(resolve({})), null);
 
 // Rule 1. Energy shapes effort in both directions, and never withholds the post.
-assert.match(joined({ energy: 10 }), /running low/iu);
+assert.match(joined({ energy: 10 }), /energy is low/iu);
 assert.match(joined({ energy: 90 }), /more involved/iu);
 assert.doesNotMatch(joined({ energy: 0 }), /do not post|skip/iu);
 
@@ -85,7 +85,7 @@ assert.deepEqual(
   ["energy", "exposure", "emotion", "day", "goal"],
 );
 // Precedence is the documented order, not the order the fields happen to be declared in.
-assert.ok(loaded.instructions[0]?.includes("running low"));
+assert.ok(loaded.instructions[0]?.includes("energy is low"));
 assert.ok(loaded.instructions[1]?.includes("further than you usually go"));
 
 // The block is labelled, so it cannot blur into the schedule section beneath it.
@@ -115,7 +115,7 @@ assert.match(service, /catch \{\s*return null;/u);
 // Every modifier the vocabulary defines is worth nothing until something real produces it.
 const storage = slurp2Source("packages/slurp2/src/engine/packages/server/src/services/storage/slurp.storage.ts");
 // Money in: felt once it is worth feeling, and never able to fail the payment that caused it.
-assert.match(storage, /amount >= SLURP_PAID_WELL_COINS/u);
+assert.match(storage, /paidCoins >= SLURP_PAID_WELL_COINS/u);
 assert.match(storage, /addSlurpModifier\(state, "paid_well"/u);
 // Only the crossing fires, so a met goal does not re-fire on every coin after it.
 assert.match(

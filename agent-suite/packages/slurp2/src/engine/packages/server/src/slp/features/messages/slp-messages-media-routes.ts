@@ -9,11 +9,18 @@ import { z } from "zod";
 import { existsSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { resolveSlurpMediaOffer } from "../../modules/economy/slp-media-offer.js";
-import { generateSlurpCommissionImage } from "./commissions/slp-commission-image-operation.js";
+import {
+  generateSlurpCommissionImage,
+  generateSlurpViewerPhoto,
+} from "./commissions/slp-commission-image-operation.js";
 import { replyToSlurpMessage } from "./slp-message-operation.js";
+import { logger } from "../../../lib/logger.js";
 import { trySlurpWrite } from "../../base/locking/slp-operation-lock.js";
 import { personaQuerySchema } from "../../modules/messages/slp-messages-schemas.js";
+import { slurpViewerImageReadyAt } from "../../modules/messages/slp-messaging.js";
 import type { SlpMessagesContext } from "./slp-messages-context.js";
+import { SLURP_SUPPORT_ACCOUNT_ID } from "../../../../../shared/src/slp/slp-support.js";
+import { SLURP_SUPPORT_NAME } from "../../modules/messages/slp-dm-roles.js";
 
 const MESSAGE_MEDIA_MAX_BYTES = 20 * 1024 * 1024;
 
@@ -77,8 +84,49 @@ const requestDecisionSchema = z.object({
   personaId: z.string().trim().min(1),
   decision: z.enum(["accept", "decline"]),
 });
+
+/** Threads whose player photo is being drawn right now (one draw per thread at a time). */
+const drawingViewerPhotos = new Set<string>();
 export async function slpMessagesMediaRoutes(app: FastifyInstance, messaging: SlpMessagesContext) {
-  const { freshView, messages, ownsCreator, requireViewer, slurp } = messaging;
+  const { freshView, maskForViewer, messages, ownsCreator, requireViewer, slurp } = messaging;
+  /**
+   * Who sends a picture into this thread: the persona in its own chat, or Slurp Support in Support's
+   * thread with a Creator the persona does not run (0.3.6). Null when neither fits.
+   */
+  const pictureSender = async (
+    thread: { viewerAccountId: string; creatorAccountId: string } | null,
+    input: { personaId: string; creatorAccountId: string; asSupport?: boolean },
+  ): Promise<{ senderAccountId: string; metadata: Record<string, unknown> } | null> => {
+    const viewer = await requireViewer(input.personaId);
+    if (!thread || !viewer || thread.creatorAccountId !== input.creatorAccountId) return null;
+    if (!input.asSupport)
+      return thread.viewerAccountId === viewer.id ? { senderAccountId: viewer.id, metadata: {} } : null;
+    if (thread.viewerAccountId !== SLURP_SUPPORT_ACCOUNT_ID || (await ownsCreator(viewer.id, thread.creatorAccountId)))
+      return null;
+    return {
+      senderAccountId: SLURP_SUPPORT_ACCOUNT_ID,
+      metadata: { sceneSpeaker: SLURP_SUPPORT_NAME, supportVoice: true },
+    };
+  };
+  /**
+   * The Creator's answer to a photo, returned like the answer to a text: the reply, its status and
+   * how long they type first, so the chat shows the typing indicator after a photo too (R1-019). A
+   * failed reply is a status, never an error: the photo is already stored and must stay.
+   */
+  const replyToPhoto = async (threadId: string, triggerMessageId: string) => {
+    let outcome: Awaited<ReturnType<typeof replyToSlurpMessage>>;
+    try {
+      outcome = await replyToSlurpMessage(app.db, { threadId, triggerMessageId });
+    } catch (error) {
+      logger.error(error, "[slurp-message] Reply failed after a photo in thread %s", threadId);
+      outcome = { status: "failed", error: "Reply generation failed." };
+    }
+    return {
+      reply: outcome.status === "replied" ? maskForViewer(outcome.message) : null,
+      replyStatus: outcome.status,
+      typingMs: "pacing" in outcome ? outcome.pacing.typingMs : 0,
+    };
+  };
   /**
    * The bytes of a generated message image.
    *
@@ -94,7 +142,11 @@ export async function slpMessagesMediaRoutes(app: FastifyInstance, messaging: Sl
     if (!message) return reply.code(404).send({ error: "Not Found" });
     const thread = await messages.getThreadById(message.threadId);
     if (!thread) return reply.code(404).send({ error: "Not Found" });
-    const isViewer = thread.viewerAccountId === parsed.data.personaId;
+    // Slurp Support's thread is the player's from every persona (`slp-support.ts`): its pictures, sent
+    // or answered, load for any persona of theirs. Without this they 404'd and never showed (0.3.6).
+    const isSupport =
+      thread.viewerAccountId === SLURP_SUPPORT_ACCOUNT_ID && Boolean(await requireViewer(parsed.data.personaId));
+    const isViewer = isSupport || thread.viewerAccountId === parsed.data.personaId;
     const isCreator = await ownsCreator(parsed.data.personaId, thread.creatorAccountId);
     if (!isViewer && !isCreator) return reply.code(404).send({ error: "Not Found" });
     if (isViewer && !isCreator && message.kind === "ppv" && !message.unlockedAt) {
@@ -157,7 +209,10 @@ export async function slpMessagesMediaRoutes(app: FastifyInstance, messaging: Sl
           mediaReason: offer.reason,
         },
       });
-      if (!message) return reply.code(404).send({ error: "Thread not found" });
+      if (!message) {
+        drawn.compensate();
+        return reply.code(404).send({ error: "Thread not found" });
+      }
       drawn.promote();
       await messages.setMessageMedia(message.id, slurpMessageMediaUrl(message.id), drawn.mediaPath);
       return { message: { ...message, imageUrl: slurpMessageMediaUrl(message.id) } };
@@ -180,33 +235,40 @@ export async function slpMessagesMediaRoutes(app: FastifyInstance, messaging: Sl
         personaId: z.string().min(1),
         creatorAccountId: z.string().min(1),
         content: z.string().max(1000).default(""),
+        // A multipart field is text: "true" means Slurp Support sends it.
+        asSupport: z
+          .union([z.boolean(), z.enum(["true", "false"])])
+          .optional()
+          .transform((value) => value === true || value === "true"),
       })
       .safeParse(decoded.payload);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const { threadId } = req.params as { threadId: string };
     const thread = await messages.getThreadById(threadId);
-    const viewer = await requireViewer(parsed.data.personaId);
-    if (
-      !thread ||
-      !viewer ||
-      thread.viewerAccountId !== viewer.id ||
-      thread.creatorAccountId !== parsed.data.creatorAccountId
-    )
-      return reply.code(404).send({ error: "Thread not found" });
+    const sender = await pictureSender(thread, parsed.data);
+    if (!thread || !sender) return reply.code(404).send({ error: "Thread not found" });
+    // `/messages/send` refuses a closed thread through `openThread`; these routes append directly.
+    if (thread.state === "declined") return reply.code(403).send({ error: "This conversation is closed." });
     const staged = stageSlurpMessageMedia(decoded.media);
     try {
       const sent = await messages.appendMessage(thread.id, {
-        senderAccountId: viewer.id,
+        senderAccountId: sender.senderAccountId,
         role: "viewer",
         content: parsed.data.content,
         imageUrl: slurpMessageMediaUrl("pending"),
-        metadata: { noodlerMediaPath: staged.filePath, uploaded: true },
+        metadata: { ...sender.metadata, noodlerMediaPath: staged.filePath, uploaded: true },
       });
-      if (!sent) return reply.code(404).send({ error: "Thread not found" });
+      if (!sent) {
+        staged.compensate();
+        return reply.code(404).send({ error: "Thread not found" });
+      }
       staged.promote();
       await messages.setMessageMedia(sent.id, slurpMessageMediaUrl(sent.id), staged.filePath);
-      const outcome = await replyToSlurpMessage(app.db, { threadId, triggerMessageId: sent.id });
-      return { message: { ...sent, imageUrl: slurpMessageMediaUrl(sent.id) }, replyStatus: outcome.status };
+      // Never throws, so a failed reply cannot reach the catch and delete the stored photo.
+      return {
+        message: { ...sent, imageUrl: slurpMessageMediaUrl(sent.id) },
+        ...(await replyToPhoto(threadId, sent.id)),
+      };
     } catch (error) {
       staged.compensate();
       throw error;
@@ -220,47 +282,64 @@ export async function slpMessagesMediaRoutes(app: FastifyInstance, messaging: Sl
         creatorAccountId: z.string().min(1),
         prompt: z.string().trim().min(3).max(1000),
         content: z.string().max(1000).default(""),
+        asSupport: z.boolean().optional(),
       })
       .safeParse(req.body ?? {});
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const { threadId } = req.params as { threadId: string };
     const thread = await messages.getThreadById(threadId);
-    const viewer = await requireViewer(parsed.data.personaId);
-    if (
-      !thread ||
-      !viewer ||
-      thread.viewerAccountId !== viewer.id ||
-      thread.creatorAccountId !== parsed.data.creatorAccountId
-    )
-      return reply.code(404).send({ error: "Thread not found" });
+    const sender = await pictureSender(thread, parsed.data);
+    if (!thread || !sender) return reply.code(404).send({ error: "Thread not found" });
+    // `/messages/send` refuses a closed thread through `openThread`; these routes append directly.
+    if (thread.state === "declined") return reply.code(403).send({ error: "This conversation is closed." });
     if (thread.coolUntil && thread.coolUntil > new Date().toISOString())
       return reply.code(409).send({ error: "This conversation is cooling off." });
-    const recentImage = (await messages.listMessages(thread.id)).some(
-      (message) =>
-        message.role === "viewer" &&
-        message.metadata.generatedContext === "viewer" &&
-        Date.now() - Date.parse(message.createdAt) < 3 * 60 * 60_000,
-    );
-    if (recentImage) return reply.code(429).send({ error: "You can generate another picture later." });
-    const drawn = await generateSlurpCommissionImage(app.db, {
+    // The wait between two drawn pictures is the player's setting (minutes, 0 = off).
+    // The whole thread, not the newest 120 messages: a long chat forgot the last picture (R1-015).
+    // ponytail: reads every message of the thread; store the last picture time on the thread if chats get huge.
+    const cooldownMinutes = (await slurp.getSettings()).messagesViewerImageCooldownMinutes;
+    const readyAt =
+      cooldownMinutes > 0
+        ? slurpViewerImageReadyAt(await messages.listMessages(thread.id, 100_000), cooldownMinutes)
+        : null;
+    // `retryAt` lets the chat say when ("Draw again at 4:30 PM") in the reader's own clock.
+    if (readyAt) return reply.code(429).send({ error: "You can generate another picture later.", retryAt: readyAt });
+    // Held while it draws, so two taps cannot both pass the wait before either picture is stored.
+    if (drawingViewerPhotos.has(thread.id))
+      return reply.code(409).send({ error: "Your picture is still being drawn." });
+    drawingViewerPhotos.add(thread.id);
+    const drawn = await generateSlurpViewerPhoto(app.db, {
       creatorAccountId: thread.creatorAccountId,
+      // Support's picture shows only what was described, never the persona.
+      personaId: parsed.data.asSupport ? null : parsed.data.personaId,
       brief: parsed.data.prompt,
-    });
+    }).finally(() => drawingViewerPhotos.delete(thread.id));
     if (drawn === "unavailable") return reply.code(503).send({ error: "Image generation is not available." });
     try {
       const message = await messages.appendMessage(thread.id, {
-        senderAccountId: viewer.id,
+        senderAccountId: sender.senderAccountId,
         role: "viewer",
         content: parsed.data.content,
         imageUrl: slurpMessageMediaUrl("pending"),
         unlockedAt: new Date().toISOString(),
-        metadata: { noodlerMediaPath: drawn.mediaPath, generatedContext: "viewer", imagePrompt: parsed.data.prompt },
+        metadata: {
+          ...sender.metadata,
+          noodlerMediaPath: drawn.mediaPath,
+          generatedContext: "viewer",
+          imagePrompt: parsed.data.prompt,
+        },
       });
-      if (!message) return reply.code(404).send({ error: "Thread not found" });
+      if (!message) {
+        drawn.compensate();
+        return reply.code(404).send({ error: "Thread not found" });
+      }
       drawn.promote();
       await messages.setMessageMedia(message.id, slurpMessageMediaUrl(message.id), drawn.mediaPath);
-      const outcome = await replyToSlurpMessage(app.db, { threadId, triggerMessageId: message.id });
-      return { message: { ...message, imageUrl: slurpMessageMediaUrl(message.id) }, replyStatus: outcome.status };
+      // Never throws, so a failed reply cannot reach the catch and delete the stored picture.
+      return {
+        message: { ...message, imageUrl: slurpMessageMediaUrl(message.id) },
+        ...(await replyToPhoto(threadId, message.id)),
+      };
     } catch (error) {
       drawn.compensate();
       throw error;

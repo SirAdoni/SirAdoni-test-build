@@ -1,3 +1,5 @@
+import { currentRoomGeneration } from "../multiplayer/generation-policy.js";
+import { resolveConversationTimeZone, toZonedWallClockDate } from "../conversation/timezone.js";
 import {
   parseDuration,
   type CharacterCommand,
@@ -35,22 +37,31 @@ export async function handleConversationScheduleCommand(args: {
   if (args.command.type !== "schedule_update") return false;
   const command = args.command as ScheduleUpdateCommand;
   if (!args.characterId || (!command.status && !command.activity)) return true;
+  const room = currentRoomGeneration();
+  if (room?.signal?.aborted) return false;
+  if (
+    room &&
+    (room.chatId !== args.chatId || !room.characterIds.includes(args.characterId) || !args.chats.patchMetadata)
+  )
+    return false;
 
   const characterId = args.characterId;
-  // Read and write inside the per-chat metadata patch queue so a concurrent metadata patch
-  // is neither lost nor overwritten with a stale snapshot. The change is made on a deep clone
-  // so the queue's pre-updater snapshot is never mutated in place.
+  // Patch metadata through the per-chat queue so concurrent changes are preserved.
+  // Clone the schedules because the queue's updater receives a shared snapshot.
   let applied = false;
   await args.chats.patchMetadata(args.chatId, (current) => {
+    if (room) {
+      const active = parseRecord(current.multiplayer);
+      if (room.signal?.aborted || active?.status !== "active" || active.epoch !== room.epoch) return {};
+    }
     const schedules = structuredClone(getEnabledConversationSchedules(current)) as Record<string, WeekScheduleRecord>;
     const schedule = schedules[characterId];
     if (!schedule) return {};
 
-    const nowDate = new Date();
+    const nowDate = room ? toZonedWallClockDate(new Date(), resolveConversationTimeZone(current)) : new Date();
     const dayName = DAYS_LIST[(nowDate.getDay() + 6) % 7]!;
     const daySchedule = schedule.days?.[dayName] ?? [];
-    const currentMinutes = nowDate.getHours() * 60 + nowDate.getMinutes();
-    if (!updateCurrentScheduleBlock(daySchedule, currentMinutes, command)) return {};
+    if (!updateCurrentScheduleBlock(daySchedule, nowDate.getHours() * 60 + nowDate.getMinutes(), command)) return {};
 
     schedule.days = { ...(schedule.days ?? {}), [dayName]: daySchedule };
     schedules[characterId] = schedule;
@@ -106,4 +117,19 @@ function updateCurrentScheduleBlock(
     return true;
   }
   return false;
+}
+
+function parseRecord(value: unknown): Record<string, unknown> | null {
+  if (!value) return null;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+  return typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }

@@ -299,6 +299,7 @@ function blockFromCreature(creature: RulesetCreature, budgets: ReadonlySet<strin
     ...(creature.vulnerable ? { vulnerable: [...creature.vulnerable] } : {}),
     ...(creature.immune ? { immune: [...creature.immune] } : {}),
     ...(creature.conditionImmunities ? { conditionImmunities: [...creature.conditionImmunities] } : {}),
+    ...(creature.hardness !== undefined ? { hardness: creature.hardness } : {}),
     ...(creature.soak
       ? {
           soak: {
@@ -442,10 +443,13 @@ function knownTypes(definition: RulesetDefinition): ReadonlySet<string> | null {
 }
 
 /** Only the names this ruleset has, in the order they were proposed. */
-function onlyKnown(values: readonly string[] | undefined, known: ReadonlySet<string> | null): string[] | null {
+function onlyKnown<T extends string | { type: string }>(
+  values: readonly T[] | undefined,
+  known: ReadonlySet<string> | null,
+): T[] | null {
   if (!values) return null;
   if (!known) return [...values];
-  return values.filter((value) => known.has(value.trim().toLowerCase()));
+  return values.filter((value) => known.has((typeof value === "string" ? value : value.type).trim().toLowerCase()));
 }
 
 /**
@@ -486,14 +490,17 @@ export function clampRulesetStatBlock(
   const budgets = combat.economy.budgets.map((budget) => budget.id);
   const mainBudget = budgets[0]!;
 
-  for (const key of ["resist", "vulnerable", "immune"] as const) {
-    const kept = onlyKnown(block[key], types);
-    if (!kept) continue;
+  const keepKnown = <K extends "resist" | "vulnerable" | "immune">(key: K) => {
+    const kept = onlyKnown<NonNullable<RulesetStatBlock[K]>[number]>(block[key], types);
+    if (!kept) return;
     const dropped = (block[key]?.length ?? 0) - kept.length;
     if (dropped > 0) adjusted.push(`${dropped} damage type this ruleset does not have was dropped from ${key}.`);
-    if (kept.length > 0) block[key] = kept;
+    if (kept.length > 0) (block as RulesetStatBlock)[key] = kept as RulesetStatBlock[K];
     else delete block[key];
-  }
+  };
+  keepKnown("resist");
+  keepKnown("vulnerable");
+  keepKnown("immune");
   if (block.conditionImmunities) {
     const kept = block.conditionImmunities.filter((condition) => conditions.has(condition));
     if (kept.length < block.conditionImmunities.length) {
@@ -534,6 +541,11 @@ export function clampRulesetStatBlock(
   if (block.soak) {
     delete block.soak;
     adjusted.push("An opponent made up for one fight soaks nothing, so its soak was dropped.");
+  }
+  // Hardness is the same: toughness no band bounds, and enough of it turns every spending blow.
+  if (block.hardness !== undefined) {
+    delete block.hardness;
+    adjusted.push("An opponent made up for one fight has no hardness, so its hardness was dropped.");
   }
   // A rider carries a damage type of its own, and a fight reads resistance off the NAME, so a type
   // this ruleset never declared is a word nothing could act on: held to the same names an action's

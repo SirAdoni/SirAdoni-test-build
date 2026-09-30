@@ -50,7 +50,7 @@ const generate = readFileSync(new URL("routes/generate.routes.ts", root), "utf8"
 const game = readFileSync(new URL("routes/game.routes.ts", root), "utf8");
 assert.match(
   generate,
-  /!abortController\.signal\.aborted &&\s+isGameSceneTimelineEnabled\(chatMeta\)\s+\) \{\s+queueSceneTimeline\(/,
+  /!generationSignal\.aborted &&\s+isGameSceneTimelineEnabled\(chatMeta\)\s+\) \{\s+queueSceneTimeline\(/,
 );
 assert.match(generate, /const timeline = isGameSceneTimelineEnabled\(chatMeta\)\s+\? await readSceneTimeline\(/);
 assert.match(game, /\(isGameSceneTimelineEnabled\(meta\) \? await sceneTimelineRecap\(app\.db, chatId\) : ""\)/);

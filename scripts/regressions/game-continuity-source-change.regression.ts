@@ -146,7 +146,8 @@ try {
 
   // ── DELETE the source message: the notification is scheduled, never awaited ──
   const deleted = await app.inject({ method: "DELETE", url: `/api/chats/${game.id}/messages/${assistant.id}` });
-  assert.equal(deleted.statusCode, 204);
+  assert.equal(deleted.statusCode, 200);
+  assert.deepEqual(deleted.json(), { trashed: false, trashedCount: 0 }, "Game source deletion stays permanent");
   assert.deepEqual(reconciled, [], "reconcile runs off the request path, not before the response");
   await waitFor("reconcile after delete", () => reconciled.includes(game.id));
   await waitFor("dependency change after delete", () => dependencyChanged.includes(game.id));
@@ -200,7 +201,8 @@ try {
   });
   assert.equal(edited.statusCode, 200);
   const removed = await app.inject({ method: "DELETE", url: `/api/chats/${roleplay.id}/messages/${roleplayMessage.id}` });
-  assert.equal(removed.statusCode, 204);
+  assert.equal(removed.statusCode, 200);
+  assert.deepEqual(removed.json(), { trashed: true, trashedCount: 1 }, "Roleplay deletion uses enabled message trash");
   await sleep(700);
   assert.equal(reconciled.length, reconcilesAtRoleplay, "non-game chat never reconciles continuity");
   assert.equal(dependencyChanged.length, dependencyAtRoleplay, "non-game chat never wakes summary refresh");

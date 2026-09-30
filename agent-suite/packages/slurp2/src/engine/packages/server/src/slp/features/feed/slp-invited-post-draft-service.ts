@@ -18,6 +18,8 @@ import { slpResponseFormat } from "../../base/prompting/slp-response-format.js";
 import { slpCreatorSourceText } from "../../base/prompting/slp-prompt-safety.js";
 import { NOODLER_UNTRUSTED_CONTENT_INSTRUCTION } from "./slp-public-identity.js";
 import { composeSlurpPromptBlocks, type SlurpPromptBlockOverrides } from "../../base/prompting/slp-prompt-blocks.js";
+import { SLURP_PERFORMED_INTIMACY } from "../../modules/creators/slp-performance.js";
+import { slpWithProviderRetry } from "../../base/model/slp-provider-retry.js";
 
 export type InvitedSlpPostDraftRequest = {
   guidance?: string;
@@ -50,23 +52,25 @@ export async function generateInvitedSlpPostDraft(
   if (!character) throw new Error("Noodle character not found.");
   const connections = createConnectionsStorage(db);
   const fallback = await connections.getFallbackForMain();
-  const provider = withConnectionFallbackProvider({
-    primary: createLLMProvider(
-      connection.provider,
-      resolveBaseUrl(connection),
-      connection.apiKey,
-      connection.maxContext,
-      connection.openrouterProvider,
-      connection.maxTokensOverride,
-      connection.claudeFastMode === "true",
-      connection.treatAsLocalEndpoint === "true",
-      connection.defaultParameters,
-    ),
-    primaryConnectionId: connection.id,
-    fallbackConnection: fallback,
-    fallbackBaseUrl: fallback ? resolveBaseUrl(fallback) : "",
-    category: "main",
-  });
+  const provider = slpWithProviderRetry(
+    withConnectionFallbackProvider({
+      primary: createLLMProvider(
+        connection.provider,
+        resolveBaseUrl(connection),
+        connection.apiKey,
+        connection.maxContext,
+        connection.openrouterProvider,
+        connection.maxTokensOverride,
+        connection.claudeFastMode === "true",
+        connection.treatAsLocalEndpoint === "true",
+        connection.defaultParameters,
+      ),
+      primaryConnectionId: connection.id,
+      fallbackConnection: fallback,
+      fallbackBaseUrl: fallback ? resolveBaseUrl(fallback) : "",
+      category: "main",
+    }),
+  );
   const messages: ChatMessage[] = [
     {
       role: "system",
@@ -82,6 +86,12 @@ export async function generateInvitedSlpPostDraft(
               "Return one JSON object with title, content, and imagePrompt set to null.",
               "Return JSON only. Do not create interactions or other accounts.",
             ].join("\n"),
+          },
+          {
+            id: "performance",
+            kind: "context",
+            optional: true,
+            text: SLURP_PERFORMED_INTIMACY,
           },
           {
             id: "style",
@@ -124,7 +134,7 @@ export async function generateInvitedSlpPostDraft(
     maxTokens: clampGenerationMaxOutputTokens({
       provider: connection.provider as APIProvider,
       model: connection.model,
-      maxTokens: 1024,
+      maxTokens: 2048,
       maxTokensOverride: connection.maxTokensOverride,
     }),
     stream: false,

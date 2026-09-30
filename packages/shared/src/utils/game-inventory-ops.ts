@@ -13,9 +13,11 @@ import {
   GAME_INVENTORY_ITEM_REF_PATTERN,
   GAME_INVENTORY_MAX_QUANTITY,
   GAME_INVENTORY_NAME_MAX_LENGTH,
-  addGameInventoryRulesetItem,
-  addToGameInventoryNamed,
+  addGameInventoryPlaced,
   gameInventoryAddedItem,
+  gameInventoryGiveRefusal,
+  gameInventoryKeptByCurse,
+  gameInventoryOverloads,
   cleanGameInventoryHolder,
   gameInventoryBagKey,
   gameInventoryCountItems,
@@ -24,6 +26,7 @@ import {
   gameInventoryNameKey,
   gameInventoryStackLabel,
   giveGameInventoryStack,
+  gameInventoryMergeOverloads,
   mergeGameInventoryStacks,
   newGameInventoryStackId,
   renameGameInventoryStack,
@@ -31,8 +34,10 @@ import {
   splitGameInventoryStack,
   swapGameInventoryStacks,
   takeFromGameInventory,
+  wearGameInventoryStack,
   type GameInventoryItemRules,
   type GameInventoryStack,
+  type GameInventoryWearRefusal,
 } from "./game-inventory-stacks.js";
 
 /** The most operations one request applies. */
@@ -45,7 +50,9 @@ const amount = z.number().int().min(1).max(GAME_INVENTORY_MAX_QUANTITY);
 
 export const gameInventoryOpSchema = z.discriminatedUnion("op", [
   /** Into one bag by name, onto the item that name finds (a new one when it finds none): the player's
-   *  bag when `holder` is absent. With `item`, that ruleset item instead, and `name` is only what the
+   *  bag when `holder` is absent. With `among`, the shared view instead: the bags it may go into, in
+   *  the order they are asked ("" is the player's), which a ruleset that says what everyone carries
+   *  picks from by who can carry it. With `item`, that ruleset item, and `name` is only what the
    *  journal calls it. `log` writes "acquired" in the journal. */
   z
     .object({
@@ -54,6 +61,7 @@ export const gameInventoryOpSchema = z.discriminatedUnion("op", [
       item: z.string().max(121).regex(GAME_INVENTORY_ITEM_REF_PATTERN).optional(),
       count: amount,
       holder: holder.optional(),
+      among: z.array(z.string().trim().max(GAME_INVENTORY_HOLDER_MAX_LENGTH)).min(1).max(20).optional(),
       log: z.boolean().optional(),
     })
     .strict(),
@@ -79,6 +87,8 @@ export const gameInventoryOpSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("swap"), first: stackId, second: stackId }).strict(),
   /** Some or all of one stack (all of it without `count`) to another bag: the player's without `to`. */
   z.object({ op: z.literal("give"), id: stackId, to: holder.optional(), count: amount.optional() }).strict(),
+  /** One stack put on or taken off, bound or unbound, by whoever carries it. */
+  z.object({ op: z.enum(["equip", "unequip", "bind", "unbind"]), id: stackId }).strict(),
 ]);
 
 export type GameInventoryOp = z.infer<typeof gameInventoryOpSchema>;
@@ -91,8 +101,10 @@ export const gameInventoryOpsRequestSchema = z
   .strict();
 
 /** Why an operation changed nothing. `not-ruleset-item`: an add of something that is not one of the
- *  ruleset's items, where only those may be added. */
-export type GameInventoryOpRefusal = "missing-stack" | "none-held" | "not-ruleset-item" | "refused";
+ *  ruleset's items, where only those may be added. `too-heavy`: past what its bearer can carry. The
+ *  rest are `GameInventoryWearRefusal`s; `cursed` also refuses parting with a bound cursed item. */
+export type GameInventoryOpRefusal =
+  "missing-stack" | "none-held" | "not-ruleset-item" | "too-heavy" | GameInventoryWearRefusal | "refused";
 
 export type GameInventoryOpResult =
   | {
@@ -104,6 +116,10 @@ export type GameInventoryOpResult =
       count?: number;
       /** How many of the item that bag holds afterwards (the party's total for a take from anyone). */
       now?: number;
+      /** An add into the shared view: how many went into whose bag, and how many that bag now holds. */
+      placed?: Array<{ holder?: string; count: number; now: number }>;
+      /** How many of an add nobody could carry, which were left behind. */
+      left?: number;
     }
   | { ok: false; reason: GameInventoryOpRefusal };
 
@@ -141,27 +157,49 @@ export function applyGameInventoryOps(
     switch (op.op) {
       case "add": {
         const bag = { holder: cleanGameInventoryHolder(op.holder) };
-        const added = op.item
-          ? addGameInventoryRulesetItem(current, op.item, op.count, makeId, bag.holder, rules)
-          : addToGameInventoryNamed(current, op.name, op.count, makeId, bag.holder, rules);
-        if (!added) {
-          const known = op.item ? rules?.offers(op.item) : gameInventoryAddedItem(current, op.name, bag.holder, rules);
-          refuse(known ? "refused" : "not-ruleset-item");
+        // The item first: a ruleset item by its id only while the game offers it, or whatever the name
+        // finds.
+        const known = op.item ? (rules?.offers(op.item) ? rules.itemOf(op.item) : undefined) : undefined;
+        const like = op.item
+          ? known && { name: known.name, item: known.item }
+          : gameInventoryAddedItem(current, op.name, bag.holder, rules);
+        if (!like) {
+          refuse("not-ruleset-item");
+          break;
+        }
+        const destination = op.among ? { among: op.among.map((holder) => cleanGameInventoryHolder(holder)) } : bag;
+        const added = addGameInventoryPlaced(current, like, op.count, destination, makeId, rules);
+        if (!added || added.shares.length === 0) {
+          refuse(added ? "too-heavy" : "refused");
           break;
         }
         current = added.stacks;
-        // How many of the item it went onto the bag now holds: the name may have found that item by
-        // a nickname in another bag, which the bag's own count by name would not see.
-        const item = gameInventoryItemId(current.find((stack) => stack.id === added.id)!);
-        const now = current
-          .filter(
-            (stack) =>
-              gameInventoryItemId(stack) === item &&
-              gameInventoryBagKey(stack.holder) === gameInventoryBagKey(bag.holder),
-          )
-          .reduce((total, stack) => total + stack.quantity, 0);
-        results.push({ ok: true, id: added.id, count: op.count, now });
-        if (op.log) journal.push({ item: op.name.trim(), action: "acquired", quantity: op.count });
+        // How many of the item each bag it went into now holds: the name may have found that item by
+        // a nickname in another bag, which a bag's own count by name would not see.
+        const item = gameInventoryItemId(like);
+        const holds = (holder: string | undefined) =>
+          current
+            .filter(
+              (stack) =>
+                gameInventoryItemId(stack) === item &&
+                gameInventoryBagKey(stack.holder) === gameInventoryBagKey(holder),
+            )
+            .reduce((total, stack) => total + stack.quantity, 0);
+        const placed = added.shares.map((share) => ({
+          ...(share.holder ? { holder: share.holder } : {}),
+          count: share.count,
+          now: holds(share.holder),
+        }));
+        const count = placed.reduce((total, share) => total + share.count, 0);
+        results.push({
+          ok: true,
+          id: added.shares[0]!.id,
+          count,
+          now: placed[0]!.now,
+          ...(op.among ? { placed } : {}),
+          ...(added.left > 0 ? { left: added.left } : {}),
+        });
+        if (op.log) journal.push({ item: op.name.trim(), action: "acquired", quantity: count });
         break;
       }
       case "take": {
@@ -169,9 +207,16 @@ export function applyGameInventoryOps(
         // Which items the name means is settled before the take: once the last stack of an item is
         // gone, the name alone could find another item by its nickname.
         const items = gameInventoryItemsNamed(current, op.name, from);
-        const taken = takeFromGameInventory(current, op.name, op.count, from);
+        const taken = takeFromGameInventory(current, op.name, op.count, from, rules);
         if (taken.taken === 0) {
-          refuse("none-held");
+          // Held, but only as a bound cursed item the player cannot part with.
+          const cursed = current.some(
+            (stack) =>
+              items.has(gameInventoryItemId(stack)) &&
+              (!from || gameInventoryBagKey(stack.holder) === gameInventoryBagKey(from.holder)) &&
+              gameInventoryKeptByCurse(stack, rules),
+          );
+          refuse(cursed ? "cursed" : "none-held");
           break;
         }
         current = taken.stacks;
@@ -185,9 +230,17 @@ export function applyGameInventoryOps(
           refuse("missing-stack");
           break;
         }
+        // A raised count is more to carry, held to its bearer's limit like any addition.
+        if (
+          op.quantity > stack.quantity &&
+          gameInventoryOverloads(current, stack, op.quantity - stack.quantity, rules)
+        ) {
+          refuse("too-heavy");
+          break;
+        }
         const next = setGameInventoryStackQuantity(current, op.id, op.quantity, makeId, rules);
         if (next === current && op.quantity !== stack.quantity) {
-          refuse("refused");
+          refuse(op.quantity < stack.quantity && gameInventoryKeptByCurse(stack, rules) ? "cursed" : "refused");
           break;
         }
         current = next;
@@ -222,7 +275,15 @@ export function applyGameInventoryOps(
       case "merge": {
         const next = mergeGameInventoryStacks(current, op.from, op.into, rules);
         if (next === current) {
-          refuse(stackOf(op.from) && stackOf(op.into) ? "refused" : "missing-stack");
+          const from = stackOf(op.from);
+          const into = stackOf(op.into);
+          refuse(
+            !from || !into
+              ? "missing-stack"
+              : gameInventoryMergeOverloads(current, from, into, rules)
+                ? "too-heavy"
+                : "refused",
+          );
           break;
         }
         current = next;
@@ -251,6 +312,11 @@ export function applyGameInventoryOps(
       }
       case "give": {
         const stack = stackOf(op.id);
+        const kept = stack && gameInventoryGiveRefusal(current, stack, op.to, op.count ?? stack.quantity, rules);
+        if (kept) {
+          refuse(kept);
+          break;
+        }
         const given = stack ? giveGameInventoryStack(current, op.id, op.to, op.count, makeId, rules) : null;
         if (!stack || !given) {
           refuse(stack ? "refused" : "missing-stack");
@@ -264,6 +330,19 @@ export function applyGameInventoryOps(
           count: op.count ?? stack.quantity,
           now: gameInventoryCountItems(current, new Set([gameInventoryItemId(stack)]), to),
         });
+        break;
+      }
+      case "equip":
+      case "unequip":
+      case "bind":
+      case "unbind": {
+        const worn = wearGameInventoryStack(current, op.id, op.op, makeId, rules);
+        if (!worn || "refused" in worn) {
+          refuse(worn ? worn.refused : "missing-stack");
+          break;
+        }
+        current = worn.stacks;
+        results.push({ ok: true, id: worn.id });
         break;
       }
     }

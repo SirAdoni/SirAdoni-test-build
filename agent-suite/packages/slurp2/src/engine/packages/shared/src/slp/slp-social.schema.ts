@@ -4,6 +4,7 @@
 // ──────────────────────────────────────────────
 import { z } from "zod";
 import { avatarCropSchema } from "@marinara-engine/shared";
+import { slpCreatorPageSchema } from "./slp-creator-page.js";
 
 export const slpAccountKindSchema = z.enum(["persona", "character", "random_user"]);
 export const slpInteractionTypeSchema = z.enum(["like", "repost", "reply", "vote"]);
@@ -82,9 +83,10 @@ export const DEFAULT_SLP_SETTINGS = {
   enableImagePrompts: false,
   imageGenerationConnectionId: null,
   imageGenerationPrompt:
-    "Create either a social-media-ready character image or an in-character meme for the post. For character images, mention build, clothing, visible appearance, pose, expression, setting, lighting, mood, and composition. For memes, mention meme format, visual gag, composition, and short readable caption/text when relevant.",
+    "Create a provider-ready image prompt for the supplied post. Preserve the post's subject, action, setting, mood, clothing, and established appearance. Use the Creator's personality to shape expression and presentation, not to invent a new event or sexualize an ordinary moment. Add nudity, explicit anatomy, or sexual activity only when the post or an explicit trusted instruction already requires it. Keep the image coherent and believable. Use only the visual details needed for this scene.",
   imageGenerationUseAvatarReferences: true,
   imageGenerationIncludeDescriptions: true,
+  appearanceProfileMode: "high_confidence",
   allowGalleryImageAttachments: false,
   imageCaptioningEnabled: false,
   imageCaptioningConnectionId: null,
@@ -137,6 +139,9 @@ export const slpSettingsSchema = z.object({
   imageGenerationPrompt: z.string().max(4000).default(DEFAULT_SLP_SETTINGS.imageGenerationPrompt),
   imageGenerationUseAvatarReferences: z.boolean().default(DEFAULT_SLP_SETTINGS.imageGenerationUseAvatarReferences),
   imageGenerationIncludeDescriptions: z.boolean().default(DEFAULT_SLP_SETTINGS.imageGenerationIncludeDescriptions),
+  appearanceProfileMode: z
+    .enum(["ask", "high_confidence", "always"])
+    .default(DEFAULT_SLP_SETTINGS.appearanceProfileMode),
   allowGalleryImageAttachments: z.boolean().default(DEFAULT_SLP_SETTINGS.allowGalleryImageAttachments),
   imageCaptioningEnabled: z.boolean().default(DEFAULT_SLP_SETTINGS.imageCaptioningEnabled),
   imageCaptioningConnectionId: z.string().min(1).nullable().default(DEFAULT_SLP_SETTINGS.imageCaptioningConnectionId),
@@ -194,6 +199,8 @@ export const slpAccountProfileSettingsSchema = z
     profileManuallyEdited: z.boolean().optional(),
     noodlerWizardExecutionId: z.string().min(1).max(128).optional(),
     noodlerSourceSnapshot: slpCreatorSourceSnapshotSchema.optional(),
+    page: slpCreatorPageSchema.optional(),
+    pageWanted: z.boolean().optional(),
   })
   .strict();
 
@@ -271,10 +278,25 @@ export const slpAccountSocialPatchSchema = slpAccountSocialSettingsSchema.pick({
   noodleFeedSeenAt: true,
 });
 
+/**
+ * One Creator strategy edit. `null` clears a value back to the derived default; an absent key
+ * leaves it alone. Bounds match `SLURP_STRATEGY_LIMITS` on the server.
+ */
+export const slpCreatorStrategyPatchSchema = z
+  .object({
+    style: z.enum(["homemade", "polished", "documentary", "theatrical"]).nullable().optional(),
+    skipRate: z.number().int().min(0).max(40).nullable().optional(),
+    textOnlyRate: z.number().int().min(0).max(100).nullable().optional(),
+    intentWeights: z.record(z.string(), z.number().int().min(0).max(100)).nullable().optional(),
+    strategyText: z.string().max(2000).nullable().optional(),
+  })
+  .strict();
+
 export const slpAccountSettingsPatchSchema = z.discriminatedUnion("subtree", [
   z.object({ subtree: z.literal("social"), patch: slpAccountSocialPatchSchema }).strict(),
   z.object({ subtree: z.literal("scheduler"), patch: slpAccountSchedulerPatchSchema }).strict(),
   z.object({ subtree: z.literal("privacy"), patch: slpAccountPrivacyPatchSchema }).strict(),
+  z.object({ subtree: z.literal("strategy"), patch: slpCreatorStrategyPatchSchema }).strict(),
 ]);
 
 const slpAccountIdentityUpdateShape = {
@@ -310,11 +332,19 @@ export const slpAmbientProfileRerollSchema = z
   })
   .strict();
 
+/**
+ * `appearance`, `wardrobe` and `locations` default to "" rather than being required: a Creator
+ * saved before these existed, and every generated draft that does not fill them in, must still
+ * validate. See `SlpCreatorStageFacts`.
+ */
 const slpStageProfileShape = {
   displayName: z.string().trim().min(1, "Enter a stage name.").max(120),
   handle: z.string().trim().min(1, "Enter a stage handle.").max(40),
   bio: z.string().trim().max(500),
   stagePersonality: z.string().trim().max(1000),
+  appearance: z.string().trim().max(2000).default(""),
+  wardrobe: z.string().trim().max(2000).default(""),
+  locations: z.string().trim().max(2000).default(""),
   disclosureMode: slpIdentityDisclosureSchema,
 };
 
@@ -359,7 +389,9 @@ export const slpStageProfileDraftRequestSchema = z
     noodlerAccountId: z.string().min(1).optional(),
     disclosureMode: slpIdentityDisclosureSchema,
     guidance: z.string().trim().max(2000).default(""),
-    currentDraft: slpStageProfileSchema.partial().optional(),
+    // The editor sends its whole form, discovery fields (gender, tags, location) included. The draft
+    // reads only the stage fields, so the rest is dropped instead of failing the request (R1-070).
+    currentDraft: z.object(slpStageProfileShape).partial().optional(),
     connectionId: z.string().min(1).optional(),
   })
   .strict()
@@ -544,6 +576,11 @@ export const slpCreatorPostUpdateSchema = z
     content: z.string().trim().max(SLP_CREATOR_POST_CONTENT_MAX_LENGTH).optional(),
     removeImage: z.literal(true).optional(),
     imageCrop: slpPostImageCropSchema.nullable().optional(),
+    /**
+     * Which picture of a photo set a crop or a replacement is for (R1-039). Absent or 0 is the post
+     * picture; a later one is the set picture at that position. Remove always takes the whole set.
+     */
+    imagePosition: z.number().int().min(0).max(64).optional(),
     poll: slpPollInputSchema.nullable().optional(),
   })
   .strict()

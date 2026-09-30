@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -11,6 +11,8 @@ const { createConnectionsStorage } = await import("../../packages/server/src/ser
 const { createChatsStorage } = await import("../../packages/server/src/services/storage/chats.storage.js");
 const { createCharactersStorage } = await import("../../packages/server/src/services/storage/characters.storage.js");
 const { characterDataSchema } = await import("../../packages/shared/src/schemas/character.schema.js");
+const { createGameRulesetsStorage } =
+  await import("../../packages/server/src/services/storage/game-rulesets.storage.js");
 const { chooseGmCombatOption } = await import("../../packages/server/src/services/game/combat-boss.service.js");
 const { createCombatDirector, commandCombatDirector } =
   await import("../../packages/server/src/services/game/combat-director.service.js");
@@ -146,6 +148,41 @@ try {
       assert.equal(response.statusCode, invalid ? 502 : 200, response.body);
       if (invalid) assert.match(response.json().error, /Invalid resource pool/);
     }
+
+    // A ruleset that turns Game Mode's own items off (#6822): the model is not asked what the
+    // inventory's items do, and whatever it guesses anyway is dropped.
+    const ember = JSON.parse(
+      readFileSync(new URL("../../docs/examples/rulesets/ember-roads.json", import.meta.url), "utf8"),
+    ) as Record<string, any>;
+    const closed = { ...ember, id: "ember-encounter-no-items", items: { ...ember.items, native: false } };
+    await createGameRulesetsStorage(db).put({
+      rulesetId: "local/ember-encounter-no-items",
+      version: closed.version,
+      sourceKind: "local",
+      definition: JSON.stringify(closed),
+    });
+    const guessed = { name: "Potion", target: "ally", type: "heal", description: "Heals", power: 0.3 };
+    replyText = JSON.stringify({ party: [{ name: "Hero" }], enemies: [{ name: "Rat" }], itemEffects: [guessed] });
+    const withItems = await app.inject({
+      method: "POST",
+      url: "/encounter/init",
+      payload: { chatId: chat.id, settings: {} },
+    });
+    assert.equal(withItems.statusCode, 200, withItems.body);
+    assert.deepEqual(withItems.json().combatState.itemEffects, [guessed], "Game Mode's own items keep the guess");
+    assert.match(JSON.stringify(payload!.messages), /\\"itemEffects\\": \[/);
+    await chats.patchMetadata(chat.id, {
+      gameRuleset: { id: "local/ember-encounter-no-items", version: closed.version, packageId: null, options: {} },
+    });
+    const noItems = await app.inject({
+      method: "POST",
+      url: "/encounter/init",
+      payload: { chatId: chat.id, settings: {} },
+    });
+    assert.equal(noItems.statusCode, 200, noItems.body);
+    assert.deepEqual(noItems.json().combatState.itemEffects, []);
+    assert.doesNotMatch(JSON.stringify(payload!.messages), /itemEffects\\": \[/);
+    assert.match(JSON.stringify(payload!.messages), /keeps its items out of fights for now/);
   } finally {
     await app.close();
   }

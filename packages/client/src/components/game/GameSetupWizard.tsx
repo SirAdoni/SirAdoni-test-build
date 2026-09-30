@@ -52,7 +52,9 @@ import {
   type TacticalBattlefieldSize,
   type Persona,
   type AvatarCrop,
+  type MultiplayerPlayer,
 } from "@marinara-engine/shared";
+import { MultiplayerPrepareButton } from "../../features/multiplayer/MultiplayerPrepareButton";
 import { getCharacterTitle } from "../../lib/character-display";
 import { api } from "../../lib/api-client";
 import { cn, getAvatarCropStyle } from "../../lib/utils";
@@ -131,7 +133,7 @@ function normalizeCapabilitySetupSelectionKind(
   return null;
 }
 
-interface GameSetupWizardProps {
+export interface GameSetupWizardProps {
   activeChatId: string;
   isNewGame: boolean;
   chatMetadata?: Record<string, unknown>;
@@ -166,6 +168,8 @@ interface GameSetupWizardProps {
     avatarCrop?: AvatarCrop | null;
   }>;
   initialPartyCharacterIds?: string[];
+  /** Host preparation only. Human ownership comes from the approved room roster. */
+  multiplayerPlayers?: MultiplayerPlayer[];
 }
 
 interface WizardConnection {
@@ -173,6 +177,7 @@ interface WizardConnection {
   name: string;
   model?: string;
   provider?: string;
+  baseUrl?: string | null;
   imageService?: string | null;
   videoService?: string | null;
   audioSource?: string | null;
@@ -508,6 +513,7 @@ export function GameSetupWizard({
   isLinkingSharedWorld,
   characters,
   initialPartyCharacterIds = [],
+  multiplayerPlayers,
 }: GameSetupWizardProps) {
   const { t: localizeUi } = useUiTranslation();
   const prefersReducedMotion = useReducedMotion();
@@ -520,7 +526,10 @@ export function GameSetupWizard({
   }, [step]);
   const panelRef = useRef<HTMLDivElement>(null);
   const { data: installedPackages, isLoading: experiencesLoading } = useInstalledCapabilityPackages(true);
-  const experiences = useMemo(() => selectGameExperiencePackages(installedPackages), [installedPackages]);
+  const experiences = useMemo(
+    () => (multiplayerPlayers ? [] : selectGameExperiencePackages(installedPackages)),
+    [installedPackages, multiplayerPlayers],
+  );
   const [experienceId, setExperienceId] = useState<string | null>(null);
   const activeExperience = (isNewGame ? experiences.find((item) => item.id === experienceId) : null) ?? null;
   const experienceSetup = activeExperience?.manifest.contributions?.gameSurface?.setup;
@@ -731,7 +740,8 @@ export function GameSetupWizard({
     ? new Set(importedLorebookEntryIds?.filter((id) => !eligibleEntries.some((entry) => entry.id === id))).size
     : 0;
   const hasInstalledAgents = installedAgentIds.size > 0;
-  const hierarchicalMapsInstalled = installedAgentIds.has("hierarchical-maps") && !experienceSetup;
+  const hierarchicalMapsInstalled =
+    installedAgentIds.has("hierarchical-maps") && !experienceSetup && !multiplayerPlayers;
   const musicDjInstalled = installedAgentIds.has("spotify");
   const lorebookKeeperInstalled = installedAgentIds.has("lorebook-keeper");
   const illustratorInstalled = installedAgentIds.has("illustrator");
@@ -1068,21 +1078,24 @@ export function GameSetupWizard({
   const spatialMapTargetLocationCountValid =
     normalizeSpatialMapTargetLocationCount(spatialMapTargetLocationCountInput) !== null;
   const canStart =
+    (!multiplayerPlayers || multiplayerPlayers.every((player) => player.personaName?.trim())) &&
     !experienceSeedInvalid &&
     (!activeLorebookEntryIds.length || Boolean(eligibleEntries)) &&
     !!gmConnectionId &&
     (!enableAgents || !hierarchicalMapsInstalled || !draftSpatialMap || spatialMapTargetLocationCountValid);
-  const canStartMessage = experienceSeedInvalid
-    ? localizeUi("game.experienceSetup.invalidSeed", { max: MAX_EXPERIENCE_SEED })
-    : activeLorebookEntryIds.length && !eligibleEntries
-      ? localizeUi(entryQuery.isError && !entryQuery.isFetching ? "game.setupLore.error" : "game.setupLore.loading")
-      : !gmConnectionId
-        ? localizeUi("ui.game.gamesetupwizard.selectAConnectionOnTheFirstStepBeforeStarting")
-        : !spatialMapTargetLocationCountValid && enableAgents && hierarchicalMapsInstalled && draftSpatialMap
-          ? localizeUi("ui.game.gamesetupwizard.chooseAnyWholeNumberFrom1ToValue1Places", {
-              value1: SPATIAL_CUSTOM_TARGET_LOCATION_LIMIT,
-            })
-          : null;
+  const canStartMessage = multiplayerPlayers?.some((player) => !player.personaName?.trim())
+    ? localizeUi("multiplayer.game.missingPersona")
+    : experienceSeedInvalid
+      ? localizeUi("game.experienceSetup.invalidSeed", { max: MAX_EXPERIENCE_SEED })
+      : activeLorebookEntryIds.length && !eligibleEntries
+        ? localizeUi(entryQuery.isError && !entryQuery.isFetching ? "game.setupLore.error" : "game.setupLore.loading")
+        : !gmConnectionId
+          ? localizeUi("ui.game.gamesetupwizard.selectAConnectionOnTheFirstStepBeforeStarting")
+          : !spatialMapTargetLocationCountValid && enableAgents && hierarchicalMapsInstalled && draftSpatialMap
+            ? localizeUi("ui.game.gamesetupwizard.chooseAnyWholeNumberFrom1ToValue1Places", {
+                value1: SPATIAL_CUSTOM_TARGET_LOCATION_LIMIT,
+              })
+            : null;
   const normalizedLanguage = normalizeGameLanguage(language);
   const illustratorEnabled = enableAgents && illustratorInstalled && enableSpriteGeneration;
   const musicDjEnabled = enableAgents && musicDjInstalled && enableSpotifyDj;
@@ -1389,7 +1402,7 @@ export function GameSetupWizard({
           ? partyCharacterIds.filter((id) => id !== gmCharacterId)
           : partyCharacterIds,
       playerGoals: playerGoals.trim() || "Have an adventure",
-      personaId: personaId ?? undefined,
+      personaId: multiplayerPlayers ? undefined : (personaId ?? undefined),
       sceneConnectionId: sceneModelValue && sceneModelValue !== "local" ? sceneModelValue : undefined,
       enableAgents: enableAgents || undefined,
       enableQuickTimeEvents: enableQuickTimeEvents ? undefined : false,
@@ -1564,6 +1577,35 @@ export function GameSetupWizard({
     );
   }
 
+  const multiplayerRoster = multiplayerPlayers ? (
+    <section className="space-y-2" aria-label={localizeUi("multiplayer.game.players")}>
+      <h4 className="text-xs font-semibold text-[var(--foreground)]">{localizeUi("multiplayer.game.players")}</h4>
+      <ul className="divide-y divide-[var(--border)]">
+        {multiplayerPlayers.map((player) => (
+          <li
+            key={player.id}
+            className="flex min-h-11 flex-wrap items-center justify-between gap-x-3 gap-y-1 py-2 text-xs"
+          >
+            <div className="min-w-0 break-words">
+              <span className="font-medium">{player.displayName}</span>
+              {player.isHost && (
+                <span className="ml-1 text-[var(--muted-foreground)]">({localizeUi("multiplayer.guest.host")})</span>
+              )}
+              <p className="text-[var(--muted-foreground)]">
+                {player.personaName
+                  ? localizeUi("multiplayer.guest.playing", { name: player.personaName })
+                  : localizeUi("multiplayer.guest.noPersona")}
+              </p>
+            </div>
+            <span className="shrink-0 text-[var(--muted-foreground)]">
+              {localizeUi(player.connected ? "multiplayer.guest.connected" : "multiplayer.guest.waiting")}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  ) : null;
+
   return (
     <>
       <div
@@ -1609,6 +1651,13 @@ export function GameSetupWizard({
               <div className="space-y-4">
                 {step === 0 && (
                   <>
+                    {multiplayerPlayers ? (
+                      <p className="text-xs leading-relaxed text-[var(--muted-foreground)]">
+                        {localizeUi("multiplayer.game.preparationHelp")}
+                      </p>
+                    ) : (
+                      <MultiplayerPrepareButton chatId={activeChatId} />
+                    )}
                     <div className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-3">
                       <input
                         ref={setupImportInputRef}
@@ -1655,7 +1704,7 @@ export function GameSetupWizard({
                     </div>
 
                     {/* Absent when nothing provides an experience, leaving this step exactly as it was. */}
-                    {isNewGame && (
+                    {isNewGame && !multiplayerPlayers && (
                       <NewGameExperienceChooser
                         experiences={experiences}
                         activeId={activeExperience?.id ?? null}
@@ -1744,6 +1793,9 @@ export function GameSetupWizard({
                               value={generationParameters}
                               provider={selectedGmConnection?.provider ?? null}
                               model={selectedGmConnection?.model ?? null}
+                              baseUrl={
+                                typeof selectedGmConnection?.baseUrl === "string" ? selectedGmConnection.baseUrl : null
+                              }
                               modelCapabilities={gmModelCapabilities}
                               onChange={setGenerationParameters}
                             />
@@ -2191,6 +2243,7 @@ export function GameSetupWizard({
 
                 {step === 2 && (
                   <>
+                    {multiplayerRoster}
                     {/* GM Mode */}
                     <div>
                       <label className="mb-1.5 block text-xs font-medium text-[var(--foreground)]">
@@ -2320,8 +2373,14 @@ export function GameSetupWizard({
                     {/* Party Members */}
                     <div>
                       <label className="mb-1.5 block text-xs font-medium text-[var(--foreground)]">
-                        {localizeUi("ui.game.gamesetupwizard.partyMembers")}
-                        {partyCharacterIds.length} {localizeUi("ui.game.gamesetupwizard.selected")}
+                        {multiplayerPlayers ? (
+                          localizeUi("multiplayer.game.aiCompanions", { count: partyCharacterIds.length })
+                        ) : (
+                          <>
+                            {localizeUi("ui.game.gamesetupwizard.partyMembers")}
+                            {partyCharacterIds.length} {localizeUi("ui.game.gamesetupwizard.selected")}
+                          </>
+                        )}
                       </label>
                       {/* Selected party members */}
                       {partyCharacterIds.length > 0 && (
@@ -2456,76 +2515,19 @@ export function GameSetupWizard({
                     </div>
 
                     {/* Persona */}
-                    <div>
-                      <label className={GAME_SETUP_FIELD_LABEL}>
-                        <User size={12} className="mr-1 inline" />
-                        {localizeUi("ui.game.gamesetupwizard.playerSPersona")}
-                      </label>
-                      {personaId &&
-                        (() => {
-                          const p = personas.find((x) => x.id === personaId);
-                          if (!p) return null;
-                          const title = getPersonaTitle(p);
-                          return (
-                            <div className="mb-2 flex items-center gap-2.5 rounded-lg bg-[var(--primary)]/10 px-3 py-2 ring-1 ring-[var(--primary)]/30">
-                              <CharacterAvatar
-                                character={{
-                                  id: p.id,
-                                  name: p.name,
-                                  avatarUrl: p.avatarPath ?? null,
-                                  avatarCrop: p.avatarCrop,
-                                }}
-                                onUpdate={() => useUIStore.getState().openPersonaDetail(p.id)}
-                              />
-                              <div className="min-w-0 flex-1">
-                                <span className="block truncate text-xs">{p.name}</span>
-                                {title && (
-                                  <span className="block truncate text-[0.625rem] text-[var(--muted-foreground)]">
-                                    {title}
-                                  </span>
-                                )}
-                              </div>
-                              <button
-                                onClick={() => setPersonaId(null)}
-                                className="flex h-5 w-5 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--destructive)]/15 hover:text-[var(--destructive)]"
-                                title={localizeUi("settings.notifications.customSound.actions.remove")}
-                              >
-                                <X size="0.6875rem" />
-                              </button>
-                            </div>
-                          );
-                        })()}
-                      <div className="overflow-hidden rounded-lg bg-[var(--card)] ring-1 ring-[var(--border)]">
-                        <div className="flex items-center gap-2 border-b border-[var(--border)] px-3 py-2">
-                          <Search size="0.75rem" className="text-[var(--muted-foreground)]" />
-                          <input
-                            value={personaSearch}
-                            onChange={(e) => setPersonaSearch(e.target.value)}
-                            placeholder={localizeUi("ui.game.gamesetupwizard.searchPersonasOrTitles")}
-                            className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-[var(--muted-foreground)]"
-                          />
-                        </div>
-                        <div className="max-h-32 overflow-y-auto">
-                          {filteredPersonas.map((p) => {
+                    {!multiplayerPlayers && (
+                      <div>
+                        <label className={GAME_SETUP_FIELD_LABEL}>
+                          <User size={12} className="mr-1 inline" />
+                          {localizeUi("ui.game.gamesetupwizard.playerSPersona")}
+                        </label>
+                        {personaId &&
+                          (() => {
+                            const p = personas.find((x) => x.id === personaId);
+                            if (!p) return null;
                             const title = getPersonaTitle(p);
                             return (
-                              <div
-                                key={p.id}
-                                role="button"
-                                tabIndex={0}
-                                onClick={() => setPersonaId(p.id === personaId ? null : p.id)}
-                                onKeyDown={(event) => {
-                                  if (event.target !== event.currentTarget) return;
-                                  if (event.key === "Enter" || event.key === " ") {
-                                    event.preventDefault();
-                                    setPersonaId(p.id === personaId ? null : p.id);
-                                  }
-                                }}
-                                className={cn(
-                                  "flex w-full items-center gap-2.5 px-3 py-2 text-left transition-all hover:bg-[var(--accent)]",
-                                  p.id === personaId && "bg-[var(--primary)]/5",
-                                )}
-                              >
+                              <div className="mb-2 flex items-center gap-2.5 rounded-lg bg-[var(--primary)]/10 px-3 py-2 ring-1 ring-[var(--primary)]/30">
                                 <CharacterAvatar
                                   character={{
                                     id: p.id,
@@ -2543,24 +2545,74 @@ export function GameSetupWizard({
                                     </span>
                                   )}
                                 </div>
-                                {p.id === personaId && (
-                                  <span className="text-[0.625rem] text-[var(--primary)]">
-                                    {localizeUi("ui.game.gamesetupwizard.selected_9a976fc")}
-                                  </span>
-                                )}
+                                <button
+                                  onClick={() => setPersonaId(null)}
+                                  className="flex h-5 w-5 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--destructive)]/15 hover:text-[var(--destructive)]"
+                                  title={localizeUi("settings.notifications.customSound.actions.remove")}
+                                >
+                                  <X size="0.6875rem" />
+                                </button>
                               </div>
                             );
-                          })}
-                          {filteredPersonas.length === 0 && (
-                            <p className="px-3 py-2 text-[0.6875rem] text-[var(--muted-foreground)]">
-                              {personas.length === 0
-                                ? localizeUi("ui.game.gamesetupwizard.noPersonasFoundCreateOneInThePersonasPanel")
-                                : localizeUi("ui.lorebooks.linkedresourcepicker.noMatches")}
-                            </p>
-                          )}
+                          })()}
+                        <div className="overflow-hidden rounded-lg bg-[var(--card)] ring-1 ring-[var(--border)]">
+                          <div className="flex items-center gap-2 border-b border-[var(--border)] px-3 py-2">
+                            <Search size="0.75rem" className="text-[var(--muted-foreground)]" />
+                            <input
+                              value={personaSearch}
+                              onChange={(e) => setPersonaSearch(e.target.value)}
+                              placeholder={localizeUi("ui.game.gamesetupwizard.searchPersonasOrTitles")}
+                              className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-[var(--muted-foreground)]"
+                            />
+                          </div>
+                          <div className="max-h-32 overflow-y-auto">
+                            {filteredPersonas.map((p) => {
+                              const title = getPersonaTitle(p);
+                              return (
+                                <button
+                                  key={p.id}
+                                  onClick={() => setPersonaId(p.id === personaId ? null : p.id)}
+                                  className={cn(
+                                    "flex w-full items-center gap-2.5 px-3 py-2 text-left transition-all hover:bg-[var(--accent)]",
+                                    p.id === personaId && "bg-[var(--primary)]/5",
+                                  )}
+                                >
+                                  <CharacterAvatar
+                                    character={{
+                                      id: p.id,
+                                      name: p.name,
+                                      avatarUrl: p.avatarPath ?? null,
+                                      avatarCrop: p.avatarCrop,
+                                    }}
+                                    onUpdate={() => useUIStore.getState().openPersonaDetail(p.id)}
+                                  />
+                                  <div className="min-w-0 flex-1">
+                                    <span className="block truncate text-xs">{p.name}</span>
+                                    {title && (
+                                      <span className="block truncate text-[0.625rem] text-[var(--muted-foreground)]">
+                                        {title}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {p.id === personaId && (
+                                    <span className="text-[0.625rem] text-[var(--primary)]">
+                                      {localizeUi("ui.game.gamesetupwizard.selected_9a976fc")}
+                                    </span>
+                                  )}
+                                </button>
+                              );
+                            })}
+                            {filteredPersonas.length === 0 && (
+                              <p className="px-3 py-2 text-[0.6875rem] text-[var(--muted-foreground)]">
+                                {personas.length === 0
+                                  ? localizeUi("ui.game.gamesetupwizard.noPersonasFoundCreateOneInThePersonasPanel")
+                                  : localizeUi("ui.lorebooks.linkedresourcepicker.noMatches")}
+                              </p>
+                            )}
+                          </div>
                         </div>
                       </div>
-                    </div>
+                    )}
 
                     {/* Shown here, after the persona and the party are picked, not beside the
                         Rules choice on the earlier step where neither is known yet. */}
@@ -3721,6 +3773,7 @@ export function GameSetupWizard({
 
                 {step === 6 && (
                   <>
+                    {multiplayerRoster}
                     <div>
                       <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-[var(--foreground)]">
                         <Sparkles size={12} />
@@ -3998,7 +4051,9 @@ export function GameSetupWizard({
                       ) : (
                         <>
                           <Wand2 size={14} />
-                          {localizeUi("ui.game.gamesurfacecomponent.startGame")}
+                          {localizeUi(
+                            multiplayerPlayers ? "multiplayer.game.review" : "ui.game.gamesurfacecomponent.startGame",
+                          )}
                         </>
                       )}
                     </button>

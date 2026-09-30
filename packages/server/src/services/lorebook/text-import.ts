@@ -6,6 +6,8 @@
 // ──────────────────────────────────────────────
 import {
   createLorebookEntrySchema,
+  LOREBOOK_TEXT_MAX_CHARS,
+  LOREBOOK_TEXT_MAX_ENTRIES,
   createLorebookFolderSchema,
   parseLorebookText,
   planLorebookTextImport,
@@ -22,8 +24,8 @@ import type { createLorebooksStorage } from "../storage/lorebooks.storage.js";
 type LorebooksStorage = ReturnType<typeof createLorebooksStorage>;
 
 /** Generous, but keeps a mistaken paste of a huge file from locking the store. */
-export const LOREBOOK_TEXT_IMPORT_MAX_CHARS = 20 * 1024 * 1024;
-export const LOREBOOK_TEXT_IMPORT_MAX_ENTRIES = 20_000;
+export const LOREBOOK_TEXT_IMPORT_MAX_CHARS = LOREBOOK_TEXT_MAX_CHARS;
+export const LOREBOOK_TEXT_IMPORT_MAX_ENTRIES = LOREBOOK_TEXT_MAX_ENTRIES;
 
 export interface LorebookTextImportRequest {
   format: LorebookTextFormat;

@@ -15,6 +15,15 @@ const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
 const globalsCss = readFileSync(join(repositoryRoot, "packages/client/src/styles/globals.css"), "utf8");
 const appShellSource = readFileSync(join(repositoryRoot, "packages/client/src/components/layout/AppShell.tsx"), "utf8");
+const guestCss = readFileSync(
+  join(repositoryRoot, "packages/client/src/features/multiplayer/multiplayer-guest.css"),
+  "utf8",
+);
+assert.match(
+  guestCss,
+  /@supports \(-moz-appearance: none\) \{\s*:root \{\s*--mari-safe-area-inset-bottom: 0px;/u,
+  "the isolated guest stylesheet must preserve the same Gecko inset correction without loading global CSS",
+);
 
 // The override lives inside the stylesheet's single Gecko-scoped @supports
 // block (roleplay-streaming.regression.ts extracts that block by its first
@@ -49,15 +58,20 @@ assert.match(
 // shell-published inset) applies uniformly. A raw env(safe-area-inset-bottom)
 // reintroduces the Android Firefox dead band on that surface.
 const clientSourceRoot = join(repositoryRoot, "packages/client/src");
-const overrideHookPattern = /var\(--mari-safe-area-inset-bottom,\s*env\(safe-area-inset-bottom\)\)/gu;
+const overrideHookPattern = /var\(--mari-safe-area-inset-bottom,\s*env\(safe-area-inset-bottom(?:,\s*0px)?\)\)/gu;
+// An optional zero fallback does not bypass the hook; raw env() remains forbidden.
+assert.equal("var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom))".replace(overrideHookPattern, ""), "");
+assert.equal(
+  "var(--mari-safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))".replace(overrideHookPattern, ""),
+  "",
+);
+assert.equal("env(safe-area-inset-bottom, 0px)".replace(overrideHookPattern, ""), "env(safe-area-inset-bottom, 0px)");
 const cssCommentPattern = /\/\*[\s\S]*?\*\//gu;
 const rawConsumers: string[] = [];
 for (const entry of readdirSync(clientSourceRoot, { recursive: true, withFileTypes: true })) {
   if (!entry.isFile() || !/\.(?:tsx?|css)$/u.test(entry.name)) continue;
   const filePath = join(entry.parentPath, entry.name);
-  const stripped = readFileSync(filePath, "utf8")
-    .replace(overrideHookPattern, "")
-    .replace(cssCommentPattern, "");
+  const stripped = readFileSync(filePath, "utf8").replace(overrideHookPattern, "").replace(cssCommentPattern, "");
   if (stripped.includes("env(safe-area-inset-bottom")) {
     rawConsumers.push(filePath.slice(repositoryRoot.length + 1));
   }

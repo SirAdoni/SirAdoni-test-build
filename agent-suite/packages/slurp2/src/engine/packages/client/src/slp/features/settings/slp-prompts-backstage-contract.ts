@@ -9,6 +9,7 @@ import {
   SLURP_GUIDANCE_PRESETS,
   SLURP_IMAGE_INTERPRETATION_PRESETS,
   SLURP_IMAGE_INTERPRETATION_STYLES,
+  errorMessage,
 } from "../../modules/settings/slp-backstage-format";
 import {
   exportSlurpPromptPresets,
@@ -17,19 +18,21 @@ import {
   SLURP_PROMPT_PRESET_NAME_LIMIT,
 } from "./slp-prompt-presets";
 import type { SlurpSettings } from "./slp-settings-contract";
+import type { SlpBackstageTarget } from "../../base/navigation/slp-backstage-target";
+import { useSlurpPostGuidance, useUpdateSlurpPostGuidance } from "./slp-post-guidance-contract";
 
 /**
  * Generation guidance, prompt presets and the image prompt. These settings are read by ads,
  * audience, creators, feed, media, messages, projects and world, so no content feature owns them.
  */
 export function useSlpPromptsBackstageState({
+  target,
   settings,
-  save,
-  restore,
+  updatePatch,
 }: {
+  target: SlpBackstageTarget;
   settings: SlurpSettings | undefined;
-  save: (patch: Partial<SlurpSettings>) => Promise<boolean>;
-  restore: (patch: Partial<SlurpSettings>, message?: string) => Promise<boolean>;
+  updatePatch: (patch: Partial<SlurpSettings>) => Promise<boolean>;
 }) {
   const { t } = useTranslation();
   const [generationGuidanceDraft, setGenerationGuidanceDraft] = useState("");
@@ -37,7 +40,15 @@ export function useSlpPromptsBackstageState({
   const [imagePromptDraft, setImagePromptDraft] = useState("");
   const [imagePromptEditorOpen, setImagePromptEditorOpen] = useState(false);
   const [selectedPresetName, setSelectedPresetName] = useState("");
+  // `level` rides in the same staged draft as the two guidance texts, so the Backstage draft bar
+  // saves or discards all three together instead of the dial saving behind the player's back.
+  const [postGuidanceDraft, setPostGuidanceDraft] = useState<Partial<Record<"public" | "locked" | "level", string>>>(
+    {},
+  );
   const presetImportRef = useRef<HTMLInputElement>(null);
+  // Only the Prompts page shows it (0.3.6: every Backstage page used to load it).
+  const postGuidanceQuery = useSlurpPostGuidance(target === "prompts");
+  const updatePostGuidance = useUpdateSlurpPostGuidance();
 
   useEffect(() => {
     if (settings) {
@@ -69,16 +80,13 @@ export function useSlpPromptsBackstageState({
       ?.trim()
       .slice(0, SLURP_PROMPT_PRESET_NAME_LIMIT);
     if (!name) return;
-    const saved = await restore(
-      {
-        promptPresets: mergeSlurpPromptPreset(settings.promptPresets, {
-          name,
-          generationGuidance: settings.generationGuidance,
-          imageGenerationPrompt: settings.imageGenerationPrompt,
-        }),
-      },
-      t("ui.slurp.settings.presets.saved"),
-    );
+    const saved = await updatePatch({
+      promptPresets: mergeSlurpPromptPreset(settings.promptPresets, {
+        name,
+        generationGuidance: settings.generationGuidance,
+        imageGenerationPrompt: settings.imageGenerationPrompt,
+      }),
+    });
     if (saved) setSelectedPresetName(name);
   };
 
@@ -97,13 +105,10 @@ export function useSlpPromptsBackstageState({
       }))
     )
       return;
-    await restore(
-      {
-        generationGuidance: selectedPreset.generationGuidance,
-        imageGenerationPrompt: selectedPreset.imageGenerationPrompt,
-      },
-      t("ui.slurp.settings.presets.applied"),
-    );
+    await updatePatch({
+      generationGuidance: selectedPreset.generationGuidance,
+      imageGenerationPrompt: selectedPreset.imageGenerationPrompt,
+    });
   };
 
   const deletePromptPreset = async () => {
@@ -114,7 +119,11 @@ export function useSlpPromptsBackstageState({
       confirmLabel: t("ui.slurp.settings.presets.delete"),
     });
     if (!confirmed) return;
-    if (await save({ promptPresets: settings.promptPresets.filter((preset) => preset.name !== selectedPreset.name) })) {
+    if (
+      await updatePatch({
+        promptPresets: settings.promptPresets.filter((preset) => preset.name !== selectedPreset.name),
+      })
+    ) {
       setSelectedPresetName("");
     }
   };
@@ -147,24 +156,32 @@ export function useSlpPromptsBackstageState({
         toast.error(t("ui.slurp.settings.presets.importInvalid"));
         return;
       }
-      await restore(
-        { promptPresets: result.presets },
-        t("ui.slurp.settings.presets.imported", { count: result.imported }),
-      );
+      await updatePatch({ promptPresets: result.presets });
     } catch {
       toast.error(t("ui.slurp.settings.presets.importInvalid"));
     }
   };
 
-  const restoreDefaultImagePrompt = () =>
-    restore(
-      { imageGenerationPrompt: DEFAULT_SLURP_IMAGE_GENERATION_PROMPT },
-      t("ui.slurp.settings.prompts.imageRestored"),
-    );
-  const saveImagePrompt = () =>
-    restore({ imageGenerationPrompt: imagePromptDraft }, t("ui.slurp.settings.prompts.imageSaved"));
-  const saveGenerationGuidance = () =>
-    restore({ generationGuidance: generationGuidanceDraft }, t("ui.slurp.settings.prompts.guidanceSaved"));
+  const restoreDefaultImagePrompt = () => updatePatch({ imageGenerationPrompt: DEFAULT_SLURP_IMAGE_GENERATION_PROMPT });
+  const saveImagePrompt = () => updatePatch({ imageGenerationPrompt: imagePromptDraft });
+  const saveGenerationGuidance = () => updatePatch({ generationGuidance: generationGuidanceDraft });
+  const stagePostGuidance = (access: "public" | "locked" | "level", value: string) =>
+    setPostGuidanceDraft((current) => ({ ...current, [access]: value }));
+  const discardPromptDraft = () => setPostGuidanceDraft({});
+  const applyPromptDraft = async () => {
+    if (Object.keys(postGuidanceDraft).length === 0) return true;
+    try {
+      await updatePostGuidance.mutateAsync({
+        creatorId: null,
+        ...postGuidanceDraft,
+      } as Parameters<typeof updatePostGuidance.mutateAsync>[0]);
+      setPostGuidanceDraft({});
+      return true;
+    } catch (error) {
+      toast.error(errorMessage(error));
+      return false;
+    }
+  };
 
   return {
     generationGuidanceDraft,
@@ -179,6 +196,12 @@ export function useSlpPromptsBackstageState({
     setSelectedPresetName,
     presetImportRef,
     selectedPreset,
+    postGuidanceQuery,
+    postGuidanceDraft,
+    promptDraftCount: Object.keys(postGuidanceDraft).length,
+    stagePostGuidance,
+    discardPromptDraft,
+    applyPromptDraft,
     generationGuidanceIsDefault,
     guidanceLevel,
     interpretationStyle,

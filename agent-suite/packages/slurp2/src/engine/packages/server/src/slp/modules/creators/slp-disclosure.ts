@@ -40,6 +40,8 @@ const AUDIENCE_FIELDS = [
   "stagePersonality",
   "autoPosting",
   "fanActivity",
+  // The Creator's Page is public by design: quotes, lists and block choices, never a price or a picture.
+  "page",
   "createdAt",
   "updatedAt",
 ] as const;

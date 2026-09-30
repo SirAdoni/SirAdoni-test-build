@@ -1,3 +1,17 @@
+import {
+  currentRoomGeneration,
+  resolveRoomGenerationPolicy,
+  roomAgentAllowed,
+  roomConversationCommandAllowed,
+  roomGenerationMetadata,
+  roomRoleplayCommandAllowed,
+  roomRosterPrompt,
+  roomHostIdentity,
+  runWithRoomGeneration,
+  type GenerationRoomContext,
+} from "../services/multiplayer/generation-policy.js";
+import { appendLorebookImageMessages, type LorebookImageNotice } from "../services/generation/lorebook-image-prompt.js";
+import { withLorebookImageCompatibility } from "../services/llm/lorebook-image-provider.js";
 import { DECISION_SETTINGS_KEYS, resolveDecisionBackend } from "../services/decision/decision-default.js";
 import {
   DECISION_TIMERS_METADATA_KEY,
@@ -85,7 +99,8 @@ import { forwardedHeaders, queueAutomaticGameMedia } from "../services/game/auto
 // ──────────────────────────────────────────────
 // Routes: Generation (SSE Streaming with Tool Use + Agent Pipeline)
 // ──────────────────────────────────────────────
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { input as SchemaInput } from "zod";
 import { translateGeneratedMessage } from "../services/translation.service.js";
 import { createHash, randomUUID } from "crypto";
 import { existsSync, mkdirSync, writeFileSync } from "fs";
@@ -138,7 +153,7 @@ import {
   formatSkillCheckResultSummary,
   unwrapConversationInstructions,
   findKnownModel,
-  isOpenAIGpt6AstraModel,
+  isOpenAIGpt6AlwaysReasoningModel,
   isOpenAIGpt6Model,
   LOCAL_SIDECAR_CONNECTION_ID,
   normalizeImagePromptInstructions,
@@ -214,10 +229,13 @@ import {
   gameInventoryBags,
   gameInventoryTellingStart,
   readGameInventoryTurn,
+  rulesetInventedItemsHeld,
   recordGameInventoryTelling,
   refuseGameInventoryTags,
   replaceTrailingInventoryTags,
   gameInventoryTotals,
+  gameInventoryBagKey,
+  gameInventoryBearerStatus,
   normalizeGameInventoryStacks,
   rulesetItemPromptFacts,
   type RoleplayCommandActivity,
@@ -231,6 +249,7 @@ import {
   buildRoleplayCommandsReminder,
   buildRoleplayPersonalContext,
   parseRoleplayCommands,
+  parseRoleplayUserCommands,
   roleplayCommandKey,
   resolveRoleplayWhisperRecipient,
   RoleplayCommandStreamFilter,
@@ -573,7 +592,17 @@ import { describeEmptyModelResponse, sentOutputBudget } from "../services/genera
 import { registerRawRoute } from "./generate/raw-route.js";
 import { registerRetryAgentsRoute, type ActiveAgentRun } from "./generate/retry-agents-route.js";
 import { fingerprintChatSummary } from "../services/prompt/chat-summary-fingerprint.js";
-import { emitSseFailure, isSseReplyWritable, sendSseEvent, startSseKeepalive, startSseReply } from "./generate/sse.js";
+import {
+  emitSseFailure,
+  endGenerationOutput,
+  isSseReplyWritable,
+  onGenerationOutputClose,
+  rejectGenerationOutput,
+  sendSseEvent,
+  startSseKeepalive,
+  startSseReply,
+  type GenerationOutput,
+} from "./generate/sse.js";
 import {
   resolveAlreadyAppliedSpatialTurn,
   resolveSpatialGenerationOrigin,
@@ -621,8 +650,7 @@ import {
 } from "../services/generation/director-secret-plot-runtime.js";
 import { applyPromptPatchOperations } from "../services/generation/prompt-patch-runtime.js";
 import { resolveGenerationProviderRuntime } from "../services/generation/provider-generation-runtime.js";
-import { supportsNativeToolCalls } from "@marinara-engine/shared";
-import { applyContextMessageLimitWithPins } from "@marinara-engine/shared";
+import { applyContextMessageLimitWithPins, supportsNativeToolCalls } from "@marinara-engine/shared";
 import { planGameToolCalls } from "../services/generation/game-tool-planning.js";
 import {
   countProfessorMariCommands,
@@ -1169,7 +1197,18 @@ function replaceConversationContextMacro(
   return replaced;
 }
 
-export async function generateRoutes(app: FastifyInstance) {
+/** Trusted callers construct the request; this runner does not authorize remote participants. */
+export type GenerationRunner = (
+  request: SchemaInput<typeof generateRequestSchema>,
+  output: GenerationOutput,
+  roomContext?: GenerationRoomContext,
+) => Promise<unknown>;
+
+export interface GenerateRouteOptions {
+  onRunnerReady?: (runner: GenerationRunner) => void;
+}
+
+export async function generateRoutes(app: FastifyInstance, options: GenerateRouteOptions = {}) {
   const pendingTranslations = new Map<string, number>();
   registerSequentialGameTasks(app, ["/", "/retry-agents"]);
   const isDebug = logger.isLevelEnabled("debug");
@@ -1204,11 +1243,11 @@ export async function generateRoutes(app: FastifyInstance) {
    * POST /api/generate
    * Streams AI generation via Server-Sent Events.
    */
-  const handleGenerate = async (
-    req: FastifyRequest,
-    reply: FastifyReply,
+  const executeGeneration = async (
     input: ReturnType<typeof generateRequestSchema.parse>,
+    reply: GenerationOutput,
     generationId: string,
+    req?: Pick<FastifyRequest, "id" | "headers">,
   ) => {
     const chatGenerationTimeoutMs = getChatGenerationTimeoutMs();
     const requestDebug = input.debugMode === true;
@@ -1222,14 +1261,50 @@ export async function generateRoutes(app: FastifyInstance) {
     // Resolve the chat
     const chat = await chats.getById(input.chatId);
     if (!chat) {
-      return reply.status(404).send({ error: "Chat not found" });
+      return rejectGenerationOutput(reply, 404, { error: "Chat not found" });
+    }
+    const roomPolicy = currentRoomGeneration();
+    try {
+      // Recheck after the wrapper's await: Stop or a new hosting epoch invalidates stale work.
+      resolveRoomGenerationPolicy(input.chatId, parseExtra(chat.metadata), roomPolicy?.characterIds ?? [], roomPolicy);
+    } catch (error) {
+      return rejectGenerationOutput(reply, 409, { error: (error as Error).message, code: "room_generation_required" });
+    }
+    if (roomPolicy) {
+      const storedMeta = parseExtra(chat.metadata);
+      if (
+        parseJsonField<string[]>(chat.characterIds, []).some((id) => !roomPolicy.characterIds.includes(id)) ||
+        (typeof storedMeta.gameGmCharacterId === "string" &&
+          !roomPolicy.characterIds.includes(storedMeta.gameGmCharacterId))
+      ) {
+        return rejectGenerationOutput(reply, 409, {
+          error: "The chat includes a character that has not been approved for this room.",
+        });
+      }
+    }
+    if (
+      roomPolicy &&
+      (input.userMessage !== null ||
+        input.attachments.length > 0 ||
+        input.impersonate ||
+        input.regenerateMessageId ||
+        input.continueMessageId ||
+        input.turnGameBots ||
+        input.pendingSpatialTransition ||
+        input.agentInjectionOverrides.length > 0 ||
+        (input.forCharacterId && !roomPolicy.characterIds.includes(input.forCharacterId)))
+    ) {
+      return rejectGenerationOutput(reply, 400, {
+        error: "Room messages and actions must be committed by their participant coordinator.",
+        code: "room_action_required",
+      });
     }
     const requestChatMode = (chat.mode as ChatMode) ?? "roleplay";
     const managedParameterDefinitions = parseManagedGenerationParameterDefinitions(
       await appSettings.get(CUSTOM_GENERATION_PARAMETERS_SETTINGS_KEY),
     );
     if (requestChatMode === "conversation" && input.impersonate) {
-      return reply.status(400).send({ error: "Impersonate is not available in Conversation mode" });
+      return rejectGenerationOutput(reply, 400, { error: "Impersonate is not available in Conversation mode" });
     }
     const spatialRequestError = validateSpatialGenerationRequest({
       mode: requestChatMode,
@@ -1240,30 +1315,34 @@ export async function generateRoutes(app: FastifyInstance) {
       continueMessageId: input.continueMessageId,
     });
     if (spatialRequestError) {
-      return reply.status(spatialRequestError.statusCode).send({
+      return rejectGenerationOutput(reply, spatialRequestError.statusCode, {
         error: spatialRequestError.error,
         code: spatialRequestError.code,
       });
     }
     if (input.regenerateMessageId && input.continueMessageId) {
-      return reply.status(400).send({ error: "Choose either regenerateMessageId or continueMessageId, not both" });
+      return rejectGenerationOutput(reply, 400, {
+        error: "Choose either regenerateMessageId or continueMessageId, not both",
+      });
     }
-    const earlyMeta = parseExtra(chat.metadata) as Record<string, unknown>;
+    const earlyMeta = roomGenerationMetadata(parseExtra(chat.metadata));
     let continueTargetMessage: any = null;
     if (input.continueMessageId) {
       if (input.impersonate) {
-        return reply.status(400).send({ error: "Cannot continue a message while impersonating" });
+        return rejectGenerationOutput(reply, 400, { error: "Cannot continue a message while impersonating" });
       }
       continueTargetMessage = await chats.getMessage(input.continueMessageId);
       if (!continueTargetMessage || continueTargetMessage.chatId !== input.chatId) {
-        return reply.status(404).send({ error: "Continued message not found" });
+        return rejectGenerationOutput(reply, 404, { error: "Continued message not found" });
       }
       if (continueTargetMessage.role !== "assistant") {
-        return reply.status(400).send({ error: "Only assistant messages can be continued" });
+        return rejectGenerationOutput(reply, 400, { error: "Only assistant messages can be continued" });
       }
       if (requestChatMode === "game" && earlyMeta.gameNpcKnowledgeMode === "isolated") {
         if (input.userMessage || input.attachments?.length || input.pendingSpatialTransition) {
-          return reply.status(400).send({ error: "Isolated continuation cannot include a new user message" });
+          return rejectGenerationOutput(reply, 400, {
+            error: "Isolated continuation cannot include a new user message",
+          });
         }
       }
       if (!input.forCharacterId && continueTargetMessage.characterId) {
@@ -1293,7 +1372,7 @@ export async function generateRoutes(app: FastifyInstance) {
         if (applied) {
           const recoveredMessage = await chats.getMessage(applied.messageId);
           if (!recoveredMessage || recoveredMessage.chatId !== input.chatId || recoveredMessage.role !== "user") {
-            return reply.status(409).send({
+            return rejectGenerationOutput(reply, 409, {
               error: "This movement was already applied, but its saved message could not be recovered.",
               code: "spatial_transition_already_applied",
             });
@@ -1313,12 +1392,12 @@ export async function generateRoutes(app: FastifyInstance) {
           });
           sendSseEvent(reply, { type: "message_saved", data: recoveredMessage });
           sendSseEvent(reply, { type: "done", data: "" });
-          reply.raw.end();
+          endGenerationOutput(reply);
           return;
         }
       } catch (error) {
         if (error instanceof SpatialOwnerTurnError) {
-          return reply.status(error.statusCode).send({
+          return rejectGenerationOutput(reply, error.statusCode, {
             error: error.message,
             code: error.code,
             ...(error.details ?? {}),
@@ -1329,17 +1408,21 @@ export async function generateRoutes(app: FastifyInstance) {
     }
 
     if (isGameTurnReviewMutationPending(input.chatId)) {
-      return reply.status(409).send({ error: "A turn correction is being saved; retry when it finishes" });
+      return rejectGenerationOutput(reply, 409, { error: "A turn correction is being saved; retry when it finishes" });
     }
     if (activeGenerations.has(input.chatId)) {
-      return reply.status(409).send({ error: "A generation is already in progress for this chat" });
+      return rejectGenerationOutput(reply, 409, { error: "A generation is already in progress for this chat" });
     }
     // Register immediately after the concurrency check. The rest of setup
     // awaits DB/connection work, so delaying this left a small double-submit
     // window where two requests for the same chat could both pass the guard.
     const abortController = new AbortController();
+    const roomSignal = currentRoomGeneration()?.signal;
+    const generationSignal = roomSignal
+      ? AbortSignal.any([abortController.signal, roomSignal])
+      : abortController.signal;
     const agentAbortController = new AbortController();
-    const agentSignal = AbortSignal.any([abortController.signal, agentAbortController.signal]);
+    const agentSignal = AbortSignal.any([generationSignal, agentAbortController.signal]);
     const customLorebookReadBehindRunKeys = new Set<string>();
     const activeGenerationRecord: ActiveGeneration = {
       abortController,
@@ -1379,7 +1462,7 @@ export async function generateRoutes(app: FastifyInstance) {
       const admittedChat = await chats.getById(input.chatId).catch(releaseActiveGenerationAndRethrow);
       if (!admittedChat) {
         releaseActiveGeneration();
-        return reply.status(404).send({ error: "Chat not found" });
+        return rejectGenerationOutput(reply, 404, { error: "Chat not found" });
       }
       chat.metadata = admittedChat.metadata;
     }
@@ -1391,11 +1474,15 @@ export async function generateRoutes(app: FastifyInstance) {
       if (isolatedRegenerationRequested) {
         if (input.userMessage || input.attachments?.length || input.pendingSpatialTransition) {
           releaseActiveGeneration();
-          return reply.status(400).send({ error: "Isolated regeneration cannot include a new user message" });
+          return rejectGenerationOutput(reply, 400, {
+            error: "Isolated regeneration cannot include a new user message",
+          });
         }
         if (!regenCandidate || regenCandidate.chatId !== input.chatId || regenCandidate.role !== "assistant") {
           releaseActiveGeneration();
-          return reply.status(400).send({ error: "Isolated regeneration requires an assistant message in this chat" });
+          return rejectGenerationOutput(reply, 400, {
+            error: "Isolated regeneration requires an assistant message in this chat",
+          });
         }
       }
       if (regenCandidate?.chatId === input.chatId) {
@@ -1435,7 +1522,9 @@ export async function generateRoutes(app: FastifyInstance) {
       (input.userMessage || input.attachments.length > 0 || input.replyTo || input.pendingSpatialTransition)
     ) {
       releaseActiveGeneration();
-      return reply.status(400).send({ error: "A cache-held turn acknowledgement requires its saved-turn descriptor" });
+      return rejectGenerationOutput(reply, 400, {
+        error: "A cache-held turn acknowledgement requires its saved-turn descriptor",
+      });
     }
 
     if (
@@ -1452,7 +1541,9 @@ export async function generateRoutes(app: FastifyInstance) {
         input.turnGameBots)
     ) {
       releaseActiveGeneration();
-      return reply.status(400).send({ error: "A cache-held turn acknowledgement cannot include a new user turn" });
+      return rejectGenerationOutput(reply, 400, {
+        error: "A cache-held turn acknowledgement cannot include a new user turn",
+      });
     }
 
     // Save user message — skip for impersonate (no real user message to save)
@@ -1517,7 +1608,7 @@ export async function generateRoutes(app: FastifyInstance) {
         } catch (error) {
           releaseActiveGeneration();
           if (error instanceof SpatialOwnerTurnError) {
-            return reply.status(error.statusCode).send({
+            return rejectGenerationOutput(reply, error.statusCode, {
               error: error.message,
               code: error.code,
               ...(error.details ?? {}),
@@ -1540,6 +1631,8 @@ export async function generateRoutes(app: FastifyInstance) {
           })
           .catch(releaseActiveGenerationAndRethrow);
       }
+      // Every later selector, macro, agent and Discord mirror must use the durable public body.
+      if (requestChatMode === "roleplay") input.userMessage = userMsg?.content ?? "";
       currentTurnUserMessageId = userMsg?.id ?? null;
       // A saved follow-up is the acceptance boundary, including OOC turns and
       // spatial transitions. Recovery can rediscover this boundary after a crash.
@@ -1612,19 +1705,23 @@ export async function generateRoutes(app: FastifyInstance) {
     }
 
     if (input.cacheGuardAcknowledged && input.cacheGuardHeldTurn) {
-      if (abortController.signal.aborted || activeGenerations.get(input.chatId) !== activeGenerationRecord) {
+      if (generationSignal.aborted || activeGenerations.get(input.chatId) !== activeGenerationRecord) {
         releaseActiveGeneration();
-        return reply.status(409).send({ error: "Generation ownership changed while resuming the held turn" });
+        return rejectGenerationOutput(reply, 409, {
+          error: "Generation ownership changed while resuming the held turn",
+        });
       }
       const heldMessages = await chats.listMessages(input.chatId).catch(releaseActiveGenerationAndRethrow);
-      if (abortController.signal.aborted || activeGenerations.get(input.chatId) !== activeGenerationRecord) {
+      if (generationSignal.aborted || activeGenerations.get(input.chatId) !== activeGenerationRecord) {
         releaseActiveGeneration();
-        return reply.status(409).send({ error: "Generation ownership changed while validating the held turn" });
+        return rejectGenerationOutput(reply, 409, {
+          error: "Generation ownership changed while validating the held turn",
+        });
       }
       const heldMessage = resolveCacheGuardHeldTurn(heldMessages, input.chatId, input.cacheGuardHeldTurn);
       if (!heldMessage) {
         releaseActiveGeneration();
-        return reply.status(409).send({ error: "The saved user turn changed; send it again" });
+        return rejectGenerationOutput(reply, 409, { error: "The saved user turn changed; send it again" });
       }
       const heldExtra = parseExtra(heldMessage.extra) as Record<string, unknown>;
       currentTurnUserMessage = heldMessage;
@@ -1646,7 +1743,7 @@ export async function generateRoutes(app: FastifyInstance) {
       const pool = await connections.listRandomPool().catch(releaseActiveGenerationAndRethrow);
       if (!pool.length) {
         releaseActiveGeneration();
-        return reply.status(400).send({ error: "No connections are marked for the random pool" });
+        return rejectGenerationOutput(reply, 400, { error: "No connections are marked for the random pool" });
       }
       const picked = pool[Math.floor(Math.random() * pool.length)];
       connId = picked.id;
@@ -1654,7 +1751,7 @@ export async function generateRoutes(app: FastifyInstance) {
 
     if (!connId) {
       releaseActiveGeneration();
-      return reply.status(400).send({ error: "No API connection configured for this chat" });
+      return rejectGenerationOutput(reply, 400, { error: "No API connection configured for this chat" });
     }
     const resolveGenerationConnection = async (connectionId: string) =>
       connectionId === LOCAL_SIDECAR_CONNECTION_ID
@@ -1673,7 +1770,7 @@ export async function generateRoutes(app: FastifyInstance) {
         const pool = await connections.listRandomPool().catch(releaseActiveGenerationAndRethrow);
         if (!pool.length) {
           releaseActiveGeneration();
-          return reply.status(400).send({ error: "No connections are marked for the random pool" });
+          return rejectGenerationOutput(reply, 400, { error: "No connections are marked for the random pool" });
         }
         const picked = pool[Math.floor(Math.random() * pool.length)];
         connId = picked.id;
@@ -1682,18 +1779,18 @@ export async function generateRoutes(app: FastifyInstance) {
     }
     if (!conn) {
       releaseActiveGeneration();
-      return reply.status(400).send({ error: "API connection not found" });
+      return rejectGenerationOutput(reply, 400, { error: "API connection not found" });
     }
 
     // Resolve base URL — fall back to provider default if empty
     const baseUrl = resolveBaseUrl(conn);
     if (!baseUrl) {
       releaseActiveGeneration();
-      return reply.status(400).send({ error: "No base URL configured for this connection" });
+      return rejectGenerationOutput(reply, 400, { error: "No base URL configured for this connection" });
     }
     const mainFallbackConnection = await connections.getFallbackForMain().catch(releaseActiveGenerationAndRethrow);
     const mainFallbackBaseUrl = mainFallbackConnection ? resolveBaseUrl(mainFallbackConnection) : "";
-    let chatMeta = parseExtra(chat.metadata) as Record<string, unknown>;
+    let chatMeta = roomGenerationMetadata(parseExtra(chat.metadata));
     const requestTimeZone = normalizePromptTimeZone(input.userTimeZone);
     const storedPromptTimeZone = normalizePromptTimeZone(chatMeta.promptTimeZone);
     const conversationTimeZone =
@@ -1706,7 +1803,7 @@ export async function generateRoutes(app: FastifyInstance) {
           (current) => ({ ...current, promptTimeZone: requestTimeZone }),
           { touchUpdatedAt: false },
         );
-        if (updatedChat) chatMeta = parseExtra(updatedChat.metadata) as Record<string, unknown>;
+        if (updatedChat) chatMeta = roomGenerationMetadata(parseExtra(updatedChat.metadata));
       } catch (err) {
         logger.warn(err, "[generate] Failed to remember timezone for chat %s", input.chatId);
       }
@@ -1762,7 +1859,7 @@ export async function generateRoutes(app: FastifyInstance) {
     const activeGeneration = activeGenerations.get(input.chatId);
     if (activeGeneration?.abortController !== abortController) {
       abortController.abort();
-      return reply.status(409).send({ error: "Generation ownership changed during setup" });
+      return rejectGenerationOutput(reply, 409, { error: "Generation ownership changed during setup" });
     }
     activeGeneration.backendUrl = baseUrl;
 
@@ -1817,7 +1914,7 @@ export async function generateRoutes(app: FastifyInstance) {
         {
           event: "generation.abort",
           reason: "client_disconnect",
-          requestId: req.id,
+          requestId: req?.id,
           chatId: input.chatId,
           operationId: generationId,
           stage: currentStage,
@@ -1839,7 +1936,7 @@ export async function generateRoutes(app: FastifyInstance) {
         });
       }
     };
-    reply.raw.on("close", onClose);
+    const detachCloseListener = onGenerationOutputClose(reply, onClose);
     if (requestChatMode === "conversation" && !input.impersonate) {
       conversationGenerationStartedAt = markGenerationInProgress(input.chatId);
     }
@@ -1858,7 +1955,7 @@ export async function generateRoutes(app: FastifyInstance) {
           { touchUpdatedAt: false },
         );
         if (updatedChat) {
-          chatMeta = parseExtra(updatedChat.metadata) as Record<string, unknown>;
+          chatMeta = roomGenerationMetadata(parseExtra(updatedChat.metadata));
         }
       } catch (err) {
         logger.warn(err, "[generate] Failed to record autonomous accounting for chat %s", input.chatId);
@@ -1882,7 +1979,7 @@ export async function generateRoutes(app: FastifyInstance) {
       // lock: a slow translation must not prevent the user from sending again.
       if (
         !outputTranslationConfig ||
-        (!afterGenerationFailure && abortController.signal.aborted) ||
+        (!afterGenerationFailure && generationSignal.aborted) ||
         translationMessages.size === 0
       )
         return;
@@ -1892,7 +1989,7 @@ export async function generateRoutes(app: FastifyInstance) {
       void (async () => {
         try {
           for (const [messageId, swipeIndex] of messagesToTranslate) {
-            if (!afterGenerationFailure && abortController.signal.aborted) break;
+            if (!afterGenerationFailure && generationSignal.aborted) break;
             try {
               await translateGeneratedMessage(app.db, {
                 chatId: input.chatId,
@@ -1969,7 +2066,7 @@ export async function generateRoutes(app: FastifyInstance) {
           conn,
           baseUrl,
           reply,
-          signal: abortController.signal,
+          signal: generationSignal,
           debugLog: turnGameDebugLog,
         });
         generationComplete = true;
@@ -2003,8 +2100,12 @@ export async function generateRoutes(app: FastifyInstance) {
       }
 
       // Get chat messages
-      const allChatMessages = await chats.listMessages(input.chatId);
       const chatMode = requestChatMode;
+      const allChatMessages = (await chats.listMessages(input.chatId)).map((message) =>
+        chatMode === "roleplay" && message.role === "user"
+          ? { ...message, content: parseRoleplayUserCommands(message.content).content }
+          : message,
+      );
       // Preserve the clock at the start of this telling. Current metadata alone cannot
       // explain a historical turn, and a reroll must not advance the same duration twice.
       const clockTarget = allChatMessages.find(
@@ -2039,7 +2140,7 @@ export async function generateRoutes(app: FastifyInstance) {
         if (memoryStatus.missingKnowledgeCharacterIds.length) {
           // Confirm access before any pre-generation agent can receive ambiguous history.
           await advancedMemory.initialize(input.chatId, {
-            signal: abortController.signal,
+            signal: generationSignal,
             blocking: true,
             onProgress: (job) =>
               sendSseEvent(reply, { type: "advanced_memory_status", data: { chatId: input.chatId, job } }),
@@ -2100,7 +2201,7 @@ export async function generateRoutes(app: FastifyInstance) {
             content: typeof regenMsg.content === "string" ? regenMsg.content : "",
             attachments,
             imageCaptioning: imageCaptioningRuntime,
-            signal: abortController.signal,
+            signal: generationSignal,
             debugMode: requestDebug,
           });
           if (typeof regenMsg.id === "string" && attachmentInputs.updatedAttachments) {
@@ -2346,7 +2447,7 @@ export async function generateRoutes(app: FastifyInstance) {
         chatMode,
         normalizedPersistedChatActiveAgentIds,
       )
-        .filter((agentId) => isAgentAvailableInChatMode(chatMode, agentId))
+        .filter((agentId) => isAgentAvailableInChatMode(chatMode, agentId) && roomAgentAllowed(agentId))
         .filter((agentId) => !(gameSpotifyMusicEnabled && agentId === "spotify"));
       const customAgentImportsEnabled = (await getCustomAgentImportPolicy(app.db)).enabled;
       const allConfiguredPromptAgents =
@@ -2363,7 +2464,9 @@ export async function generateRoutes(app: FastifyInstance) {
         );
       }
       const configuredPromptAgents = allConfiguredPromptAgents.filter(
-        (agent) => !isExternallyImportedAgent(agent.type, agent.settings) || customAgentImportsEnabled,
+        (agent) =>
+          roomAgentAllowed(agent.type, parseExtra(agent.settings)) &&
+          (!isExternallyImportedAgent(agent.type, agent.settings) || customAgentImportsEnabled),
       );
       const deletedBuiltInAgentTypes = new Set(
         configuredPromptAgents
@@ -2432,7 +2535,7 @@ export async function generateRoutes(app: FastifyInstance) {
           content: conversationPromptHistoryContent(m, chatMode),
           attachments,
           imageCaptioning: imageCaptioningRuntime,
-          signal: abortController.signal,
+          signal: generationSignal,
           debugMode: requestDebug,
         });
         const captionsPersisted = await persistPromptAttachmentCaptions(
@@ -2567,6 +2670,7 @@ export async function generateRoutes(app: FastifyInstance) {
               : null));
 
       const identity =
+        roomHostIdentity() ??
         resolvedUserIdentity ??
         (await resolveChatUserIdentity(chars, {
           personaId: chat.personaId,
@@ -2859,7 +2963,7 @@ export async function generateRoutes(app: FastifyInstance) {
               }),
               { touchUpdatedAt: false },
             );
-            if (updatedChat) chatMeta = parseExtra(updatedChat.metadata) as Record<string, unknown>;
+            if (updatedChat) chatMeta = roomGenerationMetadata(parseExtra(updatedChat.metadata));
             sendSseEvent(reply, {
               type: "metadata_patch",
               data: { inactiveCharacterIds: selectedActivity.inactiveCharacterIds },
@@ -2877,6 +2981,20 @@ export async function generateRoutes(app: FastifyInstance) {
       if (allCharacterIds.length > 0 && characterIds.length === 0 && chatMode !== "game") {
         throw new Error("All characters in this chat are disabled. Enable at least one character before generating.");
       }
+
+      // The trigger menu can ask Smart for one turn without mutating the saved group order.
+      const savedGroupResponseOrder = (chatMeta.groupResponseOrder as string) ?? "sequential";
+      const smartResponseRequested =
+        input.smartResponse &&
+        chatMode === "roleplay" &&
+        allCharacterIds.length > 1 &&
+        resolveGroupGenerationMode(chatMode, chatMeta.groupChatMode) === "individual" &&
+        (savedGroupResponseOrder === "smart" || savedGroupResponseOrder === "manual") &&
+        !input.forCharacterId &&
+        !input.regenerateMessageId &&
+        !input.continueMessageId &&
+        !input.impersonate;
+      const effectiveGroupResponseOrder = smartResponseRequested ? "smart" : savedGroupResponseOrder;
 
       let groupHistoryCharacterNamesByIdPromise: Promise<Map<string, string>> | null = null;
       const getGroupHistoryCharacterNamesById = () => {
@@ -3052,7 +3170,7 @@ export async function generateRoutes(app: FastifyInstance) {
               vectorizerAvailable: memoryRecallVectorizerAvailable,
               embeddingOptions: {
                 embeddingSource: memoryRecallEmbeddingSource,
-                signal: abortController.signal,
+                signal: generationSignal,
               },
             });
         const runtimeSectionEligibleAgentTypes = buildRuntimeAgentSectionEligibleTypes({
@@ -3095,7 +3213,7 @@ export async function generateRoutes(app: FastifyInstance) {
               return false;
             }
           });
-        const promptGroupResponseOrder = (chatMeta.groupResponseOrder as string) ?? "sequential";
+        const promptGroupResponseOrder = effectiveGroupResponseOrder;
         const promptGroupChatMode = resolveGroupGenerationMode(chatMode, chatMeta.groupChatMode);
         // Each responder sees other characters as user input. Keep shared history
         // untouched until those roles are scoped, including replies within this turn.
@@ -3193,7 +3311,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 getConnectionWithKey: (id) => connections.getWithKey(id),
                 debugMode: requestDebug,
               },
-              abortController.signal,
+              generationSignal,
             );
           return promptDecisionBackend;
         };
@@ -3270,7 +3388,7 @@ export async function generateRoutes(app: FastifyInstance) {
             await saveDecisionTimers();
             return answers;
           } catch (error) {
-            if (abortController.signal.aborted) throw error;
+            if (generationSignal.aborted) throw error;
             logger.warn(error, "[decision] Prompt decisions failed for chat %s; they read as no", input.chatId);
             return undefined;
           }
@@ -3640,7 +3758,7 @@ export async function generateRoutes(app: FastifyInstance) {
               entries: activeEntries,
               scanMessages: toLorebookScanMessages(),
               embeddingSource: memoryRecallEmbeddingSource,
-              signal: abortController.signal,
+              signal: generationSignal,
             });
             chatContextEmbedding = semanticEmbeddings.defaultEmbedding;
             lorebookSemanticEmbeddingsById = semanticEmbeddings.embeddingsByLorebookId;
@@ -3787,9 +3905,9 @@ export async function generateRoutes(app: FastifyInstance) {
             lorebookScanSnapshot = {
               activatedEntries: assembled.lorebookActivatedEntries ?? [],
               budgetSkippedEntries: assembled.lorebookBudgetSkippedEntries ?? [],
-              totalTokensEstimate: estimateTextTokens(
-                (assembled.lorebookActivatedEntries ?? []).map((entry) => entry.content).join(""),
-              ),
+              totalTokensEstimate:
+                assembled.lorebookScanResult?.totalTokensEstimate ??
+                estimateTextTokens((assembled.lorebookActivatedEntries ?? []).map((entry) => entry.content).join("")),
               totalEntries: (assembled.lorebookActivatedEntries ?? []).length,
             };
           }
@@ -3884,12 +4002,12 @@ export async function generateRoutes(app: FastifyInstance) {
             contextMessageLimit,
             chatMessages,
             finalMessages,
-            abortSignal: abortController.signal,
+            abortSignal: generationSignal,
             writeSse: (payload) => {
               sendSseEvent(reply, payload as Parameters<typeof sendSseEvent>[1]);
             },
             endSse: () => {
-              reply.raw.end();
+              endGenerationOutput(reply);
             },
             mapChatHistoryMessageForPrompt,
             resolveHistoryMessageMacros,
@@ -3954,10 +4072,10 @@ export async function generateRoutes(app: FastifyInstance) {
             fallbackBaseUrl: conversationSummaryFallback ? resolveBaseUrl(conversationSummaryFallback) : "",
             summaryEmbeddingOptions: {
               embeddingSource: memoryRecallEmbeddingSource,
-              signal: abortController.signal,
+              signal: generationSignal,
             },
             summaryVectorizerAvailable: memoryRecallVectorizerAvailable,
-            signal: abortController.signal,
+            signal: generationSignal,
           });
           finalMessages = preparedHistory.finalMessages;
 
@@ -4199,7 +4317,7 @@ export async function generateRoutes(app: FastifyInstance) {
 
           const { connectedChatBlock, systemPromptAppend: connectedChatSystemPrompt } =
             await resolveConversationConnectedChatContext({
-              connectedChatId: chat.connectedChatId,
+              connectedChatId: roomPolicy ? null : chat.connectedChatId,
               conversationCommandsEnabled,
               chatMeta,
               personaName,
@@ -4414,7 +4532,7 @@ export async function generateRoutes(app: FastifyInstance) {
         const isSceneChat = chatMeta.sceneStatus === "active";
         const { consumedInfluenceIds: injectedConnectedInfluenceIds } = await injectConnectedConversationPromptBlocks({
           chatMode,
-          connectedChatId: chat.connectedChatId,
+          connectedChatId: roomPolicy ? null : chat.connectedChatId,
           isSceneChat,
           chatId: input.chatId,
           chats,
@@ -4479,7 +4597,21 @@ export async function generateRoutes(app: FastifyInstance) {
           provider: conn.provider,
           connectionId: conn.id ?? null,
         };
+        const lorebookReferenceImages = new Set<string>();
+        const lorebookImageNotices = new Set<LorebookImageNotice>();
+        const notifyLorebookImages = (code: LorebookImageNotice) => {
+          if (lorebookImageNotices.has(code)) return;
+          lorebookImageNotices.add(code);
+          sendSseEvent(reply, { type: "lorebook_image_notice", data: { code } });
+        };
         const providerRuntime = resolveGenerationProviderRuntime({
+          wrapProvider: (provider) =>
+            withLorebookImageCompatibility(
+              provider,
+              lorebookReferenceImages,
+              () => notifyLorebookImages("unsupported"),
+              new Set(finalMessages.flatMap((message) => message.images ?? [])),
+            ),
           connectionId: connId ?? "",
           connection: conn,
           baseUrl,
@@ -5258,8 +5390,21 @@ export async function generateRoutes(app: FastifyInstance) {
             pinnedGameRuleset?.status === "ok" && promptInventoryStacks.some((stack) => stack.item)
               ? await loadGameInventoryItemBook(
                   app.db,
-                  { metadata: chatMeta, resolved: pinnedGameRuleset },
+                  { metadata: chatMeta, resolved: pinnedGameRuleset, playerName: personaName || null },
                   "game-master",
+                )
+              : undefined;
+          // What each character carries, binds and wears against what they can, when the ruleset says.
+          const promptBearers =
+            promptItemBook?.bearer || promptItemBook?.slots
+              ? Object.fromEntries(
+                  [
+                    undefined,
+                    ...new Set(promptInventoryStacks.flatMap((stack) => (stack.holder ? [stack.holder] : []))),
+                  ].map((holder) => [
+                    gameInventoryBagKey(holder),
+                    gameInventoryBearerStatus(promptInventoryStacks, holder, promptItemBook),
+                  ]),
                 )
               : undefined;
           const promptItemFacts = promptItemBook
@@ -5308,6 +5453,13 @@ export async function generateRoutes(app: FastifyInstance) {
                             chatMeta.gameCharacterCards,
                             parseStoredRulesetLive((await selectedGameStateSnapshotPromise)?.rulesetLive),
                             promptRulesetCatalogs,
+                            promptItemBook
+                              ? {
+                                  book: promptItemBook,
+                                  stacks: promptInventoryStacks,
+                                  playerName: personaName || null,
+                                }
+                              : undefined,
                           ),
                         }
                       : {}),
@@ -5338,6 +5490,7 @@ export async function generateRoutes(app: FastifyInstance) {
               })(),
               partyInventory: gameInventoryBags(promptInventoryStacks),
               ...(promptItemFacts ? { inventoryItemFacts: promptItemFacts } : {}),
+              ...(promptBearers ? { inventoryBearers: promptBearers } : {}),
             }),
           );
           const editedFormatReminder = replaceGamePromptText(formatReminder, promptTextReplacements);
@@ -5374,6 +5527,9 @@ export async function generateRoutes(app: FastifyInstance) {
             runtimeAgentSectionTokens,
           );
         }
+
+        const rosterPrompt = roomRosterPrompt();
+        if (rosterPrompt) finalMessages.push({ role: "system", content: rosterPrompt });
 
         if (chatMode === "conversation" && !conversationScopesAwarenessToResponder) {
           convoAwarenessBlock = await mergeConversationCharacterMemories({
@@ -5427,7 +5583,7 @@ export async function generateRoutes(app: FastifyInstance) {
               excludeFromMessageAt: memoryRecallCutoff,
               contextLimit: suppressModelParameters ? undefined : (effectiveMaxContext ?? connectionMaxContext),
               sendProgress,
-              signal: abortController.signal,
+              signal: generationSignal,
               resolveMacros: (value) => resolveMacros(value, promptMacroContext, { trimResult: false }),
               wrapFormat,
             });
@@ -5453,7 +5609,7 @@ export async function generateRoutes(app: FastifyInstance) {
             gameMode: chatMode === "game",
             contextLimit: suppressModelParameters ? undefined : (effectiveMaxContext ?? connectionMaxContext),
             sendProgress,
-            signal: abortController.signal,
+            signal: generationSignal,
             resolveMacros: (value) => resolveMacros(value, promptMacroContext, { trimResult: false }),
             wrapFormat,
           });
@@ -5475,7 +5631,7 @@ export async function generateRoutes(app: FastifyInstance) {
             gameMode: chatMode === "game",
             contextLimit: suppressModelParameters ? undefined : (effectiveMaxContext ?? connectionMaxContext),
             sendProgress,
-            signal: abortController.signal,
+            signal: generationSignal,
             resolveMacros: (value) => resolveMacros(value, promptMacroContext, { trimResult: false }),
             wrapFormat,
           });
@@ -5523,7 +5679,7 @@ export async function generateRoutes(app: FastifyInstance) {
         // Preserve group-chat behavior when the user temporarily disables all but
         // one participant. The active list still controls who may respond.
         const isGroupChat = chatMode === "roleplay" ? allCharacterIds.length > 1 : characterIds.length > 1;
-        const groupResponseOrder = (chatMeta.groupResponseOrder as string) ?? "sequential";
+        const groupResponseOrder = effectiveGroupResponseOrder;
         const groupChatMode = resolveGroupGenerationMode(chatMode, chatMeta.groupChatMode);
         // Auto-enable speaker colors for conversation mode groups (system prompt already requests tags)
         const groupSpeakerColors = chatMeta.groupSpeakerColors === true || (chatMode === "conversation" && isGroupChat);
@@ -5679,7 +5835,7 @@ export async function generateRoutes(app: FastifyInstance) {
             (await lorebooksStore.listEntriesByLorebooks(sourceIds)) as LorebookEntry[],
           listLorebooks: async () => (await lorebooksStore.list()) as unknown as Lorebook[],
           resolveContent: (value) => resolvePromptMacrosForLorebook(value).content,
-          signal: abortController.signal,
+          signal: generationSignal,
           tokenBudget: resolveLorebookTokenBudget(chatMeta),
           vectorizerAvailable: memoryRecallVectorizerAvailable,
         });
@@ -6662,7 +6818,7 @@ export async function generateRoutes(app: FastifyInstance) {
         } = await resolveGenerationTools({
           requestBody: input as Record<string, unknown>,
           nativeToolsAvailable: supportsNativeToolCalls((gameToolConnection ?? conn).provider),
-          lorebookEmbeddingOptions: { embeddingSource: memoryRecallEmbeddingSource, signal: abortController.signal },
+          lorebookEmbeddingOptions: { embeddingSource: memoryRecallEmbeddingSource, signal: generationSignal },
           chatId: input.chatId,
           chatMetadata: chatMeta,
           chats,
@@ -7384,7 +7540,7 @@ export async function generateRoutes(app: FastifyInstance) {
         }
 
         // ── Early exit if client disconnected during knowledge retrieval / injection ──
-        if (abortController.signal.aborted) return;
+        if (generationSignal.aborted) return;
 
         // ── Main Generation Tool Configuration ──
         // Tool definitions (toolDefs) and custom tool metadata (customToolDefs)
@@ -7634,7 +7790,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 getConnectionWithKey: (id) => connections.getWithKey(id),
                 debugMode: requestDebug,
               },
-              abortController.signal,
+              generationSignal,
             );
             // Picking a speaker sits in front of the reply, exactly like a
             // pre-generation gate, so a reasoning model defers here on the same terms.
@@ -7691,7 +7847,7 @@ export async function generateRoutes(app: FastifyInstance) {
           if (explicitMentionIds.length > 0) return explicitMentionIds;
 
           const decided = await selectSmartGroupRespondersByDecision();
-          if (abortController.signal.aborted) return [];
+          if (generationSignal.aborted) return [];
           if (decided && decided.length > 0) return decided;
 
           const recentTranscript = chatMessages
@@ -7818,7 +7974,7 @@ export async function generateRoutes(app: FastifyInstance) {
                     }),
                 suppressModelParameters: selectorPolicy.suppressModelParameters,
                 stream: false,
-                signal: abortController.signal,
+                signal: generationSignal,
               }),
             );
             const selectedIds = parseSmartGroupSelectionIds(result.content ?? "");
@@ -7835,7 +7991,7 @@ export async function generateRoutes(app: FastifyInstance) {
               "[group-smart] Selector returned no valid character IDs",
             );
           } catch (error) {
-            if (abortController.signal.aborted) return [];
+            if (generationSignal.aborted) return [];
             logger.warn({ err: error, chatId: input.chatId }, "[group-smart] Selector failed; using fallback");
           }
 
@@ -7868,7 +8024,8 @@ export async function generateRoutes(app: FastifyInstance) {
           explicitlyMentionedConversationCharacterIds.includes(character.id),
         );
 
-        const hasExplicitGenerationDirective = input.impersonate === true || Boolean(input.generationGuide?.trim());
+        const hasExplicitGenerationDirective =
+          input.impersonate === true || (Boolean(input.generationGuide?.trim()) && !smartResponseRequested);
         const selectExplicitOrFallbackSmartGroupResponder = (): string[] => {
           const explicitMentionIds = getExplicitlyMentionedCharacterIds();
           return explicitMentionIds.length > 0 ? explicitMentionIds : selectFallbackSmartGroupResponder();
@@ -7962,6 +8119,7 @@ export async function generateRoutes(app: FastifyInstance) {
           );
         }
 
+        const conversationLorebookScansByResponder = new Map<string, LorebookScanResult>();
         const prepareConversationLorebookForResponder = async (
           targetCharId: string | null,
           messages: GenerationPromptMessage[],
@@ -7969,6 +8127,7 @@ export async function generateRoutes(app: FastifyInstance) {
           if (!deferConversationLorebookScanToResponder || !targetCharId) return messages;
 
           const lorebookResult = await scanConversationLorebooks([targetCharId], { previewOnly: true });
+          conversationLorebookScansByResponder.set(targetCharId, lorebookResult);
 
           const loreContent = [lorebookResult.worldInfoBefore, lorebookResult.worldInfoAfter]
             .filter(Boolean)
@@ -8028,7 +8187,12 @@ export async function generateRoutes(app: FastifyInstance) {
           const libraryCharacters: IsolatedPresenceCharacter[] = [];
           const identityIdsToLoad = timelineIsComplete ? latestPresentNames.length > 0 : snapshotIds.length > 0;
           if (identityIdsToLoad && timelineIsComplete) {
-            for (const row of await chars.list()) {
+            // A room may resolve only its approved library identities; private games retain discovery.
+            const identityRows = roomPolicy
+              ? await Promise.all(roomPolicy.characterIds.map((id) => chars.getById(id)))
+              : await chars.list();
+            for (const row of identityRows) {
+              if (!row) continue;
               let data: { name?: unknown } | null;
               try {
                 data =
@@ -8045,6 +8209,7 @@ export async function generateRoutes(app: FastifyInstance) {
             }
           } else if (identityIdsToLoad) {
             for (const id of snapshotIds) {
+              if (roomPolicy && !roomPolicy.characterIds.includes(id)) continue;
               const row = await chars.getById(id);
               if (!row) continue;
               let data: { name?: unknown } | null;
@@ -8082,6 +8247,7 @@ export async function generateRoutes(app: FastifyInstance) {
           const additionalCharacterIds = [...candidates].filter(
             (id) =>
               present.has(id) &&
+              (!roomPolicy || roomPolicy.characterIds.includes(id)) &&
               !loadedCharacterIds.has(id) &&
               libraryCharacters.some((character) => character.id === id),
           );
@@ -8155,7 +8321,11 @@ export async function generateRoutes(app: FastifyInstance) {
             const npc = gameRuntimeContext!.npcs.find((candidate) => candidate.characterId === actorId);
             // The planner needs identities, not every character's full private context.
             // Only selected speakers pay the card lookup and audience-memory projection cost.
-            if (npc?.characterId && !isolatedCharInfo.some((character) => character.id === actorId)) {
+            if (
+              npc?.characterId &&
+              (!roomPolicy || roomPolicy.characterIds.includes(actorId)) &&
+              !isolatedCharInfo.some((character) => character.id === actorId)
+            ) {
               const row = await chars.getById(actorId);
               if (row) {
                 try {
@@ -8263,7 +8433,7 @@ export async function generateRoutes(app: FastifyInstance) {
           let recoveredAlreadyAppliedSpatialTurn = false;
           const pendingGameStateToolCalls: Parameters<typeof executeToolCalls>[0] = [];
           const persistGameStateToolCalls = async (messageId: string, swipeIndex: number) => {
-            if (!pendingGameStateToolCalls.length || !messageId || abortController.signal.aborted) return;
+            if (!pendingGameStateToolCalls.length || !messageId || generationSignal.aborted) return;
             const siblingSnapshot = projectGameSnapshotLocation(
               input.regenerateMessageId && swipeIndex > 0
                 ? await gameStateStore.getByChatAndMessage(input.chatId, messageId, swipeIndex - 1)
@@ -8310,6 +8480,9 @@ export async function generateRoutes(app: FastifyInstance) {
           // and a merged generation that may voice several characters at once
           // stays on the hand-free spectator view.
           let gameAwareMessagesForGen = await prepareConversationLorebookForResponder(targetCharId, messagesForGen);
+          let responderLorebookScan =
+            (targetCharId ? conversationLorebookScansByResponder.get(targetCharId) : undefined) ??
+            lorebookPromptScanResult;
           if (conversationScopesAwarenessToResponder && targetCharId) {
             let responderAwarenessBlock: string | null = null;
             if (conversationCrossChatAwarenessEnabled && !input.regenerateMessageId) {
@@ -8399,6 +8572,7 @@ export async function generateRoutes(app: FastifyInstance) {
             const scopedLorebookScan = await scopedScanPromise;
             ({ stable: fullLorebookContext, dynamic: dynamicFullLorebookContext } =
               splitFullLorebookContext(scopedLorebookScan));
+            responderLorebookScan = scopedLorebookScan;
             gameAwareMessagesForGen = scopeLorebookPromptMessagesForCharacter(
               gameAwareMessagesForGen,
               lorebookPromptScanResult,
@@ -8452,10 +8626,8 @@ export async function generateRoutes(app: FastifyInstance) {
                     : undefined,
                 )
               : gameAwareMessagesForGen;
-          const targetScopedMessagesForGen =
-            !promptTargetCharacterId && targetCharId
-              ? scopedMessagesForGen.map((message) => ({ ...message }))
-              : scopedMessagesForGen;
+          // Each responder owns its injections; never mutate the shared prompt array.
+          const targetScopedMessagesForGen = scopedMessagesForGen.map((message) => ({ ...message }));
           if (!deferGroupPromptRegex && !promptTargetCharacterId && targetCharId) {
             applyRegexScriptsToPromptMessages(targetScopedMessagesForGen, regexScripts, {
               ...targetRegexOptions,
@@ -8472,6 +8644,10 @@ export async function generateRoutes(app: FastifyInstance) {
               wrapFormat,
             );
           }
+          await appendLorebookImageMessages(targetScopedMessagesForGen, responderLorebookScan?.imageEntries, {
+            onNotice: notifyLorebookImages,
+            rememberImage: (dataUrl) => lorebookReferenceImages.add(dataUrl),
+          });
           const spatiallyScopedMessagesForGen = markNewRuntimeContextMessages(
             targetScopedMessagesForGen,
             (messages) => injectOwnerSpatialPrompt(messages, ownerSpatialProjection),
@@ -8839,7 +9015,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 .slice(-4)
                 .map((message) => message.content)
                 .join("\n"),
-              signal: abortController.signal,
+              signal: generationSignal,
               debugMode: requestDebug,
               blocking: true,
               onProgress: (job) =>
@@ -9228,7 +9404,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 suppressModelParameters,
                 openrouterProvider: conn.openrouterProvider ?? undefined,
               },
-              signal: abortController.signal,
+              signal: generationSignal,
               onPrompt: isolatedPromptLogger,
               beforeRequest: async (kind, messages) => {
                 if (kind !== "planner" || !cacheGuardApplies(conn.provider, messages)) return;
@@ -9314,7 +9490,7 @@ export async function generateRoutes(app: FastifyInstance) {
               const tempSuppressed =
                 ((conn.provider === "openai" || conn.provider === "openrouter") &&
                   (/^(o1|o3|o4)/.test(effModel) ||
-                    isOpenAIGpt6AstraModel(effModel) ||
+                    isOpenAIGpt6AlwaysReasoningModel(effModel) ||
                     (isOpenAIGpt6Model(effModel) && !!resolvedEffort) ||
                     (effModel.startsWith("gpt-5") && !!resolvedEffort))) ||
                 isClaudeNoSampling;
@@ -9432,7 +9608,7 @@ export async function generateRoutes(app: FastifyInstance) {
             onResponseParts: (parts) => {
               geminiResponseParts = parts;
             },
-            signal: abortController.signal,
+            signal: generationSignal,
             encryptedReasoningItems: excludePastReasoning ? undefined : encryptedReasoningItems,
             onEncryptedReasoning: excludePastReasoning
               ? undefined
@@ -9484,14 +9660,14 @@ export async function generateRoutes(app: FastifyInstance) {
                     messages: initialProviderMessages,
                     tools: toolDefs,
                     forceToolCall: enableChatTools && chatMeta.forceToolCall === true,
-                    signal: abortController.signal,
+                    signal: generationSignal,
                     debugMode: requestDebug,
                     debugLog,
                   }),
                 ))
               : null;
           if (gameToolPlan && toolPlannerFingerprint) await recordSentPrompt(input.chatId, toolPlannerFingerprint);
-          if (abortController.signal.aborted) return null;
+          if (generationSignal.aborted) return null;
           if (
             !isolatedGameResult &&
             responderToolsAttached &&
@@ -9506,7 +9682,7 @@ export async function generateRoutes(app: FastifyInstance) {
             // progressive streaming instead of the whole message appearing at once.
             const onToken = async (chunk: string) => {
               // If the request has been aborted, skip emitting any further tokens.
-              if (abortController.signal.aborted) {
+              if (generationSignal.aborted) {
                 return;
               }
               fullResponse += chunk;
@@ -9525,7 +9701,7 @@ export async function generateRoutes(app: FastifyInstance) {
               if (chatMode === "roleplay" && !input.impersonate)
                 roleplayCommandStreamFilter = new RoleplayCommandStreamFilter(roleplayRollEnabled);
               // Treat abort as a silent cancellation: stop the pipeline immediately.
-              if (abortController.signal.aborted) {
+              if (generationSignal.aborted) {
                 return null;
               }
 
@@ -9596,8 +9772,8 @@ export async function generateRoutes(app: FastifyInstance) {
                       onToken: input.streaming ? onToken : undefined,
                       openrouterProvider: conn.openrouterProvider ?? undefined,
                       signal: rollRequestAbort
-                        ? AbortSignal.any([abortController.signal, rollRequestAbort.signal])
-                        : abortController.signal,
+                        ? AbortSignal.any([generationSignal, rollRequestAbort.signal])
+                        : generationSignal,
                       encryptedReasoningItems: excludePastReasoning ? undefined : encryptedReasoningItems,
                       onEncryptedReasoning: excludePastReasoning
                         ? undefined
@@ -9612,15 +9788,15 @@ export async function generateRoutes(app: FastifyInstance) {
                 }
               } catch (err: any) {
                 // If the error was caused by an abort, cancel silently and skip post-processing.
-                if (!abortController.signal.aborted && rollRequestAbort?.signal.aborted) {
+                if (!generationSignal.aborted && rollRequestAbort?.signal.aborted) {
                   result = { content: fullResponse.slice(roundResponseStart), toolCalls: [], finishReason: "stop" };
-                } else if (abortController.signal.aborted || (err && err.name === "AbortError")) {
+                } else if (generationSignal.aborted || (err && err.name === "AbortError")) {
                   return null;
                 } else throw err;
               }
 
               // If abort was triggered during chat completion, exit before using the result.
-              if (abortController.signal.aborted) {
+              if (generationSignal.aborted) {
                 return null;
               }
               if (rollRequestAbort?.signal.aborted)
@@ -9936,7 +10112,7 @@ export async function generateRoutes(app: FastifyInstance) {
                     onThinking,
                     onToken: input.streaming ? onToken : undefined,
                     openrouterProvider: conn.openrouterProvider ?? undefined,
-                    signal: abortController.signal,
+                    signal: generationSignal,
                     encryptedReasoningItems: excludePastReasoning ? undefined : encryptedReasoningItems,
                     onEncryptedReasoning: excludePastReasoning
                       ? undefined
@@ -9999,7 +10175,7 @@ export async function generateRoutes(app: FastifyInstance) {
               if (sentFingerprint) await recordSentPrompt(input.chatId, sentFingerprint);
               await recordAcceptedLongTermMemoryPrompt(narratorMessages);
               while (!result.done) {
-                if (abortController.signal.aborted) {
+                if (generationSignal.aborted) {
                   return null;
                 }
                 fullResponse += result.value;
@@ -10018,7 +10194,7 @@ export async function generateRoutes(app: FastifyInstance) {
               recordRequestUsage(result.value || undefined);
               finishReason = result.value?.finishReason ?? finishReason;
             } catch (err) {
-              if (abortController.signal.aborted || isAbortLikeError(err)) {
+              if (generationSignal.aborted || isAbortLikeError(err)) {
                 return null;
               }
               throw err;
@@ -10031,7 +10207,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 logger.warn(closeError, "[generate] Failed to close the generation stream");
               });
             }
-            if (abortController.signal.aborted) {
+            if (generationSignal.aborted) {
               return null;
             }
           }
@@ -10157,8 +10333,12 @@ export async function generateRoutes(app: FastifyInstance) {
             if (parsed.invalid) sendSseEvent(reply, { type: "roleplay_command_error", data: { invalid: true } });
             for (const activity of parsed.activity) {
               const { command } = activity;
-              if (!isRoleplayCommandAllowed(chatMeta, roleplayCommandKey(command), roleplayCallerId)) continue;
-              if (command.type === "interrupt" && abortController.signal.aborted)
+              if (
+                !roomRoleplayCommandAllowed(command.type) ||
+                !isRoleplayCommandAllowed(chatMeta, roleplayCommandKey(command), roleplayCallerId)
+              )
+                continue;
+              if (command.type === "interrupt" && generationSignal.aborted)
                 activity.error = "Interruption was not applied because generation was cancelled.";
               if (
                 command.type === "notes" ||
@@ -10668,6 +10848,8 @@ export async function generateRoutes(app: FastifyInstance) {
               toolDiceRollResults,
               undefined,
               dicePoolSession ?? undefined,
+              // A ruleset game's checks were the pass above's alone, on the same terms as its pin.
+              chatMeta.gameRuleset != null,
             );
             if (generalRolls.content !== fullResponse) {
               fullResponse = generalRolls.content;
@@ -10727,7 +10909,7 @@ export async function generateRoutes(app: FastifyInstance) {
               try {
                 let next = await withLlmRequestTimeout(chatGenerationTimeoutMs, () => followup.next());
                 while (!next.done) {
-                  if (abortController.signal.aborted) return null;
+                  if (generationSignal.aborted) return null;
                   narration += next.value;
                   next = await withLlmRequestTimeout(chatGenerationTimeoutMs, () => followup.next());
                 }
@@ -10737,7 +10919,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 narration = thinking.content;
                 if (thinking.thinking) fullThinking = [fullThinking, thinking.thinking].filter(Boolean).join("\n\n");
               } catch (err) {
-                if (abortController.signal.aborted) return null;
+                if (generationSignal.aborted) return null;
                 geminiResponseParts = null;
                 chatCompletionsReasoning = null;
                 encryptedReasoningItems = undefined;
@@ -10865,7 +11047,7 @@ export async function generateRoutes(app: FastifyInstance) {
               const rules = tellsInventory
                 ? await loadGameInventoryItemBook(
                     app.db,
-                    { metadata: currentMeta, resolved: turnGameRuleset },
+                    { metadata: currentMeta, resolved: turnGameRuleset, playerName: personaName || null },
                     "game-master",
                   )
                 : undefined;
@@ -10927,7 +11109,7 @@ export async function generateRoutes(app: FastifyInstance) {
           // turn must not change the world. For an event verb it is not a choice at all: the client
           // has dropped the stream, so the frame would evaporate unlogged.
           const executeCollectedGmVerbCalls = async (turnRef: { messageId: string; swipeIndex: number }) => {
-            if (collectedGmVerbCalls.length > 0 && gmVerbTable && !abortController.signal.aborted) {
+            if (collectedGmVerbCalls.length > 0 && gmVerbTable && !generationSignal.aborted) {
               let gmVerbMetadataWritten = false;
               await executeGmVerbCalls({
                 calls: collectedGmVerbCalls,
@@ -11015,7 +11197,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   parsedCommands.length > 0 ||
                   parsedRawCommandCount > 0 ||
                   collectedGmVerbCalls.length > 0 ||
-                  (pendingGameStateToolCalls.length > 0 && !abortController.signal.aborted),
+                  (pendingGameStateToolCalls.length > 0 && !generationSignal.aborted),
                 spatialDirectiveDetected: assistantSpatialDirectiveDetected,
               })
             ) {
@@ -11264,11 +11446,36 @@ export async function generateRoutes(app: FastifyInstance) {
               }
             }
           } else {
+            const roomAuthority = currentRoomGeneration();
+            const roomAudience = chatMode === "game" ? roomAuthority : undefined;
+            const roomActor = roomAuthority?.characters.find((character) =>
+              chatMode === "game" ? character.role === "gm" : character.id === targetCharId,
+            );
             savedMsg = await chats.createMessage({
               chatId: input.chatId,
               role: input.impersonate ? "user" : "assistant",
               characterId: input.impersonate ? null : targetCharId,
               content: fullResponse,
+              ...(roomAuthority
+                ? {
+                    extra: {
+                      multiplayerActor: roomActor
+                        ? { id: roomActor.id, name: roomActor.name, role: roomActor.role }
+                        : { id: null, name: "GM", role: "gm" },
+                      ...(roomAudience
+                        ? {
+                            multiplayerGameAudience: {
+                              roomId: roomAudience.roomId,
+                              participants: roomAudience.participants.map((participant) => ({
+                                id: participant.id,
+                                name: participant.persona.name,
+                              })),
+                            },
+                          }
+                        : {}),
+                    },
+                  }
+                : {}),
             });
             savedSwipeIndex = 0;
           }
@@ -11295,18 +11502,32 @@ export async function generateRoutes(app: FastifyInstance) {
                   const outcome = pending.tellsInventory
                     ? applyGameInventoryTags(pending.requested, plan.start, pending.party, undefined, pending.rules)
                     : { content: pending.requested, stacks: plan.start, journal: [] };
+                  const turnRecord = recordGameInventoryTelling(
+                    pending.messageId ?? savedMsg.id,
+                    plan.before,
+                    plan.swipes,
+                    swipeIndex,
+                    outcome.stacks,
+                  );
                   return {
                     stacks: outcome.stacks,
                     journal: outcome.journal,
-                    // What this telling left, remembered in the same write as the stacks.
+                    // What this telling left, remembered in the same write as the stacks, with any
+                    // item its tags invented, so a stack never names an item the game does not keep.
+                    // Only what the stacks or a remembered telling still hold is kept: a switch back
+                    // to another telling finds the item it holds.
                     metadata: {
-                      gameInventoryTurn: recordGameInventoryTelling(
-                        pending.messageId ?? savedMsg.id,
-                        plan.before,
-                        plan.swipes,
-                        swipeIndex,
-                        outcome.stacks,
-                      ),
+                      gameInventoryTurn: turnRecord,
+                      ...(pending.rules?.inventedChanged()
+                        ? {
+                            gameInventedItems: rulesetInventedItemsHeld(
+                              pending.rules.inventedItems(),
+                              outcome.stacks,
+                              turnRecord.before,
+                              ...Object.values(turnRecord.swipes),
+                            ),
+                          }
+                        : {}),
                     },
                     value: { content: outcome.content, before: stacks, plan },
                   };
@@ -11502,7 +11723,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   ),
                   allowDiscoveryPath: supportsSpatialDiscoveryPaths(),
                   allowTeleport: supportsSpatialNarratedTeleport(),
-                  signal: abortController.signal,
+                  signal: generationSignal,
                   debugMode: requestDebug || isDebugAgentsEnabled(),
                   debugLog: turnGameDebugLog,
                 });
@@ -11562,7 +11783,7 @@ export async function generateRoutes(app: FastifyInstance) {
                     if (!state.definition || state.currentLocationId === null) {
                       throw new Error("World Maps location projection is unavailable");
                     }
-                    abortController.signal.throwIfAborted();
+                    generationSignal.throwIfAborted();
                     return materializeAssistantSpatialState(
                       {
                         chatId: input.chatId,
@@ -11594,7 +11815,7 @@ export async function generateRoutes(app: FastifyInstance) {
                       ((directive.type !== "move" && directive.type !== "teleport") ||
                         snapshot.currentLocationId === directive.destinationId),
                     ),
-                  signal: abortController.signal,
+                  signal: generationSignal,
                   allowRejectedRetry: assistantSpatialDirective !== null,
                 });
                 assistantSpatialDirective = result.directive;
@@ -11639,11 +11860,11 @@ export async function generateRoutes(app: FastifyInstance) {
                 });
               }
             } catch (spatialError) {
-              if (abortController.signal.aborted) throw spatialError;
+              if (generationSignal.aborted) throw spatialError;
               logger.warn(spatialError, "[spatial/reconcile] Narration saved, but location synchronization failed");
               const error = spatialError instanceof Error ? spatialError.message : String(spatialError);
               const diagnostic = createDiagnostic(spatialError, {
-                requestId: req.id,
+                requestId: req?.id,
                 operation: "spatial.reconcile",
                 stage: "failure",
               });
@@ -11914,14 +12135,6 @@ export async function generateRoutes(app: FastifyInstance) {
             // Cache the lorebook scan that produced the prompt so Active Context
             // reflects the last generation instead of a best-effort rescan.
             extraUpdate.lorebookScan = lorebookScanSnapshot;
-            // Activation statistics: queued in memory, written in a later batch, never throws.
-            // One count per saved reply: swipes and regenerations count, a Continue of the same reply does not.
-            if (!input.continueMessageId) {
-              recordLorebookActivations(app.db, {
-                entryIds: lorebookScanSnapshot.activatedEntries.map((entry) => entry.id),
-                chatId: input.chatId,
-              });
-            }
             extraUpdate.chatSummaryFingerprint = fingerprintChatSummary(chatMeta.summary);
             if (advancedMemoryReceipt) extraUpdate.advancedMemoryReceipt = advancedMemoryReceipt;
             // A continuation has its own prompt, but regenerating the whole message
@@ -11937,7 +12150,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 swipeIndex: savedSwipeIndex ?? savedMsg.activeSwipeIndex ?? 0,
                 extraUpdate,
                 target: roleplayInterruptionTarget,
-                signal: abortController.signal,
+                signal: generationSignal,
               });
               refreshedMsg = committed.message;
               const interrupted = committed.interruptedMessage;
@@ -11981,6 +12194,13 @@ export async function generateRoutes(app: FastifyInstance) {
                 savedSwipeIndex !== null
                   ? await chats.updateMessageExtraForSwipe(savedMsg.id, savedSwipeIndex, extraUpdate)
                   : await chats.updateMessageExtra(savedMsg.id, extraUpdate);
+            }
+            // Activation statistics count successfully saved replies, not Continue chunks.
+            if (!input.continueMessageId) {
+              recordLorebookActivations(app.db, {
+                entryIds: lorebookScanSnapshot.activatedEntries.map((entry) => entry.id),
+                chatId: input.chatId,
+              });
             }
 
             const savedMessagePayload =
@@ -12151,7 +12371,7 @@ export async function generateRoutes(app: FastifyInstance) {
         // ────────────────────────────────────────
         const hasParallelAgents = pipelineAgents.some((a) => a.phase === "parallel");
         let parallelPromise: Promise<AgentResult[]> | null = null;
-        if (hasParallelAgents && !abortController.signal.aborted) {
+        if (hasParallelAgents && !generationSignal.aborted) {
           deferParallelAgentEvents = true;
           parallelAgentStartPending = true;
           if (!agentContext.sequentialExecution) parallelPromise = pipeline.runParallel();
@@ -12185,7 +12405,7 @@ export async function generateRoutes(app: FastifyInstance) {
           );
 
           for (let ci = 0; ci < respondingCharIds.length; ci++) {
-            if (abortController.signal.aborted) break;
+            if (generationSignal.aborted) break;
             const charId = respondingCharIds[ci];
             if (!charId) continue;
             const charName = charInfo.find((c) => c.id === charId)?.name ?? "Character";
@@ -12204,8 +12424,8 @@ export async function generateRoutes(app: FastifyInstance) {
                   status: responderDelay.status,
                   delayMs: remainingDelayMs,
                 });
-                await waitForConversationPresenceDelay(remainingDelayMs, abortController.signal);
-                if (abortController.signal.aborted) break;
+                await waitForConversationPresenceDelay(remainingDelayMs, generationSignal);
+                if (generationSignal.aborted) break;
               }
 
               if (responderDelay) {
@@ -12274,7 +12494,7 @@ export async function generateRoutes(app: FastifyInstance) {
               ci === respondingCharIds.length - 1,
             );
             if (!genResult) {
-              if (abortController.signal.aborted) break;
+              if (generationSignal.aborted) break;
               continue;
             }
             firstSavedMsg ??= genResult.savedMsg;
@@ -12490,7 +12710,7 @@ export async function generateRoutes(app: FastifyInstance) {
         await persistChatMacroVariables();
         let assistantMessageReadySent = false;
         const sendAssistantMessageReady = async (savedMessage?: typeof currentIterationSavedMsg) => {
-          if (assistantMessageReadySent || abortController.signal.aborted || input.impersonate) return;
+          if (assistantMessageReadySent || generationSignal.aborted || input.impersonate) return;
           const messageId = (currentIterationSavedMsg as { id?: unknown } | null)?.id;
           if (typeof messageId !== "string" || !messageId) return;
           const readyMessage = savedMessage ?? (await chats.getMessage(messageId));
@@ -12520,7 +12740,7 @@ export async function generateRoutes(app: FastifyInstance) {
         // ────────────────────────────────────────
         // Await parallel agents that were started alongside the generation
         let parallelResults: AgentResult[] = [];
-        if (hasParallelAgents && agentContext.sequentialExecution && !abortController.signal.aborted) {
+        if (hasParallelAgents && agentContext.sequentialExecution && !generationSignal.aborted) {
           parallelPromise = pipeline.runParallel();
         }
         enterStage("postAgents");
@@ -12555,7 +12775,7 @@ export async function generateRoutes(app: FastifyInstance) {
           !recoveredAlreadyAppliedOwnerTurn &&
           preGenAnchorMessageId &&
           !input.regenerateMessageId &&
-          !abortController.signal.aborted
+          !generationSignal.aborted
         ) {
           const preGenSuccessful = pipeline.results.filter((r) => {
             if (!r.success || (builtInAgentTypes.has(r.agentType) && r.agentType !== "director")) return false;
@@ -12613,7 +12833,7 @@ export async function generateRoutes(app: FastifyInstance) {
             !latestAssistantMessageId ||
             !isRoleplaySummaryMode(chatMode) ||
             !isAutomaticRoleplaySummaryEnabled(chatMeta) ||
-            abortController.signal.aborted
+            generationSignal.aborted
           ) {
             return;
           }
@@ -12690,10 +12910,10 @@ export async function generateRoutes(app: FastifyInstance) {
               model: summaryModel,
               ...summaryTemperatureOptions,
               maxTokens: summaryMaxTokens,
-              signal: abortController.signal,
+              signal: generationSignal,
             },
           );
-          if (abortController.signal.aborted) return;
+          if (generationSignal.aborted) return;
           const parsedSummary = result.content ? parseChatSummaryResult(result.content) : { summary: "", title: "" };
           const newText = parsedSummary.summary;
 
@@ -12786,7 +13006,7 @@ export async function generateRoutes(app: FastifyInstance) {
           });
 
           if (updatedChat) {
-            chatMeta = parseExtra(updatedChat.metadata) as Record<string, unknown>;
+            chatMeta = roomGenerationMetadata(parseExtra(updatedChat.metadata));
           }
           if (newText) {
             if (shouldReviewSummary) {
@@ -12820,7 +13040,7 @@ export async function generateRoutes(app: FastifyInstance) {
           }
         };
 
-        if (hasPostWork && (completedResponse || roleplayMediaRequests.length > 0) && !abortController.signal.aborted) {
+        if (hasPostWork && (completedResponse || roleplayMediaRequests.length > 0) && !generationSignal.aborted) {
           const sceneCheckTrackers = pipelineAgents.filter(
             (agent) =>
               agent.phase === "post_processing" &&
@@ -12873,9 +13093,17 @@ export async function generateRoutes(app: FastifyInstance) {
             generatedExpressionTargetIds.add(userIdentityId);
           }
           if (generatedExpressionTargetIds.size > 0 && Array.isArray(agentContext.memory._availableSprites)) {
-            agentContext.memory._availableSprites = (
-              agentContext.memory._availableSprites as Array<{ characterId: string }>
-            ).filter((sprite) => generatedExpressionTargetIds.has(sprite.characterId));
+            // Merged narration can evaluate the whole active cast without requiring every sprite to be present.
+            const mergedRoleplayResponse =
+              chatMode === "roleplay" &&
+              isGroupChat &&
+              groupChatMode === "merged" &&
+              lastSavedMsg?.role === "assistant";
+            if (!mergedRoleplayResponse) {
+              agentContext.memory._availableSprites = (
+                agentContext.memory._availableSprites as Array<{ characterId: string }>
+              ).filter((sprite) => generatedExpressionTargetIds.has(sprite.characterId));
+            }
             agentContext.memory._expressionTargetIds = [...generatedExpressionTargetIds];
           }
           if (hasPostProcessingAgents) {
@@ -13046,7 +13274,7 @@ export async function generateRoutes(app: FastifyInstance) {
 
           // ── Auto-retry failed agents once ──
           const failedResults = postResults.filter((r) => !r.success);
-          if (failedResults.length > 0 && !abortController.signal.aborted) {
+          if (failedResults.length > 0 && !generationSignal.aborted) {
             const retryableFailures = failedResults.filter(shouldAutomaticallyRetryAgentResult);
             const timedOutFailures = failedResults.filter((result) => !shouldAutomaticallyRetryAgentResult(result));
             if (timedOutFailures.length > 0) {
@@ -15083,7 +15311,7 @@ export async function generateRoutes(app: FastifyInstance) {
                     }
                   })();
                   if (agentContext.sequentialExecution) await pendingIllustration;
-                  if (commandTarget && pendingIllustration) pendingRoleplayMedia.push(pendingIllustration);
+                  if (commandTarget) pendingRoleplayMedia.push(pendingIllustration);
                 } else {
                   logger.warn("[illustrator] Agent wants to generate but no image generation connection configured");
                   sendSseEvent(reply, {
@@ -15106,11 +15334,11 @@ export async function generateRoutes(app: FastifyInstance) {
           // ── Text rewrite/editing agents: run after ALL other agents ──
           const originalResponseBeforeRewrite = completedResponse;
           let textRewriteApplied = false;
-          if (activatedTextRewriteRunAgents.length > 0 && messageId && !abortController.signal.aborted) {
+          if (activatedTextRewriteRunAgents.length > 0 && messageId && !generationSignal.aborted) {
             let currentResponseForRewrite = originalResponseBeforeRewrite;
 
             for (const textRewriteAgent of activatedTextRewriteRunAgents) {
-              if (abortController.signal.aborted) break;
+              if (generationSignal.aborted) break;
               try {
                 // Collect all successful agent outputs as a summary for rewrite agents.
                 const agentSummary: Record<string, unknown> = {};
@@ -15256,7 +15484,7 @@ export async function generateRoutes(app: FastifyInstance) {
             }
           }
 
-          if (holdForTextRewrite && !textRewriteApplied && !abortController.signal.aborted) {
+          if (holdForTextRewrite && !textRewriteApplied && !generationSignal.aborted) {
             sendSseEvent(reply, {
               type: "text_rewrite",
               data: {
@@ -15280,7 +15508,7 @@ export async function generateRoutes(app: FastifyInstance) {
           }
         }
 
-        if (!recoveredAlreadyAppliedOwnerTurn && !abortController.signal.aborted) {
+        if (!recoveredAlreadyAppliedOwnerTurn && !generationSignal.aborted) {
           try {
             await runAutomaticRoleplaySummary();
           } catch (summaryErr) {
@@ -15291,7 +15519,7 @@ export async function generateRoutes(app: FastifyInstance) {
         // ────────────────────────────────────────
         // Character Command Execution (Conversation mode)
         // ────────────────────────────────────────
-        if (collectedCommands.length > 0 && !abortController.signal.aborted) {
+        if (collectedCommands.length > 0 && !generationSignal.aborted) {
           const professorMariCommandCount = countProfessorMariCommands(collectedCommands);
           sendSseEvent(reply, {
             type: "assistant_commands_start",
@@ -15322,7 +15550,12 @@ export async function generateRoutes(app: FastifyInstance) {
           try {
             for (const { command, characterId, messageId, swipeIndex } of collectedCommands) {
               // A Stop pressed while an earlier command ran skips the rest.
-              if (abortController.signal.aborted) break;
+              if (generationSignal.aborted) break;
+              if (
+                !roomConversationCommandAllowed(command.type) ||
+                (roomPolicy && (!characterId || !roomPolicy.characterIds.includes(characterId)))
+              )
+                continue;
               try {
                 await handleConversationScheduleCommand({
                   command,
@@ -15375,7 +15608,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   sendEvent: (payload) => {
                     sendSseEvent(reply, payload);
                   },
-                  signal: abortController.signal,
+                  signal: generationSignal,
                 });
 
                 await handleConversationCallCommand({
@@ -15457,7 +15690,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   conn,
                   baseUrl,
                   reply,
-                  signal: abortController.signal,
+                  signal: generationSignal,
                   debugLog: turnGameDebugLog,
                 });
 
@@ -15527,7 +15760,7 @@ export async function generateRoutes(app: FastifyInstance) {
           chatMode === "conversation" &&
           !input.impersonate &&
           !input.regenerateMessageId &&
-          !abortController.signal.aborted &&
+          !generationSignal.aborted &&
           followUpIteration < MAX_FOLLOW_UP_ITERATIONS
         ) {
           followUpIteration++;
@@ -15561,7 +15794,7 @@ export async function generateRoutes(app: FastifyInstance) {
           // visible to the next pass.
           const freshChat = await chats.getById(input.chatId);
           if (freshChat) {
-            chatMeta = parseExtra(freshChat.metadata) as Record<string, unknown>;
+            chatMeta = roomGenerationMetadata(parseExtra(freshChat.metadata));
           }
 
           // Reset hoisted per-iteration accumulators before continuing.
@@ -15586,7 +15819,7 @@ export async function generateRoutes(app: FastifyInstance) {
               latestAssistantMessageId &&
               !input.impersonate &&
               !input.regenerateMessageId &&
-              !abortController.signal.aborted
+              !generationSignal.aborted
             ) {
               pendingAdvancedMemory = advancedMemory
                 .checkScenesAfterGeneration(input.chatId, {
@@ -15623,7 +15856,7 @@ export async function generateRoutes(app: FastifyInstance) {
       await persistChatMacroVariables();
 
       // ── Post OOC messages to connected conversation (Roleplay → Conversation) ──
-      if (collectedOocMessages.length > 0 && chat.connectedChatId && !abortController.signal.aborted) {
+      if (!roomPolicy && collectedOocMessages.length > 0 && chat.connectedChatId && !generationSignal.aborted) {
         try {
           for (const oocText of collectedOocMessages) {
             await chats.createMessage({
@@ -15650,7 +15883,7 @@ export async function generateRoutes(app: FastifyInstance) {
       // then intentionally skipped, so resume any pending bot seat before this
       // Conversation stream releases the lock. Human turns and chats without an
       // active game are cheap no-ops inside the shared runner.
-      if (chatMode === "conversation" && !input.impersonate && !abortController.signal.aborted) {
+      if (chatMode === "conversation" && !input.impersonate && !generationSignal.aborted) {
         try {
           await runTurnGameBotTurns({
             db: app.db,
@@ -15658,23 +15891,25 @@ export async function generateRoutes(app: FastifyInstance) {
             conn,
             baseUrl,
             reply,
-            signal: abortController.signal,
+            signal: generationSignal,
             debugLog: turnGameDebugLog,
           });
         } catch (turnGameErr) {
-          if (abortController.signal.aborted || isAbortLikeError(turnGameErr)) return;
+          if (generationSignal.aborted || isAbortLikeError(turnGameErr)) return;
           logger.warn(turnGameErr, "[turn-game] Failed to resume pending bot turns after Conversation reply");
         }
-        if (abortController.signal.aborted) return;
+        if (generationSignal.aborted) return;
       }
 
       // Admit automatic Game follow-up before announcing completion, so a
       // connected viewer can observe the persisted job instead of duplicating it.
       if (
+        // Shared rooms authorize their own character roster and supported agents.
+        !roomPolicy &&
         chatMode === "game" &&
         !input.impersonate &&
         !isGameOocTurn &&
-        !abortController.signal.aborted &&
+        !generationSignal.aborted &&
         lastSavedMsg?.id &&
         lastSavedMsg.role === "assistant" &&
         typeof lastSavedMsg.content === "string" &&
@@ -15684,7 +15919,7 @@ export async function generateRoutes(app: FastifyInstance) {
           .inject({
             method: "POST",
             url: "/api/game/npc-characters/sync",
-            headers: forwardedHeaders(req.headers),
+            headers: forwardedHeaders(req?.headers ?? {}),
             payload: { chatId: input.chatId, debugMode: input.debugMode === true },
           })
           .then((npcSyncResponse) => {
@@ -15701,7 +15936,7 @@ export async function generateRoutes(app: FastifyInstance) {
             chatId: input.chatId,
             messageId: lastSavedMsg.id,
             swipeIndex: lastSavedMsg.activeSwipeIndex ?? 0,
-            headers: req.headers,
+            headers: req?.headers ?? {},
           });
       }
       dispatchAutomaticTranslations();
@@ -15714,7 +15949,7 @@ export async function generateRoutes(app: FastifyInstance) {
       if (
         chatMode === "game" &&
         !input.impersonate &&
-        !abortController.signal.aborted &&
+        !generationSignal.aborted &&
         isGameSceneTimelineEnabled(chatMeta)
       ) {
         queueSceneTimeline(app.db, input.chatId, () => activeGenerations.has(input.chatId));
@@ -15744,7 +15979,7 @@ export async function generateRoutes(app: FastifyInstance) {
         sendSseEvent(reply, { type: "done", data: "" });
         return;
       }
-      if (abortController.signal.aborted || isAbortLikeError(err)) {
+      if (generationSignal.aborted || isAbortLikeError(err)) {
         trace.finish("cancelled", { reason: clientDisconnected ? "client_disconnect" : "aborted" });
         logger.info({ chatId: input.chatId }, "[generate] Generation stopped before it finished");
         return;
@@ -15753,7 +15988,7 @@ export async function generateRoutes(app: FastifyInstance) {
       logger.error({ err, chatId: input.chatId }, "[generate] Generation failed");
       // A later error cancels remaining generation work, not an already saved reply's translation.
       translationAfterFailure = true;
-      if (!abortController.signal.aborted) {
+      if (!generationSignal.aborted) {
         abortController.abort();
       }
       // Only errors that came back from the provider path carry provider or status fields.
@@ -15803,25 +16038,30 @@ export async function generateRoutes(app: FastifyInstance) {
         clearGenerationInProgress(input.chatId, conversationGenerationStartedAt);
       }
       stopSseKeepalive();
-      reply.raw.off("close", onClose);
+      detachCloseListener();
       releaseActiveGeneration();
       releaseActiveAgentRun();
       // Success paths and early returns end here; failure paths above already finished the trace.
       if (pendingTraceFailure) trace.finish("failed", pendingTraceFailure);
-      else if (abortController.signal.aborted && !generationComplete)
+      else if (generationSignal.aborted && !generationComplete)
         trace.finish("cancelled", { reason: clientDisconnected ? "client_disconnect" : "aborted" });
       else trace.finish("ok");
       if (!clientDisconnected && isSseReplyWritable(reply)) {
-        reply.raw.end();
+        endGenerationOutput(reply);
       }
     }
   };
 
-  app.post("/", async (req, reply) => {
-    const input = generateRequestSchema.parse(req.body);
+  const runGeneration = async (
+    request: SchemaInput<typeof generateRequestSchema>,
+    output: GenerationOutput,
+    roomContext?: GenerationRoomContext,
+    req?: Pick<FastifyRequest, "id" | "headers">,
+  ) => {
+    const input = generateRequestSchema.parse(request);
     const generationId = randomUUID();
     const targetMessageId = input.regenerateMessageId ?? input.continueMessageId;
-    // requestId is already bound by the request hooks; this adds the generation scope.
+    // HTTP callers retain their request scope; trusted room callers get the same generation diagnostics.
     return withDiagnosticContext(
       {
         operation: "generate",
@@ -15829,9 +16069,30 @@ export async function generateRoutes(app: FastifyInstance) {
         chatId: input.chatId,
         ...(targetMessageId ? { messageId: targetMessageId } : {}),
       },
-      () => handleGenerate(req, reply, input, generationId),
+      async () => {
+        const chat = await chats.getById(input.chatId);
+        if (!chat) return rejectGenerationOutput(output, 404, { error: "Chat not found" });
+        let policy;
+        try {
+          policy = resolveRoomGenerationPolicy(
+            input.chatId,
+            parseExtra(chat.metadata),
+            parseJsonField<string[]>(chat.characterIds, []),
+            roomContext,
+          );
+        } catch (error) {
+          return rejectGenerationOutput(output, 409, {
+            error: (error as Error).message,
+            code: "room_generation_required",
+          });
+        }
+        return runWithRoomGeneration(policy, () => executeGeneration(input, output, generationId, req));
+      },
     );
-  });
+  };
+
+  app.post("/", async (req, reply) => runGeneration(generateRequestSchema.parse(req.body), reply, undefined, req));
+  options.onRunnerReady?.(runGeneration);
 
   // Expose the active generation registry for status/abort routes and other
   // external consumers that read the decorated Fastify property.

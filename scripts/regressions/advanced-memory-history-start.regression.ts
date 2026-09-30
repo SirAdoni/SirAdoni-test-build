@@ -179,9 +179,16 @@ try {
   const personalStart = await app.inject({
     method: "PATCH",
     url: `/api/chats/${cycleChat.id}/messages/${growingSource[40]!.id}/extra`,
-    payload: { conversationStartForCharacterIds: ["second"] },
+    payload: {
+      conversationStartForCharacterIds: ["second"],
+      hiddenFromAICharacterIds: ["unrelated"],
+      pinnedToContext: true,
+    },
   });
   assert.equal(personalStart.statusCode, 200, personalStart.body);
+  const personalExtra = JSON.parse((await chats.getMessage(growingSource[40]!.id))!.extra);
+  assert.deepEqual(personalExtra.hiddenFromAICharacterIds, ["unrelated"]);
+  assert.equal(personalExtra.pinnedToContext, true);
   const cutoffId = growingSource[30]!.id;
   await chats.addSwipe(cutoffId, growingSource[30]!.content);
   await chats.addSwipe(cutoffId, growingSource[30]!.content);

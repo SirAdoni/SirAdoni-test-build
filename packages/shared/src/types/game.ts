@@ -160,6 +160,12 @@ export interface GameCharacterCard {
 /** Life status of a tracked NPC. An absent status means alive or unknown (legacy default). */
 export type GameNpcStatus = "alive" | "dead" | "unknown";
 
+/** Persistent revision of an explicit portrait assignment or removal. */
+export interface GameNpcAvatarState {
+  revision: number;
+  removed: boolean;
+}
+
 /** A tracked NPC in the game world. */
 export interface GameNpc {
   id: string;
@@ -190,6 +196,8 @@ export interface GameNpc {
   notes: string[];
   /** Optional avatar URL (generated or uploaded) */
   avatarUrl?: string | null;
+  /** Server-owned explicit portrait intent; ordinary model fields do not create this marker. */
+  avatarState?: GameNpcAvatarState;
 }
 
 // ── Sessions ──
@@ -509,6 +517,19 @@ export interface SkillCheckResult {
   adjust?: number;
   /** The standing re-throw the Game Master named with `reroll=` and the check applied, by its id. */
   reroll?: string;
+  /**
+   * What the character's conditions and worn or carried items added to or took off the check, their
+   * dice rolled: dice on a pool, a flat number on a sum (where it is inside `modifier` too). Absent
+   * when nothing did.
+   */
+  effects?: number;
+  /**
+   * The conditions and items that changed this check, by name: its number, how it was thrown, or that
+   * it failed without a roll. Only a ruleset game sets it, and only what changed something.
+   */
+  from?: string[];
+  /** The save failed without a roll, because something named in `from` makes it fail. */
+  automatic?: boolean;
 }
 
 // ── The sighted dice pool (opt-in, last) ──

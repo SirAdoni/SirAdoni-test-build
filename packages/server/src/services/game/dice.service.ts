@@ -128,6 +128,10 @@ export function resolveGameDiceRequests(
   knownRolls: readonly DiceRollResult[] = [],
   roll: (notation: string) => DiceRollResult = rollDice,
   pool?: GameDicePoolSession,
+  /** The game pins a ruleset, whose checks are its own resolver's alone: rolled already, or left as
+   *  asks on purpose. A record it wrote with its own dice (2d6, a pool) is not a request, so no check
+   *  tag is read here, and rolling one again would lose the sheet it was rolled with. */
+  rulesetChecks = false,
 ): {
   content: string;
   diceRolls: DiceRollResult[];
@@ -181,6 +185,7 @@ export function resolveGameDiceRequests(
       return serializeDiceRecord(result);
     }
 
+    if (rulesetChecks) return original;
     const tag = parseSkillCheckTagBody(body);
     // Standard d20 checks keep their existing character-sheet modifier path.
     if (!tag || tag.skill.length > 100 || isEngineRollableSkillCheckTag(tag) || tag.advantage || tag.disadvantage)

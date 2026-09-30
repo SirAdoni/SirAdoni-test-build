@@ -1,28 +1,41 @@
-import { Loader2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { SlpEmptyState, SlpErrorState, SlpSkeleton } from "../modules/chrome/SlpStateKit";
 import { toast } from "sonner";
 import { ViewerHub } from "./screens/SlpScreenHub";
-import { SLURP_PLACEHOLDER_BALANCE, errorMessage, EmptyState, SlpCreatorFrame } from "./screens/SlpHomeHelpers";
+import { errorMessage, SlpCreatorFrame } from "./screens/SlpHomeHelpers";
 import { ImagePromptReviewModal } from "../../components/ui/ImagePromptReviewModal";
 import { ChatImageLightbox } from "../../components/chat/ChatImageLightbox";
 import { SlurpOnboardingWizard } from "../features/onboarding/SlpOnboardingPanel";
 import { SlurpAgeGate, SlurpConfetti } from "../features/onboarding/SlpAgeGate";
-import { SlurpSplash } from "../features/onboarding/SlpSplash";
-import { getSlpAccentStyle, SLP_PERSONA_SWITCHER_PAGE_SIZE, SLP_PINK } from "../base/chrome/SlpChrome";
-import { SlpShell } from "../modules/chrome/SlpShell";
+import { leaveUnlessBackdrop, SlurpSplash } from "../features/onboarding/SlpSplash";
+import {
+  getSlpAccentStyle,
+  SLP_PAGE_SCROLL_CLASS,
+  SLP_PERSONA_SWITCHER_PAGE_SIZE,
+  SLP_PINK,
+} from "../base/chrome/SlpChrome";
+import { cn } from "../../lib/utils";
+import { SlpShell, SlpWordmark } from "../modules/chrome/SlpShell";
+import { SlpSharePostModal } from "../features/messages/SlpSharePostModal";
+import { SlpCreatorSettingsModal } from "../features/creators/settings/SlpCreatorSettingsModal";
 import { SlpBackstageShell } from "../app/backstage/SlpBackstageShell";
 import { SlpBackstageSidebar } from "../features/backstage/SlpBackstageSidebar";
 import { Modal } from "../../components/ui/Modal";
-import type { SlurpNavigationState } from "../base/navigation/slp-navigation.types";
 import { useSlurpHomeState } from "./slp-home-actions";
+import type { SlurpHomeProps } from "./slp-home.types";
 import { renderSlurpHomeCreatorFlow } from "./screens/SlpHomeCreatorFlow";
 import { renderSlurpHomeDestinations } from "./screens/SlpHomeDestinations";
 import { SlpHomeFeedRail } from "./screens/SlpHomeFeedRail";
+import { SlpStirCreatorSheet, SlpStirReadyPlanHost } from "../features/stir/slp-stir-contract";
+import { useSlpMinuteClock } from "../base/ui/slp-minute-clock";
+import type { SlpStoryRings } from "../modules/story/SlpStoryRing";
+import { slpStoryRings, slpStoryStartId } from "../modules/story/slp-story-rings";
+import { slurpLiveStories } from "./screens/slp-hub-view";
+import { slpShowPostWhenRendered } from "../modules/post/SlpPostPurposeNote";
+import type { SlpPulseTarget } from "../base/state/slp-task-store";
 
-interface SlurpHomeProps {
-  navigation: SlurpNavigationState;
-  onNavigate: (destination: SlurpNavigationState) => void;
-  onLeave?: () => void;
-}
+/** Slurp's own tree and its portalled sheets. */
+const SLP_SCOPE_SELECTOR = 'marinara-capability-slurp2, [data-marinara-capability-scope="slurp2"]';
 
 export function SlurpHome({ navigation, onNavigate, onLeave }: SlurpHomeProps) {
   const model = useSlurpHomeState({ navigation, onNavigate, onLeave });
@@ -70,8 +83,7 @@ export function SlurpHome({ navigation, onNavigate, onLeave }: SlurpHomeProps) {
     onboardingPresentedRef,
     viewerQuery,
     noodlerUnseenCount,
-    notificationsQuery,
-    inboxThreadsQuery,
+    unreadCountQuery,
     frozenFeedSeenAt,
     markFeedShown,
     toggleFollow,
@@ -79,26 +91,69 @@ export function SlurpHome({ navigation, onNavigate, onLeave }: SlurpHomeProps) {
     unlockPost,
     confirmImagePrompts,
     imagePromptReview,
-    setImagePromptReview,
     prepareNavigationAwayFromProfileEditor,
     goToHub,
     goToNoodlerSearch,
     goToMessages,
     goToWallet,
-    goToStudio,
+    goToStir,
     closeNoodlerSearch,
     postCardController,
     postCardCtx,
     enterFromGate,
     closeOnboarding,
-    beginEdit,
     redraftFromSource,
     confirmReviewedImagePrompts,
+    cancelReviewedImagePrompts,
     toggleCreatorSubscription,
     mainAuthorProfile,
-    openPostComposer,
     openStoryComposer,
+    updateSlurpSettings,
   } = model;
+  // "Show whole pictures": on <html>, so previews in sheets and dialogs portalled out of Slurp follow it.
+  const wholePictures = slurpSettingsQuery.data?.previewWholePictures === true;
+  useEffect(() => {
+    document.documentElement.toggleAttribute("data-slp-whole", wholePictures);
+    return () => document.documentElement.removeAttribute("data-slp-whole");
+  }, [wholePictures]);
+  // "Blur pictures until tapped": the CSS in slp-client-entry blurs every Slurp picture and video; the
+  // first tap on one shows it instead of opening it. On <html> for the same reason as above.
+  // ponytail: a tap on an overlay that is not the picture's own button (a veil, a carousel arrow)
+  // does its usual action; a picture that is not focusable has no keyboard reveal of its own.
+  const blurPictures = slurpSettingsQuery.data?.blurPictures === true;
+  useEffect(() => {
+    const root = document.documentElement;
+    root.toggleAttribute("data-slp-blur", blurPictures);
+    if (!blurPictures) return () => root.removeAttribute("data-slp-blur");
+    const reveal = (event: MouseEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      // The picture itself, or a blurred one inside the button or link that was activated: Enter or
+      // Space on a picture button sends its click to the button, not the picture.
+      const media =
+        target?.closest("img, video") ??
+        target
+          ?.closest("button, a, [role='button']")
+          ?.querySelector("img:not([data-slp-revealed]), video:not([data-slp-revealed])");
+      if (!media || media.hasAttribute("data-slp-revealed") || !media.closest(SLP_SCOPE_SELECTOR)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      media.setAttribute("data-slp-revealed", "");
+    };
+    document.addEventListener("click", reveal, true);
+    return () => {
+      document.removeEventListener("click", reveal, true);
+      root.removeAttribute("data-slp-blur");
+    };
+  }, [blurPictures]);
+  const personaSourceIds = new Set(personas.map((persona) => persona.id));
+  const storyRings = useSlurpStoryRings(model);
+  // Task F: an older budget moved to the sized defaults; Pulse says so once, then this clears it.
+  const budgetNoteBudget = slurpSettingsQuery.data?.modelBudget.raisedNotice
+    ? slurpSettingsQuery.data.modelBudget
+    : null;
+  const dismissBudgetNote = () => {
+    if (budgetNoteBudget) updateSlurpSettings.mutate({ modelBudget: { ...budgetNoteBudget, raisedNotice: false } });
+  };
 
   const shellProps = {
     appMode: "slurp" as const,
@@ -106,15 +161,18 @@ export function SlurpHome({ navigation, onNavigate, onLeave }: SlurpHomeProps) {
       navigation.mode === "creator-settings"
         ? ("settings" as const)
         : navigation.mode === "creator" && navigation.view === "profile"
-          ? ("profile" as const)
+          ? // Only the viewer's own Creator is "Profile"; another Creator's page highlights no tab (B14).
+            navigation.accountId === mainAuthorProfile?.id
+            ? ("profile" as const)
+            : null
           : navigation.mode === "creator" && navigation.view === "search"
             ? ("search" as const)
             : navigation.mode === "creator" && navigation.view === "messages"
               ? ("messages" as const)
               : navigation.mode === "creator" && navigation.view === "wallet"
                 ? ("wallet" as const)
-                : navigation.mode === "creator" && navigation.view === "studio"
-                  ? ("studio" as const)
+                : navigation.mode === "creator" && (navigation.view === "stir" || navigation.view === "studio")
+                  ? ("stir" as const)
                   : navigation.mode === "creator" && navigation.view === "notifications"
                     ? ("messages" as const)
                     : ("noodler" as const),
@@ -125,6 +183,7 @@ export function SlurpHome({ navigation, onNavigate, onLeave }: SlurpHomeProps) {
     homeActive: navigation.mode === "creator" && navigation.view === "hub",
     noodlerUnseenCount,
     accent: SLP_PINK,
+    storyRings,
     personaAccount: shellPersonaAccount,
     // The Slurp identity to show for the active persona, when it runs a Creator profile. Kept
     // separate from `personaAccount` on purpose: that one carries the persona's own account id,
@@ -161,44 +220,149 @@ export function SlurpHome({ navigation, onNavigate, onLeave }: SlurpHomeProps) {
     onOpenSearch: goToNoodlerSearch,
     onOpenMessages: goToMessages,
     onOpenWallet: goToWallet,
-    onOpenStudio: goToStudio,
-    notificationCount:
-      (notificationsQuery.data?.unseenCount ?? 0) +
-      (inboxThreadsQuery.data?.unread ?? 0) +
-      (inboxThreadsQuery.data?.inboundUnread ?? 0),
-    // The studio is only meaningful for a persona that operates a Creator.
-    hasOperatedCreator: Boolean(myCreatorProfile),
-    walletBalanceLabel: `${viewerWalletsQuery.data?.[viewerPersonaId ?? ""]?.coins ?? SLURP_PLACEHOLDER_BALANCE}`,
-    walletBalance: viewerWalletsQuery.data?.[viewerPersonaId ?? ""]?.coins,
-    personaBannerUrl: myCreatorProfile?.bannerUrl ?? null,
-    onBecomeCreator: shellPersonaAccount
-      ? () => {
-          onNavigate({ mode: "creator", view: "create-profile", sourceAccountId: shellPersonaAccount.id });
-          setMobileDrawerOpen(false);
+    onOpenStir: goToStir,
+    // Pulse's tap-through (task C): the post a task made, your chat it wrote in, or the Creator.
+    onOpenPulseTarget: (target: SlpPulseTarget) => {
+      if ("chatCreatorId" in target) {
+        onNavigate({ mode: "creator", view: "messages", creatorAccountId: target.chatCreatorId });
+        return;
+      }
+      onNavigate({ mode: "creator", view: "profile", accountId: target.accountId });
+      const postId = target.postId;
+      if (postId) window.setTimeout(() => slpShowPostWhenRendered(postId), 250);
+    },
+    onOpenBudget: () =>
+      onNavigate({ mode: "creator-settings", section: "world", target: "audience", settingKey: "modelBudget" }),
+    pulseStarts: {
+      // The Creator picker in Backstage; its Generate is a Pulse task (task B).
+      onGeneratePosts: () =>
+        onNavigate({ mode: "creator-settings", section: "overview", target: "overview", openRefresh: true }),
+      // A failed task restored after a reload: the screen it started from (no dead end).
+      onStartAgain: (screen, task) => {
+        if (screen === "stir") void goToStir();
+        else if (screen === "generate")
+          onNavigate({ mode: "creator-settings", section: "overview", target: "overview", openRefresh: true });
+        else if (screen === "add") setOnboardingMode("add-creators");
+        else if (task.accountIds[0]) onNavigate({ mode: "creator", view: "profile", accountId: task.accountIds[0] });
+      },
+    },
+    budgetNote: budgetNoteBudget
+      ? {
+          onOpenBudget: () => {
+            dismissBudgetNote();
+            onNavigate({ mode: "creator-settings", section: "world", target: "audience", settingKey: "modelBudget" });
+          },
+          onDismiss: dismissBudgetNote,
         }
       : undefined,
+    // Unread messages only, the same number the Inbox's Messages section shows. Adding the Activity
+    // stream's unseen count made the badge disagree with every count on the page it opens.
+    notificationCount: (unreadCountQuery.data?.unread ?? 0) + (unreadCountQuery.data?.inboundUnread ?? 0),
+    walletBalanceLabel: activeWalletCoins === null ? undefined : `${activeWalletCoins}`,
+    walletBalance: viewerWalletsQuery.data?.[viewerPersonaId ?? ""]?.coins,
+    personaBannerUrl: myCreatorProfile?.bannerUrl ?? null,
+    onBecomeCreator:
+      shellPersonaAccount && accountsQuery.isSuccess
+        ? () => {
+            onNavigate({ mode: "creator", view: "create-profile", sourceAccountId: shellPersonaAccount.id });
+            setMobileDrawerOpen(false);
+          }
+        : undefined,
     onOpenProfile: async () => {
       if (!(await prepareNavigationAwayFromProfileEditor())) return;
       setMobileDrawerOpen(false);
       onNavigate(
         mainAuthorProfile
           ? { mode: "creator", view: "profile", accountId: mainAuthorProfile.id }
-          : shellPersonaAccount
+          : shellPersonaAccount && accountsQuery.isSuccess
             ? { mode: "creator", view: "create-profile", sourceAccountId: shellPersonaAccount.id }
             : { mode: "creator", view: "profiles" },
       );
     },
+    onOpenDashboard: mainAuthorProfile
+      ? () => {
+          setMobileDrawerOpen(false);
+          onNavigate({ mode: "creator", view: "profile", accountId: mainAuthorProfile.id, dashboard: true });
+        }
+      : undefined,
     onOpenSettings: openSettings,
-    onCompose: openPostComposer,
-    // Every NoodleR branch spreads shellProps, so the lightbox mounts once wherever the user is.
-    overlays: postCardController.imageLightbox ? (
-      <ChatImageLightbox
-        image={postCardController.imageLightbox}
-        alt={postCardController.imageLightbox.prompt || "Slurp image"}
-        pinEnabled={false}
-        onClose={() => postCardController.setImageLightbox(null)}
-      />
-    ) : null,
+    // Every NoodleR branch spreads shellProps, so these mount once wherever the user is. The
+    // Creator settings modal is opened from Backstage, from a Creator's profile and from a
+    // settings search result, so it cannot belong to any one of those screens.
+    overlays: (
+      <>
+        {/* The image prompt review, the share picker, the age gate and "What's new" belong to no one
+            screen: mounted here, "Send in a chat" works on a profile and the gate and the release
+            sheet show wherever Slurp opens (R1-028, R1-135). */}
+        <ImagePromptReviewModal
+          open={Boolean(imagePromptReview)}
+          items={imagePromptReview?.items ?? []}
+          isSubmitting={confirmImagePrompts.isPending}
+          onCancel={cancelReviewedImagePrompts}
+          onConfirm={confirmReviewedImagePrompts}
+        />
+        <Modal
+          open={gateOpen && !splashOpen}
+          // The X and Escape mean Leave Slurp: the gate has no other way out, and the X used to do nothing.
+          onClose={() => leaveUnlessBackdrop(onLeave)}
+          title={localizeUi("ui.noodle.noodlemodetoggle.noodler")}
+          width="max-w-md"
+          panelClassName="noodle-icon-scope"
+          panelStyle={getSlpAccentStyle(SLP_PINK)}
+          closeDisabled={!onLeave}
+        >
+          <SlurpAgeGate
+            personaName={shellPersonaAccount?.displayName ?? ""}
+            onComplete={enterFromGate}
+            onCelebrate={() => setGateCelebrating(true)}
+            onLeave={onLeave}
+            isPending={false}
+          />
+        </Modal>
+        <SlpSharePostModal
+          post={model.sharingPost}
+          personaId={viewerPersonaId}
+          open={Boolean(model.sharingPost)}
+          onClose={() => model.setSharingPost(null)}
+        />
+        <SlurpSplash open={splashOpen} onDismiss={() => setSplashOpen(false)} onLeave={onLeave} />
+        {gateCelebrating && <SlurpConfetti fixed />}
+        {postCardController.imageLightbox && (
+          <ChatImageLightbox
+            image={postCardController.imageLightbox}
+            alt={postCardController.imageLightbox.prompt || "Slurp image"}
+            pinEnabled={false}
+            onClose={() => postCardController.setImageLightbox(null)}
+          />
+        )}
+        {/* B: a Stir plan that came back after the player left its box. */}
+        <SlpStirReadyPlanHost />
+        {/* W: the ✦ sheet, opened from a profile, a post's ⋯ or Creator tools. */}
+        <SlpStirCreatorSheet
+          personaId={viewerPersonaId}
+          onOpenSupport={(creatorAccountId) =>
+            onNavigate({ mode: "creator", view: "messages", creatorAccountId, asSupport: true })
+          }
+        />
+        <SlpCreatorSettingsModal
+          onRedraft={(creator) => {
+            redraftFromSource(creator);
+            onNavigate({
+              mode: "creator",
+              view: "profile",
+              accountId: creator.id,
+              ...(navigation.mode === "creator-settings" ? { returnToSettings: navigation } : {}),
+            });
+          }}
+          onViewProfile={
+            navigation.mode === "creator-settings"
+              ? (creator) =>
+                  onNavigate({ mode: "creator", view: "profile", accountId: creator.id, returnToSettings: navigation })
+              : undefined
+          }
+        />
+      </>
+    ),
   } as const;
 
   if (navigation.mode === "creator-settings") {
@@ -214,14 +378,6 @@ export function SlurpHome({ navigation, onNavigate, onLeave }: SlurpHomeProps) {
           onNavigate={onNavigate}
           onAddCreators={() => setOnboardingMode("add-creators")}
           personaSourceIds={new Set(personas.map((persona) => persona.id))}
-          onEditCreator={(creator) => {
-            beginEdit(creator);
-            onNavigate({ mode: "creator", view: "profile", accountId: creator.id, returnToSettings: navigation });
-          }}
-          onRedraftCreator={(creator) => {
-            redraftFromSource(creator);
-            onNavigate({ mode: "creator", view: "profile", accountId: creator.id, returnToSettings: navigation });
-          }}
           onRestartOnboarding={() => {
             onboardingPresentedRef.current = true;
             setOnboardingState("entered");
@@ -255,38 +411,29 @@ export function SlurpHome({ navigation, onNavigate, onLeave }: SlurpHomeProps) {
 
   // Shared review layer: Guide generation can be triggered from both the selected stage-profile
   // view and the hub, so the confirmation modal must render on every branch that owns that action.
-  const reviewModal = (
-    <ImagePromptReviewModal
-      open={Boolean(imagePromptReview)}
-      items={imagePromptReview?.items ?? []}
-      isSubmitting={confirmImagePrompts.isPending}
-      onCancel={() => setImagePromptReview(null)}
-      onConfirm={confirmReviewedImagePrompts}
-    />
-  );
+  // Mounted once in the shell overlays; the screen branches get nothing to render twice.
+  const reviewModal = null;
 
-  if (accountsQuery.isLoading) {
+  // While Slurp itself loads or failed, the nav counts would come from other queries and lie over an
+  // empty screen, so they stay hidden until the app is really there.
+  if (accountsQuery.isLoading || accountsQuery.isError) {
     return (
-      <SlpShell {...shellProps}>
-        <SlpCreatorFrame onBack={exitToCreatorHub} title={localizeUi("ui.noodle.noodlemodetoggle.noodler")}>
-          <div className="flex justify-center py-16">
-            <Loader2 size={24} className="animate-spin text-[var(--noodle-accent)]" />
+      <SlpShell {...shellProps} noodlerUnseenCount={0} notificationCount={0}>
+        <div className="flex h-full min-h-0 flex-col">
+          <header className="flex h-14 shrink-0 items-center border-b border-[var(--noodle-divider)] px-3 @min-[1024px]:hidden">
+            <SlpWordmark />
+          </header>
+          <div className={cn("min-h-0 flex-1 overflow-y-auto", SLP_PAGE_SCROLL_CLASS)}>
+            {accountsQuery.isError ? (
+              <SlpErrorState
+                title={localizeUi("ui.noodle.noodlerhome.noodlerCouldNotBeLoaded")}
+                onRetry={retryAccountsOrReload}
+              />
+            ) : (
+              <SlpSkeleton shape="hub" count={5} label={localizeUi("ui.slurp.state.loading")} />
+            )}
           </div>
-        </SlpCreatorFrame>
-      </SlpShell>
-    );
-  }
-
-  if (accountsQuery.isError) {
-    return (
-      <SlpShell {...shellProps}>
-        <SlpCreatorFrame onBack={exitToCreatorHub} title={localizeUi("ui.noodle.noodlemodetoggle.noodler")}>
-          <EmptyState
-            title={localizeUi("ui.noodle.noodlerhome.noodlerCouldNotBeLoaded")}
-            action={localizeUi("capabilities.actions.tryAgain")}
-            onAction={retryAccountsOrReload}
-          />
-        </SlpCreatorFrame>
+        </div>
       </SlpShell>
     );
   }
@@ -298,7 +445,7 @@ export function SlurpHome({ navigation, onNavigate, onLeave }: SlurpHomeProps) {
     return (
       <SlpShell {...shellProps}>
         <SlpCreatorFrame onBack={goToHub} title={localizeUi("ui.noodle.noodlehome.profile")}>
-          <EmptyState title={localizeUi("ui.noodle.viewerhub.thisPersonaHasNoLinkedNoodlerProfile")} />
+          <SlpEmptyState title={localizeUi("ui.noodle.viewerhub.thisPersonaHasNoLinkedNoodlerProfile")} />
         </SlpCreatorFrame>
       </SlpShell>
     );
@@ -324,21 +471,11 @@ export function SlurpHome({ navigation, onNavigate, onLeave }: SlurpHomeProps) {
         scope={viewerQuery.data}
         newSinceAt={viewerQuery.data ? (frozenFeedSeenAt[viewerQuery.data.viewer.id] ?? null) : null}
         onFeedShown={markFeedShown}
-        onOpenWallet={goToWallet}
-        walletCoins={activeWalletCoins}
+        onLoadMore={model.viewerQuery.loadMore}
+        hasMore={Boolean(model.viewerQuery.data?.nextCursor)}
         isLoading={viewerQuery.isLoading}
         isError={viewerQuery.isError}
         onRetry={() => void viewerQuery.refetch()}
-        onRefresh={() =>
-          void viewerQuery.refetch().then(({ error }) => {
-            if (error) {
-              toast.error(errorMessage(error, localizeUi("ui.noodle.noodlerhome.couldNotRefreshNoodlerCreators")));
-              return;
-            }
-            toast.success(localizeUi("ui.slurp.feed.refreshed"));
-          })
-        }
-        isRefreshing={viewerQuery.isRefetching}
         unlockPending={unlockPost.isPending}
         postCardCtx={postCardCtx}
         onUnlock={(postId) => {
@@ -365,6 +502,7 @@ export function SlurpHome({ navigation, onNavigate, onLeave }: SlurpHomeProps) {
             ? () => onNavigate({ mode: "creator", view: "profile", accountId: mainAuthorProfile.id })
             : undefined
         }
+        onAddCreators={() => setOnboardingMode("add-creators")}
         onToggleSubscription={toggleCreatorSubscription}
         togglePending={toggleSubscription.isPending || toggleFollow.isPending}
         connectionCounts={connectionCountsQuery.data ?? {}}
@@ -381,26 +519,41 @@ export function SlurpHome({ navigation, onNavigate, onLeave }: SlurpHomeProps) {
         }}
         onSkipped={() => setOnboardingState("completed")}
       />
-      <Modal
-        open={gateOpen && !splashOpen}
-        onClose={() => undefined}
-        title={localizeUi("ui.noodle.noodlemodetoggle.noodler")}
-        width="max-w-md"
-        panelClassName="noodle-icon-scope"
-        panelStyle={getSlpAccentStyle(SLP_PINK)}
-        closeDisabled
-      >
-        <SlurpAgeGate
-          personaName={shellPersonaAccount?.displayName ?? ""}
-          onComplete={enterFromGate}
-          onCelebrate={() => setGateCelebrating(true)}
-          onLeave={onLeave}
-          isPending={false}
-        />
-      </Modal>
-      <SlurpSplash open={splashOpen} onDismiss={() => setSplashOpen(false)} />
-      {gateCelebrating && <SlurpConfetti fixed />}
-      {reviewModal}
     </SlpShell>
+  );
+}
+
+/**
+ * The Story ring for every avatar under the shell (T): who has a live Story, seen or not, and a tap
+ * that opens them. The hub opens its own Story viewer; anywhere else the Creator's profile opens and
+ * plays them there, so a closed Story leaves the player on that page.
+ */
+function useSlurpStoryRings({
+  viewerQuery,
+  slurpSettingsQuery,
+  navigation,
+  onNavigate,
+}: Pick<ReturnType<typeof useSlurpHomeState>, "viewerQuery" | "slurpSettingsQuery"> &
+  Pick<SlurpHomeProps, "navigation" | "onNavigate">): SlpStoryRings {
+  const [pending, setPending] = useState<string | null>(null);
+  const now = useSlpMinuteClock();
+  const cutoff = now - (slurpSettingsQuery.data?.storyLifetimeHours ?? 72) * 60 * 60 * 1000;
+  const creators = viewerQuery.data?.creators;
+  const live = useMemo(() => slurpLiveStories(creators ?? [], cutoff), [creators, cutoff]);
+  const rings = useMemo(() => slpStoryRings(live), [live]);
+  const onHub = navigation.mode === "creator" && (navigation.view === "hub" || navigation.view === "search");
+  const onProfileOf = navigation.mode === "creator" && navigation.view === "profile" ? navigation.accountId : null;
+  return useMemo(
+    () => ({
+      ringOf: (creatorId: string) => rings.get(creatorId) ?? null,
+      open: (creatorId: string) => {
+        setPending(creatorId);
+        if (!onHub && onProfileOf !== creatorId) onNavigate({ mode: "creator", view: "profile", accountId: creatorId });
+      },
+      pending,
+      taken: () => setPending(null),
+      startOf: (creatorId: string) => slpStoryStartId(live, creatorId),
+    }),
+    [live, rings, pending, onHub, onProfileOf, onNavigate],
   );
 }

@@ -4,8 +4,11 @@ import { EMPTY_SLP_CREATOR_POST_DRAFT, errorMessage, SlpCreatorFrame } from "./S
 import { StageProfileSourcePicker, DisclosureStep } from "./SlpScreenCreateProfile";
 import { toast } from "sonner";
 import { StageProfileForm } from "../../features/creators/SlpStageProfileForm";
-import { ChevronRight, LayoutGrid, Pencil, Plus, Sparkles } from "lucide-react";
+import { openSlpCreatorSettings } from "../../features/creators/settings/slp-creator-settings-store";
+import { ChevronRight, LayoutGrid, Pencil, Plus } from "lucide-react";
+import { SlpSparkleGlyph } from "../../base/chrome/SlpGlyphs";
 import { cn } from "../../../lib/utils";
+import { SLP_EYEBROW_CLASS, SLP_PAGE_SCROLL_CLASS, SLP_RAIL_GROUP_CLASS } from "../../base/chrome/SlpChrome";
 import { SlurpCreatorProfileCard } from "../../modules/creator/SlpCreatorProfileCard";
 import { StageProfileView } from "./SlpScreenProfile";
 import type { ReactNode } from "react";
@@ -32,7 +35,6 @@ export function renderSlurpHomeCreatorFlow({
   const {
     accountsQuery,
     autoPostSetupId,
-    beginEdit,
     cancelCreateProfile,
     changeDisclosure,
     clearNoodlerPostDraft,
@@ -51,9 +53,7 @@ export function renderSlurpHomeCreatorFlow({
     eligibleAccountsQuery,
     eligibleNoodleAccounts,
     generateDraft,
-    generatePost,
     generateProfileDraft,
-    goToStudio,
     handleSourceKind,
     handleSourceSearch,
     invalidateProfileDraftGeneration,
@@ -88,7 +88,6 @@ export function renderSlurpHomeCreatorFlow({
     slurpSettingsQuery,
     sourceKind,
     sourceSearch,
-    submitGuidedPost,
     submitManualPost,
     submitRunNow,
     toggleCreatorFollow,
@@ -96,7 +95,6 @@ export function renderSlurpHomeCreatorFlow({
     toggleFollow,
     toggleSubscription,
     unlockPost,
-    updateAccess,
     updateNoodlerPostDraft,
     updateProfile,
     uploadAvatar,
@@ -209,7 +207,7 @@ export function renderSlurpHomeCreatorFlow({
                     },
                   )
                 }
-                className="h-10 flex-1 rounded-full border border-transparent bg-[var(--noodle-accent)] px-3 text-xs font-bold text-zinc-950 [&_svg]:!text-zinc-950 disabled:opacity-50"
+                className="h-10 flex-1 rounded-full border border-transparent bg-[var(--noodle-accent)] px-3 text-xs font-bold text-[var(--slurp-on-accent)] [&_svg]:!text-[var(--slurp-on-accent)] disabled:opacity-50"
               >
                 {setupAutoPosting.isPending
                   ? localizeUi("ui.noodle.noodlerhome.enabling_5c258f0")
@@ -314,17 +312,14 @@ export function renderSlurpHomeCreatorFlow({
       .filter(
         (creator) => creator.profile.id !== selectedProfile.id && creator.profile.sourceAccountId !== viewerPersonaId,
       )
-      .slice(0, 2);
+      .slice(0, 5);
     const profileRail = ownsSelectedProfile ? (
       <aside
         className="relative hidden w-[20rem] shrink-0 overflow-hidden px-4 py-5 @min-[1280px]:block"
         aria-labelledby="slurp-creator-tools-heading"
       >
         <div className="sticky top-4 space-y-3">
-          <h2
-            id="slurp-creator-tools-heading"
-            className="px-1 text-xs font-black uppercase tracking-[0.14em] text-[var(--muted-foreground)]"
-          >
+          <h2 id="slurp-creator-tools-heading" className={cn(SLP_EYEBROW_CLASS, "px-1")}>
             {localizeUi("ui.slurp.profile.creatorTools", { defaultValue: "Creator tools" })}
           </h2>
           <section className="overflow-hidden rounded-2xl bg-[var(--slurp-surface)] shadow-[var(--slurp-shadow-floating)] ring-1 ring-inset ring-[var(--noodle-divider)]">
@@ -332,7 +327,7 @@ export function renderSlurpHomeCreatorFlow({
               {
                 label: localizeUi("ui.slurp.profile.editProfile", { defaultValue: "Edit profile" }),
                 icon: Pencil,
-                action: () => beginEdit(selectedProfile),
+                action: () => openSlpCreatorSettings(selectedProfile.id, { tab: "identity" }),
               },
               {
                 label: localizeUi("ui.slurp.profile.createPost", { defaultValue: "Create post" }),
@@ -344,16 +339,18 @@ export function renderSlurpHomeCreatorFlow({
               },
               {
                 label: localizeUi("ui.slurp.profile.addStory", { defaultValue: "Add story" }),
-                icon: Sparkles,
+                icon: SlpSparkleGlyph,
                 action: () => {
                   updateNoodlerPostDraft(selectedProfile.id, { postType: "story", poll: null, title: "" });
                   setComposerOpenSignal((tick) => tick + 1);
                 },
               },
               {
-                label: localizeUi("ui.slurp.profile.openStudio", { defaultValue: "Open studio" }),
+                // W: Studio's own-page half is the Dashboard sheet on the profile now.
+                label: localizeUi("ui.slurp.profile.openDashboard"),
                 icon: LayoutGrid,
-                action: () => void goToStudio(),
+                action: () =>
+                  onNavigate({ mode: "creator", view: "profile", accountId: selectedProfile.id, dashboard: true }),
               },
             ].map(({ label, icon: Icon, action }, index) => (
               <button
@@ -365,7 +362,7 @@ export function renderSlurpHomeCreatorFlow({
                   index > 0 && "border-t border-[var(--noodle-divider)]",
                 )}
               >
-                <Icon size={17} className="text-[var(--noodle-accent)]" aria-hidden="true" />
+                <Icon size={17} className="text-[var(--noodle-accent-foreground)]" aria-hidden="true" />
                 <span className="flex-1">{label}</span>
                 <ChevronRight size={15} className="text-[var(--muted-foreground)]" aria-hidden="true" />
               </button>
@@ -379,30 +376,35 @@ export function renderSlurpHomeCreatorFlow({
         aria-labelledby="slurp-similar-creators-heading"
       >
         <div className="sticky top-4 space-y-3">
-          <h2
-            id="slurp-similar-creators-heading"
-            className="px-1 text-xs font-black uppercase tracking-[0.14em] text-[var(--muted-foreground)]"
-          >
+          <h2 id="slurp-similar-creators-heading" className={cn(SLP_EYEBROW_CLASS, "px-1")}>
             {localizeUi("ui.slurp.profile.similarCreators", { defaultValue: "More creators" })}
           </h2>
-          {similarCreators.map((creator) => (
-            <SlurpCreatorProfileCard
-              key={creator.profile.id}
-              creator={creator}
-              onOpenProfile={(accountId) => onNavigate({ mode: "creator", view: "profile", accountId })}
-            />
-          ))}
+          {/* Compact rows in one raised group (design step 3): five Creators fit where two tall cards did. */}
+          <div className={SLP_RAIL_GROUP_CLASS}>
+            {similarCreators.map((creator) => (
+              <SlurpCreatorProfileCard
+                key={creator.profile.id}
+                creator={creator}
+                layout="row"
+                onOpenProfile={(accountId) => onNavigate({ mode: "creator", view: "profile", accountId })}
+              />
+            ))}
+          </div>
         </div>
       </aside>
     ) : undefined;
     return (
       <SlpShell {...shellProps} contextualRail={profileRail ? "populated" : "spanning"} rightRail={profileRail}>
-        <div className="h-full min-h-0 overflow-y-auto">
+        <div className={cn("h-full min-h-0 overflow-y-auto", SLP_PAGE_SCROLL_CLASS)}>
           <StageProfileView
             key={`${selectedProfile.id}:${shellPersonaAccount?.id ?? "no-viewer"}`}
             profile={selectedProfile}
+            openDashboard={
+              navigation.mode === "creator" && navigation.view === "profile" && navigation.dashboard === true
+            }
             profileDraft={editingProfileId === selectedProfile.id ? profileDraft : null}
             composerOpenSignal={composerOpenSignal}
+            onComposerOpened={() => setComposerOpenSignal(0)}
             onProfileChange={(patch) => setProfileDraft((current) => (current ? { ...current, ...patch } : current))}
             onCancelEdit={closeProfileEditor}
             onSaveEdit={(location) => void saveProfile(location)}
@@ -417,7 +419,7 @@ export function renderSlurpHomeCreatorFlow({
             slurpSettings={slurpSettingsQuery.data ?? null}
             postCardCtx={postCardCtx}
             viewerAccounts={viewerAccounts}
-            connectionCounts={connectionCountsQuery.data ?? {}}
+            connectionCounts={connectionCountsQuery.data ?? null}
             viewerIsLoading={Boolean(viewerPersonaId) && !viewerQuery.data && viewerQuery.isLoading}
             viewerIsError={Boolean(viewerPersonaId) && !viewerQuery.data && viewerQuery.isError}
             onRetryViewer={() => void viewerQuery.refetch()}
@@ -428,16 +430,14 @@ export function renderSlurpHomeCreatorFlow({
             isLoading={postsQuery.isLoading}
             isError={postsQuery.isError}
             onRetry={() => void postsQuery.refetch()}
-            onEdit={() => beginEdit(selectedProfile)}
+            onEdit={() => openSlpCreatorSettings(selectedProfile.id, { tab: "identity" })}
             onBack={() =>
               navigation.mode === "creator" && navigation.view === "profile" && navigation.returnToSettings
                 ? onNavigate(navigation.returnToSettings)
                 : onNavigate({ mode: "creator", view: profileReturnView.current })
             }
             onManualPost={submitManualPost}
-            onGuidedPost={submitGuidedPost}
             manualPending={createPost.isPending}
-            guidePending={generatePost.isPending}
             onRunNow={submitRunNow}
             runNowPending={runAutoPostNow.isPending}
             onUnlock={(postId) => {
@@ -455,17 +455,6 @@ export function renderSlurpHomeCreatorFlow({
             followPending={toggleFollow.isPending}
             onToggleSubscription={toggleCreatorSubscription}
             subscriptionPending={toggleSubscription.isPending}
-            accessPending={updateAccess.isPending}
-            onAccessChange={(access) =>
-              updateAccess.mutate(
-                { accountId: selectedProfile.id, ...access },
-                {
-                  onSuccess: () => toast.success(localizeUi("ui.noodle.noodlerhome.accessSettingsUpdated")),
-                  onError: (error) =>
-                    toast.error(errorMessage(error, localizeUi("ui.noodle.noodlerhome.couldNotUpdateAccessSettings"))),
-                },
-              )
-            }
           />
         </div>
         {reviewModal}

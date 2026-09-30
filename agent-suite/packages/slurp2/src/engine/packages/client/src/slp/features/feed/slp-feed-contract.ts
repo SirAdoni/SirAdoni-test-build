@@ -28,3 +28,16 @@ export type SlpCreatorPostDraftImage = {
   crop: SlpPostImageCrop | null;
 };
 export type SlpCreatorContentFormat = "caption" | "announcement" | "long_form";
+
+// The Creator settings modal owns one Creator's automation and prepared publishing slots.
+export {
+  useCreatorReserveStatus,
+  useUpdateCreatorAutoPosting,
+  useUpdateCreatorScheduleSlot,
+} from "./slp-feed-schedule-hooks.js";
+
+// A post shared into a chat unlocks in place (messages' shared post card).
+export { useUnlockCreatorPost } from "./slp-feed-viewer-hooks.js";
+
+// Slurp Support's "Show a post" picks from one Creator's posts and Stories (0.3.6).
+export { useCreatorPosts } from "./slp-feed-post-hooks.js";

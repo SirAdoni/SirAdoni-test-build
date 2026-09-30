@@ -1,10 +1,18 @@
 import { slpCreatorGenerationRequestSchema } from "../../../../../shared/src/slp/slp-social-generation.schema.js";
+import { slpIsAdmissionFailure } from "../../base/host/slp-admission.js";
+import { loadImageGenerationUserSettings } from "../../../services/image/image-generation-settings.js";
 import { slpCreatorTargetedRefreshSchema } from "../../../../../shared/src/slp/slp-social.schema.js";
 import { z } from "zod";
 import { getSlurpPostGuidance, updateSlurpPostGuidance } from "../../data/settings/slp-post-guidance-storage.js";
-import { SLURP_BUILT_IN_POST_GUIDANCE, SLURP_POST_GUIDANCE_MAX_LENGTH } from "../../modules/feed/slp-post-guidance.js";
+import {
+  SLURP_BUILT_IN_EXPLICIT_LEVEL,
+  SLURP_BUILT_IN_POST_GUIDANCE,
+  SLURP_POST_GUIDANCE_MAX_LENGTH,
+} from "../../modules/feed/slp-post-guidance.js";
+import { SLURP_VISUAL_SEXUAL_LEVELS } from "../../base/media/slp-visual-brief.js";
 import { resolveSlurpTextConnection } from "../../base/identity/slp-connection.js";
 import { generateSlurpPostGuidanceDraft } from "./slp-post-guidance-draft-service.js";
+import type { SlurpPostGuidanceEntry } from "../../modules/feed/slp-post-guidance.js";
 import { logger } from "../../../lib/logger.js";
 import { getErrorMessage } from "../../modules/creators/slp-public-support.js";
 import { getCreatorImageConnections, updateCreatorImageConnections } from "../../base/media/slp-image-connections.js";
@@ -13,11 +21,8 @@ import {
   refreshAllCreatorsNow,
   refreshTargetedCreatorsNow,
 } from "./slp-post-operation.js";
-import { resolveSlurpAutomaticPostAccess } from "./slp-generation-service.js";
-import {
-  admissionModeForRequest,
-  isConnectionAdmissionFailure,
-} from "../../../services/generation/connection-admission.js";
+import { resolveSlurpAutomaticPostAccess } from "./slp-automatic-post-access.js";
+import { admissionModeForRequest } from "../../../services/generation/connection-admission.js";
 import type { FastifyInstance } from "fastify";
 import { slurpPostTypeSchema } from "../../modules/requests/slp-request-schemas.js";
 import {
@@ -26,6 +31,7 @@ import {
   sendCreatorMediaError,
 } from "../../base/host/slp-multipart.js";
 import type { SlpRouteDeps } from "../viewer/slp-viewer-contract.js";
+import { slurpPromptContext } from "../../base/prompting/slp-prompt-blocks.js";
 
 const slurpTargetedRefreshSchema = slpCreatorTargetedRefreshSchema.extend({
   access: z.enum(["public", "locked"]).optional(),
@@ -77,6 +83,7 @@ export async function slpFeedPublishingRoutes(app: FastifyInstance, deps: SlpRou
   app.get("/slurp/post-guidance", async () => ({
     ...(await getSlurpPostGuidance(app.db)),
     builtIn: SLURP_BUILT_IN_POST_GUIDANCE,
+    builtInLevel: SLURP_BUILT_IN_EXPLICIT_LEVEL,
   }));
 
   /**
@@ -94,12 +101,19 @@ export async function slpFeedPublishingRoutes(app: FastifyInstance, deps: SlpRou
         locked: z.string().max(SLURP_POST_GUIDANCE_MAX_LENGTH).optional(),
         /** A Creator's private content menu. Only valid with `creatorId`: it has no global level. */
         menu: z.string().max(SLURP_POST_GUIDANCE_MAX_LENGTH).optional(),
+        /** How far this Creator's pictures go. An empty string clears the override. */
+        level: z.enum(["", ...SLURP_VISUAL_SEXUAL_LEVELS]).optional(),
       })
       .safeParse(req.body ?? {});
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     const { creatorId } = body.data;
-    if (body.data.public === undefined && body.data.locked === undefined && body.data.menu === undefined) {
-      return reply.code(400).send({ error: "Send public, locked, or menu." });
+    if (
+      body.data.public === undefined &&
+      body.data.locked === undefined &&
+      body.data.menu === undefined &&
+      body.data.level === undefined
+    ) {
+      return reply.code(400).send({ error: "Send public, locked, menu, or level." });
     }
     if (body.data.menu !== undefined && !creatorId) {
       return reply.code(400).send({ error: "A content menu belongs to one Creator; send creatorId." });
@@ -108,21 +122,22 @@ export async function slpFeedPublishingRoutes(app: FastifyInstance, deps: SlpRou
       return reply.code(404).send({ error: "Slurp stage profile not found" });
     }
     const next = await updateSlurpPostGuidance(app.db, (current) => {
-      const patch = (entry: { public: string; locked: string; menu: string }) => ({
+      const patch = (entry: SlurpPostGuidanceEntry): SlurpPostGuidanceEntry => ({
         public: body.data.public ?? entry.public,
         locked: body.data.locked ?? entry.locked,
         menu: body.data.menu ?? entry.menu,
+        level: body.data.level ?? entry.level,
       });
       if (!creatorId) return { ...current, defaults: patch(current.defaults) };
       return {
         ...current,
         creators: {
           ...current.creators,
-          [creatorId]: patch(current.creators[creatorId] ?? { public: "", locked: "", menu: "" }),
+          [creatorId]: patch(current.creators[creatorId] ?? { public: "", locked: "", menu: "", level: "" }),
         },
       };
     });
-    return { ...next, builtIn: SLURP_BUILT_IN_POST_GUIDANCE };
+    return { ...next, builtIn: SLURP_BUILT_IN_POST_GUIDANCE, builtInLevel: SLURP_BUILT_IN_EXPLICIT_LEVEL };
   });
 
   /** Draft one access direction with the model. Returns the text; saving it stays the client's call. */
@@ -150,7 +165,8 @@ export async function slpFeedPublishingRoutes(app: FastifyInstance, deps: SlpRou
         currentDraft: body.data.currentDraft ?? "",
         guidance: body.data.guidance ?? "",
         connection,
-        promptBlocks: settings.promptBlocks,
+        promptBlocks: slurpPromptContext(settings).blocks,
+        promptInstructions: slurpPromptContext(settings).instructions,
       });
     } catch (error) {
       logger.error(error, "[slurp] Post guidance draft failed using %s", connection.model || connection.provider);
@@ -161,24 +177,42 @@ export async function slpFeedPublishingRoutes(app: FastifyInstance, deps: SlpRou
 
   app.get("/slurp/image-connections", async () => getCreatorImageConnections(app.db));
 
+  // The Engine's image style profiles, so Slurp can pick one instead of always using the default.
+  app.get("/slurp/image-style-profiles", async () =>
+    (await loadImageGenerationUserSettings(app.db)).styleProfiles.profiles.map((profile) => ({
+      id: profile.id,
+      name: profile.name,
+    })),
+  );
+
   app.patch("/slurp/image-connections", async (req, reply) => {
     const body = z
       .object({
         defaultConnectionId: z.string().min(1).nullable().optional(),
         creatorId: z.string().min(1).optional(),
         connectionId: z.string().min(1).nullable().optional(),
+        styleProfileId: z.string().min(1).nullable().optional(),
       })
       .safeParse(req.body ?? {});
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
-    const { creatorId, connectionId, defaultConnectionId } = body.data;
+    const { creatorId, connectionId, defaultConnectionId, styleProfileId } = body.data;
+    if (styleProfileId !== undefined && !creatorId) {
+      return reply.code(400).send({ error: "Set creatorId with a Creator image style override." });
+    }
     // A creatorId without a connectionId (or the reverse) silently did nothing.
-    if ((creatorId === undefined) !== (connectionId === undefined)) {
+    if ((creatorId === undefined) !== (connectionId === undefined) && styleProfileId === undefined) {
       return reply.code(400).send({
         error: "Set creatorId and connectionId together to map a Creator to an image connection.",
       });
     }
     if (creatorId && !(await noodle.getNoodlerAccountById(creatorId))) {
       return reply.code(404).send({ error: "Slurp stage profile not found" });
+    }
+    if (styleProfileId) {
+      const profiles = (await loadImageGenerationUserSettings(app.db)).styleProfiles.profiles;
+      if (!profiles.some((profile) => profile.id === styleProfileId)) {
+        return reply.code(404).send({ error: "Slurp image style profile not found" });
+      }
     }
     for (const candidateConnectionId of [defaultConnectionId, connectionId]) {
       if (candidateConnectionId === undefined || candidateConnectionId === null) continue;
@@ -189,13 +223,21 @@ export async function slpFeedPublishingRoutes(app: FastifyInstance, deps: SlpRou
     }
     return updateCreatorImageConnections(app.db, (current) => {
       const creatorConnectionIds = { ...current.creatorConnectionIds };
+      const creatorStyleProfileIds = { ...current.creatorStyleProfileIds };
       if (creatorId) {
-        if (connectionId) creatorConnectionIds[creatorId] = connectionId;
-        else delete creatorConnectionIds[creatorId];
+        if (connectionId !== undefined) {
+          if (connectionId) creatorConnectionIds[creatorId] = connectionId;
+          else delete creatorConnectionIds[creatorId];
+        }
+        if (styleProfileId !== undefined) {
+          if (styleProfileId) creatorStyleProfileIds[creatorId] = styleProfileId;
+          else delete creatorStyleProfileIds[creatorId];
+        }
       }
       return {
         defaultConnectionId: defaultConnectionId !== undefined ? defaultConnectionId : current.defaultConnectionId,
         creatorConnectionIds,
+        creatorStyleProfileIds,
       };
     });
   });
@@ -206,11 +248,15 @@ export async function slpFeedPublishingRoutes(app: FastifyInstance, deps: SlpRou
   app.post("/slurp/accounts/:id/auto-post/run-now", async (req, reply) => {
     const { id } = req.params as { id: string };
     try {
-      const result = await generateAndApplyCreatorPost(app.db, {
-        mode: "noodler",
-        targetAccountId: id,
-        access: await resolveSlurpAutomaticPostAccess(noodle, id),
-      });
+      // The player's tap: its picture's prompt rewrite is off the AI budget. Not foreground, which would
+      // also let run-now write for the player's own persona page.
+      const result = await generateAndApplyCreatorPost(
+        app.db,
+        { mode: "noodler", targetAccountId: id, access: await resolveSlurpAutomaticPostAccess(noodle, id) },
+        undefined,
+        undefined,
+        { playerAsked: true },
+      );
       // Run-now never sets reviewImagePromptsBeforeSend, so the generator can only return a
       // plain post here — no image-prompt review is ever produced on this path.
       if (result.status === "generated") return result.post;
@@ -228,7 +274,10 @@ export async function slpFeedPublishingRoutes(app: FastifyInstance, deps: SlpRou
       if (result.status === "disabled") {
         return reply.code(400).send({ error: "Persona-owned Slurp profiles cannot post automatically" });
       }
-      return reply.code(404).send({ error: "Slurp account not found." });
+      // The Creator exists; the Engine character or persona it was made from is gone (R1-078).
+      return reply
+        .code(409)
+        .send({ error: "This Creator's Engine character is gone. Link a new one in its settings to post again." });
     } catch (error) {
       logger.error(error, "[slurp] Manual run-now failed");
       return reply.code(500).send({ error: "Manual post generation failed." });
@@ -268,6 +317,15 @@ export async function slpFeedPublishingRoutes(app: FastifyInstance, deps: SlpRou
     return { finalized: result.finalized };
   });
 
+  app.post("/slurp/refresh/images/cancel", async (req, reply) => {
+    const parsed = z
+      .object({ ids: z.array(z.string().min(1)).min(1).max(20) })
+      .strict()
+      .safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    return { cancelled: await slpCreatorImages.cancelReviewedImages(parsed.data.ids) };
+  });
+
   app.post("/refresh", async (req, reply) => {
     let decoded: DecodedCreatorMediaRequest<z.output<typeof slurpCreatorGenerationRequestSchema>>;
     try {
@@ -304,9 +362,12 @@ export async function slpFeedPublishingRoutes(app: FastifyInstance, deps: SlpRou
       if (result.status === "disabled") {
         return reply.code(400).send({ error: "Persona-owned Slurp profiles cannot post automatically" });
       }
-      return reply.code(404).send({ error: "Slurp account not found." });
+      // The Creator exists; the Engine character or persona it was made from is gone (R1-078).
+      return reply
+        .code(409)
+        .send({ error: "This Creator's Engine character is gone. Link a new one in its settings to post again." });
     } catch (error) {
-      if (isConnectionAdmissionFailure(error)) return reply.code(409).send({ error: getErrorMessage(error) });
+      if (slpIsAdmissionFailure(error)) return reply.code(409).send({ error: getErrorMessage(error) });
       logger.error(error, "[slurp] Slurp post generation failed");
       return reply.code(500).send({ error: "Slurp post generation failed." });
     }

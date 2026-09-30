@@ -101,6 +101,7 @@ if (process.argv.includes("--reload")) {
     }
     sidecarModelService.selectLocalModel(file);
     const restarted = spawnSync(process.execPath, [...process.execArgv, process.argv[1]!, "--reload"], {
+      windowsHide: true,
       env: { ...process.env, GGUF_FIXTURE_PATH: file },
       encoding: "utf8",
       timeout: 30_000,

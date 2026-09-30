@@ -703,6 +703,8 @@ try {
       ruleset: pool((doc) => {
         doc.sheet.abilities = doc.sheet.abilities.filter((ability: { id: string }) => ability.id === "nerve");
         doc.sheet.skills = doc.sheet.skills.filter((skill: { ability: string }) => skill.ability === "nerve");
+        // The spade asks for Sinew, which this sheet no longer has.
+        for (const catalog of doc.catalogs) for (const entry of catalog.entries ?? []) delete entry.item?.requires;
       }),
     });
     assert.doesNotMatch(oneAbility, /Add with="Ability"/);
@@ -824,6 +826,15 @@ try {
     }));
     assert.equal(summed.checkResults[0]!.threshold, undefined);
     assert.doesNotMatch(summed.content, /threshold=/);
+
+    // In a game that pins a ruleset, a check tag is the ruleset's alone: a record it rolled with its
+    // own dice, or an ask it left, is never rolled again here, which would lose the sheet it used.
+    const record = `[skill_check: skill="Scrap" dc="8" rolls="4|5" used="9" modifier="3" total="12" result="success" mode="normal" resolution="sum" dice="2d6" who="Bram"]`;
+    const kept = resolveGameDiceRequests(`${record} [dice: 1d6]`, [], roll, undefined, true);
+    assert.ok(kept.content.startsWith(record), "the ruleset's record is left as it is");
+    assert.deepEqual([kept.checkResults, kept.rolled], [[], 1], "and only the plain dice are rolled");
+    const pooled = `[skill_check: skill="Intimidation" dc="4" dice="6d10" resolution="successes" threshold="6"]`;
+    assert.equal(resolveGameDiceRequests(pooled, [], roll, undefined, true).content, pooled);
   }
 
   // ── engine-legacy checks are untouched, prompt and record alike ──

@@ -87,7 +87,7 @@ export type SlurpCommission = {
 };
 
 export type SlurpSendResult =
-  | { status: "sent"; thread: SlurpThread; message: SlurpMessage }
-  | { status: "closed" }
+  | { status: "sent"; thread: SlurpThread; message: SlurpMessage; /** A resend of a stored line. */ replayed?: true }
+  | { status: "closed"; reason?: "couple_page" }
   | { status: "insufficient_funds"; required: number }
   | { status: "not_found" };

@@ -1,54 +1,41 @@
-import { Check, Coins, LayoutGrid, List, Tags, UsersRound, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Check, SlidersHorizontal } from "lucide-react";
+import { useState } from "react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { useSlurpSettings } from "../settings/slp-settings-contract";
-import { groupSlurpDiscoveryTags, type SlurpDiscoverLayout, type SlurpDiscoverSort } from "./slp-discovery";
+import {
+  groupSlurpDiscoveryTags,
+  SLURP_DISCOVER_PRICE_BANDS,
+  type SlurpDiscoverPriceBand,
+  type SlurpDiscoverSort,
+} from "./slp-discovery";
 import type { SlurpDiscoveryGender } from "../../base/state/slp-state-types";
 import { cn } from "../../../lib/utils";
+import { SlpButton, SlpChip } from "../../modules/chrome/SlpButton";
+import { SlpRadioRow, SlpSheet } from "../../modules/chrome/SlpSheet";
+import { SLP_TYPE } from "../../base/chrome/SlpChrome";
+import { SlurpCoinAmount } from "../../modules/coin/SlpCoin";
 
-const triggerClass =
-  "inline-flex min-h-10 items-center gap-2 rounded-full border border-[var(--noodle-divider)] bg-[var(--slurp-surface)] px-3 text-xs font-bold transition-colors hover:border-[var(--noodle-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--noodle-accent)]";
+const priceBandOf = (minimum: string, maximum: string): SlurpDiscoverPriceBand | null =>
+  SLURP_DISCOVER_PRICE_BANDS.find(
+    (band) => String(band.minimum ?? "") === minimum.trim() && String(band.maximum ?? "") === maximum.trim(),
+  )?.id ?? null;
 
-function FilterMenu({
-  label,
-  icon: Icon,
-  active,
-  menuId,
-  openMenu,
-  setOpenMenu,
-  children,
-}: {
-  label: string;
-  icon: typeof UsersRound;
-  active?: boolean;
-  menuId: string;
-  openMenu: string | null;
-  setOpenMenu: (id: string | null) => void;
-  children: React.ReactNode;
-}) {
+/** Sentence case for tags that have no translation (a Creator's own tags arrive as typed). */
+const sentenceCase = (value: string) => value.charAt(0).toLocaleUpperCase() + value.slice(1);
+
+function SheetSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <details
-      className="group relative"
-      open={openMenu === menuId}
-      onToggle={(event) => setOpenMenu(event.currentTarget.open ? menuId : openMenu === menuId ? null : openMenu)}
-    >
-      <summary
-        className={cn(
-          triggerClass,
-          "cursor-pointer list-none [&::-webkit-details-marker]:hidden",
-          active && "border-[var(--noodle-accent)] bg-[var(--noodle-accent)]/12 text-[var(--noodle-accent-foreground)]",
-        )}
-      >
-        <Icon size={15} aria-hidden="true" />
-        {label}
-      </summary>
-      <div className="absolute left-0 top-full z-30 mt-2 min-w-64 rounded-xl border border-[var(--noodle-divider)] bg-[var(--slurp-surface-raised,var(--background))] p-3 shadow-[var(--slurp-shadow-modal)]">
-        {children}
-      </div>
-    </details>
+    <section className="space-y-2 border-t border-[var(--noodle-divider)] py-3 first:border-t-0 first:pt-0">
+      <h3 className={cn(SLP_TYPE.meta, "px-1 font-semibold text-[var(--slurp-muted)]")}>{title}</h3>
+      {children}
+    </section>
   );
 }
 
+/**
+ * Discover's filters: one scrollable chip row (Filters · All · New · Popular · the common tags) and a
+ * glass sheet with the rest (subscription, gender, price, sort, every tag). Selected = tint + ring.
+ */
 export function SlurpDiscoverToolbar({
   notSubscribed,
   onNotSubscribedChange,
@@ -59,14 +46,14 @@ export function SlurpDiscoverToolbar({
   onMinimumPriceChange,
   onMaximumPriceChange,
   tags,
+  rowTags,
   customTags,
   onTagToggle,
+  onTagsClear,
   sort,
   onSortChange,
-  layout,
-  onLayoutChange,
+  sheetFilterCount,
   filteredCount,
-  filtersActive,
   onClear,
 }: {
   notSubscribed: boolean;
@@ -78,221 +65,173 @@ export function SlurpDiscoverToolbar({
   onMinimumPriceChange: (value: string) => void;
   onMaximumPriceChange: (value: string) => void;
   tags: ReadonlySet<string>;
+  /** Tags that get a chip in the row. */
+  rowTags: readonly string[];
   customTags: readonly string[];
   onTagToggle: (value: string) => void;
+  onTagsClear: () => void;
   sort: SlurpDiscoverSort;
   onSortChange: (value: SlurpDiscoverSort) => void;
-  layout: SlurpDiscoverLayout;
-  onLayoutChange: (value: SlurpDiscoverLayout) => void;
+  /** Filters set in the sheet that the row does not show (the number on the Filters chip). */
+  sheetFilterCount: number;
   filteredCount: number;
-  filtersActive: boolean;
   onClear: () => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
-  const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const [sheetOpen, setSheetOpen] = useState(false);
   const tagGroups = groupSlurpDiscoveryTags(useSlurpSettings().data?.discoveryTags);
-  useEffect(() => {
-    const dismiss = (event: PointerEvent) => {
-      if (!(event.target instanceof Node) || !(event.target as Element).closest("details")) setOpenMenu(null);
-    };
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpenMenu(null);
-    };
-    document.addEventListener("pointerdown", dismiss);
-    document.addEventListener("keydown", escape);
-    return () => {
-      document.removeEventListener("pointerdown", dismiss);
-      document.removeEventListener("keydown", escape);
-    };
-  }, []);
+  const tagLabel = (tag: string) => sentenceCase(localizeUi(`ui.slurp.tags.${tag}`, { defaultValue: tag }));
+  const priceBand = priceBandOf(minimumPrice, maximumPrice);
+  const setPriceBand = (id: SlurpDiscoverPriceBand | null) => {
+    const band = SLURP_DISCOVER_PRICE_BANDS.find((entry) => entry.id === id);
+    onMinimumPriceChange(band?.minimum == null ? "" : String(band.minimum));
+    onMaximumPriceChange(band?.maximum == null ? "" : String(band.maximum));
+  };
+  // New and Popular are the two sorts worth a chip; tapping the selected one goes back to All.
+  const quickSort = (value: "newest" | "liked") => onSortChange(sort === value ? "recommended" : value);
+  const filtersLabel = localizeUi("ui.slurp.discover.filters", { defaultValue: "Filters" });
+
   return (
-    <div className="space-y-3 border-y border-[var(--noodle-divider)] bg-[linear-gradient(110deg,color-mix(in_srgb,var(--slurp-surface)_96%,transparent),color-mix(in_srgb,var(--noodle-accent)_5%,var(--slurp-surface)))] px-4 py-4 sm:px-5">
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          aria-pressed={notSubscribed}
-          onClick={() => onNotSubscribedChange(!notSubscribed)}
-          className={cn(
-            triggerClass,
-            notSubscribed && "border-[var(--noodle-accent)] bg-[var(--noodle-accent)] text-white",
+    <>
+      <div
+        role="toolbar"
+        aria-label={filtersLabel}
+        className="-mx-3 flex snap-x gap-2 overflow-x-auto px-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&>*]:shrink-0 [&>*]:snap-start"
+      >
+        <SlpChip
+          selected={sheetFilterCount > 0}
+          aria-pressed={undefined}
+          aria-haspopup="dialog"
+          aria-expanded={sheetOpen}
+          onClick={() => setSheetOpen(true)}
+          aria-label={sheetFilterCount > 0 ? `${filtersLabel}, ${sheetFilterCount}` : filtersLabel}
+        >
+          <SlidersHorizontal size={16} aria-hidden="true" />
+          {filtersLabel}
+          {sheetFilterCount > 0 && (
+            <span
+              aria-hidden="true"
+              className="grid h-5 min-w-5 place-items-center rounded-full bg-[var(--noodle-accent)] px-1 text-[11px] font-extrabold text-[var(--slurp-on-accent)]"
+            >
+              {sheetFilterCount}
+            </span>
           )}
+        </SlpChip>
+        <span aria-hidden="true" className="my-2.5 w-px bg-[var(--noodle-divider)]" />
+        <SlpChip
+          selected={tags.size === 0 && sort === "recommended"}
+          onClick={() => {
+            onTagsClear();
+            onSortChange("recommended");
+          }}
         >
-          {notSubscribed && <Check size={14} aria-hidden="true" />}
-          {localizeUi("ui.slurp.discover.notSubscribed", { defaultValue: "Not subscribed" })}
-        </button>
-        <FilterMenu
-          label={`${localizeUi("ui.slurp.discover.genderLabel", { defaultValue: "Gender" })}${genders.size ? ` · ${genders.size}` : ""}`}
-          icon={UsersRound}
-          active={genders.size > 0}
-          menuId="gender"
-          openMenu={openMenu}
-          setOpenMenu={setOpenMenu}
-        >
-          <fieldset className="space-y-1">
-            <legend className="sr-only">
-              {localizeUi("ui.slurp.discover.genderLabel", { defaultValue: "Gender" })}
-            </legend>
-            {(["female", "male", "other"] as const).map((gender) => (
-              <label
-                key={gender}
-                className="flex min-h-10 cursor-pointer items-center gap-3 rounded-lg px-2 text-sm hover:bg-[var(--accent)]"
-              >
-                <input
-                  type="checkbox"
-                  checked={genders.has(gender)}
-                  onChange={() => onGenderToggle(gender)}
-                  className="accent-[var(--noodle-accent)]"
-                />
-                {localizeUi(`ui.slurp.discover.gender.${gender}`, { defaultValue: gender })}
-              </label>
-            ))}
-          </fieldset>
-        </FilterMenu>
-        <FilterMenu
-          label={localizeUi("ui.slurp.discover.price", { defaultValue: "Price" })}
-          icon={Coins}
-          active={Boolean(minimumPrice || maximumPrice)}
-          menuId="price"
-          openMenu={openMenu}
-          setOpenMenu={setOpenMenu}
-        >
-          <div className="grid grid-cols-2 gap-3">
-            <label className="space-y-1 text-xs font-bold">
-              <span>{localizeUi("ui.slurp.discover.minimum", { defaultValue: "Minimum" })}</span>
-              <input
-                type="number"
-                inputMode="numeric"
-                min="0"
-                step="1"
-                value={minimumPrice}
-                onChange={(event) => onMinimumPriceChange(event.target.value)}
-                className="h-10 w-full rounded-lg border border-[var(--noodle-divider)] bg-[var(--background)] px-3 text-sm outline-none focus:border-[var(--noodle-accent)]"
-              />
-            </label>
-            <label className="space-y-1 text-xs font-bold">
-              <span>{localizeUi("ui.slurp.discover.maximum", { defaultValue: "Maximum" })}</span>
-              <input
-                type="number"
-                inputMode="numeric"
-                min="0"
-                step="1"
-                value={maximumPrice}
-                onChange={(event) => onMaximumPriceChange(event.target.value)}
-                className="h-10 w-full rounded-lg border border-[var(--noodle-divider)] bg-[var(--background)] px-3 text-sm outline-none focus:border-[var(--noodle-accent)]"
-              />
-            </label>
-          </div>
-        </FilterMenu>
-        <FilterMenu
-          label={`${localizeUi("ui.slurp.discover.tagsLabel", { defaultValue: "Tags" })}${tags.size ? ` · ${tags.size}` : ""}`}
-          icon={Tags}
-          active={tags.size > 0}
-          menuId="tags"
-          openMenu={openMenu}
-          setOpenMenu={setOpenMenu}
-        >
-          <div className="max-h-72 space-y-3 overflow-y-auto pr-1">
-            {tagGroups.map((group) => (
-              <fieldset key={group.id}>
-                <legend className="mb-1 text-[11px] font-black uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
-                  {localizeUi(`ui.slurp.discover.tagGroup.${group.id}`, { defaultValue: group.id })}
-                </legend>
-                {group.tags.map((tag) => (
-                  <label
-                    key={tag}
-                    className="flex min-h-9 cursor-pointer items-center gap-3 rounded-lg px-2 text-sm hover:bg-[var(--accent)]"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={tags.has(tag)}
-                      onChange={() => onTagToggle(tag)}
-                      className="accent-[var(--noodle-accent)]"
-                    />
-                    {localizeUi(`ui.slurp.tags.${tag}`, { defaultValue: tag })}
-                  </label>
-                ))}
-              </fieldset>
-            ))}
-            {customTags.length > 0 && (
-              <fieldset>
-                <legend className="mb-1 text-[11px] font-black uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
-                  {localizeUi("ui.slurp.discover.tagGroup.custom", { defaultValue: "Custom" })}
-                </legend>
-                {customTags.map((tag) => (
-                  <label
-                    key={tag}
-                    className="flex min-h-9 cursor-pointer items-center gap-3 rounded-lg px-2 text-sm hover:bg-[var(--accent)]"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={tags.has(tag)}
-                      onChange={() => onTagToggle(tag)}
-                      className="accent-[var(--noodle-accent)]"
-                    />
-                    {tag}
-                  </label>
-                ))}
-              </fieldset>
-            )}
-          </div>
-        </FilterMenu>
-        <label className="ml-auto flex min-h-10 items-center gap-2 rounded-full border border-[var(--noodle-divider)] bg-[var(--slurp-surface)] px-3 text-xs font-bold">
-          <span className="sr-only">{localizeUi("ui.slurp.discover.sortBy", { defaultValue: "Sort by" })}</span>
-          <select
-            value={sort}
-            onChange={(event) => onSortChange(event.target.value as SlurpDiscoverSort)}
-            className="bg-transparent outline-none"
-          >
-            {(["recommended", "newest", "liked", "subscribed"] as const).map((value) => (
-              <option key={value} value={value}>
-                {localizeUi(`ui.slurp.discover.sort.${value}`, { defaultValue: value })}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div
-          className="flex rounded-full border border-[var(--noodle-divider)] bg-[var(--slurp-surface)] p-1"
-          role="group"
-          aria-label={localizeUi("ui.slurp.discover.view", { defaultValue: "Creator view" })}
-        >
-          {(["grid", "list"] as const).map((value) => {
-            const Icon = value === "grid" ? LayoutGrid : List;
-            return (
-              <button
-                key={value}
-                type="button"
-                aria-pressed={layout === value}
-                aria-label={localizeUi(`ui.slurp.discover.view.${value}`, { defaultValue: `${value} view` })}
-                onClick={() => onLayoutChange(value)}
-                className={cn(
-                  "flex h-8 w-8 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--noodle-accent)]",
-                  layout === value && "bg-[var(--noodle-accent)] text-white",
-                )}
-              >
-                <Icon size={15} aria-hidden="true" />
-              </button>
-            );
-          })}
-        </div>
+          {localizeUi("ui.slurp.discover.chip.all", { defaultValue: "All" })}
+        </SlpChip>
+        <SlpChip selected={sort === "newest"} onClick={() => quickSort("newest")}>
+          {localizeUi("ui.slurp.discover.chip.new", { defaultValue: "New" })}
+        </SlpChip>
+        <SlpChip selected={sort === "liked"} onClick={() => quickSort("liked")}>
+          {localizeUi("ui.slurp.discover.chip.popular", { defaultValue: "Popular" })}
+        </SlpChip>
+        {rowTags.map((tag) => (
+          <SlpChip key={tag} selected={tags.has(tag)} onClick={() => onTagToggle(tag)}>
+            {tagLabel(tag)}
+          </SlpChip>
+        ))}
       </div>
-      {filtersActive && (
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-xs text-[var(--muted-foreground)]" aria-live="polite">
-            {localizeUi("ui.slurp.discover.resultCount", {
-              count: filteredCount,
-              defaultValue: `${filteredCount} creators`,
-            })}
-          </p>
-          <button
-            type="button"
-            onClick={onClear}
-            className="inline-flex min-h-9 items-center gap-1.5 rounded-full px-3 text-xs font-bold text-[var(--noodle-accent)] hover:bg-[var(--noodle-accent)]/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--noodle-accent)]"
-          >
-            <X size={14} aria-hidden="true" />
-            {localizeUi("ui.slurp.discover.clearFilters", { defaultValue: "Clear filters" })}
-          </button>
+
+      <SlpSheet open={sheetOpen} onClose={() => setSheetOpen(false)} title={filtersLabel}>
+        <div className="px-1 pb-2 pt-2">
+          <SheetSection title={localizeUi("ui.slurp.discover.show", { defaultValue: "Show" })}>
+            <div className="flex flex-wrap gap-2">
+              <SlpChip selected={notSubscribed} onClick={() => onNotSubscribedChange(!notSubscribed)}>
+                {notSubscribed && <Check size={14} aria-hidden="true" />}
+                {localizeUi("ui.slurp.discover.notSubscribed", { defaultValue: "Not subscribed" })}
+              </SlpChip>
+            </div>
+          </SheetSection>
+          <SheetSection title={localizeUi("ui.slurp.discover.genderLabel", { defaultValue: "Gender" })}>
+            <div className="flex flex-wrap gap-2">
+              {(["female", "male", "other"] as const).map((gender) => (
+                <SlpChip key={gender} selected={genders.has(gender)} onClick={() => onGenderToggle(gender)}>
+                  {localizeUi(`ui.slurp.discover.gender.${gender}`, { defaultValue: gender })}
+                </SlpChip>
+              ))}
+            </div>
+          </SheetSection>
+          <SheetSection title={localizeUi("ui.slurp.discover.priceWeek", { defaultValue: "Price per week" })}>
+            <div className="flex flex-wrap gap-2">
+              <SlpChip
+                selected={priceBand === null && !minimumPrice && !maximumPrice}
+                onClick={() => setPriceBand(null)}
+              >
+                {localizeUi("ui.slurp.discover.priceAny", { defaultValue: "Any" })}
+              </SlpChip>
+              {SLURP_DISCOVER_PRICE_BANDS.map((band) => (
+                <SlpChip key={band.id} selected={priceBand === band.id} onClick={() => setPriceBand(band.id)}>
+                  {/* One span, so the chip's flex gap does not split the words from the amount. */}
+                  <span>
+                    {band.minimum === null ? (
+                      <>
+                        {localizeUi("ui.slurp.discover.priceUpTo", { defaultValue: "Up to" })}{" "}
+                        <SlurpCoinAmount amount={band.maximum} />
+                      </>
+                    ) : band.maximum === null ? (
+                      <>
+                        <SlurpCoinAmount amount={band.minimum} />{" "}
+                        {localizeUi("ui.slurp.discover.priceAndUp", { defaultValue: "and up" })}
+                      </>
+                    ) : (
+                      <>
+                        {band.minimum}–<SlurpCoinAmount amount={band.maximum} />
+                      </>
+                    )}
+                  </span>
+                </SlpChip>
+              ))}
+            </div>
+          </SheetSection>
+          <SheetSection title={localizeUi("ui.slurp.discover.sortBy", { defaultValue: "Sort by" })}>
+            <div role="radiogroup" aria-label={localizeUi("ui.slurp.discover.sortBy", { defaultValue: "Sort by" })}>
+              {(["recommended", "newest", "liked", "subscribed"] as const).map((value) => (
+                <SlpRadioRow
+                  key={value}
+                  name="slurp-discover-sort"
+                  checked={sort === value}
+                  onChange={() => onSortChange(value)}
+                >
+                  {localizeUi(`ui.slurp.discover.sort.${value}`, { defaultValue: value })}
+                </SlpRadioRow>
+              ))}
+            </div>
+          </SheetSection>
+          {[...tagGroups, ...(customTags.length > 0 ? [{ id: "custom", tags: [...customTags] }] : [])].map((group) => (
+            <SheetSection
+              key={group.id}
+              title={localizeUi(`ui.slurp.discover.tagGroup.${group.id}`, { defaultValue: sentenceCase(group.id) })}
+            >
+              <div className="flex flex-wrap gap-2">
+                {group.tags.map((tag) => (
+                  <SlpChip key={tag} selected={tags.has(tag)} onClick={() => onTagToggle(tag)}>
+                    {tagLabel(tag)}
+                  </SlpChip>
+                ))}
+              </div>
+            </SheetSection>
+          ))}
         </div>
-      )}
-    </div>
+        <div className="flex items-center justify-between gap-3 border-t border-[var(--noodle-divider)] px-1 pt-3">
+          <SlpButton variant="tertiary" onClick={onClear}>
+            {localizeUi("ui.slurp.discover.clearFilters", { defaultValue: "Clear filters" })}
+          </SlpButton>
+          <SlpButton variant="secondary" onClick={() => setSheetOpen(false)}>
+            {localizeUi("ui.slurp.discover.showCount", {
+              count: filteredCount,
+              defaultValue: `Show ${filteredCount} creators`,
+            })}
+          </SlpButton>
+        </div>
+      </SlpSheet>
+    </>
   );
 }

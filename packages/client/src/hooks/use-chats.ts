@@ -12,6 +12,7 @@ import {
 } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, ApiError, isRequestTimeoutError, requestTimeoutSignal } from "../lib/api-client";
+import { translate } from "../localization/i18n";
 import { useChatStore } from "../stores/chat.store";
 import { useAgentStore } from "../stores/agent.store";
 import { useGameStateStore } from "../stores/game-state.store";
@@ -44,9 +45,6 @@ import type {
   MessageTrashEntry,
   ChatChapterSummary,
 } from "@marinara-engine/shared";
-import { resolveFeatureEnabled, type FeatureSettingsResponse } from "@marinara-engine/shared";
-import { translate } from "../localization/i18n";
-import { featureSettingsKeys, useFeatureSettings } from "./use-feature-settings";
 
 import { useRollingBackfillStore } from "../stores/backfill.store";
 import { homeFeedKeys } from "./use-home-feed";
@@ -1336,18 +1334,18 @@ export function useCreateMessage(chatId: string | null) {
  */
 export function useDeleteMessage(chatId: string | null) {
   const qc = useQueryClient();
-  // Loads the Features switches so the "moved to Trash" toast matches what the server did.
-  useFeatureSettings();
   return useMutation({
     mutationFn: (target: string | { messageId: string; skipTrash?: boolean }) => {
       const { messageId, skipTrash } = typeof target === "string" ? { messageId: target, skipTrash: false } : target;
-      return api.delete(`/chats/${chatId}/messages/${messageId}${skipTrash ? "?trash=false" : ""}`);
+      return api.delete<{ trashed: boolean; trashedCount: number }>(
+        `/chats/${chatId}/messages/${messageId}${skipTrash ? "?trash=false" : ""}`,
+      );
     },
-    onSuccess: (_data, target) => {
+    onSuccess: (result) => {
       if (chatId) {
-        if ((typeof target === "string" || !target.skipTrash) && chatUsesMessageTrash(qc, chatId)) {
+        if (result.trashed) {
           qc.invalidateQueries({ queryKey: chatKeys.trash(chatId) });
-          notifyMovedToTrash(1);
+          notifyMovedToTrash(result.trashedCount);
         }
         qc.invalidateQueries({ queryKey: ["chat-message-search", chatId] });
         qc.invalidateQueries({ queryKey: chatKeys.chapters(chatId) });
@@ -1363,14 +1361,14 @@ export function useDeleteMessage(chatId: string | null) {
 
 export function useDeleteMessages(chatId: string | null) {
   const qc = useQueryClient();
-  useFeatureSettings();
   return useMutation({
-    mutationFn: (messageIds: string[]) => api.post(`/chats/${chatId}/messages/bulk-delete`, { messageIds }),
-    onSuccess: (_data, messageIds) => {
+    mutationFn: (messageIds: string[]) =>
+      api.post<{ trashed: boolean; trashedCount: number }>(`/chats/${chatId}/messages/bulk-delete`, { messageIds }),
+    onSuccess: (result) => {
       if (chatId) {
-        if (chatUsesMessageTrash(qc, chatId)) {
+        if (result.trashed) {
           qc.invalidateQueries({ queryKey: chatKeys.trash(chatId) });
-          notifyMovedToTrash(messageIds.length);
+          notifyMovedToTrash(result.trashedCount);
         }
         qc.invalidateQueries({ queryKey: ["chat-message-search", chatId] });
         qc.invalidateQueries({ queryKey: chatKeys.chapters(chatId) });
@@ -1382,16 +1380,6 @@ export function useDeleteMessages(chatId: string | null) {
       }
     },
   });
-}
-
-/**
- * Game chats keep permanent deletes (the server skips their trash; there is no Trash view), and so
- * does every chat when Settings > Features "Message trash" is off.
- */
-function chatUsesMessageTrash(qc: ReturnType<typeof useQueryClient>, chatId: string) {
-  const features = qc.getQueryData<FeatureSettingsResponse>(featureSettingsKeys.all);
-  if (!resolveFeatureEnabled(features?.settings, "messageTrash")) return false;
-  return qc.getQueryData<Chat>(chatKeys.detail(chatId))?.mode !== "game";
 }
 
 function notifyMovedToTrash(count: number) {
@@ -1420,26 +1408,47 @@ export function useChatChapters(chatId: string | null, enabled = true) {
   });
 }
 
-function invalidateAfterTrashChange(qc: ReturnType<typeof useQueryClient>, chatId: string) {
-  qc.invalidateQueries({ queryKey: chatKeys.trash(chatId) });
-  qc.invalidateQueries({ queryKey: chatKeys.chapters(chatId) });
-  qc.invalidateQueries({ queryKey: chatKeys.messages(chatId) });
-  qc.invalidateQueries({ queryKey: chatKeys.messagePeek(chatId) });
-  qc.invalidateQueries({ queryKey: chatKeys.messageCount(chatId) });
-  qc.invalidateQueries({ queryKey: chatKeys.list() });
-  qc.invalidateQueries({ queryKey: ["chat-message-search", chatId] });
+function invalidateAfterTrashChange(qc: QueryClient, chatId: string) {
+  return Promise.all([
+    qc.invalidateQueries({ queryKey: chatKeys.trash(chatId) }),
+    qc.invalidateQueries({ queryKey: chatKeys.chapters(chatId) }),
+    qc.invalidateQueries({ queryKey: chatKeys.messages(chatId) }),
+    qc.invalidateQueries({ queryKey: chatKeys.messagePeek(chatId) }),
+    qc.invalidateQueries({ queryKey: chatKeys.messageCount(chatId) }),
+    qc.invalidateQueries({ queryKey: chatKeys.list() }),
+    qc.invalidateQueries({ queryKey: ["chat-message-search", chatId] }),
+  ]);
 }
 
 /** Restore trashed messages to their original position. */
 export function useRestoreTrashedMessages(chatId: string | null) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (entryIds: string[]) =>
-      api.post<{ restoredMessageIds: string[]; conflictEntryIds: string[] }>(`/chats/${chatId}/trash/restore`, {
-        entryIds,
-      }),
-    onSuccess: () => {
-      if (chatId) invalidateAfterTrashChange(qc, chatId);
+    mutationFn: async (entryIds: string[]) => {
+      const result: { restoredMessageIds: string[]; conflictEntryIds: string[]; error: string | null } = {
+        restoredMessageIds: [],
+        conflictEntryIds: [],
+        error: null,
+      };
+      // The route accepts at most 5,000 IDs; keep every batch under one pending mutation.
+      for (let offset = 0; offset < entryIds.length; offset += 5000) {
+        try {
+          const batch = await api.post<{ restoredMessageIds: string[]; conflictEntryIds: string[] }>(
+            `/chats/${chatId}/trash/restore`,
+            { entryIds: entryIds.slice(offset, offset + 5000) },
+          );
+          result.restoredMessageIds.push(...batch.restoredMessageIds);
+          result.conflictEntryIds.push(...batch.conflictEntryIds);
+        } catch (error) {
+          if (offset === 0) throw error;
+          result.error = error instanceof Error ? error.message : translate("ui.chat.messagetrash.restoreFailed");
+          break;
+        }
+      }
+      return result;
+    },
+    onSettled: () => {
+      if (chatId) return invalidateAfterTrashChange(qc, chatId);
     },
   });
 }

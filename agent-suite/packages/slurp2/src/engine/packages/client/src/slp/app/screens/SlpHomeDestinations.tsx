@@ -1,14 +1,18 @@
+import type { ComponentProps } from "react";
+import { SlpEmptyState, SlpErrorState, SlpSkeleton } from "../../modules/chrome/SlpStateKit";
 import { SlpShell } from "../../modules/chrome/SlpShell";
+import { openSlpPulse } from "../../base/state/slp-task-store";
 import { SlurpWalletView } from "./SlpScreenWallet";
-import { SLURP_PLACEHOLDER_BALANCE, EmptyState, DisclosureBadge } from "./SlpHomeHelpers";
+import { DisclosureBadge } from "./SlpHomeHelpers";
 import { SlurpInboxView } from "./SlpScreenMessages";
-import { SlurpStudioView } from "./SlpScreenStudio";
-import { ChevronLeft, ChevronRight, Loader2, Plus, TriangleAlert, UserRound } from "lucide-react";
-import { ProfileInitial } from "../../base/chrome/SlpChrome";
+import { SlpStirScreen } from "../../features/stir/slp-stir-contract";
+import { ChevronLeft, ChevronRight, Plus, TriangleAlert, UserRound } from "lucide-react";
+import { ProfileInitial, SLP_PAGE_SCROLL_CLASS } from "../../base/chrome/SlpChrome";
+import { cn } from "../../../lib/utils";
 import { isSlurpDiscoveryProfileIncomplete } from "../../features/discovery/slp-discovery";
 import type { SlurpHomeHostView } from "./SlpHomeCreatorFlow";
 
-/** The navigation destinations that are pages of their own: wallet, notifications, studio, messages, profiles. */
+/** The navigation destinations that are pages of their own: wallet, notifications, Stir, messages, profiles. */
 export function renderSlurpHomeDestinations({
   model,
   shellProps,
@@ -31,14 +35,26 @@ export function renderSlurpHomeDestinations({
     shellPersonaAccount,
     sourcePickerLoading,
     viewerPersonaId,
-    viewerWalletsQuery,
   } = model;
+  // These pages all read one persona's data; with none there is nothing to load, so they said
+  // "Still connecting…" forever or offered a Try again that could not work (R1-139).
+  if (
+    navigation.mode === "creator" &&
+    !viewerPersonaId &&
+    (navigation.view === "wallet" || navigation.view === "messages" || navigation.view === "notifications")
+  ) {
+    return (
+      <SlpShell {...shellProps}>
+        <SlpEmptyState title={localizeUi("ui.noodle.viewerhub.createAPersonaToBrowseNoodler")} />
+      </SlpShell>
+    );
+  }
+
   if (navigation.mode === "creator" && navigation.view === "wallet") {
     return (
       <SlpShell {...shellProps}>
         <SlurpWalletView
           personaId={viewerPersonaId}
-          fallbackCoins={viewerWalletsQuery.data?.[viewerPersonaId ?? ""]?.coins ?? SLURP_PLACEHOLDER_BALANCE}
           personaName={shellPersonaAccount?.displayName ?? ""}
           personaAvatarUrl={shellPersonaAccount?.avatarUrl ?? null}
           personaAvatarCrop={shellPersonaAccount?.avatarCrop ?? null}
@@ -64,13 +80,27 @@ export function renderSlurpHomeDestinations({
     );
   }
 
-  if (navigation.mode === "creator" && navigation.view === "studio") {
+  // W: the Stir tab. An old Studio link lands here too (its own-page half is the profile's Dashboard).
+  if (navigation.mode === "creator" && (navigation.view === "stir" || navigation.view === "studio")) {
     return (
       <SlpShell {...shellProps}>
-        <SlurpStudioView
+        <SlpStirTab
           personaId={viewerPersonaId}
-          onBack={exitToCreatorHub}
-          onOpenProfile={(accountId) => onNavigate({ mode: "creator", view: "profile", accountId })}
+          onOpenTarget={shellProps.onOpenPulseTarget}
+          onOpenSupport={(creatorAccountId) =>
+            onNavigate({
+              mode: "creator",
+              view: "messages",
+              creatorAccountId,
+              asSupport: true,
+              returnTo: { mode: "creator", view: "stir" },
+            })
+          }
+          onOpenDashboard={
+            myCreatorProfile
+              ? () => onNavigate({ mode: "creator", view: "profile", accountId: myCreatorProfile.id, dashboard: true })
+              : undefined
+          }
         />
       </SlpShell>
     );
@@ -83,10 +113,12 @@ export function renderSlurpHomeDestinations({
           personaId={viewerPersonaId}
           ownedCreatorAccountIds={myCreatorProfile ? [myCreatorProfile.id] : []}
           composeWithCreatorAccountId={navigation.creatorAccountId ?? null}
+          composeAsSupport={navigation.asSupport === true}
           initialActivity={false}
           onBack={navigation.returnTo ? () => onNavigate(navigation.returnTo!) : exitToCreatorHub}
           leaveOnExit={Boolean(navigation.returnTo)}
           onOpenProfile={(accountId) => onNavigate({ mode: "creator", view: "profile", accountId })}
+          onOpenDesk={() => onNavigate({ mode: "creator", view: "stir" })}
         />
       </SlpShell>
     );
@@ -96,13 +128,13 @@ export function renderSlurpHomeDestinations({
     return (
       <SlpShell {...shellProps}>
         <div className="flex h-full min-h-0 flex-col">
-          <main className="min-h-0 flex-1 overflow-y-auto">
+          <main className={cn("min-h-0 flex-1 overflow-y-auto", SLP_PAGE_SCROLL_CLASS)}>
             <div className="flex min-h-14 flex-wrap items-center gap-3 border-b border-[var(--noodle-divider)] px-4 py-3">
               {navigation.returnToSettings && (
                 <button
                   type="button"
                   onClick={() => onNavigate(navigation.returnToSettings!)}
-                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--noodle-accent)] hover:bg-[var(--accent)]"
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--noodle-accent-foreground)] hover:bg-[var(--accent)]"
                   aria-label={localizeUi("ui.noodle.socialsettings.backToSettings")}
                   title={localizeUi("ui.noodle.socialsettings.backToSettings")}
                 >
@@ -155,22 +187,18 @@ export function renderSlurpHomeDestinations({
                         ? localizeUi("ui.noodle.noodlerhome.everyEligibleAccountAlreadyHasAStageProfile")
                         : undefined
                 }
-                className="inline-flex min-h-11 items-center gap-2 rounded-lg bg-[var(--noodle-accent)] px-3 text-xs font-bold text-zinc-950 [&_svg]:!text-zinc-950 hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex min-h-11 items-center gap-2 rounded-lg bg-[var(--noodle-accent)] px-3 text-xs font-bold text-[var(--slurp-on-accent)] [&_svg]:!text-[var(--slurp-on-accent)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Plus size={15} />
                 {localizeUi("ui.noodle.noodlerhome.newProfile")}
               </button>
             </div>
             {accountsQuery.isLoading ? (
-              <div className="flex justify-center py-16">
-                <Loader2 size={24} className="animate-spin text-[var(--noodle-accent)]" />
-              </div>
+              <SlpSkeleton count={3} />
             ) : accountsQuery.isError ? (
-              <EmptyState
+              <SlpErrorState
                 title={localizeUi("ui.noodle.noodlerhome.stageProfilesCouldNotBeLoaded")}
-                action={localizeUi("capabilities.actions.tryAgain")}
-                onAction={retryAccountsOrReload}
-                icon={TriangleAlert}
+                onRetry={retryAccountsOrReload}
               />
             ) : accountsQuery.data && accountsQuery.data.length > 0 ? (
               <div className="divide-y divide-[var(--noodle-divider)]">
@@ -215,7 +243,7 @@ export function renderSlurpHomeDestinations({
             ) : (
               // With no profiles and no eligible sources loaded, the create button is disabled, so a
               // failed sources query would leave the page with nothing to act on but a page reload.
-              <EmptyState
+              <SlpEmptyState
                 title={
                   eligibleAccountsQuery.isError
                     ? localizeUi("ui.noodle.noodlerhome.sourcesUnavailable")
@@ -245,4 +273,27 @@ export function renderSlurpHomeDestinations({
     );
   }
   return null;
+}
+
+/** The Stir tab inside the shell: "See all" opens the shell's Pulse sheet; a recent play opens what it touched. */
+function SlpStirTab({
+  personaId,
+  onOpenDashboard,
+  onOpenTarget,
+  onOpenSupport,
+}: {
+  personaId: string | null;
+  onOpenDashboard?: () => void;
+  onOpenTarget?: ComponentProps<typeof SlpStirScreen>["onOpenTarget"];
+  onOpenSupport?: (creatorId: string) => void;
+}) {
+  return (
+    <SlpStirScreen
+      personaId={personaId}
+      onOpenSupport={onOpenSupport}
+      onOpenPulse={openSlpPulse}
+      onOpenDashboard={onOpenDashboard}
+      onOpenTarget={onOpenTarget}
+    />
+  );
 }

@@ -25,6 +25,8 @@ import {
 } from "../../base/model/slp-model-worker.js";
 import { SLURP_SHIPPED_REACTIONS, SLURP_SHIPPED_TYPE_REACTIONS } from "../../modules/world/slp-world-copy.js";
 import { composeSlurpPromptBlocks } from "../../base/prompting/slp-prompt-blocks.js";
+import { slurpPromptContext } from "../../base/prompting/slp-prompt-blocks.js";
+import { slpWithProviderRetry } from "../../base/model/slp-provider-retry.js";
 
 /**
  * Growing the free comment bank.
@@ -87,16 +89,18 @@ export async function topUpSlurpReactionBank(
 
   try {
     if (!(await claimSlurpModelBudget(db, settings.modelBudget, "bank_grow"))) return "busy";
-    const provider = createLLMProvider(
-      connection.provider,
-      resolveBaseUrl(connection),
-      connection.apiKey,
-      connection.maxContext,
-      connection.openrouterProvider,
-      connection.maxTokensOverride,
-      connection.claudeFastMode === "true",
-      connection.treatAsLocalEndpoint === "true",
-      connection.defaultParameters,
+    const provider = slpWithProviderRetry(
+      createLLMProvider(
+        connection.provider,
+        resolveBaseUrl(connection),
+        connection.apiKey,
+        connection.maxContext,
+        connection.openrouterProvider,
+        connection.maxTokensOverride,
+        connection.claudeFastMode === "true",
+        connection.treatAsLocalEndpoint === "true",
+        connection.defaultParameters,
+      ),
     );
     const briefs = [
       ...(targets.shared === undefined
@@ -154,7 +158,7 @@ export async function topUpSlurpReactionBank(
                   .join(", ")}}`,
               },
             ],
-            settings.promptBlocks,
+            slurpPromptContext(settings).blocks,
           ),
         },
         { role: "user", content: "Write the lines." },
@@ -169,7 +173,7 @@ export async function topUpSlurpReactionBank(
         maxTokens: clampGenerationMaxOutputTokens({
           provider: connection.provider,
           model: connection.model,
-          maxTokens: 512 + 256 * Object.keys(targets).length,
+          maxTokens: 2048 + 256 * Object.keys(targets).length,
           maxTokensOverride: connection.maxTokensOverride,
         }),
         stream: false,
@@ -185,8 +189,11 @@ export async function topUpSlurpReactionBank(
       logger.warn(error, "[slurp-bank] Could not read the comment bank answer");
       return "unavailable";
     }
-    const merged = mergeSlurpReactionBankBatch(banks, parsed, targets);
-    if (merged === banks) return "unavailable";
+    // Merge into the bank as it is now, not as it was before the model call: an edit the player saved
+    // while the call ran would otherwise be overwritten (R1-118).
+    const current = (await noodle.getSettings()).audienceReactionBank;
+    const merged = mergeSlurpReactionBankBatch(current, parsed, targets);
+    if (merged === current) return "unavailable";
     await noodle.updateSettings({ audienceReactionBank: merged });
     logger.info(
       "[slurp-bank] Grew %d comment banks (shared now %d)",

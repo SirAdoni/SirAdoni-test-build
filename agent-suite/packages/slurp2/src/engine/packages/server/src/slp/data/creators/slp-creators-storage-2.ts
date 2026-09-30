@@ -1,4 +1,5 @@
 import { and, desc, eq, inArray, or } from "../../../db/file-query.js";
+import { deleteSlurpCreatorPlanningRows } from "../continuity/slp-continuity-storage.js";
 import { SlpAccount, SlpAccountKind } from "../../../../../shared/src/slp/slp-social.types.js";
 import { slurpProjectsKey } from "../../modules/projects/slp-project.js";
 import { slurpArcAutoKey, slurpArcConfigKey } from "../../modules/projects/slp-arc-library.js";
@@ -9,6 +10,7 @@ import {
   slpActivityDigests,
   slpInteractions,
   slpPosts,
+  slpPostMedia,
   slpPostUnlocks,
   slpRefreshRuns,
   slpCreatorCreatorReplyClaims,
@@ -28,6 +30,9 @@ import {
   slurpCommissions,
   slurpImprovementJobs,
   slurpImprovementProposals,
+  slurpFollowUps,
+  slurpWorldClaims,
+  slpReports,
 } from "../../../db/schema/slurp.js";
 import { SLURP_CREATOR_MESSAGING_KEY } from "../../modules/messages/slp-messaging.js";
 import { now } from "../../../utils/id-generator.js";
@@ -82,15 +87,36 @@ export function createCreatorsStorage2(context: SlurpStorageContext) {
     deleteStoredInteraction,
   } = context;
   const storage = {
-    async deleteAllSlurpData(): Promise<{ deletedCreators: number; deletedPosts: number }> {
+    /**
+     * `keepCreators` is the recovery reset: Creators, their settings and every Slurp setting stay,
+     * everything they did (posts, messages, audience, queued and stuck work, planning memory) goes.
+     * An install whose old activity left Slurp empty starts over without re-adding every Creator.
+     */
+    async deleteAllSlurpData({ keepCreators = false }: { keepCreators?: boolean } = {}): Promise<{
+      deletedCreators: number;
+      deletedPosts: number;
+    }> {
       const accounts = await db.select().from(slpAccounts).where(eq(slpAccounts.platform, "slurp"));
       const accountIds = accounts.map((account) => account.id);
       const personaIds = (await characters.listPersonas()).map((persona) => persona.id);
-      const posts = accountIds.length
-        ? await db.select().from(slpPosts).where(inArray(slpPosts.authorAccountId, accountIds))
-        : [];
-      const postIds = posts.map((post) => post.id);
+      let deletedPosts = 0;
+      // The full reset removes the whole media folder; this one must spare Creator artwork, so it
+      // collects the files that belong to what it deletes and unlinks them after the commit.
+      const mediaPaths: unknown[] = [];
       await db.transaction(async (tx) => {
+        const posts = await tx.select().from(slpPosts);
+        deletedPosts = posts.length;
+        if (keepCreators) {
+          mediaPaths.push(
+            ...posts.map((post) => parseRecord(post.metadata).noodlerMediaPath),
+            ...(await tx.select().from(slpPostMedia)).map((item) => item.mediaPath),
+            ...(await tx.select().from(slurpMessages)).map((message) => parseRecord(message.metadata).noodlerMediaPath),
+            ...(await tx.select().from(slurpCommissions)).map((commission) => commission.mediaPath),
+            ...(await tx.select().from(slpCreatorPreparedPosts)).map(
+              (row) => parseRecord(parseRecord(row.payload).metadata).noodlerMediaPath,
+            ),
+          );
+        }
         for (const table of [
           slpActivityDigests,
           slpRefreshRuns,
@@ -105,6 +131,7 @@ export function createCreatorsStorage2(context: SlurpStorageContext) {
           slurpMessages,
           slurpReplyBubbles,
           slurpCommissions,
+          slurpFollowUps,
           slurpThreads,
           // Everything below had no deletion path at all, not even in this full reset. A fresh
           // install inherited the previous one's audience, world events, and queued work.
@@ -115,40 +142,36 @@ export function createCreatorsStorage2(context: SlurpStorageContext) {
           slurpPendingText,
           slurpImprovementProposals,
           slurpImprovementJobs,
+          slurpWorldClaims,
+          slpReports,
+          slpPostMedia,
+          slpPostUnlocks,
+          slpInteractions,
+          slpPosts,
         ]) {
           await tx.delete(table);
         }
-        if (postIds.length) {
-          await tx.delete(slpInteractions).where(inArray(slpInteractions.postId, postIds));
-          await tx.delete(slpPostUnlocks).where(inArray(slpPostUnlocks.postId, postIds));
-          await tx.delete(slpPosts).where(inArray(slpPosts.id, postIds));
-        }
-        if (accountIds.length) {
-          await tx.delete(slpInteractions).where(inArray(slpInteractions.actorAccountId, accountIds));
-          await tx
-            .delete(slpAccountSubscriptions)
-            .where(
-              or(
-                inArray(slpAccountSubscriptions.viewerAccountId, accountIds),
-                inArray(slpAccountSubscriptions.creatorAccountId, accountIds),
-              ),
-            );
-          await tx.delete(slpAccounts).where(inArray(slpAccounts.id, accountIds));
-        }
+        // Deep details, continuity and content plans describe the posts and threads deleted above.
+        for (const accountId of accountIds) await deleteSlurpCreatorPlanningRows(tx, accountId);
         const settings = createAppSettingsStorage(tx);
-        for (const accountId of accountIds) {
-          await settings.remove(`${SLURP_CREATOR_STATE_KEY}.${accountId}`);
-          await settings.remove(slurpProjectsKey(accountId));
-          await settings.remove(slurpArcAutoKey(accountId));
-          await settings.remove(slurpArcConfigKey(accountId));
-        }
-        for (const personaId of personaIds) await settings.remove(slurpViewerSettingsKey(personaId));
-        await settings.remove(SLURP_SETTINGS_KEY);
         await settings.remove(SLP_REFRESH_SCHEDULE_KEY);
-        await settings.remove(SLURP_CREATOR_MESSAGING_KEY);
+        if (!keepCreators) {
+          await tx.delete(slpAccountSubscriptions);
+          await tx.delete(slpAccounts).where(inArray(slpAccounts.id, accountIds));
+          for (const accountId of accountIds) {
+            await settings.remove(`${SLURP_CREATOR_STATE_KEY}.${accountId}`);
+            await settings.remove(slurpProjectsKey(accountId));
+            await settings.remove(slurpArcAutoKey(accountId));
+            await settings.remove(slurpArcConfigKey(accountId));
+          }
+          for (const personaId of personaIds) await settings.remove(slurpViewerSettingsKey(personaId));
+          await settings.remove(SLURP_SETTINGS_KEY);
+          await settings.remove(SLURP_CREATOR_MESSAGING_KEY);
+        }
         await tx._fileStore.flush();
       });
-      return { deletedCreators: accounts.length, deletedPosts: posts.length };
+      for (const path of new Set(mediaPaths)) if (typeof path === "string" && path) unlinkCreatorMedia(path);
+      return { deletedCreators: keepCreators ? 0 : accounts.length, deletedPosts };
     },
     async previewUnusedSlurpData(): Promise<{
       preparedPosts: number;
@@ -215,7 +238,10 @@ export function createCreatorsStorage2(context: SlurpStorageContext) {
     async updateSettings(input: SlurpSettingsUpdateInput): Promise<SlurpSettings> {
       const run = slurpSettingsUpdateQueue.current.then(async () => {
         const current = await this.getSettings();
-        const next = normalizeSlurpSettings({ ...current, ...input });
+        // A "Posts per day" the player sends is theirs from now on, unless the patch says otherwise
+        // (Use recommended, a section reset).
+        const mark = input.postsPerDay !== undefined && input.postsPerDayCustom === undefined;
+        const next = normalizeSlurpSettings({ ...current, ...input, ...(mark ? { postsPerDayCustom: true } : {}) });
         await settingsStore.set(SLURP_SETTINGS_KEY, JSON.stringify(next));
         if (!current.autoPostingScheduleEnabled && next.autoPostingScheduleEnabled) {
           const timestamp = now();
@@ -263,7 +289,7 @@ export function createCreatorsStorage2(context: SlurpStorageContext) {
     ): Promise<PersistedSlpRefreshSchedule> {
       const settings = settingsOverride ?? (await this.getSettings());
       const current = await this.getRefreshSchedule();
-      const reconciled = reconcileSlpRefreshSchedule(current, 0, at);
+      const reconciled = reconcileSlpRefreshSchedule(current, settings.refreshesPerDay, at);
       if (!current || JSON.stringify(current) !== JSON.stringify(reconciled)) {
         await this.saveRefreshSchedule(reconciled);
       }
@@ -381,6 +407,7 @@ export function createCreatorsStorage2(context: SlurpStorageContext) {
             ),
           );
         await tx.delete(slpCreatorPreparedPosts).where(eq(slpCreatorPreparedPosts.creatorAccountId, existing.id));
+        await deleteSlurpCreatorPlanningRows(tx, existing.id);
         // Same Creator-keyed rows deleteNoodlerAccount cascades. Both entry points must agree, or
         // which one the caller happened to use decides what survives.
         await tx.delete(slurpCommissions).where(eq(slurpCommissions.creatorAccountId, existing.id));
@@ -389,6 +416,7 @@ export function createCreatorsStorage2(context: SlurpStorageContext) {
         await tx.delete(slurpEvents).where(eq(slurpEvents.creatorAccountId, existing.id));
         await tx.delete(slpCreatorFirstPostJobs).where(eq(slpCreatorFirstPostJobs.creatorAccountId, existing.id));
         await tx.delete(slurpImprovementProposals).where(eq(slurpImprovementProposals.accountId, existing.id));
+        await tx.delete(slpPostMedia).where(inArray(slpPostMedia.postId, postIds));
         await tx.delete(slpPosts).where(inArray(slpPosts.id, postIds));
         await tx.delete(slpAccounts).where(eq(slpAccounts.id, existing.id));
         await tx._fileStore.flush();

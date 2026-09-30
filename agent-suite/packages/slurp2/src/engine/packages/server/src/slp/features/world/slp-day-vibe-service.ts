@@ -18,7 +18,11 @@ import {
 /** Where the cached vibe lives. One entry per creator per day, like `slurp-studio-snapshot.ts`. */
 const key = (creatorAccountId: string) => `slurp2.creator.${creatorAccountId}.dayvibe`;
 
-const dayKey = (at: Date) => at.toISOString().slice(0, 10);
+/**
+ * A four-hour window, not the UTC day: the mood reads the last 24 hours (Plane 300) and a mood cached
+ * just after midnight described yesterday for the whole day (R1-076). Still stable within a chat.
+ */
+const dayKey = (at: Date) => `${at.toISOString().slice(0, 10)}#${Math.floor(at.getUTCHours() / 4)}`;
 
 /**
  * The day vibe for one creator, cached for the rest of the day.

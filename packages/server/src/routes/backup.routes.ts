@@ -1,3 +1,8 @@
+import {
+  embedCharacterBookImages,
+  embedLorebookImages,
+  LOREBOOK_EXPORT_IMAGE_MAX_BYTES,
+} from "../services/lorebook/lorebook-images.js";
 // ──────────────────────────────────────────────
 // Routes: Backup
 // ──────────────────────────────────────────────
@@ -526,6 +531,7 @@ function buildCompatibleLorebookExport(lb: Record<string, any>) {
       preventRecursion: entry.preventRecursion === true,
       excludeRecursion: entry.excludeRecursion === true,
       delayUntilRecursion: entry.delayUntilRecursion === true,
+      extensions: { marinaraImages: entry.images ?? [] },
       ...parseLorebookDecisionActivation(entry),
     };
   });
@@ -561,9 +567,13 @@ async function buildCompatibleProfileZip(app: FastifyInstance) {
     usedEntryNames.add(candidate.toLowerCase());
     return candidate;
   };
+  const exportBudget = { remainingBytes: LOREBOOK_EXPORT_IMAGE_MAX_BYTES };
 
   for (const [index, character] of (Array.isArray(data.characters) ? data.characters : []).entries()) {
-    const charData = typeof character.data === "string" ? JSON.parse(character.data) : character.data;
+    const charData = await embedCharacterBookImages(
+      typeof character.data === "string" ? JSON.parse(character.data) : character.data,
+      exportBudget,
+    );
     zip.addFile(
       uniqueEntryName("characters", toSafeExportName(String(charData?.name ?? "character"), `character-${index + 1}`)),
       Buffer.from(JSON.stringify({ spec: "chara_card_v2", spec_version: "2.0", data: charData }, null, 2), "utf8"),
@@ -589,7 +599,17 @@ async function buildCompatibleProfileZip(app: FastifyInstance) {
   for (const [index, lorebook] of (Array.isArray(data.lorebooks) ? data.lorebooks : []).entries()) {
     zip.addFile(
       uniqueEntryName("lorebooks", toSafeExportName(String(lorebook.name ?? "lorebook"), `lorebook-${index + 1}`)),
-      Buffer.from(JSON.stringify(buildCompatibleLorebookExport(lorebook), null, 2), "utf8"),
+      Buffer.from(
+        JSON.stringify(
+          buildCompatibleLorebookExport({
+            ...lorebook,
+            entries: await embedLorebookImages(lorebook.entries ?? [], exportBudget),
+          }),
+          null,
+          2,
+        ),
+        "utf8",
+      ),
     );
   }
 
@@ -3714,7 +3734,9 @@ function reportBackupFailure(err: unknown, operation: string, stage?: string) {
 function sendBackupRouteError(reply: FastifyReply, err: unknown, operation: string, stage?: string) {
   const message = getBackupErrorMessage(err, `${operation} failed. Check the server logs for details.`);
   const ref = reportBackupFailure(err, operation, stage);
-  return reply.status(500).send({
+  const statusCode =
+    err && typeof err === "object" && "statusCode" in err && typeof err.statusCode === "number" ? err.statusCode : 500;
+  return reply.status(statusCode).send({
     error: `${operation} failed`,
     message,
     errorId: ref.errorId,

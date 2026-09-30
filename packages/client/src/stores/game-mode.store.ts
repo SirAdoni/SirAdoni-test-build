@@ -2,20 +2,15 @@
 // Store: Game Mode
 // ──────────────────────────────────────────────
 import { create } from "zustand";
-import {
-  buildStableGameNpcId,
-  applyExtendedWidgetUpdate,
-  applyHudWidgetLifecycle,
-  isExtendedHudWidgetType,
-  coerceWidgetValue,
-  leadingWidgetNumber,
-  listWidgetCapacity,
-} from "@marinara-engine/shared";
+import { applyGameWidgetUpdate, buildStableGameNpcId } from "@marinara-engine/shared";
 import { toast } from "sonner";
 import { translate } from "../localization/i18n";
 import {
   mergeGameNpcsPreservingAvatars,
+  hasAuthoritativeNpcAvatarState,
+  isNpcAvatarRemoved,
   normalizeNpcAvatarName,
+  resolveNpcAvatarStateForIdentity,
   withFreshNpcAvatarRevision,
 } from "../lib/game-npc-avatar";
 import { api } from "../lib/api-client";
@@ -27,6 +22,7 @@ import type {
   HudWidget,
   GameBlueprint,
   WidgetUpdate,
+  GameNpcAvatarState,
 } from "@marinara-engine/shared";
 
 /**
@@ -104,7 +100,15 @@ interface GameModeStore {
   setBlueprint: (bp: GameBlueprint | null) => void;
   setCampaignWikiNav: (nav: CampaignWikiNavState | null) => void;
   /** Patch avatarUrl on tracked NPCs after server-side image generation. */
-  patchNpcAvatars: (avatars: Array<{ npcId?: string | null; name: string; avatarUrl: string }>) => void;
+  patchNpcAvatars: (
+    avatars: Array<{
+      npcId?: string | null;
+      characterId?: string | null;
+      name?: string;
+      avatarUrl: string | null;
+      avatarState?: GameNpcAvatarState;
+    }>,
+  ) => void;
   reset: () => void;
 }
 
@@ -153,41 +157,6 @@ function debouncedPersistWidgets(chatId: string, widgets: HudWidget[]) {
         }
       });
   }, 1000);
-}
-
-function normalizeListWidgetItem(value: string): string {
-  return value
-    .trim()
-    .replace(/^["']+|["']+$/g, "")
-    .replace(/\s+/g, " ")
-    .replace(/[.!?;,:]+$/g, "")
-    .toLowerCase();
-}
-
-function appendListWidgetItem(items: string[], nextItem: string, capacity: number): string[] {
-  const cleaned = nextItem.trim();
-  if (!cleaned) return items;
-
-  const normalizedNewItem = normalizeListWidgetItem(cleaned);
-  const dedupedItems = items.filter((item) => normalizeListWidgetItem(item) !== normalizedNewItem);
-  return [...dedupedItems, cleaned].slice(-capacity);
-}
-
-function removeListWidgetItem(items: string[], target: string): string[] {
-  const normalizedTarget = normalizeListWidgetItem(target);
-  if (!normalizedTarget) return items;
-
-  const exactMatchIndex = items.findIndex((item) => normalizeListWidgetItem(item) === normalizedTarget);
-  if (exactMatchIndex >= 0) {
-    return items.filter((_, index) => index !== exactMatchIndex);
-  }
-
-  const partialMatches = items
-    .map((item, index) => ({ index, normalized: normalizeListWidgetItem(item) }))
-    .filter(({ normalized }) => normalized.includes(normalizedTarget) || normalizedTarget.includes(normalized));
-
-  if (partialMatches.length !== 1) return items;
-  return items.filter((_, index) => index !== partialMatches[0]!.index);
 }
 
 function buildTrackedNpcStub(name: string, avatarUrl: string, npcId?: string | null): GameNpc {
@@ -337,26 +306,69 @@ export const useGameModeStore = create<GameModeStore>((set) => ({
         const npcName = normalizeNpcAvatarName(npc.name);
         const match = avatars.find((avatar) => {
           const npcId = avatar.npcId?.trim();
+          const characterId = avatar.characterId?.trim();
           if (npcId) return npc.id === npcId;
+          if (characterId) return npc.characterId === characterId;
+          if (avatar.avatarUrl === null || isNpcAvatarRemoved(avatar.avatarState) || !avatar.name) return false;
           return npcNameCounts.get(npcName) === 1 && normalizeNpcAvatarName(avatar.name) === npcName;
         });
         if (match) {
+          const avatarState = resolveNpcAvatarStateForIdentity(
+            npc.avatarState,
+            npc.characterId,
+            match.avatarState,
+            match.characterId,
+          );
+          if (hasAuthoritativeNpcAvatarState(npc.avatarState) && avatarState === npc.avatarState) {
+            return npc;
+          }
+          if (isNpcAvatarRemoved(avatarState)) {
+            modified = true;
+            return {
+              ...npc,
+              characterId: match.characterId?.trim() || npc.characterId,
+              avatarUrl: undefined,
+              avatarState,
+            };
+          }
+          if (!match.avatarUrl) return npc;
+          if (isNpcAvatarRemoved(npc.avatarState) && !hasAuthoritativeNpcAvatarState(match.avatarState)) return npc;
           const avatarUrl = withFreshNpcAvatarRevision(match.avatarUrl);
           modified = true;
-          return { ...npc, avatarUrl };
+          return {
+            ...npc,
+            characterId: match.characterId?.trim() || npc.characterId,
+            avatarUrl,
+            avatarState,
+          };
         }
         return npc; // preserve reference — no churn
       });
 
       for (const avatar of avatars) {
-        const avatarName = normalizeNpcAvatarName(avatar.name);
+        const avatarName = normalizeNpcAvatarName(avatar.name ?? "");
         const avatarNpcId = avatar.npcId?.trim();
+        const avatarCharacterId = avatar.characterId?.trim();
+        if (!avatar.avatarUrl || isNpcAvatarRemoved(avatar.avatarState)) continue;
         const exists = avatarNpcId
           ? nextNpcs.some((npc) => npc.id === avatarNpcId)
-          : nextNpcs.filter((npc) => normalizeNpcAvatarName(npc.name) === avatarName).length === 1;
+          : avatarCharacterId
+            ? nextNpcs.some((npc) => npc.characterId === avatarCharacterId)
+            : !!avatar.name && nextNpcs.filter((npc) => normalizeNpcAvatarName(npc.name) === avatarName).length === 1;
         if (!exists) {
-          if (!avatarNpcId && nextNpcs.some((npc) => normalizeNpcAvatarName(npc.name) === avatarName)) continue;
-          nextNpcs.push(buildTrackedNpcStub(avatar.name, withFreshNpcAvatarRevision(avatar.avatarUrl), avatar.npcId));
+          if (
+            !avatarNpcId &&
+            !avatarCharacterId &&
+            nextNpcs.some((npc) => normalizeNpcAvatarName(npc.name) === avatarName)
+          )
+            continue;
+          if (!avatar.name) continue;
+          const stub = buildTrackedNpcStub(avatar.name, withFreshNpcAvatarRevision(avatar.avatarUrl), avatarNpcId);
+          nextNpcs.push({
+            ...stub,
+            ...(avatarCharacterId ? { characterId: avatarCharacterId } : {}),
+            ...(avatar.avatarState ? { avatarState: avatar.avatarState } : {}),
+          });
           modified = true;
         }
       }
@@ -383,78 +395,15 @@ export const useGameModeStore = create<GameModeStore>((set) => ({
     let nextWidgets: HudWidget[] = [];
     const listOverflow = new Map<string, { label: string; capacity: number; dropped: number }>();
     set((s) => {
-      const updatedWidgets = update.changes.action
-        ? applyHudWidgetLifecycle(s.hudWidgets, update)
-        : s.hudWidgets.map((w) => {
-            if (w.id !== update.widgetId) return w;
-            if (isExtendedHudWidgetType(w.type)) return applyExtendedWidgetUpdate(w, update.changes);
-            const changes = update.changes;
-            const newConfig = { ...w.config };
-
-            // Handle stat_block: update a specific stat by name, creating it when needed.
-            if (changes.statName && w.type === "stat_block") {
-              const targetName = changes.statName.trim();
-              // Stat values are text ("23 h 52 min", "540 km circuit"): only a wholly numeric one becomes a number.
-              const rawValue = typeof changes.value === "string" ? coerceWidgetValue(changes.value) : changes.value;
-              const newValue =
-                typeof rawValue === "number"
-                  ? rawValue
-                  : typeof rawValue === "string" && rawValue.trim()
-                    ? rawValue.trim()
-                    : undefined;
-              if (targetName && newValue !== undefined) {
-                const stats = Array.isArray(newConfig.stats) ? [...newConfig.stats] : [];
-                const targetKey = targetName.toLowerCase();
-                const statIndex = stats.findIndex((stat) => stat.name.trim().toLowerCase() === targetKey);
-                if (statIndex >= 0) {
-                  stats[statIndex] = { ...stats[statIndex]!, value: newValue };
-                } else {
-                  stats.push({ name: targetName, value: newValue });
-                }
-                newConfig.stats = stats;
-              }
-            } else {
-              // Merge simple numeric/config fields
-              if (changes.value !== undefined) newConfig.value = leadingWidgetNumber(changes.value) ?? newConfig.value;
-              if (changes.count !== undefined) newConfig.count = changes.count;
-              if (changes.running !== undefined) newConfig.running = changes.running;
-              if (changes.seconds !== undefined) newConfig.seconds = changes.seconds;
-            }
-
-            // Handle list/inventory add/remove
-            if (w.type === "list") {
-              // [widget: id, max: N] raises (or lowers) how many entries the list keeps.
-              if (typeof changes.max === "number" && Number.isFinite(changes.max)) {
-                newConfig.max = listWidgetCapacity({ max: changes.max });
-              }
-              const capacity = listWidgetCapacity(newConfig);
-              let nextItems = [...(newConfig.items ?? [])];
-              if (changes.remove) {
-                nextItems = removeListWidgetItem(nextItems, changes.remove);
-              }
-              if (changes.add) {
-                const before = nextItems;
-                nextItems = appendListWidgetItem(nextItems, changes.add, capacity);
-                const dropped = before.filter((item) => !nextItems.includes(item)).length;
-                if (dropped > 0) {
-                  listOverflow.set(w.id, {
-                    label: w.label,
-                    capacity,
-                    dropped: (listOverflow.get(w.id)?.dropped ?? 0) + dropped,
-                  });
-                }
-              }
-              newConfig.items = nextItems;
-            } else {
-              if (changes.add && w.type === "inventory_grid") {
-                newConfig.contents = [...(newConfig.contents ?? []), { name: changes.add, quantity: 1 }];
-              }
-              if (changes.remove && w.type === "inventory_grid") {
-                newConfig.contents = (newConfig.contents ?? []).filter((c) => c.name !== changes.remove);
-              }
-            }
-            return { ...w, config: newConfig };
+      const updatedWidgets = applyGameWidgetUpdate(s.hudWidgets, update, {
+        onListOverflow: (widget, capacity, dropped) => {
+          listOverflow.set(widget.id, {
+            label: widget.label,
+            capacity,
+            dropped: (listOverflow.get(widget.id)?.dropped ?? 0) + dropped,
           });
+        },
+      });
       // Persist to server
       const chatId = s.activeSessionChatId;
       if (chatId) debouncedPersistWidgets(chatId, updatedWidgets);

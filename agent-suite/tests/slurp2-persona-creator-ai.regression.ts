@@ -42,10 +42,12 @@ assert.match(postOperation, /imagePrompt: input\.imagePrompt\?\.trim\(\) \|\| nu
 
 // The composer offers the toggle, and a manual post renders its image after publishing.
 const home = read(`${client}components/slurp/SlurpHome.tsx`);
-assert.match(home, /ui\.slurp\.composer\.aiImage"/u);
+// 3c: the toggle folds into "Draw a picture" (the picture assist); older drafts with it on still post it.
+assert.match(home, /ui\.slurp\.assist\.drawPicture"/u);
 assert.match(home, /const wantsImage = generateImage && !image;/u);
 assert.match(home, /imagePrompt: body\.trim\(\) \|\| title\.trim\(\)/u);
 assert.match(home, /generatePostImage\s*\.mutateAsync\(\{ id: created\.id, accountId: profileId \}\)/u);
-assert.match(home, /\.\.\.\(generateImage \? \{ generateImage: true \} : \{\}\)/u, "a guided post forwards the toggle");
+// 3c: Guide folds into Write / Improve on the caption, open to every Creator the player owns.
+assert.match(home, /<SlpTextAssist\s+field=\{story \? "story" : "caption"\}/u, "the owner may ask for words");
 
 console.log("slurp2 persona creator AI regression passed");

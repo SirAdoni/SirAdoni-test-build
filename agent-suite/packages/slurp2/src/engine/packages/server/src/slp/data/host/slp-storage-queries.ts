@@ -14,7 +14,10 @@ export function slpCreatorReadablePostCondition(options: SlpCreatorPostPageOptio
 export function slpCreatorPostPageCondition(options: SlpCreatorPostPageOptions, includeCursor: boolean) {
   const readable = slpCreatorReadablePostCondition(options);
   return and(
-    inArray(slpPosts.authorAccountId, options.accountIds),
+    // A collab post shows on the partner's page too (7b-c).
+    options.extraPostIds?.length
+      ? or(inArray(slpPosts.authorAccountId, options.accountIds), inArray(slpPosts.id, options.extraPostIds))
+      : inArray(slpPosts.authorAccountId, options.accountIds),
     ne(slpPosts.access, "draft"),
     options.mediaOnly
       ? and(isNotNull(slpPosts.imageUrl), or(readable, like(slpPosts.imageUrl, `${NOODLER_MEDIA_URL_PREFIX}%`)))

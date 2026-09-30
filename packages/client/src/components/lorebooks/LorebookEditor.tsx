@@ -74,6 +74,7 @@ import {
   Check,
   CheckSquare2,
   Copy,
+  ClipboardPaste,
   MoveRight,
   Tag,
   Wand2,
@@ -424,6 +425,8 @@ export function LorebookEditor() {
   const { t } = useTranslation();
   const lorebookId = useUIStore((s) => s.lorebookDetailId);
   const closeDetail = useUIStore((s) => s.closeLorebookDetail);
+  const linkClipboard = useUIStore((s) => s.lorebookLinkClipboard);
+  const setLinkClipboard = useUIStore((s) => s.setLorebookLinkClipboard);
   const activeChat = useChatStore((s) => s.activeChat);
   const activeOwnerChatId = activeChat?.mode === "roleplay" || activeChat?.mode === "game" ? activeChat.id : null;
   const spatialBacklinksQuery = useSpatialContext(activeOwnerChatId);
@@ -920,6 +923,37 @@ export function LorebookEditor() {
     formRevisionRef.current += 1;
     setLorebookDirty(true);
   }, []);
+
+  const handleCopyLinks = () => {
+    setLinkClipboard({ characterIds: [...formCharacterIds], personaIds: [...formPersonaIds] });
+    toast.success(t("lorebook.editor.links.copied"));
+  };
+
+  const canPasteLinks =
+    !!linkClipboard &&
+    (linkClipboard.characterIds.length === 0 || !!rawCharacters) &&
+    (linkClipboard.personaIds.length === 0 || !!rawPersonas);
+
+  const handlePasteLinks = () => {
+    if (!linkClipboard || !canPasteLinks) return;
+    const characterIds = linkClipboard.characterIds.filter((id) => characters.some((character) => character.id === id));
+    const personaIds = linkClipboard.personaIds.filter((id) => personas.some((persona) => persona.id === id));
+    if (characterIds.length === 0 && personaIds.length === 0) {
+      toast.info(t("lorebook.editor.links.unavailable"));
+      return;
+    }
+    if (
+      characterIds.every((id) => formCharacterIds.includes(id)) &&
+      personaIds.every((id) => formPersonaIds.includes(id))
+    ) {
+      toast.info(t("lorebook.editor.links.alreadyLinked"));
+      return;
+    }
+    setFormCharacterIds((current) => [...new Set([...current, ...characterIds])]);
+    setFormPersonaIds((current) => [...new Set([...current, ...personaIds])]);
+    markLorebookDirty();
+    toast.success(t("lorebook.editor.links.pasted"));
+  };
 
   const handleAddTags = useCallback(() => {
     const nextTags = appendNewTags(formTags, newTag);
@@ -2406,6 +2440,28 @@ export function LorebookEditor() {
 
                 {!formIsGlobal && (
                   <div className="mari-editor-panel p-4">
+                    <div className="mb-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={handleCopyLinks}
+                        disabled={formCharacterIds.length === 0 && formPersonaIds.length === 0}
+                        title={t("lorebook.editor.links.copyHint")}
+                        className="mari-editor-action inline-flex items-center gap-1.5 disabled:opacity-50"
+                      >
+                        <Copy size="0.8125rem" />
+                        {t("lorebook.editor.links.copy")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handlePasteLinks}
+                        disabled={!canPasteLinks}
+                        title={t("lorebook.editor.links.pasteHint")}
+                        className="mari-editor-action inline-flex items-center gap-1.5 disabled:opacity-50"
+                      >
+                        <ClipboardPaste size="0.8125rem" />
+                        {t("lorebook.editor.links.paste")}
+                      </button>
+                    </div>
                     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                       {/* Character Link */}
                       <LinkedResourcePicker

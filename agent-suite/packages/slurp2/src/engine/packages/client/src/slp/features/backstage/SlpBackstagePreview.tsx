@@ -1,4 +1,6 @@
-import { ChevronDown, SlidersHorizontal, Sparkles } from "lucide-react";
+import { SlpCoinText } from "../../modules/coin/SlpCoin";
+import { ChevronDown, SlidersHorizontal } from "lucide-react";
+import { SlpSparkleGlyph } from "../../base/chrome/SlpGlyphs";
 import { useDeferredValue, useMemo, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { SlurpPromotion } from "../ads/slp-ads-contract";
@@ -85,7 +87,7 @@ export function outcomeSummary(
       });
     case "wallet":
       return t(key, {
-        defaultValue: "Coins {{state}} · {{cost}}/week",
+        defaultValue: "Coins {{state}} · {{cost}} <coin/> / week",
         state: onOff(t, settings.walletEnabled),
         cost: settings.walletSubscriptionCost,
       });
@@ -121,7 +123,7 @@ function CompareRow({ label, current, proposed }: { label: string; current: Reac
   return (
     <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 py-1.5">
       <dt className="text-[var(--slurp-muted)]">{label}</dt>
-      <dd className={cn("font-semibold tabular-nums", changed && "text-[var(--noodle-accent)]")}>
+      <dd className={cn("font-semibold tabular-nums", changed && "text-[var(--noodle-accent-foreground)]")}>
         {changed ? (
           <>
             {current} → {proposed}
@@ -289,9 +291,16 @@ function AdCadence({ current, proposed }: { current: SlurpSettings; proposed: Sl
 
 function AudienceWeek({ current, proposed }: { current: SlurpSettings; proposed: SlurpSettings }) {
   const { t } = useTranslation();
-  const deferredProposed = useDeferredValue(proposed.simulationTuning);
-  const before = useMemo(() => estimateSlurpSimulation(current.simulationTuning), [current.simulationTuning]);
-  const after = useMemo(() => estimateSlurpSimulation(deferredProposed), [deferredProposed]);
+  // The whole settings object, so a staged Fan Type, world dial or AI-run change moves it too (R1-116).
+  const deferredProposed = useDeferredValue(proposed);
+  const before = useMemo(
+    () => estimateSlurpSimulation(current.simulationTuning, undefined, undefined, current),
+    [current],
+  );
+  const after = useMemo(
+    () => estimateSlurpSimulation(deferredProposed.simulationTuning, undefined, undefined, deferredProposed),
+    [deferredProposed],
+  );
   const metrics = ["followers", "likes", "comments", "subscriptions", "messages"] as const;
   return (
     <figure>
@@ -423,7 +432,7 @@ export function SlurpBackstagePreview({
       <div className="xl:sticky xl:top-4">
         <div className="mb-3 flex items-center justify-between gap-3">
           <div>
-            <p className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--noodle-accent)]">
+            <p className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--noodle-accent-foreground)]">
               {t("ui.slurp.settings.backstage.preview.label", { defaultValue: "Live preview" })}
             </p>
             <h2 className="mt-1 text-base font-bold text-balance">
@@ -435,17 +444,21 @@ export function SlurpBackstagePreview({
         <PreviewFrame>
           <div className="rounded-xl bg-[linear-gradient(135deg,color-mix(in_srgb,var(--noodle-accent)_18%,var(--slurp-surface-raised)),color-mix(in_srgb,var(--slurp-violet)_12%,var(--slurp-surface-raised)))] p-4 ring-1 ring-inset ring-[var(--slurp-outline)]">
             <div className="flex items-center gap-3">
-              <span className="grid h-10 w-10 place-items-center rounded-full bg-[var(--noodle-accent)] text-zinc-950 [&_svg]:!text-zinc-950">
+              <span className="grid h-10 w-10 place-items-center rounded-full bg-[var(--noodle-accent)] text-[var(--slurp-on-accent)] [&_svg]:!text-[var(--slurp-on-accent)]">
                 {target === "improve" ? (
-                  <Sparkles size={18} aria-hidden="true" />
+                  <SlpSparkleGlyph size={18} aria-hidden="true" />
                 ) : (
                   <SlidersHorizontal size={18} aria-hidden="true" />
                 )}
               </span>
               <div className="min-w-0">
-                <h3 className="truncate text-sm font-bold">{SLP_BACKSTAGE_TARGET_LABELS[target]}</h3>
+                <h3 className="truncate text-sm font-bold">
+                  {t(`ui.slurp.settings.backstage.targets.${target}`, {
+                    defaultValue: SLP_BACKSTAGE_TARGET_LABELS[target],
+                  })}
+                </h3>
                 <p className="mt-0.5 text-xs leading-5 text-[var(--slurp-muted)] text-pretty" aria-live="polite">
-                  {outcomeSummary(t, target, proposed, creatorCount)}
+                  <SlpCoinText>{outcomeSummary(t, target, proposed, creatorCount)}</SlpCoinText>
                 </p>
               </div>
             </div>
@@ -455,10 +468,12 @@ export function SlurpBackstagePreview({
               <p className="font-semibold text-[var(--slurp-muted)]">
                 {t("ui.slurp.settings.backstage.preview.current", { defaultValue: "Current" })}
               </p>
-              <p className="mt-1 font-bold text-pretty">{outcomeSummary(t, target, current, creatorCount)}</p>
+              <p className="mt-1 font-bold text-pretty">
+                <SlpCoinText>{outcomeSummary(t, target, current, creatorCount)}</SlpCoinText>
+              </p>
             </div>
             <div className="rounded-lg bg-[color-mix(in_srgb,var(--noodle-accent)_9%,var(--slurp-surface-raised))] p-3 ring-1 ring-inset ring-[color-mix(in_srgb,var(--noodle-accent)_25%,transparent)]">
-              <p className="font-semibold text-[var(--noodle-accent)]">
+              <p className="font-semibold text-[var(--noodle-accent-foreground)]">
                 {t("ui.slurp.settings.backstage.preview.proposed", { defaultValue: "Proposed" })}
               </p>
               <p className="mt-1 font-bold">

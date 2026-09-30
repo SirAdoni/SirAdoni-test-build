@@ -261,7 +261,7 @@ for (const file of [
 }
 
 // Source B — every bracket name the Engine parses back out of a finished turn. There are five
-// parsers, not two: the client tag parser and the client narration formatter, the server's segment
+// parsers, not two: the shared tag parser and the client narration formatter, the server's segment
 // editor, the sidecar scene analyzer, and the generate route's dialogue rewriter. The dialogue
 // tokens are pinned from here rather than from the reminder, because the reminder renders them
 // inside an alternation (`[main|side|whisper:Target|thought]`) that a `[name:` sweep cannot see —
@@ -278,7 +278,7 @@ for (const file of [
 // names the five above already hold. Rot cover is not worth widening what the constant claims to be.
 const parserTags = new Set<string>();
 for (const file of [
-  "packages/client/src/lib/game-tag-parser.ts",
+  "packages/shared/src/utils/game-tag-parser.ts",
   "packages/client/src/components/game/game-narration-format.ts",
   "packages/server/src/services/game/segment-edits.ts",
   "packages/server/src/services/sidecar/scene-analyzer.ts",
@@ -291,7 +291,7 @@ assert.ok(reminderTags.size >= 15, `the GM reminder sweep found only ${reminderT
 assert.ok(parserTags.size >= 25, `the tag-parser sweep found only ${parserTags.size} tags; the extractor broke`);
 // Canaries no other source in the union can supply, so losing one proves a source dropped out:
 // `reputation` only ever appears in the GM reminder, `whisper` in colon form only in the party
-// reminder, the party pair only in the client tag parser, the QTE pair only in the client narration
+// reminder, the party pair only in the shared tag parser, the QTE pair only in the client narration
 // formatter, and `main`/`whisper` only inside a regex alternation, which is what the narrow sweep
 // this pin used to run could not read.
 // `element_attack` used to stand for the tag parser here and no longer can: the narration formatter
@@ -303,7 +303,7 @@ assert.ok(reminderTags.has("reputation"), "the reminder sweep must still see [re
 assert.ok(reminderTags.has("whisper"), "the party-prompts reminder must still be part of the sweep");
 assert.ok(
   parserTags.has("party-chat") && parserTags.has("party-turn"),
-  "the client tag parser must still be part of the sweep",
+  "the shared tag parser must still be part of the sweep",
 );
 assert.ok(
   parserTags.has("qte_bonus") && parserTags.has("qte_result"),
@@ -811,7 +811,7 @@ assert.deepEqual(
 // handed a variable or a helper's return value, in either write shape. Its keys cannot be read from
 // here at all, so the COUNT is pinned — another opaque call fails until someone reads it by hand
 // and either widens a walk above or adds the namespace to ENGINE_OWNED_METADATA_KEY_PREFIXES.
-// Thirteen are `patchMetadata`/`updateMetadata` calls; the other
+// Fourteen are `patchMetadata`/`updateMetadata` calls; the other
 // two are route PATCHes, and neither is a live gap today — one is the mutation hook's own
 // implementation, whose keys the client-mutation arm reads at its call sites instead, and the other
 // is a debounced scene patch assembled into a variable whose four keys the literal beside it repeats
@@ -827,12 +827,17 @@ assert.deepEqual(
 // 14 since 3354c1c89: the generate-route retry map sync (applyRetryResultEffects) became a readable
 // patchMetadata updater that returns gameMap/gameMaps/activeGameMapId, covered by the reserved
 // `game` and `active` namespaces.
+// `chats.storage.ts` is one of the fourteen patch/update calls above; it routes an existing full
+// metadata update through the guarded patch queue and introduces no keys. The new upstream
+// `game-runtime.ts` call contributes the seventeenth unreadable write: its patch commits `game*`
+// and `multiplayer*` turn effects. Both prefixes are reserved, and room generation preserves the
+// coordinator's multiplayer object.
 // The other half of the boundary — a read off a parameter inside a helper — has no count
 // to pin, which is why sub-source 7 exists rather than a seventh sweep. The docs state both limits.
 assert.equal(
   unreadableWriteCalls,
-  14,
-  `chat-metadata writes this sweep cannot read statically changed: expected 14, found ${unreadableWriteCalls}. ` +
+  17,
+  `chat-metadata writes this sweep cannot read statically changed: expected 17, found ${unreadableWriteCalls}. ` +
     "This count is a boundary marker, not a budget, so do not simply edit the number to match. Read the " +
     "call this added by hand — the sites are listed below — and decide what it writes: if it commits a key " +
     "under a namespace that is not already in ENGINE_OWNED_METADATA_KEY_PREFIXES, add that namespace (or " +
@@ -863,7 +868,7 @@ assert.deepEqual(
 );
 // The floor the decision named explicitly. `persona` is the only one of them the sweeps above
 // cannot produce on their own, so it is the one entry that is genuinely hand-maintained.
-for (const floor of ["game", "conversation", "chat", "lorebook", "character", "persona", "macro", "summary"]) {
+for (const floor of ["game", "multiplayer", "conversation", "chat", "lorebook", "character", "persona", "macro", "summary"]) {
   assert.ok(ownedPrefixes.has(floor), `"${floor}" must stay in the engine-owned denylist`);
 }
 

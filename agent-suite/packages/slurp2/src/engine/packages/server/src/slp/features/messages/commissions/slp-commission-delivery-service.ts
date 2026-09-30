@@ -14,7 +14,7 @@ import { createSlurpMessagesStorage } from "../../../data/slp-storage.js";
 import type { SlurpCommission } from "../../../data/slp-storage.js";
 import { enqueueSlurpPendingText } from "../../world/slp-world-contract.js";
 import { slurpMessageMediaUrl } from "../../../base/media/slp-media.js";
-import { slurpCommissionDeliveryNote } from "../../../modules/world/slp-world-copy.js";
+import { slurpChatLanguage, slurpCommissionDeliveryNote } from "../../../modules/world/slp-world-copy.js";
 
 export type SlurpCommissionDeliveryOutcome =
   | { status: "delivered"; commission: SlurpCommission }
@@ -30,8 +30,21 @@ export async function deliverAutomaticSlurpCommission(
 ): Promise<SlurpCommissionDeliveryOutcome> {
   const messages = createSlurpMessagesStorage(db);
   // From the copy bank, seeded on the commission, so the same piece always arrives with the same
-  // note and every Creator does not say one identical hardcoded sentence.
-  const delivered = await messages.deliverCommission(commission.id, slurpCommissionDeliveryNote(commission.id), null);
+  // note and every Creator does not say one identical hardcoded sentence. In the chat's language:
+  // an English line in a German chat read as a bot (7c M-008).
+  const recent: { kind: string; content: string; metadata?: Record<string, unknown> | null }[] = await messages
+    .listMessages(commission.threadId, 12)
+    .catch(() => []);
+  const language = slurpChatLanguage(
+    recent
+      .filter((message) => message.kind === "text" && !message.metadata?.paymentReaction)
+      .map((message) => message.content),
+  );
+  const delivered = await messages.deliverCommission(
+    commission.id,
+    slurpCommissionDeliveryNote(commission.id, language),
+    null,
+  );
   if (!delivered) return { status: "refunded" };
   if (delivered.state !== "delivered" || !delivered.deliveryMessageId)
     return { status: "stale", commission: delivered };

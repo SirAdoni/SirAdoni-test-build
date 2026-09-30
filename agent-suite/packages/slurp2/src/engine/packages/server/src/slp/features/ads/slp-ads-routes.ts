@@ -11,7 +11,7 @@ import { createLorebooksStorage } from "../../../services/storage/lorebooks.stor
 import { readGarnishLorebookContext } from "./slp-garnish-lorebook.js";
 import { generateGarnishAds, retireWeakGarnishAds } from "./slp-garnish-generation-service.js";
 import { qualityScores } from "../../../services/garnish-ads/garnish-ads.rating.js";
-import type { GarnishAd } from "../../../services/garnish-ads/garnish-ads.types.js";
+import { garnishAdBrandId, type GarnishAd } from "../../../services/garnish-ads/garnish-ads.types.js";
 import {
   exportGarnishAds,
   importGarnishAds,
@@ -19,6 +19,7 @@ import {
 } from "../../../services/garnish-ads/garnish-ads.export.js";
 import type { FastifyInstance } from "fastify";
 import type { SlpRouteDeps } from "../viewer/slp-viewer-contract.js";
+import { slurpPromptContext } from "../../base/prompting/slp-prompt-blocks.js";
 
 export async function slpAdsRoutes(app: FastifyInstance, deps: SlpRouteDeps) {
   const { ads, characters, noodle, resolveViewerPersona } = deps;
@@ -28,9 +29,12 @@ export async function slpAdsRoutes(app: FastifyInstance, deps: SlpRouteDeps) {
     brand: z.string().trim().min(1).max(80),
     product: z.string().trim().min(1).max(120),
     copy: z.string().trim().min(1).max(600),
+    priceFeel: z.enum(["budget", "everyday", "premium"]).optional(),
+    look: z.string().trim().max(400).optional(),
     categories: z.array(z.string().trim().min(1).max(32)).max(12).default([]),
     contextTags: z.array(z.string().trim().min(1).max(32)).max(12).default([]),
     imageUrl: z.string().trim().max(2048).nullable().optional(),
+    wideImageUrl: z.string().trim().max(2048).nullable().optional(),
     actionLabel: z.string().trim().min(1).max(40).optional(),
     contentRating: z.enum(["tame", "suggestive", "explicit"]).default("tame"),
   });
@@ -68,7 +72,11 @@ export async function slpAdsRoutes(app: FastifyInstance, deps: SlpRouteDeps) {
       items.map((item) => item.id),
     );
     for (const item of items) await ads.record(parsed.data.personaId, item.id, "impression");
-    return { items };
+    // The brand's logo is the ad's avatar (R); a brand without one shows its initials.
+    const logos = new Map(
+      (await ads.pool.listBrands(SLURP_GARNISH_PLATFORM)).map((brand) => [brand.id, brand.logoUrl ?? null]),
+    );
+    return { items: items.map((item) => ({ ...item, brandLogoUrl: logos.get(garnishAdBrandId(item)) ?? null })) };
   });
 
   app.post("/slurp/viewer/ads/:id/hide", async (req, reply) => {
@@ -168,6 +176,8 @@ export async function slpAdsRoutes(app: FastifyInstance, deps: SlpRouteDeps) {
     await ads.pool.remove(id);
     if (existing.origin !== "builtin") unlinkGarnishAdImage(id, existing.imageUrl);
     else if (generatedImageUrl) unlinkGarnishAdImage(id, generatedImageUrl);
+    // A builtin ships no banner, so a wide picture is always one Slurp drew.
+    unlinkGarnishAdImage(id, existing.wideImageUrl);
     return { ok: true };
   });
 
@@ -181,10 +191,15 @@ export async function slpAdsRoutes(app: FastifyInstance, deps: SlpRouteDeps) {
     const parsed = garnishAdPatchSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     // Scoped like the other pool routes: an id from another Garnish platform is not editable here.
-    if (!(await ads.pool.listAll(SLURP_GARNISH_PLATFORM)).some((ad) => ad.id === id)) {
-      return reply.code(404).send({ error: "Not Found" });
-    }
-    const updated = await ads.pool.update(id, parsed.data);
+    const existing = (await ads.pool.listAll(SLURP_GARNISH_PLATFORM)).find((ad) => ad.id === id);
+    if (!existing) return reply.code(404).send({ error: "Not Found" });
+    // A new feed picture makes the old banner a picture of something else: wide slots crop the new one.
+    const replacesPicture =
+      parsed.data.imageUrl !== undefined &&
+      parsed.data.imageUrl !== existing.imageUrl &&
+      parsed.data.wideImageUrl === undefined;
+    const updated = await ads.pool.update(id, replacesPicture ? { ...parsed.data, wideImageUrl: null } : parsed.data);
+    if (updated && replacesPicture) unlinkGarnishAdImage(id, existing.wideImageUrl);
     if (!updated) return reply.code(404).send({ error: "Not Found" });
     return updated;
   });
@@ -194,10 +209,7 @@ export async function slpAdsRoutes(app: FastifyInstance, deps: SlpRouteDeps) {
     const ad = (await ads.pool.listAll(SLURP_GARNISH_PLATFORM)).find((row) => row.id === id);
     if (!ad) return reply.code(404).send({ error: "Not Found" });
     const settings = await noodle.getSettings();
-    const outcome = await generateGarnishAdImage(app.db, ads.pool, ad, [
-      settings.inlineAdsImageConnectionId,
-      settings.imageGenerationConnectionId,
-    ]);
+    const outcome = await generateGarnishAdImage(app.db, ads.pool, ad, [settings.inlineAdsImageConnectionId]);
     if (outcome === "unavailable") {
       return reply.code(400).send({ error: "Select an image generation connection first." });
     }
@@ -209,8 +221,13 @@ export async function slpAdsRoutes(app: FastifyInstance, deps: SlpRouteDeps) {
   app.get("/noodler/ads/:id/image/:fileName", async (req, reply) => {
     const { id, fileName } = req.params as { id: string; fileName: string };
     const ad = (await ads.pool.listAll()).find((row) => row.id === id);
-    const absolute = resolveGarnishAdImageAbsolutePath(id, ad?.imageUrl);
-    if (!absolute || basename(absolute) !== fileName || !existsSync(absolute)) {
+    // A brand's logo lives under the same route, keyed by the brand id (R).
+    const brand = ad ? null : (await ads.pool.listBrands()).find((row) => row.id === id);
+    // The feed picture or the wide banner, whichever this file name is.
+    const absolute = [ad?.imageUrl, ad?.wideImageUrl, brand?.logoUrl]
+      .map((url) => resolveGarnishAdImageAbsolutePath(id, url))
+      .find((path) => path && basename(path) === fileName);
+    if (!absolute || !existsSync(absolute)) {
       return reply.code(404).send({ error: "Not Found" });
     }
     const width = z.coerce
@@ -261,16 +278,13 @@ export async function slpAdsRoutes(app: FastifyInstance, deps: SlpRouteDeps) {
         era: settings.inlineAdsEra,
         contentCeiling: settings.inlineAdsContentCeiling,
         worldContext: [lorebook?.text, settings.inlineAdsWorldContext].filter((part) => part?.trim()).join("\n\n"),
-        promptBlocks: settings.promptBlocks,
+        promptBlocks: slurpPromptContext(settings).blocks,
       });
       let images = 0;
       if (settings.inlineAdsImagesEnabled) {
         for (const ad of items) {
           if (
-            (await generateGarnishAdImage(app.db, ads.pool, ad, [
-              settings.inlineAdsImageConnectionId,
-              settings.imageGenerationConnectionId,
-            ])) === "generated"
+            (await generateGarnishAdImage(app.db, ads.pool, ad, [settings.inlineAdsImageConnectionId])) === "generated"
           )
             images += 1;
         }

@@ -5,6 +5,7 @@
  * release after the visible bubble plus delayed batch are durable. The claim is what stops the live
  * send path and the offline scheduler from both answering the same message.
  */
+import { agreeSlurpCollabInDm } from "../projects/slp-projects-contract.js";
 import type { DB } from "../../../db/connection.js";
 import { logger } from "../../../lib/logger.js";
 import { createConnectionsStorage } from "../../../services/storage/connections.storage.js";
@@ -15,10 +16,11 @@ import { createSlurpMessagesStorage, type SlurpMessage } from "../../data/slp-st
 import { createSlurpEventsStorage } from "../../data/notifications/slp-notification-storage.js";
 import { tryCreatorAccountOperation } from "../../base/locking/slp-account-operation-lock.js";
 import { generateSlurpMessageReply, SlurpMessageBudgetUnavailableError } from "./slp-message-generation-service.js";
-import { describeSlurpDayVibe } from "../world/slp-world-contract.js";
+import { resolveSlurpReplyAvailability, resolveSlurpReplyViewer } from "./slp-thread-stance.js";
+import { describeSlurpDayVibe, dropSlurpPendingText } from "../world/slp-world-contract.js";
 import { recoverSlurpMood } from "../../modules/world/slp-mood.js";
-import { activeSlurpStrikes, SLURP_COOL_OFF_HOURS, type SlurpStanceLatitude } from "../../modules/world/slp-stance.js";
-import { resolveSlurpCreatorAvailability } from "../../modules/creators/slp-creator-schedule-context.js";
+import { activeSlurpStrikes, type SlurpStanceLatitude } from "../../modules/world/slp-stance.js";
+import { resolveSlurpCreatorScheduleTraits } from "../../modules/creators/slp-creator-schedule-context.js";
 import {
   calculateConversationMomentum,
   extendedOnlineDurationMinutes,
@@ -29,21 +31,47 @@ import { readTalkativenessProfile, allowMultiBubbleSplit } from "../../modules/w
 import {
   slurpReplyBubbleDelayMs,
   slurpReplyPacing,
+  slurpAnswersAiFan,
   splitSlurpReplyBurst,
   type SlurpReplyPacing,
 } from "../../modules/messages/slp-messaging.js";
 import { generateSlurpCommissionImage } from "./commissions/slp-commission-image-operation.js";
-import { slurpMessageMediaUrl } from "../../base/media/slp-media.js";
-import { resolveSlurpMediaOffer } from "../../modules/economy/slp-media-offer.js";
+import { slpStoredMediaSize, slurpMessageMediaUrl } from "../../base/media/slp-media.js";
+import { resolveSlurpMediaOffer, slurpDmPictureSpicy } from "../../modules/economy/slp-media-offer.js";
+import { slurpDmSpiceLevel } from "../../modules/creators/slp-spice.js";
+import { resolveSlurpExplicitLevel } from "../../data/settings/slp-post-guidance-storage.js";
 import { slurpCreatorStateCanUseMedia } from "../../modules/creators/slp-creator-state.js";
+import type { SlpAccount } from "../../../../../shared/src/slp/slp-social.types.js";
+import {
+  applySlurpSupportTalk,
+  isSlurpSupportPhotoDemand,
+  isSlurpSupportThread,
+  slurpSupportPhotoFallback,
+  type SlurpSupportTalkStore,
+} from "../../modules/messages/slp-support.js";
+import { applySlurpDeskTalk } from "./desk/slp-desk-talk-operation.js";
+import { slpCreatorUnlockPriceFromMetadata } from "../../modules/economy/slp-prices.js";
+import { readSlurpCreatorSteering } from "../../data/creators/slp-steering-storage.js";
+import { planSlpStir } from "../assist/slp-assist-contract.js";
+import {
+  createSlurpContinuityFact,
+  findSlurpContinuityFactBySourceHash,
+} from "../../data/continuity/slp-continuity-storage.js";
+import { slurpContinuityIdentityOf } from "../../modules/continuity/slp-continuity-rules.js";
 
 export type SlurpReplyOutcome =
   | { status: "replied"; message: SlurpMessage; pacing: SlurpReplyPacing }
   | { status: "queued"; pacing: SlurpReplyPacing }
+  /** The daily or hourly AI budget is spent; the reply is queued for `retryAt`. */
+  | { status: "budget"; retryAt: string; pacing: SlurpReplyPacing }
   /** The creator has stepped away from this conversation. `until` is when they come back. */
   | { status: "cooling"; until: string }
   | { status: "busy" }
   | { status: "ineligible" }
+  /** Not answered now, and no away reply will come: the player asks for one. */
+  | { status: "owed" }
+  /** The AI budget is off (or its DM switch is): nobody answers until it is on again. */
+  | { status: "ai_off" }
   | { status: "connection_not_found" }
   | { status: "failed"; error: string };
 
@@ -61,6 +89,8 @@ export async function replyToSlurpMessage(
     force?: boolean;
     /** The scheduler, answering unattended. A person waiting at the screen is not this. */
     background?: boolean;
+    /** The owner asked their hand-operated Creator to answer this once, through draft-reply. */
+    operatorDraft?: boolean;
     debugMode?: boolean;
     generationGuidance?: string;
   },
@@ -70,13 +100,29 @@ export async function replyToSlurpMessage(
   const thread = await messagesStore.getThreadById(input.threadId);
   if (!thread || (thread.state !== "active" && thread.state !== "request")) return { status: "ineligible" };
 
-  const [creator, viewer] = await Promise.all([
-    slurp.getNoodlerAccountById(thread.creatorAccountId),
-    slurp.getViewer(thread.viewerAccountId),
-  ]);
+  const creator = await slurp.getNoodlerAccountById(thread.creatorAccountId);
+  // Slurp Support's own thread: the one writing is Slurp's staff, named as the thread names them.
+  const support = isSlurpSupportThread(thread);
+  const listedViewer = await resolveSlurpReplyViewer(db, thread, creator, input.operatorDraft === true);
+  // An AI fan (no persona, not Support) is answered unattended about one time in four (task E);
+  // once answered, the fan keeps the conversation while the thread lives. The rest expire unanswered.
+  const aiFanTrigger =
+    !listedViewer && !input.operatorDraft && input.background && creator
+      ? await messagesStore.getMessageById(input.triggerMessageId)
+      : null;
+  const aiFan = Boolean(
+    aiFanTrigger &&
+    slurpAnswersAiFan(
+      aiFanTrigger,
+      (await messagesStore.listMessages(thread.id, 120)).some(
+        (message: SlurpMessage) => message.senderAccountId === thread.creatorAccountId,
+      ),
+    ),
+  );
+  const viewer = aiFan ? await resolveSlurpReplyViewer(db, thread, creator, true) : listedViewer;
   // A persona-backed Creator is operated by hand: it never auto-posts and it never answers a DM
   // on its own either. The operator writes the answer through the draft-reply route.
-  if (!creator || !viewer || (creator.kind === "persona" && creator.sourceKind === "persona")) {
+  if (!creator || !viewer || (creator.kind === "persona" && creator.sourceKind === "persona" && !input.operatorDraft)) {
     // No automatic reply can ever come, so the thread must stop taking one of the scheduler's
     // oldest-first slots. Left set, these starved every newer thread the player was waiting on.
     if (input.background) await messagesStore.clearReplyObligation(thread.id);
@@ -89,30 +135,26 @@ export async function replyToSlurpMessage(
     return { status: "cooling", until: thread.coolUntil };
   }
 
-  const source = await slurp.resolveAccountSource(creator);
-  const latestPost = await slurp.getNoodlerLatestPublishedPost(creator.id);
-  const replyDelays = await slurp.getSettings();
-  const scheduled = source
-    ? await resolveSlurpCreatorAvailability(
-        createCharactersStorage(db),
-        source,
-        undefined,
-        new Date(),
-        latestPost?.createdAt ?? null,
-        replyDelays,
-      )
-    : { online: true, activity: null, minutesUntilOnline: 0 };
-  // An open conversation window keeps the Creator online; momentum alone never wakes her.
-  const availability =
-    thread.extendedOnlineUntil && thread.extendedOnlineUntil > new Date().toISOString()
-      ? { online: true, activity: "chatting", minutesUntilOnline: 0 }
-      : scheduled;
+  // The same availability the Prompt details view reads (R1-011).
+  const {
+    settings: settingsForDelays,
+    replyDelays,
+    source,
+    details,
+    availability,
+  } = await resolveSlurpReplyAvailability(db, thread, creator);
 
   const history = await messagesStore.listMessages(thread.id, 60);
+  const trigger = history.find((message) => message.id === input.triggerMessageId);
+  if (!trigger) return { status: "ineligible" };
 
-  // Calculate conversation momentum
+  // Momentum is how recently she was in this conversation. `thread.lastMessageAt` is the fan's own
+  // message from a moment ago, which made every live reply "hot" and froze mood recovery.
+  const lastCreatorMessageAt =
+    history.filter((message) => message.role === "creator" && message.createdAt <= (trigger?.createdAt ?? "~")).at(-1)
+      ?.createdAt ?? new Date(0).toISOString();
   const momentumAnalysis = calculateConversationMomentum(
-    thread.lastMessageAt,
+    lastCreatorMessageAt,
     history.map((m) => ({ role: m.role as "viewer" | "creator", createdAt: m.createdAt })),
   );
 
@@ -132,13 +174,14 @@ export async function replyToSlurpMessage(
   // subscription shape pacing and tone but cannot strand an already-started conversation.
   const isRequest = thread.state === "request";
   if (isRequest && history.some((message) => message.role === "creator")) return { status: "ineligible" };
-  const trigger = history.find((message) => message.id === input.triggerMessageId) ?? history[history.length - 1];
   const triggerObligationCreatedAt = trigger?.createdAt ?? new Date().toISOString();
   const subscriptions = await slurp.listSubscriptionsForViewer(thread.viewerAccountId);
   const subscribed = subscriptions.some((entry) => entry.creatorAccountId === thread.creatorAccountId);
 
-  // Read talkativeness profile from generated schedule if available
-  const talkativenessProfile = readTalkativenessProfile({});
+  // The generated Conversation Schedule carries how chatty this Creator is.
+  const talkativenessProfile = readTalkativenessProfile(
+    source ? await resolveSlurpCreatorScheduleTraits(createCharactersStorage(db), source) : null,
+  );
 
   // Calculate mood with recovery (but pause recovery if hot conversation + negative mood)
   const minutesSinceMoodUpdate = thread.moodUpdatedAt
@@ -161,6 +204,7 @@ export async function replyToSlurpMessage(
     // replyLength will be filled in after generation
     talkativeness: talkativenessProfile.talkativeness,
     delays: replyDelays,
+    firstContact: !history.some((message) => message.role === "creator"),
   });
   const completedReplyId = await messagesStore.getCompletedReply(thread.id, input.triggerMessageId);
   if (completedReplyId) {
@@ -168,7 +212,12 @@ export async function replyToSlurpMessage(
     if (completedReply) return { status: "replied", message: completedReply, pacing };
   }
   if ((pacing.mode === "queued" || pacing.mode === "delayed") && input.force !== true) {
-    await messagesStore.setReplyNotBefore(thread.id, new Date(Date.now() + pacing.notBeforeMs).toISOString());
+    // A wait already running is kept. Each new fan message used to restart it, so a fan who kept
+    // writing never got an answer until they stopped.
+    const running = thread.needsReply && thread.replyNotBeforeAt && thread.replyNotBeforeAt > new Date().toISOString();
+    if (!running) {
+      await messagesStore.setReplyNotBefore(thread.id, new Date(Date.now() + pacing.notBeforeMs).toISOString());
+    }
     // She has seen it and is not answering yet. That is the whole meaning of a queued reply, and
     // it was indistinguishable from the app being broken because nothing recorded the noticing.
     // "Seen, no reply" is the loudest thing this surface can say, and the timestamp already exists.
@@ -181,6 +230,9 @@ export async function replyToSlurpMessage(
       },
       Math.round(5000 + Math.random() * 25000),
     ); // 5-30 seconds
+    // With "Answer while you are away" off nothing answers a queued message later, so it must not
+    // promise that; "owed" keeps "Get reply now" on screen (R1-014).
+    if (!input.background && !settingsForDelays.messagesAwayRepliesEnabled) return { status: "owed" };
     return { status: "queued", pacing };
   }
 
@@ -220,12 +272,15 @@ export async function replyToSlurpMessage(
         mood: thread.mood,
         moodUpdatedAt: thread.moodUpdatedAt,
         notes: thread.notes,
+        threadId: thread.id,
         threadState: thread.threadState,
         creatorState,
-        dayVibe: await describeSlurpDayVibe(db, thread.creatorAccountId),
+        dayVibe:
+          details.dayVibe !== undefined ? details.dayVibe : await describeSlurpDayVibe(db, thread.creatorAccountId),
         coolingOff: false,
         strikes: activeSlurpStrikes(thread.strikes, thread.lastStrikeAt),
         connection,
+        availability,
         debugMode: input.debugMode,
         generationGuidance: input.generationGuidance,
         // The scheduler only calls with `force` after `messagesAwayRepliesEnabled` admitted this
@@ -234,12 +289,15 @@ export async function replyToSlurpMessage(
         // audience messages arrived, but no Creator could answer them.
         workerContext: "present",
         skipBudgetCap: input.force === true && input.background !== true,
+        // Only the scheduler's unattended answers are budgeted upkeep.
+        playerSend: input.background !== true,
       });
       // Two or three messages when the conversation is going well, one when it is not. A creator
       // who always answers in exactly one tidy block reads as a form letter.
       // Settings caps the burst, energy still decides whether it earns the top of that cap. A limit
-      // of one is a player asking for the tidy block instead of the texting rhythm.
-      const burstLimit = Math.min(settings.messagesReplyBubbleLimit, creatorState.energy >= 70 ? 3 : 2);
+      // of one is a player asking for the tidy block instead of the texting rhythm. The top is the
+      // setting itself: a fixed 3 here made the stepper's 4 a value that never applied.
+      const burstLimit = Math.min(settings.messagesReplyBubbleLimit, creatorState.energy >= 70 ? Infinity : 2);
       const shouldSplit = allowMultiBubbleSplit(talkativenessProfile.talkativeness, currentMood);
       const bubbles = splitSlurpReplyBurst(
         reply.content,
@@ -250,6 +308,22 @@ export async function replyToSlurpMessage(
           reply.moodShift !== "down",
         burstLimit,
       );
+      // The first bubble shows after its typing indicator, so the later ones wait for it as well.
+      // Unattended replies have no indicator on screen.
+      const firstPacing = slurpReplyPacing({
+        online: availability.online,
+        rapport: thread.rapport,
+        subscribed,
+        messageLength: trigger?.content.length ?? 0,
+        minutesUntilOnline: availability.minutesUntilOnline,
+        mood: currentMood,
+        momentum: momentumAnalysis.momentum,
+        replyLength: bubbles[0]!.length,
+        talkativeness: talkativenessProfile.talkativeness,
+        delays: replyDelays,
+        firstContact: !history.some((message) => message.role === "creator"),
+      });
+      const typingLeadMs = input.background ? 0 : firstPacing.typingMs;
       let stored = null;
       const queuedBubbles = [];
       for (const [index, bubble] of bubbles.entries()) {
@@ -273,7 +347,7 @@ export async function replyToSlurpMessage(
           threadId: thread.id,
           senderAccountId: thread.creatorAccountId,
           content: bubble,
-          deliverAt: new Date(Date.now() + delayMs).toISOString(),
+          deliverAt: new Date(Date.now() + typingLeadMs + delayMs).toISOString(),
           generationEpoch: thread.generationEpoch,
           createdAt: triggerObligationCreatedAt,
         });
@@ -283,11 +357,22 @@ export async function replyToSlurpMessage(
         delayed: queuedBubbles.map((bubble) => ({ ...bubble, id: `${claim.claimId}:${bubble.sequence}` })),
       });
       if (!stored) return { status: "ineligible" } as const;
-      if (reply.sharedPost) {
+      // Never echo a post already shared in this conversation: the creator used to send back the very
+      // post the fan had just shared, as if it were news.
+      const alreadyShared =
+        reply.sharedPost &&
+        history
+          .slice(-12)
+          .some((message) => message.kind === "post_preview" && message.metadata?.postId === reply.sharedPost!.id);
+      // Staff are not sold to: no shared posts and no pictures in Support's thread.
+      if (reply.sharedPost && !alreadyShared && !support) {
         const postAccess = reply.sharedPost.access === "locked" ? "locked" : "public";
         const previewLocked =
           postAccess === "locked" ||
           (reply.sharedPost.access !== "public" && thread.rapport.tier !== "whale" && !subscribed);
+        const sharedMetadata = (await slurp.getNoodlerPostById(reply.sharedPost.id))?.metadata as
+          Record<string, unknown> | undefined;
+        const sharedSize = slpStoredMediaSize(sharedMetadata?.noodlerMediaPath);
         stored =
           (await messagesStore.appendMessage(thread.id, {
             senderAccountId: thread.creatorAccountId,
@@ -302,50 +387,69 @@ export async function replyToSlurpMessage(
               access: reply.sharedPost.access,
               previewLocked,
               shareReason: reply.sharePost !== undefined ? "relevant" : "tease",
+              // The chat shows it as a real post card: whose it is and what unlocking costs.
+              authorAccountId: creator.id,
+              authorName: creator.displayName,
+              authorHandle: creator.handle,
+              authorAvatarUrl: creator.avatarUrl ?? null,
+              price: slpCreatorUnlockPriceFromMetadata(sharedMetadata),
+              // The card reserves the post's own picture ratio (V).
+              ...(sharedSize ? { imageWidth: sharedSize.width, imageHeight: sharedSize.height } : {}),
             },
           })) ?? stored;
       }
+      // Support's "photo, right now": always a free picture, even when the model forgot to add one.
+      const demanded = support && isSlurpSupportPhotoDemand(trigger);
+      const image = reply.image ?? (demanded ? slurpSupportPhotoFallback(trigger?.content ?? "") : null);
       if (
-        reply.image &&
-        reply.canSendImage &&
-        slurpCreatorStateCanUseMedia(creatorState, thread.threadState) &&
-        // Unattended replies never draw: the picture costs money the player did not ask to spend.
-        // A forced reply is a person pressing a button, so it may, like an ordinary send.
-        input.background !== true
+        image &&
+        (demanded ||
+          (reply.canSendImage &&
+            !support &&
+            // An AI fan gets words only: a picture needs the image budget the world does not spend on them.
+            !aiFan &&
+            slurpCreatorStateCanUseMedia(creatorState, thread.threadState)))
       ) {
-        const imageAllowedBySettings = settings.enableImagePrompts === true;
-        const recentGeneratedImage = history.some(
-          (message) =>
-            message.imageUrl &&
-            typeof message.metadata.generatedContext === "string" &&
-            Date.now() - Date.parse(message.createdAt) < 3 * 60 * 60_000,
+        // A delayed ("away") reply draws too. The scheduler only ever answers the player's own
+        // message, so the player asked; blocking it meant most chats never got a picture or a PPV
+        // (0 in a 7-day simulation). The reply itself already passed the AI budget.
+        // The Creator's own Images switch, the one its posts use. The old gate read
+        // `enableImagePrompts`, an internal flag with no control that is off on every install, so
+        // no Creator ever sent a picture in a chat (R1-122). No image connection → "unavailable".
+        const imageAllowedBySettings = demanded || creator.settings.scheduler.autoPosting?.imagesEnabled === true;
+        // Decided before the picture: a paid (PPV) picture goes as far as the Creator does, a free
+        // one to somebody who has not subscribed stays a tease.
+        const offer = resolveSlurpMediaOffer({
+          intent: reply.imageMode === "hostile" ? "hostile" : "friendly",
+          rapportTier: thread.rapport.tier,
+          subscribed,
+          configuredPrice: messaging.ppvPrice,
+          spicy: slurpDmPictureSpicy(image),
+        });
+        const creatorLevel = await resolveSlurpExplicitLevel(db, thread.creatorAccountId).catch(
+          () => "suggestive" as const,
         );
-        const drawn =
-          imageAllowedBySettings && !recentGeneratedImage
-            ? await generateSlurpCommissionImage(db, {
-                creatorAccountId: thread.creatorAccountId,
-                brief: `${reply.image.prompt}\nImage mode: ${reply.imageMode}`,
-              })
-            : "unavailable";
+        const drawn = imageAllowedBySettings
+          ? await generateSlurpCommissionImage(db, {
+              creatorAccountId: thread.creatorAccountId,
+              brief: `${image.prompt}\nImage mode: ${reply.imageMode}`,
+              // A free picture stays a tease (a subscriber's casual one too); a paid one goes as far as the Creator does.
+              level: offer.price > 0 && !demanded ? creatorLevel : slurpDmSpiceLevel(creatorLevel, false),
+            })
+          : "unavailable";
         if (drawn !== "unavailable") {
-          const offer = resolveSlurpMediaOffer({
-            intent: reply.imageMode === "hostile" ? "hostile" : "friendly",
-            rapportTier: thread.rapport.tier,
-            subscribed,
-            configuredPrice: messaging.ppvPrice,
-          });
-          const price = offer.price;
+          const price = demanded ? 0 : offer.price;
           const imageMessage = await messagesStore.appendMessage(thread.id, {
             senderAccountId: thread.creatorAccountId,
             role: "creator",
             kind: price > 0 ? "ppv" : "text",
-            content: reply.image.caption,
+            content: image.caption ?? "",
             price,
             unlockedAt: price > 0 ? null : new Date().toISOString(),
             metadata: {
               noodlerMediaPath: drawn.mediaPath,
               generatedContext: reply.imageMode,
-              imagePrompt: reply.image.prompt,
+              imagePrompt: image.prompt,
             },
           });
           if (!imageMessage) {
@@ -363,7 +467,9 @@ export async function replyToSlurpMessage(
       }
       // After the message is safely stored. The conversation's mood and what she now knows are
       // worth keeping, but never at the price of the reply itself.
-      if (stored) {
+      // A reply to Slurp Support (the player writing as Slurp's staff) says nothing about the fan: it
+      // must not move their mood, memories or relationship.
+      if (stored && trigger.metadata?.supportVoice !== true) {
         await messagesStore
           .recordReplyOutcome(thread.id, {
             moodShift: reply.moodShift,
@@ -371,7 +477,32 @@ export async function replyToSlurpMessage(
             stateSignals: reply.stateSignals,
           })
           .catch((error: unknown) => logger.warn(error, "[slurp-message] Could not record the reply outcome"));
-
+      }
+      // Support's own thread: the talk may change the Creator (mood, focus, plans, memory), never a fan.
+      if (stored && support) {
+        await applySlurpSupportTalk(slurpSupportTalkStore(db, creator), {
+          thread,
+          trigger,
+          reply: stored,
+          outcome: { moodShift: reply.moodShift, remember: reply.remember, stateSignals: reply.stateSignals },
+          staff: reply.staff,
+          supportName: viewer.displayName,
+        }).catch((error: unknown) => logger.warn(error, "[slurp-message] Could not apply the talk with Slurp Support"));
+        // The desk: trust, an Offer's answer, intel, a ticket rating (docs/SUPPORT-DESK.md).
+        await applySlurpDeskTalk(db, {
+          threadId: thread.id,
+          creatorAccountId: thread.creatorAccountId,
+          replyId: stored.id,
+          desk: reply.desk,
+        }).catch((error: unknown) => logger.warn(error, "[slurp-message] Could not apply the desk talk"));
+      }
+      // Two pages agreed on a joint post in this chat: the replying Creator hosts it (7b-c).
+      if (stored && reply.agreedCollab)
+        await agreeSlurpCollabInDm(db, { hostId: thread.creatorAccountId, ...reply.agreedCollab }).catch(
+          (error: unknown) => logger.warn(error, "[slurp-message] Could not record the collab agreed in this chat"),
+        );
+      if (stored && aiFan) await dropSlurpPendingText(db, input.triggerMessageId);
+      if (stored) {
         // Whoever just answered is, for the next few minutes, obviously around: every reply keeps
         // her online briefly, and a hot conversation keeps her longer.
         const hotDuration =
@@ -424,7 +555,8 @@ export async function replyToSlurpMessage(
             const { detectPromiseFromText, createScheduledFollowUps } =
               await import("../../modules/messages/slp-follow-up.js");
             const detected = detectPromiseFromText(reply.content);
-            if (detected) {
+            // One pending follow-up per kind is enough; every matching reply used to add another.
+            if (detected && !thread.scheduledFollowUps.some((followUp) => followUp.type === detected.type)) {
               const followUps = createScheduledFollowUps(
                 {
                   type: detected.type,
@@ -444,15 +576,19 @@ export async function replyToSlurpMessage(
           }
         }
 
-        await slurp
-          .recordCreatorStateSignals(thread.creatorAccountId, reply.stateSignals)
-          .catch((error: unknown) => logger.warn(error, "[slurp-message] Could not record creator state signals"));
+        // The signals say what a fan did, and Support is not a fan. Nor can a Creator shut the
+        // platform's staff out of their inbox.
+        if (!support)
+          await slurp
+            .recordCreatorStateSignals(thread.creatorAccountId, reply.stateSignals)
+            .catch((error: unknown) => logger.warn(error, "[slurp-message] Could not record creator state signals"));
         // The reply is written first and the boundary applied after it, so the fan always receives
         // the words the creator actually left them with rather than silence.
-        await applyBoundary(messagesStore, thread.id, reply.latitude).catch((error: unknown) =>
-          logger.warn(error, "[slurp-message] Could not apply the conversation boundary"),
-        );
-        if (reply.latitude === "cool_off" || reply.latitude === "close") {
+        if (!support)
+          await applyBoundary(messagesStore, thread.id, reply.latitude, settings.messagesCoolOffMinutes).catch(
+            (error: unknown) => logger.warn(error, "[slurp-message] Could not apply the conversation boundary"),
+          );
+        if (!support && (reply.latitude === "cool_off" || reply.latitude === "close")) {
           const events = createSlurpEventsStorage(db);
           const operator = creator.sourceKind === "persona" ? creator.sourceEntityId : null;
           if (operator) {
@@ -466,28 +602,13 @@ export async function replyToSlurpMessage(
           }
         }
       }
-      return stored ? ({ status: "replied", message: stored } as const) : ({ status: "ineligible" } as const);
+      return stored
+        ? ({ status: "replied", message: stored, pacing: firstPacing } as const)
+        : ({ status: "ineligible" } as const);
     });
     // The account lock is already held by another Slurp operation on this creator. Nothing was
     // generated, so the caller may simply try again rather than treat this as a failure.
     if (!locked.acquired) return { status: "busy" };
-    if (locked.value.status === "replied") {
-      // Recalculate typing delay with actual reply content length
-      const actualReplyLength = locked.value.message.content.length;
-      const recalculatedPacing = slurpReplyPacing({
-        online: availability.online,
-        rapport: thread.rapport,
-        subscribed,
-        messageLength: trigger?.content.length ?? 0,
-        minutesUntilOnline: availability.minutesUntilOnline,
-        mood: currentMood,
-        momentum: momentumAnalysis.momentum,
-        replyLength: actualReplyLength,
-        talkativeness: talkativenessProfile.talkativeness,
-        delays: replyDelays,
-      });
-      return { status: "replied", message: locked.value.message, pacing: recalculatedPacing };
-    }
     return locked.value;
   } catch (error) {
     if (error instanceof SlurpMessageBudgetUnavailableError) {
@@ -496,15 +617,62 @@ export async function replyToSlurpMessage(
       const retryAt = error.retryAt ?? (input.background ? new Date(Date.now() + 60 * 60_000).toISOString() : null);
       if (retryAt) {
         await messagesStore.setReplyNotBefore(thread.id, retryAt);
-        return { status: "queued", pacing };
+        // Said plainly to the player: "away" hid that the AI budget, not the Creator, was the reason.
+        return input.background ? { status: "queued", pacing } : { status: "budget", retryAt, pacing };
       }
-      return { status: "ineligible" };
+      // Its own status: "X is not answering this conversation" blamed the Creator (R1-013).
+      return { status: "ai_off" };
     }
     logger.error(error, "[slurp-message] Reply generation failed for thread %s", thread.id);
     return { status: "failed", error: error instanceof Error ? error.message : "Reply generation failed." };
   } finally {
     await release();
   }
+}
+
+/** Support's talk, written through the real stores: Support's thread, the steering, the continuity. */
+function slurpSupportTalkStore(
+  db: DB,
+  creator: SlpAccount & { sourceKind?: string | null; sourceEntityId?: string | null },
+): SlurpSupportTalkStore<Parameters<ReturnType<typeof createSlurpMessagesStorage>["recordReplyOutcome"]>[1]> {
+  return {
+    recordThreadOutcome: (threadId, outcome) => createSlurpMessagesStorage(db).recordReplyOutcome(threadId, outcome),
+    readSteering: (creatorAccountId) => readSlurpCreatorSteering(db, creatorAccountId),
+    // W: the reply carries the plan; the thread shows it as Stir cards to confirm. A world wish is
+    // planned once here (the "Plans" row), so the cards never cost a call when the thread is read.
+    propose: async (replyMessageId, proposal) => {
+      const planned = proposal.stir
+        ? await planSlpStir(db, { text: proposal.stir, creatorId: creator.id }).catch(() => null)
+        : null;
+      const extra = planned?.ok ? planned.value.cards.map((card) => ({ action: card.action, input: card.input })) : [];
+      await createSlurpMessagesStorage(db).mergeMessageMetadata(replyMessageId, {
+        stirProposal: {
+          steps: [...proposal.steps, ...extra],
+          cant: planned?.ok ? planned.value.cant : [],
+          playId: null,
+        },
+      });
+    },
+    hasMemory: async (creatorAccountId, sourceHash) =>
+      Boolean(await findSlurpContinuityFactBySourceHash(db, creatorAccountId, sourceHash)),
+    // The Creator's own private memory: read by their posts and every chat, never tied to one fan.
+    addMemory: async (_creatorAccountId, memory) => {
+      const identity = slurpContinuityIdentityOf(creator);
+      if (!identity) return;
+      await createSlurpContinuityFact(db, {
+        ...identity,
+        factType: "circumstance",
+        text: memory.text,
+        audienceScope: "creator_private",
+        realityScope: "slurp",
+        threadId: memory.threadId,
+        source: "slurp_message",
+        evidence: memory.evidence,
+        sourceHash: memory.sourceHash,
+        contribution: "generated",
+      });
+    },
+  };
 }
 
 /**
@@ -518,9 +686,10 @@ async function applyBoundary(
   messagesStore: ReturnType<typeof createSlurpMessagesStorage>,
   threadId: string,
   latitude: SlurpStanceLatitude,
+  coolOffMinutes: number,
 ): Promise<void> {
   if (latitude === "cool_off") {
-    await messagesStore.beginCoolOff(threadId, SLURP_COOL_OFF_HOURS);
+    await messagesStore.beginCoolOff(threadId, coolOffMinutes / 60);
     return;
   }
   if (latitude === "close") await messagesStore.closeThreadByCreator(threadId);

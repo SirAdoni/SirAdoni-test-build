@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
+import fsPromises from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import { mock } from "node:test";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -71,11 +74,15 @@ async function main() {
     else globalThis.window = originalWindow;
   }
   const { configurePackageRuntime } = await import(`${source}/package-runtime.ts`);
+  const { readLtmDebugLog } = await import(`${source}/debug-log.ts`);
   const { getLongTermMemoryDirectories, getLongTermMemoryRoot, ltmRejectedSuggestionsPath, notePathForId } =
     await import(`${source}/paths.ts`);
   const { LongTermMemoryStorage } = await import(`${source}/storage.ts`);
+  const { invalidateLtmVaultSnapshot, readLtmVaultSnapshot } = await import(`${source}/vault-snapshot.ts`);
   const { LongTermMemoryDraftStore } = await import(`${source}/draft-store.ts`);
-  const { applyLongTermMemoryDraft, preflightLongTermMemoryDraft } = await import(`${source}/reconciliation.ts`);
+  const { applyLongTermMemoryDraft, preflightLongTermMemoryDraft, LtmDraftApplyError } = await import(
+    `${source}/reconciliation.ts`
+  );
   const { compileEvidenceUnitExtraction, sourceMetadataForEvidenceUnitDraft } = await import(
     `${source}/evidence-unit-extraction.ts`
   );
@@ -83,13 +90,13 @@ async function main() {
     await import(`${source}/source-hash.ts`);
   const { projectLongTermMemoryDraftReview } = await import(`${source}/draft-review.ts`);
   const { activateLongTermMemoryStorage } = await import(`${source}/runtime.ts`);
-  const { ltmSettingsPath } = await import(`${source}/settings.ts`);
+  const { getLtmGlobalSettings, ltmSettingsPath, updateLtmGlobalSettings } = await import(`${source}/settings.ts`);
   const { ltmMutationTransactionSchema, recoverLtmMutations } = await import(`${source}/mutation-transaction.ts`);
   const { readLtmNoteSummary, writeLtmNoteSummary } = await import(`${source}/index-state.ts`);
   const { runLongTermMemoryRetention } = await import(`${source}/retention.ts`);
   const { rebuildLtmActivityIndex, readLtmActivityEvents } = await import(`${source}/activity-index.ts`);
   const { renderSectionContributions } = await import(`${source}/section-contributions.ts`);
-  const { extractNoteKeywords } = await import(`${source}/keyword-extract.ts`);
+  const { buildStopWordSet, extractNoteKeywords } = await import(`${source}/keyword-extract.ts`);
   const { mergeKeywords } = await import(`${source}/keyword-extract.ts`);
   const { getLtmActiveKeywords, ltmKeywordKey, normalizeLtmKeywordIntent } =
     await import("../packages/long-term-memory/src/engine/packages/shared/src/features/agents/long-term-memory/keywords.ts");
@@ -283,6 +290,34 @@ async function main() {
         "self-check must reject malformed settings",
       );
       await writeFile(ltmSettingsPath(root), '{"version":1}\n');
+      const stopWordSettings = await updateLtmGlobalSettings({ longTermMemoryStopWords: ["Cobalt-Moon"] }, root);
+      assert.deepEqual(
+        stopWordSettings.longTermMemoryStopWords,
+        ["Cobalt-Moon"],
+        "global settings must persist a custom stop-word list",
+      );
+      assert.deepEqual(
+        (await getLtmGlobalSettings(root)).longTermMemoryStopWords,
+        ["Cobalt-Moon"],
+        "a persisted custom stop-word list must be readable",
+      );
+      assert.deepEqual(
+        (await updateLtmGlobalSettings({ longTermMemoryStopWords: [] }, root)).longTermMemoryStopWords,
+        [],
+        "a custom stop-word list must be clearable",
+      );
+      assert.equal(
+        (await getLtmGlobalSettings(root)).longTermMemoryStopWordsFilterGenerated,
+        true,
+        "filtering custom stop words from generated keywords must default on",
+      );
+      assert.equal(
+        (await updateLtmGlobalSettings({ longTermMemoryStopWordsFilterGenerated: false }, root))
+          .longTermMemoryStopWordsFilterGenerated,
+        false,
+        "the generated-keyword filter toggle must persist",
+      );
+      await updateLtmGlobalSettings({ longTermMemoryStopWordsFilterGenerated: true }, root);
 
       const quarantine = join(root, "quarantine", "expired");
       await mkdir(quarantine, { recursive: true });
@@ -421,7 +456,7 @@ async function main() {
       const completeRecoveryCandidate = {
         id: randomUUID(),
         bucket: "timeline_event",
-        subjectId: "argument_strained_trust",
+        subjectId: "O’Malley Smith",
         sectionKey: "facts",
         text: "A complete recovered candidate whose original text is longer than the display preview. ".repeat(5),
         claimKind: "static",
@@ -447,7 +482,7 @@ async function main() {
             ...rejectionDraft.extractionOutcome,
             droppedCandidates: [
               {
-                index: 0,
+                index: 7,
                 reason: "invalid_format",
                 message: "Rejected candidate.",
                 snippet: "candidate",
@@ -458,7 +493,28 @@ async function main() {
         } as any,
         root,
       );
+      assert.equal(completeRecovery[0]?.candidate.recoveryCandidate?.subjectId, "o_malley_smith");
       assert.equal(completeRecovery[0]?.candidate.recoveryCandidate?.text, completeRecoveryCandidate.text);
+      const normalizedRepeat = await addRejectedSuggestions(
+        {
+          ...rejectionDraft,
+          source: completeRecoverySource,
+          extractionOutcome: {
+            ...rejectionDraft.extractionOutcome,
+            droppedCandidates: [
+              {
+                index: 7,
+                reason: "invalid_format",
+                message: "Rejected candidate.",
+                snippet: "candidate",
+                recoveryCandidate: { ...completeRecoveryCandidate, subjectId: "o_malley_smith" },
+              },
+            ],
+          },
+        } as any,
+        root,
+      );
+      assert.equal(normalizedRepeat[0]?.id, completeRecovery[0]?.id);
       assert.equal(completeRecovery[0]?.candidate.recoveryCandidate?.confidence, 0.91);
       assert.deepEqual(completeRecovery[0]?.candidate.recoveryCandidate?.evidence, completeRecoveryCandidate.evidence);
       const completeRecoveryBackup = await exportLongTermMemoryData(root);
@@ -543,16 +599,31 @@ async function main() {
       });
       assert.equal((await listRejectedSuggestions({ chatId: "chat-a" }, root)).length, 1);
       const rejectedPath = ltmRejectedSuggestionsPath(root);
-      const rejectedDirectory = dirname(rejectedPath);
-      await chmod(rejectedDirectory, 0o500);
+      const rejectedLedgerBeforeFailedDelete = await readFile(rejectedPath, "utf8");
+      const originalRename = fsPromises.rename;
+      const renameMock = mock.method(fsPromises, "rename", async (from, to) => {
+        if (to === rejectedPath) {
+          const error = new Error("EACCES: simulated rejected-suggestions persistence denial");
+          Object.assign(error, { code: "EACCES" });
+          throw error;
+        }
+        return originalRename(from, to);
+      });
+      syncBuiltinESMExports();
       try {
         await assert.rejects(
           () => deleteRejectedSuggestionsForSource("source_valid_import", root),
           /EACCES|permission|read-only/i,
         );
       } finally {
-        await chmod(rejectedDirectory, 0o700);
+        renameMock.mock.restore();
+        syncBuiltinESMExports();
       }
+      assert.equal(
+        await readFile(rejectedPath, "utf8"),
+        rejectedLedgerBeforeFailedDelete,
+        "a failed rejected-suggestion persistence must leave the ledger unchanged",
+      );
       assert.equal((await listRejectedSuggestions({ chatId: "chat-a" }, root)).length, 1);
       const rejectionId = firstRejections[0]!.id;
       assert.deepEqual(await deleteRejectedSuggestion(rejectionId, root), { deleted: true, id: rejectionId });
@@ -738,6 +809,115 @@ async function main() {
         false,
         "suppressed generated and text-derived keywords must stay out of recall indexing",
       );
+      const stopWordNote = await storage.createNote({
+        ...noteInput,
+        id: "world_keyword_stop_words",
+        title: "Stop word proof",
+        keywords: [],
+        sections: {
+          facts: {
+            text: "I’m sure they really went above and below, against the wall. Cobalt archive holds Harrowmark.",
+            updatedAt: timestamp,
+          },
+        },
+      });
+      const stopWordKeywords = extractNoteKeywords(stopWordNote);
+      for (const word of ["i'm", "really", "above", "below", "against", "sure"]) {
+        assert.equal(
+          stopWordKeywords.includes(word),
+          false,
+          `built-in stop word ${word} must not become a standalone keyword`,
+        );
+      }
+      assert.ok(
+        stopWordKeywords.some((keyword) => keyword.includes("cobalt")),
+        "meaningful words must survive built-in stop-word filtering",
+      );
+      assert.ok(stopWordKeywords.some((keyword) => keyword.includes("harrowmark")));
+      const customGenerated = extractNoteKeywords(stopWordNote, buildStopWordSet(["cobalt"]));
+      assert.equal(
+        customGenerated.some((keyword) => keyword.includes("cobalt")),
+        false,
+        "the custom stop list must filter generated keywords when filtering is enabled",
+      );
+      assert.ok(
+        customGenerated.some((keyword) => keyword.includes("harrowmark")),
+        "the custom stop list must not filter unrelated generated keywords",
+      );
+      const manualStopWordNote = await storage.createNote({
+        ...noteInput,
+        id: "world_keyword_manual_stop_word",
+        title: "Manual stop word proof",
+        keywords: [],
+        manualKeywords: ["Cobalt"],
+        sections: {
+          facts: { text: "Harrowmark holds.", updatedAt: timestamp },
+        },
+      });
+      const manualStopWordKeywords = extractNoteKeywords(manualStopWordNote, buildStopWordSet(["cobalt"]));
+      assert.ok(
+        manualStopWordKeywords.some((keyword) => keyword.toLowerCase() === "cobalt"),
+        "a manual keyword must survive the custom stop list even while it blocks generated keywords",
+      );
+      const hyphenStopWords = buildStopWordSet(["Cobalt-Moon"]);
+      assert.equal(
+        hyphenStopWords.has("cobalt moon"),
+        true,
+        "a hyphenated custom stop word must be stored as its normalized whole phrase",
+      );
+      const hyphenStopWordNote = await storage.createNote({
+        ...noteInput,
+        id: "world_keyword_hyphen_stop_word",
+        title: "Hyphen stop word proof",
+        keywords: [],
+        sections: {
+          facts: { text: "Indeed, namely Cobalt-Moon holds Harrowmark.", updatedAt: timestamp },
+        },
+      });
+      const hyphenStopWordKeywords = extractNoteKeywords(hyphenStopWordNote, hyphenStopWords);
+      assert.equal(
+        hyphenStopWordKeywords.some((keyword) => keyword.includes("cobalt") || keyword.includes("moon")),
+        false,
+        "a hyphenated custom stop word must be filtered from generated keywords as a whole",
+      );
+      assert.ok(
+        hyphenStopWordKeywords.some((keyword) => keyword.includes("harrowmark")),
+        "a hyphenated custom stop word must not filter unrelated generated keywords",
+      );
+      const defaultHyphenKeywords = extractNoteKeywords(hyphenStopWordNote);
+      for (const word of ["indeed", "namely"]) {
+        assert.ok(defaultHyphenKeywords.includes(word), `discourse word ${word} must not be on the built-in stop list`);
+      }
+      const singlePartStopWords = buildStopWordSet(["cobalt"]);
+      assert.equal(
+        extractNoteKeywords(hyphenStopWordNote, singlePartStopWords).some((keyword) => keyword.includes("cobalt")),
+        false,
+        "a single-token custom stop word must reject a hyphenated token that contains it",
+      );
+      const punctuatedStopWords = buildStopWordSet(["cobalt/harbor"]);
+      assert.ok(
+        punctuatedStopWords.has("cobalt") && punctuatedStopWords.has("harbor"),
+        "a punctuated custom stop-word entry must contribute each token boundary",
+      );
+      const manyGeneratedNote = await storage.createNote({
+        ...noteInput,
+        id: "world_keyword_manual_retained",
+        title: "Manual retention proof",
+        keywords: [],
+        manualKeywords: ["manualkeep"],
+        sections: {
+          facts: {
+            text: Array.from({ length: 31 }, (_, index) => `proofword${index + 1}`).join(" "),
+            updatedAt: timestamp,
+          },
+        },
+      });
+      const manyGeneratedKeywords = extractNoteKeywords(manyGeneratedNote);
+      assert.ok(
+        manyGeneratedKeywords.includes("manualkeep"),
+        "a manual keyword must survive the note keyword cap even when generated keywords fill it",
+      );
+      assert.equal(manyGeneratedKeywords.length, 30, "the note keyword cap must still bound the merged keyword list");
       const restoredKeyword = await storage.updateNote(keywordIntent.id, {
         manualKeywords: ["Manual", "Cobalt"],
         suppressedKeywords: [],
@@ -794,6 +974,107 @@ async function main() {
         },
       });
       const draftStore = new LongTermMemoryDraftStore(root);
+      const rejectedSubjectId = "!!!";
+      const rejectedCandidateText = "Private recovery candidate text must not be logged.";
+      const rejectedSubjectOperationId = randomUUID();
+      await assert.rejects(
+        draftStore.createDraft({
+          source: { sourceNoteId: legacySource.id, chatId: "chat-a" },
+          scope: legacySource.scope,
+          modes: ["roleplay"],
+          response: { summary: "", mutations: [] },
+          operationId: rejectedSubjectOperationId,
+          outcome: {
+            state: "partial_success",
+            totalCandidates: 1,
+            keptUnits: 0,
+            droppedUnits: 1,
+            droppedCandidates: [
+              {
+                index: 7,
+                reason: "invalid_format",
+                message: "Rejected candidate.",
+                recoveryCandidate: {
+                  id: randomUUID(),
+                  bucket: "timeline_event",
+                  subjectId: rejectedSubjectId,
+                  sectionKey: "event",
+                  text: rejectedCandidateText,
+                  evidence: [`source_note:${legacySource.id}`],
+                  confidence: 0.9,
+                  salience: 0.8,
+                  status: "active",
+                  sourceHash: "a".repeat(64),
+                },
+              },
+            ],
+          },
+        }),
+        (error: any) =>
+          error.name === "ZodError" &&
+          error.issues.some((issue: any) => issue.path.join(".").endsWith("recoveryCandidate.subjectId")),
+      );
+      const subjectIdFailure = (await readLtmDebugLog({ operationId: rejectedSubjectOperationId }, root)).at(-1);
+      assert.equal(subjectIdFailure?.action, "recovery_subject_id_validation_failed");
+      assert.deepEqual(subjectIdFailure?.details?.rejectedSubjectIds, [
+        { candidateIndex: 7, subjectId: rejectedSubjectId },
+      ]);
+      const debugContents = await readFile(getLongTermMemoryDirectories(root).debugLog, "utf8");
+      assert.equal(debugContents.includes(rejectedCandidateText), false);
+      const oversizedSubjectOperationId = randomUUID();
+      const escapedSubjectId = "\u0000".repeat(240);
+      await assert.rejects(
+        draftStore.createDraft({
+          source: { sourceNoteId: legacySource.id, chatId: "chat-a" },
+          scope: legacySource.scope,
+          modes: ["roleplay"],
+          response: { summary: "", mutations: [] },
+          operationId: oversizedSubjectOperationId,
+          outcome: {
+            state: "partial_success",
+            totalCandidates: 80,
+            keptUnits: 0,
+            droppedUnits: 80,
+            droppedCandidates: Array.from({ length: 80 }, (_, index) => ({
+              index,
+              reason: "invalid_format" as const,
+              message: "Rejected candidate.",
+              recoveryCandidate: {
+                id: randomUUID(),
+                bucket: "timeline_event" as const,
+                subjectId: escapedSubjectId,
+                sectionKey: "event",
+                text: rejectedCandidateText,
+                evidence: [`source_note:${legacySource.id}`],
+                confidence: 0.9,
+                salience: 0.8,
+                status: "active" as const,
+                sourceHash: "a".repeat(64),
+              },
+            })),
+          },
+        }),
+        (error: any) =>
+          error.name === "ZodError" &&
+          error.issues.some((issue: any) => issue.path.join(".").endsWith("recoveryCandidate.subjectId")),
+      );
+      const oversizedSubjectFailure = (await readLtmDebugLog({ operationId: oversizedSubjectOperationId }, root)).at(
+        -1,
+      );
+      const loggedSubjectIds = oversizedSubjectFailure?.details?.rejectedSubjectIds;
+      assert.ok(Array.isArray(loggedSubjectIds) && loggedSubjectIds.length > 1 && loggedSubjectIds.length < 80);
+      assert.deepEqual(
+        loggedSubjectIds,
+        Array.from({ length: loggedSubjectIds.length }, (_, index) => ({
+          candidateIndex: index,
+          subjectId: escapedSubjectId,
+        })),
+      );
+      const oversizedLine = (await readFile(getLongTermMemoryDirectories(root).debugLog, "utf8"))
+        .split("\n")
+        .find((line) => line.includes(oversizedSubjectOperationId));
+      assert.ok(oversizedLine && Buffer.byteLength(`${oversizedLine}\n`) <= 64 * 1024);
+      assert.equal(oversizedLine.includes(rejectedCandidateText), false);
       let afterWriteRan = false;
       let afterWriteDraftId = "";
       await assert.rejects(
@@ -1259,6 +1540,417 @@ async function main() {
         rebuildIndexes: false,
       });
       assert.deepEqual(staticApplied.appliedMutationIds, [staticMutationId]);
+
+      const choiceSubject = { key: "character:link-choice", ref: { kind: "character" as const, id: "link-choice" } };
+      const choiceTarget = await storage.createNote({
+        ...noteInput,
+        id: "char_link_choice",
+        type: "character",
+        scope: legacySource.scope,
+        subjects: [choiceSubject],
+        links: [],
+      });
+      const choiceOwner = await storage.createNote({
+        ...noteInput,
+        id: "world_link_choice",
+        scope: legacySource.scope,
+        links: [],
+      });
+      const choiceMutation = {
+        id: randomUUID(),
+        kind: "add_link" as const,
+        claimKind: "static" as const,
+        risk: "low" as const,
+        confidence: 0.9,
+        summary: "Choose a character link",
+        evidence: [`source_note:${canonicalSourceId}`],
+        noteId: choiceOwner.id,
+        link: { target: choiceTarget.id, relation: "affects_character" as const },
+      };
+      const choiceDraft = await draftStore.createDraft({
+        source: { sourceNoteId: canonicalSourceId, chatId: "chat-a" },
+        scope: legacySource.scope,
+        modes: legacySource.modes,
+        response: { summary: "Ambiguous link", mutations: [choiceMutation] },
+        diagnostics: [
+          {
+            severity: "warning",
+            code: "ambiguous_subject_link_target",
+            noteId: choiceOwner.id,
+            message: "Choose a target",
+            details: {
+              linkTarget: choiceTarget.id,
+              linkRelation: "affects_character",
+              candidateTargetNoteIds: [choiceTarget.id, "char_other_choice"],
+              candidateSubjectKeys: {
+                [choiceTarget.id]: [choiceSubject.key],
+                char_other_choice: ["character:other-choice"],
+              },
+            },
+          },
+        ],
+      });
+      const choiceOptions = {
+        root,
+        mutationIds: [choiceMutation.id],
+        editedMutations: [choiceMutation],
+        linkChoices: [
+          {
+            mutationId: choiceMutation.id,
+            linkTarget: choiceTarget.id,
+            linkRelation: "affects_character" as const,
+            selectedTarget: choiceTarget.id,
+          },
+        ],
+        rebuildIndexes: false,
+      };
+      assert.equal((await preflightLongTermMemoryDraft(choiceDraft.id, choiceOptions)).readyMutationIds.length, 1);
+      await storage.updateNote(choiceTarget.id, { status: "archived" });
+      await assert.rejects(
+        applyLongTermMemoryDraft(choiceDraft.id, choiceOptions),
+        (error: unknown) => error instanceof LtmDraftApplyError && error.code === "ltm_draft_ambiguous_link_stale",
+      );
+      assert.equal((await new LongTermMemoryDraftStore(root).getDraft(choiceDraft.id))?.status, "pending");
+      assert.deepEqual((await storage.getNote(choiceOwner.id))?.links, []);
+      await storage.updateNote(choiceTarget.id, { status: "active" });
+      assert.deepEqual((await applyLongTermMemoryDraft(choiceDraft.id, choiceOptions)).appliedMutationIds, [
+        choiceMutation.id,
+      ]);
+      await storage.updateNote(choiceTarget.id, { status: "archived" });
+      const archivedSibling = await storage.createNote({
+        ...noteInput,
+        id: "char_archived_sibling",
+        type: "character",
+        scope: legacySource.scope,
+        links: [],
+      });
+      await storage.updateNote(archivedSibling.id, { status: "archived" });
+      const archivedSiblingOwner = await storage.createNote({
+        ...noteInput,
+        id: "world_archived_sibling_owner",
+        scope: legacySource.scope,
+        links: [],
+      });
+      const originalSiblingChoice = { ...choiceMutation, id: randomUUID(), noteId: archivedSiblingOwner.id };
+      const archivedSiblingLink = {
+        ...choiceMutation,
+        id: randomUUID(),
+        noteId: archivedSiblingOwner.id,
+        link: { ...choiceMutation.link, target: archivedSibling.id },
+      };
+      const archivedSiblingDraft = await draftStore.createDraft({
+        source: { sourceNoteId: canonicalSourceId, chatId: "chat-a" },
+        scope: legacySource.scope,
+        modes: legacySource.modes,
+        response: {
+          summary: "Sibling link with its own target",
+          mutations: [originalSiblingChoice, archivedSiblingLink],
+        },
+        diagnostics: [
+          {
+            severity: "warning",
+            code: "ambiguous_subject_link_target",
+            noteId: archivedSiblingOwner.id,
+            message: "Choose a target for the original mutation",
+            details: {
+              linkTarget: choiceTarget.id,
+              linkRelation: "affects_character",
+              candidateTargetNoteIds: [choiceTarget.id, archivedSibling.id],
+            },
+          },
+        ],
+      });
+      const archivedSiblingResult = await applyLongTermMemoryDraft(archivedSiblingDraft.id, {
+        root,
+        mutationIds: [archivedSiblingLink.id],
+        rebuildIndexes: false,
+      });
+      assert.deepEqual(archivedSiblingResult.appliedMutationIds, [archivedSiblingLink.id]);
+      assert.deepEqual(archivedSiblingResult.skippedMutationIds, [originalSiblingChoice.id]);
+      assert.ok(
+        (await storage.getNote(archivedSiblingOwner.id))?.links.some((link) => link.target === archivedSibling.id),
+      );
+      await storage.updateNote(choiceTarget.id, { status: "active" });
+
+      const wideChoice = await storage.createNote({
+        ...noteInput,
+        id: "char_link_choice_wide",
+        type: "character",
+        scope: { chatId: "chat-a", chatIds: ["chat-a", "chat-b"] },
+        links: [],
+      });
+      const wideMutation = {
+        ...choiceMutation,
+        id: randomUUID(),
+        link: { ...choiceMutation.link, target: wideChoice.id },
+      };
+      const wideDraft = await draftStore.createDraft({
+        source: { sourceNoteId: canonicalSourceId, chatId: "chat-a" },
+        scope: legacySource.scope,
+        modes: legacySource.modes,
+        response: { summary: "Select an overlapping target", mutations: [wideMutation] },
+        diagnostics: [
+          {
+            severity: "warning",
+            code: "ambiguous_subject_link_target",
+            noteId: choiceOwner.id,
+            message: "Choose a target",
+            details: {
+              linkTarget: wideChoice.id,
+              linkRelation: "affects_character",
+              candidateTargetNoteIds: [wideChoice.id, choiceTarget.id],
+            },
+          },
+        ],
+      });
+      const wideOptions = {
+        root,
+        mutationIds: [wideMutation.id],
+        linkChoices: [
+          {
+            mutationId: wideMutation.id,
+            linkTarget: wideChoice.id,
+            linkRelation: "affects_character" as const,
+            selectedTarget: wideChoice.id,
+          },
+        ],
+        rebuildIndexes: false,
+      };
+      assert.deepEqual((await preflightLongTermMemoryDraft(wideDraft.id, wideOptions)).readyMutationIds, [
+        wideMutation.id,
+      ]);
+      await storage.updateNote(wideChoice.id, { scope: { chatId: "chat-z", chatIds: ["chat-z"] } });
+      await assert.rejects(
+        applyLongTermMemoryDraft(wideDraft.id, wideOptions),
+        (error: unknown) => error instanceof LtmDraftApplyError && error.code === "ltm_draft_ambiguous_link_scope",
+      );
+      await storage.updateNote(wideChoice.id, { scope: { chatId: "chat-a", chatIds: ["chat-a", "chat-b"] } });
+      assert.deepEqual((await applyLongTermMemoryDraft(wideDraft.id, wideOptions)).appliedMutationIds, [
+        wideMutation.id,
+      ]);
+
+      const siblingId = "char_sibling_choice";
+      const siblingCreate = {
+        ...choiceMutation,
+        id: randomUUID(),
+        kind: "create_note" as const,
+        summary: "Create sibling link candidate",
+        note: { ...noteInput, id: siblingId, type: "character", scope: legacySource.scope, links: [] },
+      };
+      const siblingLink = { ...choiceMutation, link: { ...choiceMutation.link, target: siblingId } };
+      const siblingDraft = await draftStore.createDraft({
+        source: { sourceNoteId: canonicalSourceId, chatId: "chat-a" },
+        scope: legacySource.scope,
+        modes: legacySource.modes,
+        response: { summary: "Select a sibling candidate", mutations: [siblingCreate, choiceMutation] },
+        diagnostics: [
+          {
+            severity: "warning",
+            code: "ambiguous_subject_link_target",
+            noteId: choiceOwner.id,
+            message: "Choose a target",
+            details: {
+              linkTarget: choiceTarget.id,
+              linkRelation: "affects_character",
+              candidateTargetNoteIds: [choiceTarget.id, siblingId],
+            },
+          },
+        ],
+      });
+      const siblingOptions = {
+        root,
+        mutationIds: [siblingCreate.id, choiceMutation.id],
+        editedMutations: [siblingLink],
+        linkChoices: [
+          {
+            mutationId: choiceMutation.id,
+            linkTarget: choiceTarget.id,
+            linkRelation: "affects_character" as const,
+            selectedTarget: siblingId,
+          },
+        ],
+        rebuildIndexes: false,
+      };
+      assert.deepEqual((await applyLongTermMemoryDraft(siblingDraft.id, siblingOptions)).appliedMutationIds, [
+        siblingCreate.id,
+        choiceMutation.id,
+      ]);
+      assert.ok((await storage.getNote(choiceOwner.id))?.links.some((link) => link.target === siblingId));
+
+      for (const archiveByMutation of [false, true]) {
+        const candidateId = archiveByMutation ? "char_archived_by_status" : "char_archived_at_create";
+        const archivedCreate = {
+          ...siblingCreate,
+          id: randomUUID(),
+          note: {
+            ...siblingCreate.note,
+            id: candidateId,
+            status: archiveByMutation ? ("active" as const) : ("archived" as const),
+          },
+        };
+        const archiveStatus = {
+          ...choiceMutation,
+          id: randomUUID(),
+          kind: "set_status" as const,
+          noteId: candidateId,
+          status: "archived" as const,
+        };
+        const originalLink = { ...choiceMutation, id: randomUUID() };
+        const archivedMutations = [archivedCreate, ...(archiveByMutation ? [archiveStatus] : []), originalLink];
+        const archivedDraft = await draftStore.createDraft({
+          source: { sourceNoteId: canonicalSourceId, chatId: "chat-a" },
+          scope: legacySource.scope,
+          modes: legacySource.modes,
+          response: { summary: "Archive selected candidate in draft", mutations: archivedMutations },
+          diagnostics: [
+            {
+              severity: "warning",
+              code: "ambiguous_subject_link_target",
+              noteId: choiceOwner.id,
+              message: "Choose a target",
+              details: {
+                linkTarget: choiceTarget.id,
+                linkRelation: "affects_character",
+                candidateTargetNoteIds: [choiceTarget.id, candidateId],
+              },
+            },
+          ],
+        });
+        await assert.rejects(
+          applyLongTermMemoryDraft(archivedDraft.id, {
+            root,
+            mutationIds: archivedMutations.map((mutation) => mutation.id),
+            editedMutations: [{ ...originalLink, link: { ...originalLink.link, target: candidateId } }],
+            linkChoices: [
+              {
+                mutationId: originalLink.id,
+                linkTarget: choiceTarget.id,
+                linkRelation: "affects_character",
+                selectedTarget: candidateId,
+              },
+            ],
+            rebuildIndexes: false,
+          }),
+          (error: unknown) => error instanceof LtmDraftApplyError && error.code === "ltm_draft_ambiguous_link_stale",
+        );
+        assert.equal(await storage.getNote(candidateId), null);
+      }
+
+      const pendingCreate = {
+        ...siblingCreate,
+        id: randomUUID(),
+        note: {
+          ...siblingCreate.note,
+          id: "char_pending_choice",
+          links: [{ target: choiceTarget.id, relation: "affects_character" as const }],
+        },
+      };
+      const dependentLink = {
+        ...choiceMutation,
+        id: randomUUID(),
+        link: { ...choiceMutation.link, target: pendingCreate.note.id },
+      };
+      const sameNoteLink = {
+        ...choiceMutation,
+        id: randomUUID(),
+        noteId: pendingCreate.note.id,
+        link: { ...choiceMutation.link, target: siblingId },
+      };
+      const independentCreate = {
+        ...siblingCreate,
+        id: randomUUID(),
+        note: { ...noteInput, id: "world_independent_choice", scope: legacySource.scope, links: [] },
+      };
+      const autoChoiceDraft = await draftStore.createDraft({
+        source: { sourceNoteId: canonicalSourceId, chatId: "chat-a" },
+        scope: legacySource.scope,
+        modes: legacySource.modes,
+        response: {
+          summary: "Auto-apply safe work",
+          mutations: [pendingCreate, dependentLink, sameNoteLink, independentCreate],
+        },
+        diagnostics: [
+          {
+            severity: "warning",
+            code: "ambiguous_subject_link_target",
+            noteId: pendingCreate.note.id,
+            message: "Choose a target",
+            details: {
+              linkTarget: choiceTarget.id,
+              linkRelation: "affects_character",
+              candidateTargetNoteIds: [choiceTarget.id, siblingId, wideChoice.id],
+            },
+          },
+        ],
+      });
+      await assert.rejects(
+        applyLongTermMemoryDraft(autoChoiceDraft.id, { root, rebuildIndexes: false }),
+        (error: unknown) => error instanceof LtmDraftApplyError && error.code === "ltm_draft_ambiguous_link",
+      );
+      const autoChoiceResult = await applyLongTermMemoryDraft(autoChoiceDraft.id, {
+        root,
+        autoApplyLowRiskOnly: true,
+        editedMutations: [{ ...pendingCreate, summary: "Reviewed ambiguous target" }],
+        rebuildIndexes: false,
+      });
+      assert.deepEqual(autoChoiceResult.appliedMutationIds, [independentCreate.id]);
+      assert.deepEqual(autoChoiceResult.skippedMutationIds, [pendingCreate.id, dependentLink.id, sameNoteLink.id]);
+      assert.equal(autoChoiceResult.draft.status, "pending");
+      assert.equal(autoChoiceResult.draft.mutations[0]?.summary, "Reviewed ambiguous target");
+      assert.deepEqual(
+        autoChoiceResult.draft.mutations.map((mutation) => mutation.id),
+        [pendingCreate.id, dependentLink.id, sameNoteLink.id],
+      );
+      assert.equal(await storage.getNote(pendingCreate.note.id), null);
+      const pendingChoice = {
+        mutationId: pendingCreate.id,
+        linkTarget: choiceTarget.id,
+        linkRelation: "affects_character" as const,
+        selectedTarget: siblingId,
+      };
+      for (const extraTarget of [choiceTarget.id, wideChoice.id]) {
+        await assert.rejects(
+          applyLongTermMemoryDraft(autoChoiceDraft.id, {
+            root,
+            mutationIds: [pendingCreate.id],
+            editedMutations: [
+              {
+                ...pendingCreate,
+                note: {
+                  ...pendingCreate.note,
+                  links: [
+                    { target: siblingId, relation: "affects_character" },
+                    { target: extraTarget, relation: "affects_character" },
+                  ],
+                },
+              },
+            ],
+            linkChoices: [pendingChoice],
+            rebuildIndexes: false,
+          }),
+          (error: unknown) => error instanceof LtmDraftApplyError && error.code === "ltm_draft_ambiguous_link",
+        );
+      }
+      assert.equal((await draftStore.getDraft(autoChoiceDraft.id))?.status, "pending");
+      assert.equal(await storage.getNote(pendingCreate.note.id), null);
+      const unrelatedLinkPreflight = await preflightLongTermMemoryDraft(autoChoiceDraft.id, {
+        root,
+        mutationIds: [pendingCreate.id],
+        editedMutations: [
+          {
+            ...pendingCreate,
+            note: {
+              ...pendingCreate.note,
+              links: [
+                { target: siblingId, relation: "affects_character" },
+                { target: choiceTarget.id, relation: "involves" },
+              ],
+            },
+          },
+        ],
+        linkChoices: [pendingChoice],
+      });
+      assert.deepEqual(unrelatedLinkPreflight.readyMutationIds, [pendingCreate.id]);
 
       const ghostTarget = await storage.getNote("world_static_evidence");
       assert.equal(
@@ -2285,6 +2977,162 @@ async function main() {
         true,
         "permanently deleted targets must retain an explicit blocking reason",
       );
+
+      const snapshotRoot = join(dataDir, "vault-snapshot");
+      const snapshotStorage = new LongTermMemoryStorage(snapshotRoot);
+      await snapshotStorage.createNote({ ...noteInput, id: "world_snapshot_b", title: "Snapshot B" });
+      await snapshotStorage.createNote({ ...noteInput, id: "world_snapshot_a", title: "Snapshot A" });
+      const firstRead = await snapshotStorage.listNotes();
+      assert.deepEqual(
+        firstRead.map((note) => note.id),
+        ["world_snapshot_a", "world_snapshot_b"],
+        "vault reads must keep id ordering",
+      );
+      const secondRead = await new LongTermMemoryStorage(snapshotRoot).listNotes();
+      assert.deepEqual(
+        secondRead.map((note) => note.id),
+        firstRead.map((note) => note.id),
+        "opening the vault again must reuse one parsed snapshot",
+      );
+      firstRead[0]!.sections.facts!.text = "Caller mutation must not alter the cached scan.";
+      assert.equal(
+        (await snapshotStorage.listNotes())[0]!.sections.facts!.text,
+        noteInput.sections.facts.text,
+        "listNotes must isolate cached notes from caller mutations",
+      );
+      const paged = await new LongTermMemoryStorage(snapshotRoot).listNotes({ offset: 1, limit: 1 });
+      assert.deepEqual(
+        paged.map((note) => note.id),
+        ["world_snapshot_b"],
+        "offset and limit must keep matching the full vault snapshot",
+      );
+      assert.equal(paged[0]?.id, firstRead[1]?.id);
+      assert.equal(
+        (await snapshotStorage.listNotes({ type: "source" })).length,
+        0,
+        "type filters must keep narrowing the shared snapshot",
+      );
+      assert.equal((await snapshotStorage.listNotes())[0]?.id, firstRead[0]?.id);
+      await snapshotStorage.updateNote("world_snapshot_b", { title: "Snapshot B updated" });
+      const afterUpdate = await new LongTermMemoryStorage(snapshotRoot).listNotes();
+      assert.equal(afterUpdate.find((note) => note.id === "world_snapshot_b")?.title, "Snapshot B updated");
+      await snapshotStorage.cleanup();
+      await new LongTermMemoryStorage(snapshotRoot).cleanup();
+
+      const countRoot = join(dataDir, "vault-snapshot-count");
+      let snapshotLoads = 0;
+      const loadSnapshot = () => {
+        snapshotLoads++;
+        return Promise.resolve({ notes: [], errors: [] });
+      };
+      await readLtmVaultSnapshot(countRoot, loadSnapshot);
+      await readLtmVaultSnapshot(countRoot, loadSnapshot);
+      assert.equal(snapshotLoads, 1, "concurrent snapshot consumers must share one scan");
+      invalidateLtmVaultSnapshot(countRoot);
+      await readLtmVaultSnapshot(countRoot, loadSnapshot);
+      assert.equal(snapshotLoads, 2, "snapshot invalidation must permit a fresh scan");
+
+      const isolationRoot = join(dataDir, "vault-error-isolation");
+      const isolationStorage = new LongTermMemoryStorage(isolationRoot);
+      await isolationStorage.createNote({ ...noteInput, id: "world_isolation_ok", title: "Healthy world" });
+      const isolationDirs = getLongTermMemoryDirectories(isolationRoot);
+      await writeFile(
+        join(isolationDirs.vault, "sources", "source_isolation_ok.json"),
+        `${JSON.stringify({
+          id: "source_isolation_ok",
+          title: "Healthy source",
+          type: "source",
+          status: "active",
+          modes: ["roleplay"],
+          scope: {},
+          tags: [],
+          keywords: [],
+          links: [],
+          provenance: { kind: "chat_summary", sourceId: "chat-a", entryId: "summary-isolation" },
+          sections: { source: { text: "Healthy source.", updatedAt: timestamp } },
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          version: 1,
+        })}\n`,
+      );
+      await writeFile(join(isolationDirs.vault, "world", "world_isolation_malformed.json"), "{not-json\n");
+      assert.deepEqual(
+        (await isolationStorage.listNotes({ type: "source" })).map((note) => note.id),
+        ["source_isolation_ok"],
+        "a typed read must not fail on malformed notes in unrelated vault folders",
+      );
+      await assert.rejects(isolationStorage.listNotes(), /JSON/u, "a full read must still surface malformed notes");
+      await rm(join(isolationDirs.vault, "world", "world_isolation_malformed.json"));
+      assert.deepEqual(
+        (await isolationStorage.listNotes()).map((note) => note.id),
+        ["source_isolation_ok", "world_isolation_ok"],
+        "a tolerated vault failure must not be memoized past its cause",
+      );
+      await rename(join(isolationDirs.vault, "world"), join(isolationDirs.vault, "world-missing"));
+      invalidateLtmVaultSnapshot(isolationRoot);
+      assert.deepEqual(
+        (await isolationStorage.listNotes({ type: "source" })).map((note) => note.id),
+        ["source_isolation_ok"],
+        "typed reads must tolerate unrelated folder enumeration failures",
+      );
+      await assert.rejects(
+        isolationStorage.listNotes(),
+        /ENOENT/u,
+        "full reads must report folder enumeration failures",
+      );
+      await rename(join(isolationDirs.vault, "world-missing"), join(isolationDirs.vault, "world"));
+      await isolationStorage.cleanup();
+
+      const misplacedRoot = join(dataDir, "vault-misplaced-isolation");
+      const misplacedStorage = new LongTermMemoryStorage(misplacedRoot);
+      await misplacedStorage.createNote({ ...noteInput, id: "world_misplaced", title: "Misplaced world" });
+      await rename(
+        notePathForId("world_misplaced", "world", misplacedRoot),
+        join(getLongTermMemoryDirectories(misplacedRoot).vault, "threads", "world_misplaced.json"),
+      );
+      assert.equal(
+        (await misplacedStorage.listNotes({ type: "world" })).length,
+        0,
+        "a typed read must not fail on misplaced notes in other vault folders",
+      );
+      await assert.rejects(
+        misplacedStorage.listNotes({ type: "thread" }),
+        /is stored in threads/u,
+        "a typed read must still fail on a misplaced note in its own folder",
+      );
+      await assert.rejects(
+        misplacedStorage.listNotes(),
+        /is stored in threads/u,
+        "a full read must still fail on misplaced notes",
+      );
+      await misplacedStorage.cleanup();
+
+      const raceRoot = join(dataDir, "vault-snapshot-race");
+      {
+        let rejectStale!: (error: Error) => void;
+        const staleLoad = new Promise<never>((_, reject) => {
+          rejectStale = reject;
+        });
+        const stalePending = readLtmVaultSnapshot(raceRoot, () => staleLoad);
+        invalidateLtmVaultSnapshot(raceRoot);
+        let resolveFresh!: (scan: any) => void;
+        const freshLoad = new Promise<any>((resolve) => {
+          resolveFresh = resolve;
+        });
+        const freshPending = readLtmVaultSnapshot(raceRoot, () => freshLoad);
+        assert.notEqual(freshPending, stalePending, "invalidation must start a new scan");
+        rejectStale(new Error("stale vault scan failed"));
+        await assert.rejects(stalePending, /stale vault scan failed/u);
+        let reloads = 0;
+        const joined = readLtmVaultSnapshot(raceRoot, () => {
+          reloads += 1;
+          return Promise.resolve({ notes: [], errors: [] });
+        });
+        assert.equal(joined, freshPending, "a stale rejection must not evict the newer snapshot entry");
+        assert.equal(reloads, 0, "the newer pending scan must stay shared");
+        resolveFresh({ notes: [], errors: [] });
+        assert.deepEqual(await joined, { notes: [], errors: [] });
+      }
 
       const activityRoot = join(dataDir, "activity-index");
       const activityDirectories = getLongTermMemoryDirectories(activityRoot);

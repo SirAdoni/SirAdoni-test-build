@@ -315,7 +315,7 @@ export function ChatMessageSearch({ chatId }: { chatId: string }) {
                   </button>
                 </div>
               ) : view === "bookmarks" ? (
-                <ChatBookmarksList chatId={chatId} messages={messages ?? []} onJump={jumpToMessage} />
+                <ChatBookmarksList messages={messages ?? []} onJump={jumpToMessage} />
               ) : query.trim() && results.length === 0 ? (
                 <p className="px-3 py-8 text-center text-sm text-[var(--muted-foreground)]">
                   {localizeUi("ui.chat.chatmessagesearch.noMatches")}

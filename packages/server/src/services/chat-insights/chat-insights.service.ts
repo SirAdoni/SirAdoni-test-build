@@ -76,13 +76,13 @@ export function isInternalAssistantChat(chat: { metadata?: unknown }): boolean {
 const VISIBILITY_FLAGS = ["hiddenFromUser", "commandOnly", "roleplayPrivateOnly"] as const;
 
 /**
- * Whether a stored message shows up in the readable transcript. The extra blob
- * is only parsed when it mentions one of the flags, which keeps full scans cheap.
+ * Whether a stored message shows up in the readable transcript. Parse JSON extras before checking flags:
+ * escaped property names (valid JSON) must not bypass reader privacy.
  */
-export function isReaderVisibleMessage(message: { content?: unknown; extra?: unknown }): boolean {
+export function isReaderVisibleMessage(message: { role?: unknown; content?: unknown; extra?: unknown }): boolean {
+  if (message.role === "system") return false;
   if (typeof message.content !== "string" || message.content.trim().length === 0) return false;
   const extra = message.extra;
-  if (typeof extra === "string" && !VISIBILITY_FLAGS.some((flag) => extra.includes(flag))) return true;
   const record = parseRecord(extra);
   return VISIBILITY_FLAGS.every((flag) => record[flag] !== true);
 }
@@ -359,7 +359,6 @@ interface ChatActivitySummary {
 
 type ActivityStoreProbe = {
   getTableWriteGeneration?: (table: string) => number;
-  getResidentChatUnits?: () => ReadonlySet<string>;
 };
 
 function chatSummaryKey(chat: ChatRow): string {
@@ -397,7 +396,6 @@ export function createChatActivitySummaryCache(db: DB, maxAgeMs = ACTIVITY_SUMMA
     stats,
     async collect(chatRows: readonly ChatRow[]): Promise<Map<string, ChatActivitySummary>> {
       const generation = store?.getTableWriteGeneration?.("messages") ?? -1;
-      const resident = store?.getResidentChatUnits?.() ?? null;
       const now = Date.now();
       const result = new Map<string, ChatActivitySummary>();
       for (const chat of chatRows) {
@@ -407,7 +405,7 @@ export function createChatActivitySummaryCache(db: DB, maxAgeMs = ACTIVITY_SUMMA
           generation >= 0 &&
           cached.key === chatSummaryKey(chat) &&
           now - cached.computedAt < maxAgeMs &&
-          (cached.generation === generation || (resident !== null && !resident.has(chat.id)));
+          cached.generation === generation;
         if (reusable) {
           stats.reused += 1;
           result.set(chat.id, cached);

@@ -1,6 +1,11 @@
-import { Ban, ExternalLink, Megaphone, X } from "lucide-react";
+import { Ban, ExternalLink, EyeOff, MoreHorizontal } from "lucide-react";
+import { useRef, useState } from "react";
+import { useTranslation as useUiTranslation } from "react-i18next";
 import type { SlurpPromotion } from "./slp-ads-contract";
-import { SlurpMediaImg } from "../../base/chrome/SlpChrome";
+import { Avatar, SLP_IMG_FRAME_CLASS, SLP_TYPE, SlurpMediaImg } from "../../base/chrome/SlpChrome";
+import { SlpButton, slpTagClass } from "../../modules/chrome/SlpButton";
+import { SlpSheet, SlpSheetItem } from "../../modules/chrome/SlpSheet";
+import { cn } from "../../../lib/utils";
 
 /**
  * The same ad as a wall tile.
@@ -25,14 +30,14 @@ export function SlurpInlineAdTile({
         type="button"
         onClick={onAction}
         className="group block h-full w-full text-left focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--noodle-accent)]"
-        aria-label={`${labels.sponsored}: ${promotion.brand} — ${promotion.actionLabel ?? labels.actionFallback}`}
+        aria-label={`${labels.sponsored}: ${promotion.brand}, ${promotion.actionLabel ?? labels.actionFallback}`}
       >
         {promotion.imageUrl ? (
           <SlurpMediaImg
             src={promotion.imageUrl}
             alt=""
             loading="lazy"
-            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03] motion-reduce:transition-none motion-reduce:group-hover:scale-100"
+            className="slp-crop-top h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03] motion-reduce:transition-none motion-reduce:group-hover:scale-100"
           />
         ) : (
           <span className="flex h-full items-center justify-center bg-[linear-gradient(145deg,color-mix(in_srgb,var(--noodle-accent)_18%,var(--slurp-surface)),var(--slurp-surface))] p-4 text-center text-sm font-bold">
@@ -42,11 +47,8 @@ export function SlurpInlineAdTile({
         {/* An unlabelled ad inside a wall of real posts reads as a post. The gradient keeps the
             label legible on any image without hiding the image behind a panel. */}
         <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-2 pt-6">
-          <span className="block text-[0.6rem] font-bold uppercase tracking-[0.14em] text-[var(--noodle-accent)]">
-            <Megaphone size={10} aria-hidden="true" className="mr-1 inline align-[-1px]" />
-            {labels.sponsored}
-          </span>
-          <span className="mt-0.5 block truncate text-xs font-bold text-white">{promotion.brand}</span>
+          <span className="block truncate text-xs font-bold text-white">{promotion.brand}</span>
+          <span className="mt-0.5 block text-[11px] font-semibold text-white/75">{labels.sponsored}</span>
         </span>
       </button>
       <button
@@ -54,86 +56,125 @@ export function SlurpInlineAdTile({
         onClick={onHide}
         aria-label={labels.hide}
         title={labels.hide}
-        className="absolute right-1 top-1 flex h-7 w-7 items-center justify-center rounded-lg bg-black/50 text-white hover:bg-black/70"
+        className="absolute right-1 top-1 flex h-9 w-9 items-center justify-center rounded-full bg-black/45 text-white backdrop-blur-sm hover:bg-black/65"
       >
-        <X size={14} aria-hidden="true" />
+        <EyeOff size={15} aria-hidden="true" />
       </button>
     </div>
   );
 }
 
+/**
+ * An ad in the shape of a post (feed, Discover, Backstage preview): the brand's avatar and name
+ * with a quiet "Sponsored" chip, the caption, the picture, and one tinted button. Hide lives in
+ * the ⋯ sheet, like a post's own menu.
+ */
 export function SlurpInlineAd({
   promotion,
   onHide,
   onHideBrand,
   onAction,
   labels,
+  wide = false,
 }: {
   promotion: SlurpPromotion;
+  /** Discover: the 1.91:1 banner, so the ad sits between grid rows instead of filling the phone. */
+  wide?: boolean;
   onHide: () => void;
   onHideBrand?: () => void;
   onAction: () => void;
   labels: { sponsored: string; hide: string; hideBrand: string; actionFallback: string };
 }) {
+  const { t: localizeUi } = useUiTranslation();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [imageFailed, setImageFailed] = useState(false);
+  const menuRef = useRef<HTMLButtonElement | null>(null);
+  const menuLabel = localizeUi("ui.slurp.home.moreActions", { defaultValue: "More actions" });
+  // Each slot shows the picture drawn for its shape; an older ad without a banner is cropped from the top.
+  const imageUrl = (wide && promotion.wideImageUrl) || promotion.imageUrl;
   return (
-    <article className="relative overflow-hidden rounded-xl border border-[var(--noodle-accent)]/35 bg-[var(--slurp-surface)] shadow-sm">
-      {/* imageUrl has always been on the promotion; without it an ad never reads
-          as feed content, which is the whole point of an inline ad. */}
-      {promotion.imageUrl ? (
-        <SlurpMediaImg
-          src={promotion.imageUrl}
-          alt=""
-          loading="lazy"
-          className="max-h-56 w-full object-cover"
-          onError={(event) => {
-            event.currentTarget.style.display = "none";
+    <article
+      aria-label={`${labels.sponsored}: ${promotion.brand}`}
+      className="rounded-2xl bg-[var(--slurp-surface-raised)] px-4 py-4 shadow-[var(--slurp-shadow-raised),var(--slurp-highlight)]"
+    >
+      <div className="flex items-center gap-3">
+        {/* The brand's logo, or the initials of the first two words of the brand. */}
+        <Avatar
+          account={{
+            displayName: promotion.brand.split(/\s+/u).slice(0, 2).join(" "),
+            avatarUrl: promotion.brandLogoUrl ?? null,
           }}
         />
-      ) : null}
-      <div className="flex items-start gap-3 p-4">
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--noodle-accent)]/15 text-[var(--noodle-accent)]">
-          <Megaphone size={16} aria-hidden="true" />
-        </span>
         <div className="min-w-0 flex-1">
-          <p className="text-[0.65rem] font-bold uppercase tracking-[0.14em] text-[var(--noodle-accent)]">
-            {labels.sponsored}
-          </p>
-          <h2 className="mt-1 break-words text-sm font-bold">{promotion.brand}</h2>
-          <p className="mt-0.5 break-words text-xs font-semibold text-[var(--muted-foreground)]">{promotion.product}</p>
-          <p className="mt-2 break-words text-sm leading-6">{promotion.copy}</p>
-          <button
-            type="button"
-            onClick={onAction}
-            className="mt-3 min-h-9 rounded-lg bg-[var(--noodle-accent)] px-3 text-xs font-bold text-zinc-950 [&_svg]:!text-zinc-950 hover:opacity-90"
-          >
-            <ExternalLink size={13} aria-hidden="true" />
-            {promotion.actionLabel ?? labels.actionFallback}
-          </button>
+          <div className="flex min-w-0 items-center gap-2">
+            <h2 className={cn(SLP_TYPE.title, "min-w-0 truncate")}>{promotion.brand}</h2>
+            <span className={slpTagClass()}>{labels.sponsored}</span>
+          </div>
+          {promotion.product && (
+            <p className="mt-0.5 truncate text-xs font-medium leading-4 text-[var(--slurp-muted)]">
+              {promotion.product}
+            </p>
+          )}
         </div>
-        <div className="flex shrink-0 flex-col gap-1">
-          <button
-            type="button"
-            onClick={onHide}
-            aria-label={labels.hide}
-            title={labels.hide}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
-          >
-            <X size={15} aria-hidden="true" />
-          </button>
-          {/* Hiding one ad used to leave the same brand free to come back. */}
-          {onHideBrand ? (
-            <button
-              type="button"
-              onClick={onHideBrand}
-              aria-label={labels.hideBrand}
-              title={labels.hideBrand}
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
-            >
-              <Ban size={14} aria-hidden="true" />
-            </button>
-          ) : null}
-        </div>
+        <button
+          ref={menuRef}
+          type="button"
+          onClick={() => setMenuOpen(true)}
+          aria-label={menuLabel}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          className="-me-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-[var(--slurp-muted)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--slurp-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)]"
+        >
+          <MoreHorizontal size={20} aria-hidden="true" />
+        </button>
       </div>
+      {promotion.copy && <p className={cn(SLP_TYPE.body, "mt-3 whitespace-pre-line break-words")}>{promotion.copy}</p>}
+      {imageUrl && !imageFailed && (
+        <div
+          className={cn(
+            "relative -mx-4 mt-3 w-[calc(100%+2rem)] overflow-hidden bg-[var(--slurp-media-stage,#17131a)]",
+            wide ? "" : "aspect-[4/5] max-h-[32rem]",
+            SLP_IMG_FRAME_CLASS,
+          )}
+          style={wide ? { aspectRatio: "1.91 / 1" } : undefined}
+        >
+          <SlurpMediaImg
+            src={imageUrl}
+            alt=""
+            loading="lazy"
+            decoding="async"
+            className="slp-crop-top h-full w-full object-cover"
+            onError={() => setImageFailed(true)}
+          />
+        </div>
+      )}
+      <SlpButton variant="secondary" onClick={onAction} className="mt-3 w-full">
+        <ExternalLink size={16} aria-hidden="true" />
+        {promotion.actionLabel ?? labels.actionFallback}
+      </SlpButton>
+      <SlpSheet open={menuOpen} onClose={() => setMenuOpen(false)} title={menuLabel} kind="menu" anchorRef={menuRef}>
+        <SlpSheetItem
+          onSelect={() => {
+            setMenuOpen(false);
+            onHide();
+          }}
+        >
+          <EyeOff aria-hidden="true" />
+          {labels.hide}
+        </SlpSheetItem>
+        {/* Hiding one ad used to leave the same brand free to come back. */}
+        {onHideBrand && (
+          <SlpSheetItem
+            onSelect={() => {
+              setMenuOpen(false);
+              onHideBrand();
+            }}
+          >
+            <Ban aria-hidden="true" />
+            {labels.hideBrand}
+          </SlpSheetItem>
+        )}
+      </SlpSheet>
     </article>
   );
 }

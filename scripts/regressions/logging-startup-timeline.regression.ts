@@ -15,30 +15,37 @@ await assert.rejects(
   "a failing phase rethrows the original error",
 );
 assert.equal(startup.stageOf(failure), "sample.inner", "the innermost phase names the failure");
-const recorded = startup.phases().map((phase) => `${phase.stage}:${phase.outcome}`);
+const recorded = startup.phases.map((phase) => `${phase.stage}:${phase.outcome}`);
 assert.deepEqual(recorded, ["sample.ok:ok", "sample.inner:failed", "sample.outer:failed"]);
 
-// A slow inner step is reported once: the outer phase's own time excludes it.
+// Nested phases both report their wall time, and the summary ranks those elapsed durations.
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 await startup.phase("nested.outer", async () => {
   await startup.phase("nested.inner", () => wait(120));
 });
-const inner = startup.phases().find((phase) => phase.stage === "nested.inner")!;
-const outer = startup.phases().find((phase) => phase.stage === "nested.outer")!;
-assert.ok(inner.selfMs >= 100, "the inner step owns its time");
-assert.ok(outer.elapsedMs >= inner.elapsedMs, "the outer phase still reports its wall time");
-assert.ok(outer.selfMs < 60, `the outer phase does not count the inner step again (selfMs=${outer.selfMs})`);
+const inner = startup.phases.find((phase) => phase.stage === "nested.inner")!;
+const outer = startup.phases.find((phase) => phase.stage === "nested.outer")!;
+assert.ok(inner.elapsedMs >= 100, "the inner step reports its elapsed time");
+assert.ok(outer.elapsedMs >= inner.elapsedMs, "the outer phase includes nested wall time");
 
 const summary = startup.summary();
-assert.equal(summary.event, "startup.ready");
-assert.equal(summary.phaseCount, 5);
-assert.equal(summary.slowest[0]?.stage, "nested.inner", "the summary ranks steps by their own time");
-
-// index.ts wires the timeline and keeps the lines other regressions and launchers wait for.
+assert.equal(summary.phases.count, 5);
+assert.deepEqual(
+  summary.phases.failed.map((phase) => phase.stage + ":" + phase.outcome),
+  ["sample.inner:failed", "sample.outer:failed"],
+);
+const expectedSlowest = [...startup.phases].sort((a, b) => b.elapsedMs - a.elapsedMs).slice(0, 8);
+assert.ok(summary.phases.slowest.length <= 8, "the summary bounds its slowest phase list");
+assert.deepEqual(
+  summary.phases.slowest.map((phase) => phase.stage),
+  expectedSlowest.map((phase) => phase.stage),
+  "the summary ranks phases by elapsed time",
+);
+// index.ts wires the timeline and emits one structured ready event after listening.
 const index = readFileSync(new URL("../../packages/server/src/index.ts", import.meta.url), "utf8");
 assert.match(index, /startup\.phase\("app\.build"/u);
-assert.match(index, /Marinara Engine server listening on/u);
-assert.match(index, /logger\.info\(ready, "\[startup\] Ready in %d ms"/u);
+assert.match(index, /startup\.phase\("http\.listen"/u);
+assert.match(index, /event: "startup\.ready"/u);
+assert.match(index, /Marinara Engine ready on %s in %d ms/u);
 assert.match(index, /startup\.stageOf\(err\)/u, "a bootstrap failure names its step");
-
 console.info("Logging startup timeline regression passed");

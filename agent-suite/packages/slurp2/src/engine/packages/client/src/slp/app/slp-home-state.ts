@@ -1,9 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { createElement, useEffect, useRef, useState } from "react";
 import { useSlurpHomePostActions } from "./slp-home-post-actions";
 import { SLP_CREATOR_POST_TITLE_MAX_LENGTH } from "../../../../shared/src/slp/slp-social.schema.js";
 import type {
   SlpAccount,
-  SlpCreatorManagedPost,
   SlpCreatorSourceSnapshot,
   SlpIdentityDisclosure,
 } from "../../../../shared/src/slp/slp-social.types.js";
@@ -18,30 +17,29 @@ import {
   useUploadCreatorAvatar,
   useUseCreatorSourceAvatar,
 } from "../features/creators/slp-creator-profile-hooks";
-import { useCreatorAccounts, useCreatorEligibleAccounts } from "../features/creators/slp-creators-hooks";
+import {
+  useCreatorAccounts,
+  useCreatorEligibleAccounts,
+  useSlpViewerPersonaId,
+} from "../features/creators/slp-creators-hooks";
 import { useCreatorViewerWallets } from "../features/economy/slp-economy-hooks";
 import {
   useConfirmCreatorImagePrompts,
   useCreateCreatorPost,
   useDeleteCreatorPost,
-  useGenerateCreatorSlpPost,
-  useGenerateCreatorPostImage,
   useLoadCreatorPostImage,
   useCreatorPosts,
   useReplaceCreatorPostImage,
   useUpdateCreatorPost,
 } from "../features/feed/slp-feed-post-hooks";
-import {
-  useRunCreatorAutoPostNow,
-  useUpdateCreatorAccess,
-  useUpdateCreatorAutoPosting,
-} from "../features/feed/slp-feed-schedule-hooks";
+import { useRunCreatorAutoPostNow, useUpdateCreatorAutoPosting } from "../features/feed/slp-feed-schedule-hooks";
 import {
   useCreateCreatorInteraction,
   useDeleteCreatorInteraction,
   useMarkCreatorFeedSeen,
   useCreatorUnseenCount,
   useCreatorViewer,
+  useGambleUnlockCreatorPost,
   useRemoveCreatorInteraction,
   useToggleCreatorFollow,
   useToggleCreatorSubscription,
@@ -49,42 +47,41 @@ import {
   useUnlockCreatorPost,
   useUpdateCreatorInteraction,
 } from "../features/feed/slp-feed-viewer-hooks";
-import { useSlurpThreads } from "../features/messages/slp-messages-hooks";
-import { useSlurpNotifications } from "../features/notifications/slp-notification-hooks";
+import { useSlurpUnreadCount } from "../features/messages/slp-messages-hooks";
 import { useSlurpSettings, useUpdateSlurpSettings } from "../features/settings/slp-settings-hooks";
 import { useActivePersona, usePersonas } from "../../hooks/use-creator-personas";
-import { useConnections } from "../../hooks/use-connections";
+import { useSlurpConnections } from "../base/state/slp-host-connections";
 import { showConfirmDialog } from "../../lib/app-dialogs";
 import { useSlurpUIStore } from "../base/state/slp-package-store";
+import { api } from "../../lib/api-client";
+import type { SlpPostCardModel } from "../modules/post/SlpPostTypes";
 import {
   type SlpCreatorPostDraft,
   EMPTY_SLP_CREATOR_POST_DRAFT,
   isEmptyCreatorPostDraft,
   errorMessage,
-  SLURP_PLACEHOLDER_BALANCE,
 } from "./screens/SlpHomeHelpers";
-import { useSlpPostCardController } from "../modules/post/SlpPostCard";
+import { useSlpPostCardController } from "../modules/post/SlpPostHooks";
+import { SlpTextAssist } from "../features/assist/slp-assist-contract";
+import { openSlpStir } from "../base/state/slp-stir-sheet-store";
 import type { ImagePromptReviewItem } from "../../components/ui/ImagePromptReviewModal";
 import type { SlurpNavigationState } from "../base/navigation/slp-navigation.types";
 import { useTranslation as useUiTranslation } from "react-i18next";
-import { confirmLeaveSlurpBackstage } from "../features/backstage/SlpBackstageControls";
+import { useSlpBackstageLeaveGuard } from "../features/backstage/SlpBackstageControls";
 import { SLP_PERSONA_SWITCHER_PAGE_SIZE } from "../base/chrome/SlpChrome";
 import { toast } from "sonner";
 import { slurp2SplashPending } from "../features/onboarding/SlpSplash";
-
-export interface SlurpHomeProps {
-  navigation: SlurpNavigationState;
-  onNavigate: (destination: SlurpNavigationState) => void;
-  onLeave?: () => void;
-}
-
-export function useSlurpHomeBaseState({ navigation, onNavigate, onLeave }: SlurpHomeProps) {
+import type { SlurpHomeProps } from "./slp-home.types";
+export function useSlurpHomeBaseState({ navigation, onNavigate: navigateRaw, onLeave }: SlurpHomeProps) {
+  const onNavigate = useSlpBackstageLeaveGuard(navigation, navigateRaw);
   const { t: localizeUi } = useUiTranslation();
+  const creatorView = navigation.mode === "creator" ? navigation.view : null;
+  const viewerSurfaceActive = creatorView !== null && ["hub", "search", "profile"].includes(creatorView);
   const accountsQuery = useCreatorAccounts();
   const retryAccountsOrReload = async () => {
     if ((await accountsQuery.refetch()).isError) window.location.reload();
   };
-  const connectionCountsQuery = useCreatorConnectionCounts();
+  const connectionCountsQuery = useCreatorConnectionCounts(viewerSurfaceActive);
   const viewerWalletsQuery = useCreatorViewerWallets();
   const slurpSettingsQuery = useSlurpSettings();
   const updateSlurpSettings = useUpdateSlurpSettings();
@@ -100,12 +97,8 @@ export function useSlurpHomeBaseState({ navigation, onNavigate, onLeave }: Slurp
   const storedPersonaId = useSlurpUIStore((state) => state.viewerPersonaId);
   const setStoredPersonaId = useSlurpUIStore((state) => state.setViewerPersonaId);
   const personas = personasQuery.data ?? [];
-  const viewerPersonaId =
-    (storedPersonaId && personas.some((persona) => persona.id === storedPersonaId) ? storedPersonaId : null) ??
-    activePersonaQuery.data?.id ??
-    personas[0]?.id ??
-    null;
-  const activeWalletCoins = viewerWalletsQuery.data?.[viewerPersonaId ?? ""]?.coins ?? SLURP_PLACEHOLDER_BALANCE;
+  const viewerPersonaId = useSlpViewerPersonaId();
+  const activeWalletCoins = viewerWalletsQuery.data?.[viewerPersonaId ?? ""]?.coins ?? null;
   const viewerAccounts = personas.map(
     (persona) =>
       ({
@@ -124,6 +117,7 @@ export function useSlurpHomeBaseState({ navigation, onNavigate, onLeave }: Slurp
     (shellPersonaAccount &&
       accountsQuery.data?.find((profile) => profile.sourceAccountId === shellPersonaAccount.id)) ||
     null;
+  const viewerQuery = useCreatorViewer(viewerPersonaId, viewerSurfaceActive);
   const viewerActorAccount = shellPersonaAccount
     ? ({
         ...shellPersonaAccount,
@@ -139,6 +133,9 @@ export function useSlurpHomeBaseState({ navigation, onNavigate, onLeave }: Slurp
               updatedAt: myCreatorProfile.updatedAt,
             }
           : {}),
+        // Likes, comments and votes on other Creators' posts are stored under this fan account (R1-020).
+        fanActorAccountId: (viewerQuery.data as { viewerActorAccountId?: string | null } | undefined)
+          ?.viewerActorAccountId,
       } as SlpAccount)
     : null;
   const [accountSwitcherOpen, setAccountSwitcherOpen] = useState(false);
@@ -226,7 +223,6 @@ export function useSlurpHomeBaseState({ navigation, onNavigate, onLeave }: Slurp
       tone: "destructive",
     });
   const exitToCreatorHub = async () => {
-    if (navigation.mode === "creator-settings" && !(await confirmLeaveSlurpBackstage(localizeUi))) return;
     if (!(await confirmDiscardProfileDraft())) return;
     if (!(await confirmDiscardNoodlerPostDrafts())) return;
     clearProfileEditorState();
@@ -241,7 +237,7 @@ export function useSlurpHomeBaseState({ navigation, onNavigate, onLeave }: Slurp
     onNavigate({
       mode: "creator-settings",
       tab: "creator",
-      section: "overview",
+      // No section: phones open on the settings home list; wide screens show Overview.
       returnTo: { mode: "creator", view: "hub" },
     });
     setMobileDrawerOpen(false);
@@ -256,10 +252,8 @@ export function useSlurpHomeBaseState({ navigation, onNavigate, onLeave }: Slurp
   const [gateCelebrating, setGateCelebrating] = useState(false);
   const gatePresentedRef = useRef(false);
   const onboardingPresentedRef = useRef(false);
-  const viewerQuery = useCreatorViewer(viewerPersonaId);
   const noodlerUnseenCount = useCreatorUnseenCount(viewerPersonaId);
-  const notificationsQuery = useSlurpNotifications(viewerPersonaId);
-  const inboxThreadsQuery = useSlurpThreads(viewerPersonaId);
+  const unreadCountQuery = useSlurpUnreadCount(viewerPersonaId);
   const markFeedSeenMutation = useMarkCreatorFeedSeen();
   const [frozenFeedSeenAt, setFrozenFeedSeenAt] = useState<Record<string, string | null>>({});
   const feedShownForAccountRef = useRef<string | null>(null);
@@ -276,6 +270,7 @@ export function useSlurpHomeBaseState({ navigation, onNavigate, onLeave }: Slurp
   const toggleFollow = useToggleCreatorFollow();
   const toggleSubscription = useToggleCreatorSubscription();
   const unlockPost = useUnlockCreatorPost();
+  const gambleUnlockPost = useGambleUnlockCreatorPost();
   const createInteraction = useCreateCreatorInteraction();
   const triggerCreatorReply = useTriggerCreatorReply();
   const removeInteraction = useRemoveCreatorInteraction();
@@ -283,30 +278,20 @@ export function useSlurpHomeBaseState({ navigation, onNavigate, onLeave }: Slurp
   const deletePost = useDeleteCreatorPost();
   const updateInteraction = useUpdateCreatorInteraction();
   const deleteInteraction = useDeleteCreatorInteraction();
-  const updateAccess = useUpdateCreatorAccess();
   const [draftNoodleAccountId, setDraftNoodleAccountId] = useState<string | null>(null);
   const [sourceSearch, setSourceSearch] = useState("");
   const [sourceKind, setSourceKind] = useState<"all" | "character" | "persona">("all");
-  const eligibleAccountsQuery = useCreatorEligibleAccounts(
-    sourceSearch,
-    sourceKind,
-    navigation.mode === "creator",
-    draftNoodleAccountId,
-  );
   const createProfile = useCreateCreatorStageProfile();
   const updateProfile = useUpdateCreatorStageProfile();
   const updateProfileLocation = useUpdateCreatorProfileLocation();
   const uploadAvatar = useUploadCreatorAvatar();
   const useSourceAvatar = useUseCreatorSourceAvatar();
   const removeAvatar = useRemoveCreatorAvatar();
-  const generatePost = useGenerateCreatorSlpPost();
   const confirmImagePrompts = useConfirmCreatorImagePrompts();
   const runAutoPostNow = useRunCreatorAutoPostNow();
   const setupAutoPosting = useUpdateCreatorAutoPosting();
   const createPost = useCreateCreatorPost();
   const generateProfileDraft = useGenerateCreatorStageProfileDraft();
-  const connectionsQuery = useConnections();
-  const connections = (connectionsQuery.data ?? []) as Array<{ id: string; name: string; model?: string }>;
   const [profileDraft, setProfileDraft] = useState<SlurpStageProfileInput | null>(null);
   const [profileDraftDirty, setProfileDraftDirty] = useState(false);
   const [imagePromptReview, setImagePromptReview] = useState<{
@@ -320,6 +305,19 @@ export function useSlurpHomeBaseState({ navigation, onNavigate, onLeave }: Slurp
   const [draftConnectionId, setDraftConnectionId] = useState("");
   const [previousDraft, setPreviousDraft] = useState<SlurpStageProfileInput | null>(null);
   const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
+  const profileWorkspaceActive =
+    creatorView !== null &&
+    (["profiles", "create-profile"].includes(creatorView) || creationStep !== null || editingProfileId !== null);
+  const eligibleAccountsQuery = useCreatorEligibleAccounts(
+    sourceSearch,
+    sourceKind,
+    profileWorkspaceActive,
+    draftNoodleAccountId,
+  );
+  const connectionsQuery = useSlurpConnections(
+    creatorView === "create-profile" || creationStep === "draft" || editingProfileId !== null,
+  );
+  const connections = (connectionsQuery.data ?? []) as Array<{ id: string; name: string; model?: string }>;
   const [composerOpenSignal, setComposerOpenSignal] = useState(0);
   const profileReturnToSettingsRef = useRef<SlurpNavigationState | null>(null);
   const [acceptSourceChangesForProfileId, setAcceptSourceChangesForProfileId] = useState<string | null>(null);
@@ -442,9 +440,9 @@ export function useSlurpHomeBaseState({ navigation, onNavigate, onLeave }: Slurp
     onNavigate({ mode: "creator", view: "wallet" });
     setMobileDrawerOpen(false);
   };
-  const goToStudio = async () => {
+  const goToStir = async () => {
     if (!(await prepareNavigationAwayFromProfileEditor())) return;
-    onNavigate({ mode: "creator", view: "studio" });
+    onNavigate({ mode: "creator", view: "stir" });
     setMobileDrawerOpen(false);
   };
   const closeNoodlerSearch = () => {
@@ -466,6 +464,9 @@ export function useSlurpHomeBaseState({ navigation, onNavigate, onLeave }: Slurp
     cancelEditingReply,
     saveEditedReply,
     deleteNoodleReply,
+    generatePostImage,
+    generatingPostImageIds,
+    handleGeneratePostImage,
   } = useSlurpHomePostActions({
     localizeUi,
     viewerPersonaId,
@@ -481,6 +482,8 @@ export function useSlurpHomeBaseState({ navigation, onNavigate, onLeave }: Slurp
     deletePost,
   });
   const postCardController = useSlpPostCardController({
+    textAssist: ({ story, ...input }) => createElement(SlpTextAssist, { ...input, field: story ? "story" : "caption" }),
+    stir: (post) => openSlpStir({ creatorId: post.authorAccountId, postId: post.id }),
     postShowMoreLength: slurpSettingsQuery.data?.postShowMoreLength,
     postManagement: false,
     personaAccount: viewerActorAccount,
@@ -518,25 +521,27 @@ export function useSlurpHomeBaseState({ navigation, onNavigate, onLeave }: Slurp
     },
     openAuthorProfile: (accountId) => onNavigate({ mode: "creator", view: "profile", accountId }),
   });
-  const generatePostImage = useGenerateCreatorPostImage();
-  const [generatingPostImageId, setGeneratingPostImageId] = useState<string | null>(null);
-  const handleGeneratePostImage = (
-    post: Pick<SlpCreatorManagedPost, "id" | "authorAccountId">,
-    imagePrompt?: string,
-  ) => {
-    setGeneratingPostImageId(post.id);
-    generatePostImage.mutate(
-      { id: post.id, accountId: post.authorAccountId, imagePrompt },
-      {
-        onError: (error) => toast.error(errorMessage(error, localizeUi("ui.slurp.image.generateFailed"))),
-        onSettled: () => setGeneratingPostImageId(null),
-      },
-    );
-  };
+  /** The post whose share picker is open, or null. */
+  const [sharingPost, setSharingPost] = useState<SlpPostCardModel | null>(null);
   const postCardCtx = {
     ...postCardController.ctx,
     generatePostImage: handleGeneratePostImage,
-    generatingPostImageId,
+    generatingPostImageIds,
+    gambleUnlockPost: viewerPersonaId
+      ? async (postId: string) => {
+          try {
+            return await gambleUnlockPost.mutateAsync({ postId, personaId: viewerPersonaId });
+          } catch (error) {
+            toast.error(errorMessage(error, localizeUi("ui.noodle.noodlerhome.couldNotUnlockThisPost")));
+            throw error;
+          }
+        }
+      : undefined,
+    // Undefined without a persona rather than a no-op handler: the menu then falls back to its
+    // own share-card download instead of the item doing nothing at all when it is clicked.
+    // Sharing used to post straight to the creator who wrote the post — the one chat the reader
+    // never means — so it opens the chat picker instead.
+    sharePost: viewerPersonaId ? (post: SlpPostCardModel) => setSharingPost(post) : undefined,
   };
   const selectedProfile =
     navigation.mode === "creator" && navigation.view === "profile"
@@ -548,7 +553,6 @@ export function useSlurpHomeBaseState({ navigation, onNavigate, onLeave }: Slurp
   const eligibleNoodleAccounts = eligibleAccountsQuery.data?.pages.flatMap((page) => page.items) ?? [];
   const selectedSource = eligibleNoodleAccounts.find((account) => account.id === draftNoodleAccountId) ?? null;
   const sourcePickerLoading = eligibleAccountsQuery.isLoading || eligibleAccountsQuery.isFetching;
-
   const handleSourceSearch = (value: string) => {
     invalidateProfileDraftGeneration();
     setSourceSearch(value);
@@ -559,7 +563,6 @@ export function useSlurpHomeBaseState({ navigation, onNavigate, onLeave }: Slurp
     setSourceKind(value);
     setDraftNoodleAccountId(null);
   };
-
   useEffect(() => {
     if (
       slurpSettingsQuery.isSuccess &&
@@ -579,12 +582,10 @@ export function useSlurpHomeBaseState({ navigation, onNavigate, onLeave }: Slurp
     slurpSettingsQuery.data?.onboarding,
     slurpSettingsQuery.isSuccess,
   ]);
-
   useEffect(() => {
     if (navigation.mode !== "creator" || navigation.view !== "hub") return;
     onboardingPresentedRef.current = false;
   }, [navigation.mode, navigation.view, onboardingState]);
-
   const enterFromGate = async () => {
     setGateOpen(false);
     setOnboardingState("completed");
@@ -595,17 +596,14 @@ export function useSlurpHomeBaseState({ navigation, onNavigate, onLeave }: Slurp
     }
     onNavigate({ mode: "creator", view: "hub" });
   };
-
   useEffect(() => {
     if (!gateCelebrating) return;
     const timer = window.setTimeout(() => setGateCelebrating(false), 1_400);
     return () => window.clearTimeout(timer);
   }, [gateCelebrating]);
-
   const closeOnboarding = () => {
     setOnboardingMode(null);
   };
-
   return {
     navigation,
     onNavigate,
@@ -669,8 +667,7 @@ export function useSlurpHomeBaseState({ navigation, onNavigate, onLeave }: Slurp
     onboardingPresentedRef,
     viewerQuery,
     noodlerUnseenCount,
-    notificationsQuery,
-    inboxThreadsQuery,
+    unreadCountQuery,
     markFeedSeenMutation,
     frozenFeedSeenAt,
     setFrozenFeedSeenAt,
@@ -686,7 +683,6 @@ export function useSlurpHomeBaseState({ navigation, onNavigate, onLeave }: Slurp
     deletePost,
     updateInteraction,
     deleteInteraction,
-    updateAccess,
     draftNoodleAccountId,
     setDraftNoodleAccountId,
     sourceSearch,
@@ -700,7 +696,6 @@ export function useSlurpHomeBaseState({ navigation, onNavigate, onLeave }: Slurp
     uploadAvatar,
     useSourceAvatar,
     removeAvatar,
-    generatePost,
     confirmImagePrompts,
     runAutoPostNow,
     setupAutoPosting,
@@ -749,7 +744,7 @@ export function useSlurpHomeBaseState({ navigation, onNavigate, onLeave }: Slurp
     goToNoodlerSearch,
     goToMessages,
     goToWallet,
-    goToStudio,
+    goToStir,
     closeNoodlerSearch,
     reactToPost,
     reactToReply,
@@ -767,10 +762,11 @@ export function useSlurpHomeBaseState({ navigation, onNavigate, onLeave }: Slurp
     deleteNoodleReply,
     postCardController,
     generatePostImage,
-    generatingPostImageId,
-    setGeneratingPostImageId,
+    generatingPostImageIds,
     handleGeneratePostImage,
     postCardCtx,
+    sharingPost,
+    setSharingPost,
     selectedProfile,
     postsQuery,
     selectedViewerCreator,
@@ -783,5 +779,4 @@ export function useSlurpHomeBaseState({ navigation, onNavigate, onLeave }: Slurp
     closeOnboarding,
   };
 }
-
 export type SlurpHomeBaseState = ReturnType<typeof useSlurpHomeBaseState>;

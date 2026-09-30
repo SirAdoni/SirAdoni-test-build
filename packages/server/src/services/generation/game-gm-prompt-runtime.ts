@@ -1,6 +1,7 @@
 import { layoutNamedCards, type NamedCard } from "../game/named-card-cache.js";
 import { isFeatureEnabled } from "../features/feature-settings.js";
 import { selectNamedCharacterIds } from "../game/named-characters.js";
+import { currentRoomGeneration, roomHostIdentity } from "../multiplayer/generation-policy.js";
 import {
   GAME_GM_BUILT_IN_PROMPT_TEMPLATES,
   composeGameTimeLine,
@@ -489,6 +490,10 @@ export async function injectGameGmPromptRuntime(args: {
     !Array.isArray(args.chatMetadata.gameSetupConfig)
       ? (args.chatMetadata.gameSetupConfig as Record<string, unknown>)
       : null;
+  const roomGeneration = currentRoomGeneration();
+  const approvedRoomCharacterIds = new Set(roomGeneration?.characterIds ?? []);
+  const mayLoadCharacter = (id: string) => !roomGeneration || approvedRoomCharacterIds.has(id);
+
   const gameActiveState = (args.chatMetadata.gameActiveState as string) || "exploration";
   const sessionNumber = (args.chatMetadata.gameSessionNumber as number) || 1;
   const storyArc = (args.chatMetadata.gameStoryArc as string) || null;
@@ -515,7 +520,7 @@ export async function injectGameGmPromptRuntime(args: {
 
   let gmCharacterCard: string | null = null;
   const gmCharId = args.chatMetadata.gameGmCharacterId as string | null;
-  if (gmCharId) {
+  if (gmCharId && mayLoadCharacter(gmCharId)) {
     try {
       const gmChar = await args.chars.getById(gmCharId);
       if (gmChar) {
@@ -548,6 +553,9 @@ export async function injectGameGmPromptRuntime(args: {
   }
 
   for (const pcId of partyCharIds) {
+    if (isPartyNpcId(pcId)) continue;
+    if (!mayLoadCharacter(pcId)) continue;
+
     try {
       const pc = await args.chars.getById(pcId);
       if (pc) {
@@ -641,9 +649,20 @@ export async function injectGameGmPromptRuntime(args: {
   let sceneCharacterCards: Array<{ name: string; card: string }> = [];
   let sceneCharacterCardUpdates: Array<{ name: string; card: string }> = [];
   let sceneCharacterCardUpdatesFrozen = false;
-  if (args.chatMetadata.gameSceneCharacterCards !== false && typeof args.chars.list === "function") {
+  if (
+    args.chatMetadata.gameSceneCharacterCards !== false &&
+    (roomGeneration || typeof args.chars.list === "function")
+  ) {
     try {
-      const rows = await args.chars.list();
+      const rows: Array<{ id: string; data: unknown }> = [];
+      if (roomGeneration) {
+        for (const id of approvedRoomCharacterIds) {
+          const card = await args.chars.getById(id);
+          if (card) rows.push({ id, data: card.data });
+        }
+      } else {
+        rows.push(...(await args.chars.list!()));
+      }
       const library: Array<{ id: string; name: string; data: any }> = [];
       for (const row of rows) {
         const data = parseMaybeJson(row.data) as any;
@@ -710,15 +729,30 @@ export async function injectGameGmPromptRuntime(args: {
 
   let playerCard: string | null = null;
   const playerPersonaId = (args.chat.personaId || setupConfig?.personaId) as string | null | undefined;
-  if (playerPersonaId) {
+  const roomPersona = roomHostIdentity();
+  if (playerPersonaId || roomPersona) {
     try {
-      const persona = await args.chars.getPersona(playerPersonaId);
+      const persona = roomPersona ?? (await args.chars.getPersona(playerPersonaId!));
       if (persona) {
         playerCard = buildPlayerPersonaCanonText(persona, gameCardByName.get(normalizeTextForMatch(persona.name)));
       }
     } catch {
       /* ignore */
     }
+  }
+
+  for (const participant of currentRoomGeneration()?.participants ?? []) {
+    if (participant.isHost) continue;
+    const name = participant.persona.name;
+    const parts = [
+      `Name: ${name}`,
+      "Human-controlled persona: only this participant may choose their actions or dialogue.",
+      participant.persona.description,
+    ];
+    appendGameCardDetails(parts, gameCardByName.get(normalizeTextForMatch(name)));
+    partyNames.push(name);
+    partyIdNamePairs.push({ id: participant.id, name });
+    partyCards.push({ name, card: parts.join("\n") });
   }
 
   let weatherContext: string | undefined;

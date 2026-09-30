@@ -30,6 +30,7 @@ import {
   type RulesetSheetBuild,
   type RulesetSheetEnvelope,
   type RulesetSheetOp,
+  type RulesetSheetItem,
 } from "@marinara-engine/shared";
 import { RulesetSheetEditor } from "../rulesets/RulesetSheetEditor";
 import { rulesetCheckValueText } from "../../lib/ruleset-resolution";
@@ -292,6 +293,8 @@ export interface GameRulesetSheetProps {
   onLiveChange: (next: RulesetLiveState) => void;
   onEnvelopeSave: (next: RulesetSheetEnvelope) => Promise<void> | void;
   readOnly?: boolean;
+  /** What the character holds, which a value reading their items (`itemStat`) shows. */
+  items?: ReadonlyArray<RulesetSheetItem>;
 }
 
 export function GameRulesetSheet({
@@ -304,6 +307,7 @@ export function GameRulesetSheet({
   onLiveChange,
   onEnvelopeSave,
   readOnly = false,
+  items,
 }: GameRulesetSheetProps) {
   const { t: localizeUi } = useUiTranslation();
   const [draft, setDraft] = useState<RulesetSheetEnvelope | null>(null);
@@ -314,8 +318,12 @@ export function GameRulesetSheet({
 
   const build = useMemo(() => envelope?.build ?? defaultRulesetSheetBuild(definition), [definition, envelope]);
   const resolved = useMemo(() => readRulesetLive(definition, build, live), [definition, build, live]);
-  // Against the live state as it stands, so a value that reads a track or a pool shows what it is now.
-  const evaluated = useMemo(() => evaluateRulesetSheet(definition, build, resolved), [definition, build, resolved]);
+  // Against the live state as it stands, so a value that reads a track or a pool shows what it is now,
+  // and against what the character holds, so one that reads their items does too.
+  const evaluated = useMemo(
+    () => evaluateRulesetSheet(definition, build, items ? { ...resolved, items } : resolved),
+    [definition, build, items, resolved],
+  );
 
   /** Every change a player makes takes the same route a Game Master command does. */
   const apply = (op: RulesetSheetOp) => {
@@ -420,6 +428,7 @@ export function GameRulesetSheet({
             envelope={draft}
             onChange={setDraft}
             live={live}
+            items={items}
           />
           <div className="flex flex-wrap gap-2">
             <button

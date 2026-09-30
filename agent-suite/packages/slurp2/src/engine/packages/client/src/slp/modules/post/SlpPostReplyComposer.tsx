@@ -1,5 +1,5 @@
 import type { SlpAccount } from "../../../../../shared/src/slp/slp-social.types.js";
-import type { SlpPostCardModel } from "./SlpPostCard";
+import type { SlpPostCardModel } from "./SlpPostTypes";
 import { cn } from "../../../lib/utils";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import {
@@ -103,7 +103,7 @@ export function SlpPostReplyComposer({
       {replyParentInteractionId && replyTargetActor && (
         <p className="mb-2 text-xs text-[var(--muted-foreground)]">
           {localizeUi("ui.noodle.noodlepostcard.replyingTo")}{" "}
-          <span className="font-semibold text-[var(--noodle-accent)]">@{replyTargetActor.handle}</span>
+          <span className="font-semibold text-[var(--noodle-accent-foreground)]">@{replyTargetActor.handle}</span>
         </p>
       )}
       <textarea
@@ -144,7 +144,7 @@ export function SlpPostReplyComposer({
             <img
               src={replyImageUrl}
               alt={localizeUi("ui.noodle.noodlepostcard.attachedReplyPreview")}
-              className="max-h-52 w-full object-cover"
+              className="slp-crop-top max-h-52 w-full object-cover"
             />
           </button>
           <button
@@ -202,7 +202,7 @@ export function SlpPostReplyComposer({
           </button>
           <button
             type="button"
-            className="h-8 rounded-full bg-[var(--noodle-accent)] px-4 text-xs font-bold text-zinc-950 [&_svg]:!text-zinc-950 transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            className="h-8 rounded-full bg-[var(--noodle-accent)] px-4 text-xs font-bold text-[var(--slurp-on-accent)] [&_svg]:!text-[var(--slurp-on-accent)] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             disabled={!replyHasText || postReplyPending}
             onClick={() => submitReply(post)}
           >

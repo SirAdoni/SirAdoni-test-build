@@ -29,8 +29,9 @@ export function AvatarImage({
       // Absolutely centred so it fills the avatar frame even through wrappers that have no height.
       <span
         className={cn("absolute inset-0 flex items-center justify-center", fallbackClassName)}
-        role="img"
+        role={alt ? "img" : undefined}
         aria-label={alt || undefined}
+        aria-hidden={alt ? undefined : true}
       >
         <User size={iconSize} aria-hidden="true" />
       </span>

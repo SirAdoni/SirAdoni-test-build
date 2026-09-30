@@ -1,6 +1,7 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { seedUIState } from "./ui-state-fixture.js";
+import { inventoryButton } from "./game-inventory-fixture.js";
 
 const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
@@ -72,11 +73,7 @@ test("each party member carries their own bag, and stacks are given between them
   };
   try {
     await openGameChat(page, chatId);
-    await page
-      .getByRole("button", { name: /Inventory/ })
-      .filter({ visible: true })
-      .first()
-      .click({ timeout: 30000 });
+    await inventoryButton(page).click({ timeout: 30000 });
     const slot = (label: string) => page.getByRole("button", { name: label, exact: true });
     const tab = (name: string) => page.getByRole("button", { name: `${name}'s things`, exact: true });
 

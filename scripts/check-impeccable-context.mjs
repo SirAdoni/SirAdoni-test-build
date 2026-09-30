@@ -1,10 +1,19 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const root = process.cwd();
-const skillPath = resolve(root, ".agents/skills/impeccable/SKILL.md");
-const loaderPath = resolve(root, ".agents/skills/impeccable/scripts/load-context.mjs");
+const skillsLink = resolve(root, ".agents/skills");
+// Git with core.symlinks=false writes the tracked link as text on Windows.
+// Resolve only this declared local target; a missing skill still fails below.
+const skillsRoot =
+  existsSync(skillsLink) &&
+  statSync(skillsLink).isFile() &&
+  readFileSync(skillsLink, "utf8").trim() === "../.claude/skills"
+    ? resolve(root, ".claude/skills")
+    : skillsLink;
+const skillPath = resolve(skillsRoot, "impeccable/SKILL.md");
+const loaderPath = resolve(skillsRoot, "impeccable/scripts/load-context.mjs");
 const failures = [];
 const warnings = [];
 

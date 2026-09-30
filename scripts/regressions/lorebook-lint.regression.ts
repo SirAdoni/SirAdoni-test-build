@@ -62,6 +62,22 @@ assert.deepEqual(dupA.relatedEntryIds, ["dup-b"]);
 assert.equal(dupA.severity, "info");
 assert.deepEqual(codesFor(issues, "case-a"), [], "case-sensitive keys that differ in case are distinct");
 
+// Duplicate keys mean identical matching modes, not merely overlapping text.
+for (const literal of ["Rose", "rose"]) {
+  const mixedModes = lintLorebookEntries([
+    entry("insensitive", { keys: ["rose"] }),
+    entry("sensitive", { keys: [literal], caseSensitive: true }),
+    entry("regex", { keys: ["rose"], useRegex: true }),
+  ]);
+  assert.ok(!mixedModes.some((issue) => issue.code === "duplicate_key"), "different matching modes stay distinct");
+}
+assert.ok(
+  !lintLorebookEntries([
+    entry("digits", { keys: ["\\d"], useRegex: true }),
+    entry("non-digits", { keys: ["\\D"], useRegex: true }),
+  ]).some((issue) => issue.code === "duplicate_key"),
+  "regex escape case changes semantics even when matching ignores case",
+);
 const same1 = issues.find((issue) => issue.entryId === "same-1");
 assert.equal(same1?.code, "duplicate_content", "whitespace and case do not hide identical content");
 assert.deepEqual(same1?.relatedEntryIds, ["same-2"]);
@@ -94,7 +110,6 @@ assert.equal(
   ]).filter((issue) => issue.code === "duplicate_key").length,
   0,
 );
-
 // Large books stay fast (hundreds of entries, a few keys each).
 const big = Array.from({ length: 3000 }, (_, index) =>
   entry(`n${index}`, { keys: [`npc ${index}`, `alias ${index}`, index % 50 === 0 ? "Shared" : `tag ${index}`] }),

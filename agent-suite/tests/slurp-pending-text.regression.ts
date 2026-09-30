@@ -26,6 +26,16 @@ assert.match(
 // The drain only runs on a read, and only for the newest few. Opening after a week away must not
 // stall behind a queue.
 assert.match(service, /const DRAIN_LIMIT = 2;/u);
+// The scheduler rewrites more per pass, so a busy world does not queue faster than it rewrites;
+// the AI budget and its day pace still decide the spend.
+const scheduler = read("slp/features/world/slp-world-scheduler-service.ts");
+assert.match(scheduler, /drainSlurpPendingText\(app\.db, SCHEDULED_DRAIN_LIMIT, context\)/u);
+// "Rewrite all now" is the player's request: no per-read limit and no day pace, but the day's caps hold.
+assert.match(service, /drainSlurpPendingText\(db, Number\.POSITIVE_INFINITY, "present", false\)/u);
+assert.match(
+  service,
+  /claimSlurpModelBudget\(db, settings\.modelBudget, jobKind, undefined, paced \? undefined : false\)/u,
+);
 assert.match(
   service,
   /\(leftPolicy\?\.priority \?\? Number\(left\.priority\)\) - \(rightPolicy\?\.priority \?\? Number\(right\.priority\)\)[\s\S]*?\.slice\(0, limit\)/u,
@@ -61,12 +71,13 @@ assert.match(service, /NOODLER_UNTRUSTED_CONTENT_INSTRUCTION/u);
 // A thread caches its last message, so rewriting one without updating the cache leaves the list
 // showing a placeholder next to a conversation that no longer contains it.
 const messageStorage = read("services/storage/slurp-messages.storage.ts");
+const messageActions = read("slp/data/messages/slp-messages-storage-actions.ts");
 assert.match(messageStorage, /async rewriteMessageContent\(/u);
 assert.match(messageStorage, /lastMessagePreview: content\.slice\(0, 160\)/u);
 assert.match(messageStorage, /latest\?\.id === id/u, "only the newest message owns the preview");
 
 // Rewrites are text only. Nothing about price, state, or authorship moves.
-assert.match(messageStorage, /Text only; nothing else moves\./u);
+assert.match(messageActions, /async rewriteCommissionBrief\(/u);
 
 const schema = read("db/schema/slurp.ts");
 assert.match(schema, /fileTable\("slurp2_pending_text"/u);

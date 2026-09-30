@@ -16,6 +16,30 @@ import { DATA_DIR } from "../../../utils/data-dir.js";
 import { assertInsideDir, isAllowedImageBuffer } from "../../../utils/security.js";
 import { getSharp } from "../../../utils/sharp.js";
 import { stageImageToDisk } from "../../../services/image/image-generation.js";
+import { slpImageSizeOfFile, type SlpImageSize } from "./slp-image-size.js";
+import { slurpImageExtension } from "./slp-image-format.js";
+
+/**
+ * A generated PNG (or BMP) stored as a WebP at quality 90, same size (0.3.6): about a fifth of the
+ * bytes on disk and in the full-screen view, with no visible change in a generated picture. Other
+ * formats, and hosts without `sharp`, keep the provider's bytes.
+ */
+export async function slpCompactGeneratedImage(image: {
+  base64: string;
+  ext: string;
+}): Promise<{ base64: string; ext: string }> {
+  const ext = slurpImageExtension(image.base64, image.ext);
+  if (ext !== "png" && ext !== "bmp") return { base64: image.base64, ext };
+  const sharp = await getSharp();
+  if (!sharp) return { base64: image.base64, ext };
+  try {
+    const webp = await sharp(Buffer.from(image.base64, "base64")).webp({ quality: 90 }).toBuffer();
+    return { base64: webp.toString("base64"), ext: "webp" };
+  } catch (error) {
+    logger.warn(error, "[slurp] Could not store a generated picture as WebP; keeping the original");
+    return { base64: image.base64, ext };
+  }
+}
 
 export { isAllowedImageBuffer } from "../../../utils/security.js";
 
@@ -35,6 +59,10 @@ export type SlpCreatorPostMediaUpload = {
 /** Access-checked serving URL for a NoodleR post's generated image. */
 export function slpCreatorPostMediaUrl(postId: string): string {
   return `/api/slurp2/noodler/posts/${encodeURIComponent(postId)}/media`;
+}
+
+export function slpCreatorPostAttachmentUrl(postId: string, position: number): string {
+  return `/api/slurp2/noodler/posts/${encodeURIComponent(postId)}/media/${position}`;
 }
 
 export const NOODLER_MEDIA_URL_PREFIX = "/api/slurp2/noodler/posts/";
@@ -106,7 +134,8 @@ export async function persistCreatorPostWithUploadedMedia<T>(
 // rather than merely hidden.
 const TEASER_WIDTH = 64;
 const TEASER_SUFFIX = ".teaser-v4.jpg";
-export const SLP_CREATOR_MEDIA_WIDTHS = [96, 320, 480, 640, 960, 1280, 1600] as const;
+// 160: a thumbnail asked for it and, not listed, got the full original (about 2 MB) instead (0.3.6).
+export const SLP_CREATOR_MEDIA_WIDTHS = [96, 160, 320, 480, 640, 960, 1280, 1600] as const;
 
 export async function resolveCreatorMediaVariant(absolutePath: string, width: number | undefined): Promise<string> {
   if (!width || !SLP_CREATOR_MEDIA_WIDTHS.includes(width as (typeof SLP_CREATOR_MEDIA_WIDTHS)[number]))
@@ -178,6 +207,12 @@ export function readCreatorMediaPath(post: Pick<SlpCreatorManagedPost, "metadata
 }
 
 /** Resolve a stored relative NoodleR-media path to an absolute path inside the gallery dir. */
+/** The pixel size of a stored post picture (V: the client reserves its frame from it). */
+export function slpStoredMediaSize(mediaPath: unknown): SlpImageSize | null {
+  const absolute = typeof mediaPath === "string" ? resolveCreatorMediaAbsolutePath(mediaPath) : null;
+  return absolute ? slpImageSizeOfFile(absolute) : null;
+}
+
 export function resolveCreatorMediaAbsolutePath(relativePath: string): string | null {
   if (!relativePath.startsWith(NOODLER_MEDIA_PREFIX)) return null;
   const segments = relativePath.slice(NOODLER_MEDIA_PREFIX.length).split(/[\\/]/u);

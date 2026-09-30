@@ -56,7 +56,7 @@ export function SlpImageComposer({
         {resolvedFileActionLabel}
       </button>
 
-      <div className="flex items-center gap-2 text-[0.625rem] font-semibold uppercase tracking-normal text-[var(--marinara-chat-chrome-panel-muted)]">
+      <div className="flex items-center gap-2 text-xs font-medium text-[var(--marinara-chat-chrome-panel-muted)]">
         <span className="h-px flex-1 bg-[var(--noodle-divider)]" />
         {localizeUi("ui.noodle.noodlehome.or")}
         <span className="h-px flex-1 bg-[var(--noodle-divider)]" />
@@ -86,7 +86,7 @@ export function SlpImageComposer({
         type="button"
         onClick={onUseImageUrl}
         disabled={disabled || !imageUrl.trim()}
-        className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-[var(--noodle-accent)]/15 px-4 text-sm font-bold text-[var(--noodle-accent)] transition-colors hover:bg-[var(--noodle-accent)]/20 disabled:cursor-not-allowed disabled:opacity-40"
+        className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-[var(--noodle-accent)]/15 px-4 text-sm font-bold text-[var(--noodle-accent-foreground)] transition-colors hover:bg-[var(--noodle-accent)]/20 disabled:cursor-not-allowed disabled:opacity-40"
       >
         <Link size={17} />
         {resolvedUrlActionLabel}

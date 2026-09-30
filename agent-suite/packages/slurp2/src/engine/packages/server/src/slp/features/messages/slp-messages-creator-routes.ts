@@ -2,15 +2,19 @@ import { z } from "zod";
 import { SLURP_DEFAULT_RAPPORT_WEIGHTS } from "../../modules/messages/slp-rapport.js";
 import { SLURP_DM_POLICIES } from "../../modules/messages/slp-messaging.js";
 import { replyToSlurpMessage } from "./slp-message-operation.js";
+import { replyAsSlurpFan } from "./slp-fan-reply-service.js";
 import { slurpDynamicPriceTarget } from "../../modules/economy/slp-creator-pricing.js";
 import { isDebugAgentsEnabled } from "../../../config/runtime-config.js";
 import { resolveSlurpTextConnection } from "../../base/identity/slp-connection.js";
 import { createConnectionsStorage } from "../../../services/storage/connections.storage.js";
 import { buildSlurpMessagePrompt } from "./slp-message-generation-service.js";
+import { resolveSlurpReplyAvailability, resolveSlurpReplyViewer } from "./slp-thread-stance.js";
+import { activeSlurpStrikes } from "../../modules/world/slp-stance.js";
 import { describeSlurpDayVibe } from "../world/slp-world-contract.js";
 import type { FastifyInstance } from "fastify";
 import { personaQuerySchema } from "../../modules/messages/slp-messages-schemas.js";
 import type { SlpMessagesContext } from "./slp-messages-context.js";
+import { SLURP_FUNNEL_STAGES } from "../../../../../shared/src/slp/slp-population.js";
 
 /**
  * An image a paid message carries.
@@ -83,6 +87,43 @@ export async function slpMessagesCreatorRoutes(app: FastifyInstance, messaging: 
   });
 
   /**
+   * Ask the fan for a reply, playing the Creator.
+   *
+   * The viewer side has had "Request a reply" since the pacing rework; the Creator side had no
+   * mirror, because a persona-operated Creator is written by hand and nothing ever wrote the
+   * fan's words on demand. Same shape as the viewer's request: it asks, it does not compel.
+   */
+  app.post("/messages/creators/:creatorAccountId/request-fan-reply", async (req, reply) => {
+    const parsed = z
+      .object({
+        personaId: z.string().trim().min(1),
+        threadId: z.string().trim().min(1),
+        guidance: z.string().trim().max(2000).optional(),
+      })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    const { creatorAccountId } = req.params as { creatorAccountId: string };
+    if (!(await ownsCreator(parsed.data.personaId, creatorAccountId))) {
+      return reply.code(403).send({ error: "Only the Creator's owner can ask for this." });
+    }
+    const outcome = await replyAsSlurpFan(app.db, {
+      threadId: parsed.data.threadId,
+      creatorAccountId,
+      guidance: parsed.data.guidance,
+    });
+    if (outcome.status === "nothing_to_answer")
+      return reply.code(400).send({ error: "Write to them before asking for a reply." });
+    if (outcome.status === "no_connection")
+      return reply.code(400).send({ error: "Select a Slurp generation connection first." });
+    if (outcome.status === "ineligible") return reply.code(404).send({ error: "Conversation not found" });
+    return {
+      reply: outcome.status === "replied" ? outcome.message : null,
+      replyStatus: outcome.status,
+      thread: await freshView(parsed.data.threadId, "creator"),
+    };
+  });
+
+  /**
    * Have the Creator draft their own reply, for the player to send or rewrite.
    *
    * The generator is the fallback here rather than the default: the maintainer wants to write as
@@ -101,12 +142,17 @@ export async function slpMessagesCreatorRoutes(app: FastifyInstance, messaging: 
     if (!thread || thread.creatorAccountId !== creatorAccountId) {
       return reply.code(404).send({ error: "Conversation not found" });
     }
-    const latest = (await messages.listMessages(thread.id, 1))[0];
-    if (!latest) return reply.code(400).send({ error: "Nothing to reply to yet." });
+    // The fan's newest message. The thread's newest can be a quote or the Creator's own bubble,
+    // which the reply claim refuses as "busy".
+    const latestId = await messages.latestViewerMessageId(thread.id);
+    if (!latestId) return reply.code(400).send({ error: "Nothing to reply to yet." });
     const outcome = await replyToSlurpMessage(app.db, {
       threadId: thread.id,
-      triggerMessageId: latest.id,
+      triggerMessageId: latestId,
       force: true,
+      // `ownsCreator` only passes for a hand-operated Creator, which the operation otherwise never
+      // answers for, so without this every draft came back ineligible.
+      operatorDraft: true,
     });
     if (outcome.status !== "replied") {
       return reply.code(502).send({ error: "Could not draft a reply.", status: outcome.status });
@@ -143,9 +189,17 @@ export async function slpMessagesCreatorRoutes(app: FastifyInstance, messaging: 
       const wallet = await slurp.getWallet(subscription.viewerAccountId);
       if (wallet.subscriptions[creatorAccountId]) activeSubscribers.push(subscription);
     }
+    // The sheet's "To 37 subscribers" counts audience subscribers too (ties at subscriber or
+    // later), so they get the broadcast as well (R1-002). A persona on both lists gets it once.
+    const recipients = new Set(activeSubscribers.map((subscription) => subscription.viewerAccountId));
+    const subscriberFloor = SLURP_FUNNEL_STAGES.indexOf("subscriber");
+    for (const tie of await population.listTiesForCreator(creatorAccountId)) {
+      if (SLURP_FUNNEL_STAGES.indexOf(tie.stage as (typeof SLURP_FUNNEL_STAGES)[number]) >= subscriberFloor)
+        recipients.add(tie.memberId);
+    }
     const sent = [];
-    for (const subscription of activeSubscribers) {
-      const message = await messages.sendCreatorMessage(creatorAccountId, subscription.viewerAccountId, {
+    for (const viewerAccountId of recipients) {
+      const message = await messages.sendCreatorMessage(creatorAccountId, viewerAccountId, {
         content: parsed.data.content,
         kind: "broadcast",
       });
@@ -226,12 +280,16 @@ export async function slpMessagesCreatorRoutes(app: FastifyInstance, messaging: 
     if (!thread || !(await ownsCreator(viewer.id, thread.creatorAccountId)))
       return reply.code(404).send({ error: "Thread not found" });
     const creator = await slurp.getNoodlerAccountById(thread.creatorAccountId);
-    const fan = await slurp.getViewer(thread.viewerAccountId);
+    // The reply's own inputs, read through the helpers the reply operation reads (R1-011): the fan
+    // it answers (an audience member too, as in a draft), the connection with the budget's choice
+    // first, the availability with its open window and overrides, the strikes still counting, and
+    // the thread id that brings the Details overrides in.
+    const fan = await resolveSlurpReplyViewer(app.db, thread, creator, true);
     if (!creator || !fan) return reply.code(404).send({ error: "Thread not found" });
-    const settings = await slurp.getSettings();
+    const { settings, details, availability } = await resolveSlurpReplyAvailability(app.db, thread, creator);
     const connection = await resolveSlurpTextConnection(
       createConnectionsStorage(app.db),
-      settings.generationConnectionId,
+      settings.modelBudget.connectionId ?? settings.generationConnectionId,
     );
     if (!connection) return reply.code(409).send({ error: "No text connection is configured." });
     const subscriptions = await slurp.listSubscriptionsForViewer(thread.viewerAccountId);
@@ -242,18 +300,23 @@ export async function slpMessagesCreatorRoutes(app: FastifyInstance, messaging: 
       viewer: fan,
       history: await messages.listMessages(thread.id, 60),
       rapport: thread.rapport,
-      subscribed: subscriptions.some((entry) => entry.creatorAccountId === thread.creatorAccountId),
+      subscribed: subscriptions.some(
+        (entry: { creatorAccountId: string }) => entry.creatorAccountId === thread.creatorAccountId,
+      ),
       dmPolicy: messaging.dmPolicy,
       isRequest: thread.state === "request",
       mood: thread.mood,
       moodUpdatedAt: thread.moodUpdatedAt,
       notes: thread.notes,
+      threadId: thread.id,
       threadState: thread.threadState,
       creatorState: await slurp.getCreatorState(thread.creatorAccountId),
-      dayVibe: await describeSlurpDayVibe(app.db, thread.creatorAccountId),
+      dayVibe:
+        details.dayVibe !== undefined ? details.dayVibe : await describeSlurpDayVibe(app.db, thread.creatorAccountId),
       coolingOff: Boolean(thread.coolUntil && thread.coolUntil > new Date().toISOString()),
-      strikes: thread.strikes,
+      strikes: activeSlurpStrikes(thread.strikes, thread.lastStrikeAt),
       connection,
+      availability,
     });
     return {
       // The layers first. This is the section that answers "why did she say that".
@@ -278,20 +341,20 @@ export async function slpMessagesCreatorRoutes(app: FastifyInstance, messaging: 
    * deliberately absent from the thread UI, so the fiction is not broken by a visible meter.
    */
   app.get("/messages/creators/:creatorAccountId/rapport", async (req, reply) => {
-    const parsed = personaQuerySchema.safeParse(req.query);
+    const parsed = personaQuerySchema.extend({ viewerAccountId: z.string().trim().min(1) }).safeParse(req.query);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const { creatorAccountId } = req.params as { creatorAccountId: string };
     const creator = await slurp.getNoodlerAccountById(creatorAccountId);
     if (!creator) return reply.code(404).send({ error: "Creator not found" });
-    const viewer = await requireViewer(parsed.data.personaId);
-    if (!viewer) return reply.code(404).send({ error: "Slurp persona not found" });
     if (!(await ownsCreator(parsed.data.personaId, creatorAccountId)))
       return reply.code(403).send({ error: "Only the Creator's owner can read rapport." });
+    // The fan's rapport with this Creator. The owner's own pair can never have a thread.
+    const fanId = parsed.data.viewerAccountId;
     const messaging = await messages.getCreatorMessaging(creatorAccountId);
     return {
       messaging,
-      rapport: await messages.rapportFor(viewer.id, creatorAccountId),
-      facts: await messages.rapportFactsFor(viewer.id, creatorAccountId),
+      rapport: await messages.rapportFor(fanId, creatorAccountId),
+      facts: await messages.rapportFactsFor(fanId, creatorAccountId),
     };
   });
 

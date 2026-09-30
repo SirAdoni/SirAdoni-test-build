@@ -90,6 +90,7 @@ import type {
   MariWorkspaceTraceItem,
 } from "@marinara-engine/shared";
 import { getMariDbService } from "../mari-db/mari-db.service.js";
+import { isMariReviewVisibleInChat, MARI_WORKSPACE_SESSION_ID, mariWorkspaceSessionId } from "./mari-session.js";
 import {
   elideDataUrls,
   listCapabilityMariActions,
@@ -195,7 +196,9 @@ const WORKSPACE_TOOLS: MariWorkspaceToolName[] = [
   "package_service",
 ];
 const RUNTIME_API_KEY = "local-marinara-runtime";
-const SESSION_ID = "professor-mari-workspace";
+// Security reviews (sensitive files, dependency installs) are workspace-wide gates. Database
+// reviews are per chat: see runSessionId().
+const SESSION_ID = MARI_WORKSPACE_SESSION_ID;
 const MAX_COMMAND_ROUNDS = 12;
 const MAX_PROTOCOL_REPAIR_ROUNDS = 2;
 // Local sidecar / small models fumble the JSON command protocol more often, so they get a larger
@@ -2564,7 +2567,10 @@ export class ProfessorMariWorkspaceService {
         };
       })()),
       pendingApprovals: [
-        ...getMariDbService(this.app.db).getPendingApprovals(),
+        // #6842: a chat shows its own review cards, plus ones no chat owns.
+        ...getMariDbService(this.app.db)
+          .getPendingApprovals()
+          .filter((approval) => isMariReviewVisibleInChat(approval.sessionId, chatId)),
         ...this.workspaceChangeReviews.getPendingApprovals(),
       ],
       history: await getMariDbService(this.app.db).getHistory(),
@@ -4255,7 +4261,7 @@ ${sections.join("\n\n")}
       argv,
       command,
       cwd: this.workspaceRoot,
-      sessionId: SESSION_ID,
+      sessionId: this.runSessionId(),
     });
     const printable =
       isRecord(result) && "output" in result && !("summary" in result) ? result.output : compactMutationResult(result);
@@ -4317,7 +4323,7 @@ ${sections.join("\n\n")}
     const result = await getMariDbService(this.app.db).executeAction({
       ...args,
       cwd: this.workspaceRoot,
-      sessionId: SESSION_ID,
+      sessionId: this.runSessionId(),
       reviewPolicy: autoKeep ? "auto-keep" : "standard",
     });
     if (result.ok !== false && (action === "personal_extension.create" || action === "personal_extension.update")) {
@@ -4400,8 +4406,16 @@ ${sections.join("\n\n")}
     return { ...fallback, apiKey: decryptApiKey(fallback.apiKeyEncrypted) };
   }
 
+  /**
+   * The session id this run's database commands carry, naming its Mari chat, so the
+   * Keep/Restore cards they create belong to that chat (#6842).
+   */
+  private runSessionId(): string {
+    return mariWorkspaceSessionId(this.activeDecisionContext?.chatId);
+  }
+
   private withMariRuntimeEnv(env: NodeJS.ProcessEnv, mariCliBinDir: string) {
-    env.MARI_WORKSPACE_SESSION_ID = SESSION_ID;
+    env.MARI_WORKSPACE_SESSION_ID = this.runSessionId();
     env.MARI_SERVER_URL = `${getServerProtocol()}://127.0.0.1:${getPort()}`;
     env.MARINARA_PI_API_KEY = RUNTIME_API_KEY;
     env.DATA_DIR = DATA_DIR;

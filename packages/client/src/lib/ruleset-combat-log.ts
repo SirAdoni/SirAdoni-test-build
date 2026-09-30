@@ -30,8 +30,10 @@ export interface RulesetCombatNames {
   save: (id: string) => string;
   /** One of the checks a contest reads. */
   check: (id: string) => string;
-  /** The label of one of the two tracks the ruleset's dying rule counts on. */
+  /** The label of a live track: one of the two the ruleset's dying rule counts on, or one a level reads. */
   track: (id: string) => string;
+  /** The label of a derived value a level reads. */
+  derived: (id: string) => string;
   tier: (id: string) => string;
   /** One of the ways an attack may be made where initiative is a number attacks move. */
   style: (id: string) => string;
@@ -82,6 +84,7 @@ export function rulesetCombatNames(
     save: lookup(definition.sheet.saves),
     check: lookup(definition.combat?.checks),
     track: lookup(definition.sheet.live.tracks),
+    derived: lookup(definition.sheet.derived),
     tier: lookup(definition.combat?.threat?.tiers),
     style: lookup(definition.combat?.initiative.resource?.styles),
     defense: rulesetValueLabel(definition, definition.combat?.defense),
@@ -186,12 +189,18 @@ function defenseText(names: RulesetCombatNames, defense: number): string {
   return names.defense ? `${names.defense} ${defense}` : String(defense);
 }
 
-/** What a condition, or a level of a track, that changed a number is called in the log. */
+/** What a condition, or a level of a track or a derived value, that changed a number is called in the
+ *  log. A level is named by what it reads. */
 function bonusNamer(names: RulesetCombatNames, t: TFunction): (bonus: RulesetConditionBonus) => string {
   return (bonus) =>
     bonus.level === undefined
-      ? names.condition(bonus.condition)
-      : t("game.combat.ruleset.roll.level", { track: names.track(bonus.condition), level: bonus.level });
+      ? bonus.item
+        ? bonus.condition
+        : names.condition(bonus.condition)
+      : t("game.combat.ruleset.roll.level", {
+          track: (bonus.derived ? names.derived : names.track)(bonus.condition),
+          level: bonus.level,
+        });
 }
 
 /** The reason a step was refused, as a sentence. The server sends the same words back as the second
@@ -318,6 +327,7 @@ export function rulesetCombatEventLine(
         }),
       );
       if (event.critical) lines.push(key("damageCritical"));
+      if (event.floor !== undefined) lines.push(key("damageFloor", { floor: event.floor }));
       if (event.adjust !== "none") lines.push(key(`damage${event.adjust[0]!.toUpperCase()}${event.adjust.slice(1)}`));
       if (event.saved) lines.push(key("damageSaved"));
       if (event.toTemp > 0) lines.push(key("damageTemporary", { amount: event.toTemp }));
@@ -523,6 +533,35 @@ export function rulesetCombatEventLine(
       });
     case "cover":
       return key("cover", { target: names.combatant(event.targetId), bonus: event.bonus, defense: event.defense });
+    case "shot":
+      return event.of !== undefined
+        ? key("shotLoaded", { label: event.label, left: event.left, of: event.of })
+        : key("shot", { label: event.label, left: event.left });
+    case "reload":
+      return event.drew !== undefined
+        ? key("reloadDrew", {
+            actor: names.combatant(event.actorId),
+            label: event.label,
+            loaded: event.loaded,
+            of: event.of,
+            drew: event.drew,
+          })
+        : key("reload", {
+            actor: names.combatant(event.actorId),
+            label: event.label,
+            loaded: event.loaded,
+            of: event.of,
+          });
+    case "recovered":
+      return key("recovered", { actor: names.combatant(event.actorId), label: event.label, count: event.count });
+    case "hardness":
+      return key("hardness", {
+        actor: names.combatant(event.sourceId),
+        target: names.combatant(event.targetId),
+        label: event.label,
+        dice: event.dice,
+        hardness: event.hardness,
+      });
     case "area":
       return key("area", {
         actor: names.combatant(event.actorId),

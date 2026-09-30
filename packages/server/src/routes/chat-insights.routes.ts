@@ -28,6 +28,9 @@ export async function chatInsightsRoutes(app: FastifyInstance) {
       limit?: string;
     };
   }>("/search", async (req, reply) => {
+    if (Object.values(req.query).some((value) => typeof value !== "string")) {
+      return reply.status(400).send({ error: "Search parameters must each have a single text value" });
+    }
     const query = typeof req.query.q === "string" ? req.query.q.slice(0, 500) : "";
     if (!query.trim()) return reply.status(400).send({ error: "Search query is required" });
     return searchAllChats(app.db, {
@@ -43,16 +46,22 @@ export async function chatInsightsRoutes(app: FastifyInstance) {
   });
 
   // `tz` is the browser IANA zone (DST aware); `tzOffset` is the fixed fallback.
-  app.get<{ Querystring: { tzOffset?: string; tz?: string; refresh?: string } }>("/activity", async (req) =>
-    activityCache.get(normalizeTimezoneOffset(req.query.tzOffset), {
+  app.get<{ Querystring: { tzOffset?: string; tz?: string; refresh?: string } }>("/activity", async (req, reply) => {
+    if (Object.values(req.query).some((value) => typeof value !== "string")) {
+      return reply.status(400).send({ error: "Activity parameters must each have a single text value" });
+    }
+    return activityCache.get(normalizeTimezoneOffset(req.query.tzOffset), {
       refresh: req.query.refresh === "true",
       timeZone: req.query.tz ?? null,
-    }),
-  );
+    });
+  });
 
   app.get<{ Params: { id: string }; Querystring: { tzOffset?: string; tz?: string } }>(
     "/chats/:id/stats",
     async (req, reply) => {
+      if (Object.values(req.query).some((value) => typeof value !== "string")) {
+        return reply.status(400).send({ error: "Stats parameters must each have a single text value" });
+      }
       const [chat] = await app.db.select().from(chats).where(eq(chats.id, req.params.id));
       if (!chat || isInternalAssistantChat(chat)) return reply.status(404).send({ error: "Chat not found" });
       return computeStoredChatStats(app.db, chat, {

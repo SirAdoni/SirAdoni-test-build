@@ -1,12 +1,15 @@
-import { clampPostsPerDay, DISCLOSURES, disclosureLabel, StepHeading } from "./SlpOnboardingPanel";
-import { Check, Clock, Eye, Image as ImageIcon, RefreshCw, SlidersHorizontal, Users } from "lucide-react";
+import { DISCLOSURES, disclosureLabel, DisclosureChoice, StepHeading } from "./SlpOnboardingPanel";
+import { useId, useState } from "react";
+import { Check, ChevronRight, RefreshCw, SlidersHorizontal, Users } from "lucide-react";
 import {
   SLP_CREATOR_BULK_ACCOUNT_MAX,
   SLP_CREATOR_POSTS_PER_DAY_MAX,
 } from "../../../../../shared/src/slp/slp-social.schema.js";
 import { cn } from "../../../lib/utils";
-import { Avatar } from "../../base/chrome/SlpChrome";
-import type { SlpIdentityDisclosure } from "../../../../../shared/src/slp/slp-social.types.js";
+import { Avatar, SLP_GROUP_CLASS, SLP_TYPE } from "../../base/chrome/SlpChrome";
+import { SlpButton, SlpSegment, SlpSquareCheck } from "../../modules/chrome/SlpButton";
+import { SlpRadioRow, SlpSheet } from "../../modules/chrome/SlpSheet";
+import { NumberSetting, Toggle } from "../../modules/settings/SlpSettingsControls";
 import type { SlurpOnboardingWizardModel } from "./slp-onboarding-wizard-model";
 
 /** The wizard body: pick the creators, tune them, run the setup, and read what came back. */
@@ -22,6 +25,8 @@ export function SlpOnboardingSteps({ model }: { model: SlurpOnboardingWizardMode
     creationFailed,
     creationFailures,
     creationReasons,
+    creationRetryIds,
+    retryFailedCreations,
     disclosure,
     eligible,
     exceptions,
@@ -40,7 +45,6 @@ export function SlpOnboardingSteps({ model }: { model: SlurpOnboardingWizardMode
     outcomes,
     pending,
     postsPerDay,
-    postsPerDayDraft,
     refreshTargeted,
     resolveCompletion,
     runGeneration,
@@ -58,7 +62,6 @@ export function SlpOnboardingSteps({ model }: { model: SlurpOnboardingWizardMode
     setImagesEnabled,
     setNightQuiet,
     setPostsPerDay,
-    setPostsPerDayDraft,
     setSelected,
     setSettingsFailed,
     setSetupLane,
@@ -68,6 +71,48 @@ export function SlpOnboardingSteps({ model }: { model: SlurpOnboardingWizardMode
     t,
     toggleSelected,
   } = model;
+  const identityOptions = DISCLOSURES.map((value) => ({ value, label: disclosureLabel(value, t) }));
+  const connections = connectionsQuery.data ?? [];
+  const connectionOption = (connection: (typeof connections)[number]) => ({
+    id: connection.id,
+    label: connection.name ?? connection.model ?? connection.id,
+  });
+  const postsPerDayStepper = (
+    <NumberSetting
+      stepper
+      label={t("ui.noodle.noodlerwizard.postsPerDay")}
+      value={postsPerDay}
+      min={1}
+      max={SLP_CREATOR_POSTS_PER_DAY_MAX}
+      onSave={setPostsPerDay}
+    />
+  );
+  const connectionPickers = (
+    <>
+      <ConnectionPicker
+        label={t("ui.slurp.onboarding.generationConnection")}
+        help={t("ui.slurp.onboarding.generationConnectionHelp")}
+        placeholder={t("ui.slurp.onboarding.generationConnectionPlaceholder")}
+        value={generationConnectionId}
+        onChange={setGenerationConnectionId}
+        loading={connectionsQuery.isLoading}
+        options={connections.filter((connection) => connection.provider !== "image_generation").map(connectionOption)}
+      />
+      {imagesEnabled && (
+        <ConnectionPicker
+          label={t("ui.slurp.onboarding.imageConnection")}
+          help={t("ui.slurp.onboarding.imageConnectionHelp")}
+          placeholder={t("ui.slurp.onboarding.imageConnectionDefault")}
+          // Empty is a real choice here: the Slurp-wide default image connection.
+          emptyOption
+          value={imageConnectionId}
+          onChange={setImageConnectionId}
+          loading={connectionsQuery.isLoading}
+          options={connections.filter((connection) => connection.provider === "image_generation").map(connectionOption)}
+        />
+      )}
+    </>
+  );
 
   return (
     <>
@@ -75,36 +120,34 @@ export function SlpOnboardingSteps({ model }: { model: SlurpOnboardingWizardMode
         <div className="space-y-4">
           <div className="flex items-start justify-between gap-3">
             <StepHeading
-              icon={<Users size={18} />}
               title={t("ui.noodle.noodlerwizard.chooseCharacters")}
               help={t("ui.noodle.noodlerwizard.selectionRule")}
             />
             {/* The easy lane skips identity/activity/images; this is the way back to them
             without putting a decision screen in front of the character list. */}
             {selectionOnly && (
-              <button
-                type="button"
+              <SlpButton
+                className="shrink-0 px-3.5"
                 onClick={() => setSetupLane(setupLane === "easy" ? "customize" : "easy")}
-                className="flex min-h-9 shrink-0 items-center gap-1.5 rounded-full border border-[var(--noodle-accent)]/40 px-3 text-xs font-bold text-[var(--noodle-accent)] transition-colors hover:bg-[var(--noodle-accent)]/10"
               >
-                <SlidersHorizontal size={13} />
+                <SlidersHorizontal size={16} aria-hidden="true" />
                 {t(
                   setupLane === "easy"
                     ? "ui.noodle.noodlerwizard.handoff.customize.action"
                     : "ui.noodle.noodlerwizard.handoff.easy.action",
                 )}
-              </button>
+              </SlpButton>
             )}
           </div>
           {accounts.length > 0 && (
-            <div className="sticky top-0 z-10 -mt-1 flex items-center justify-between gap-3 rounded-lg border border-[var(--noodle-accent)]/25 bg-[color-mix(in_srgb,var(--noodle-accent)_8%,var(--background))] px-3 py-1.5">
-              <span className="text-xs font-bold text-[var(--noodle-accent)]">
+            <div className="sticky top-0 z-10 flex min-h-11 items-center justify-between gap-3 rounded-full bg-[var(--slurp-glass)] ps-4 pe-1 shadow-[var(--slurp-shadow-floating),var(--slurp-highlight)] backdrop-blur-xl">
+              <span className={cn(SLP_TYPE.meta, "font-semibold")}>
                 {t("ui.noodle.noodlerwizard.selectedCount", {
                   count: selected.size,
                 })}
               </span>
-              <button
-                type="button"
+              <SlpButton
+                variant="tertiary"
                 disabled={hasNextPage}
                 onClick={() =>
                   setSelected(
@@ -115,80 +158,72 @@ export function SlpOnboardingSteps({ model }: { model: SlurpOnboardingWizardMode
                     ),
                   )
                 }
-                className="min-h-10 shrink-0 px-1 text-xs font-bold text-[var(--noodle-accent)] disabled:opacity-40"
               >
                 {selected.size > 0 ? t("ui.noodle.noodlerwizard.selectNone") : t("ui.noodle.noodlerwizard.selectAll")}
-              </button>
+              </SlpButton>
             </div>
           )}
           {eligible.isError && accounts.length === 0 ? (
             <div className="py-8 text-center">
-              <p className="text-sm text-[var(--slurp-muted)]">{t("ui.noodle.noodlerwizard.loadFailed")}</p>
-              <button
-                type="button"
-                onClick={() => void eligible.refetch()}
-                className="mt-2 min-h-10 px-2 text-sm font-bold text-[var(--noodle-accent)]"
-              >
+              <p className={cn(SLP_TYPE.body, "text-[var(--slurp-muted)]")}>
+                {t("ui.noodle.noodlerwizard.loadFailed")}
+              </p>
+              <SlpButton variant="tertiary" className="mt-2" onClick={() => void eligible.refetch()}>
                 {t("capabilities.actions.tryAgain")}
-              </button>
+              </SlpButton>
             </div>
           ) : accounts.length === 0 && !eligible.isLoading && !eligible.hasNextPage ? (
             <div className="flex flex-col items-center py-8 text-center">
-              <span className="flex h-12 w-12 items-center justify-center rounded-full bg-[var(--noodle-accent)]/12 text-[var(--noodle-accent)]">
-                <Users size={22} />
+              <span className="grid size-12 place-items-center rounded-full bg-[var(--slurp-tint)] text-[var(--noodle-accent-foreground)]">
+                <Users size={22} aria-hidden="true" />
               </span>
-              <p className="mt-3 max-w-md text-sm leading-6 text-[var(--slurp-muted)]">
+              <p className={cn(SLP_TYPE.body, "mt-3 max-w-md text-pretty text-[var(--slurp-muted)]")}>
                 {t("ui.noodle.noodlerwizard.zeroEligible")}
               </p>
             </div>
           ) : (
             <div className="grid gap-2 sm:grid-cols-2">
-              {accounts.map((account) => (
-                <button
-                  key={account.id}
-                  type="button"
-                  role="checkbox"
-                  aria-checked={selected.has(account.id)}
-                  disabled={selectionFull && !selected.has(account.id)}
-                  onClick={() => toggleSelected(account.id)}
-                  className={cn(
-                    "flex min-h-16 items-center gap-3 rounded-xl border px-3 py-2 text-left transition-[transform,background-color,box-shadow] hover:-translate-y-0.5 motion-reduce:transform-none",
-                    selected.has(account.id)
-                      ? "border-[var(--noodle-accent)] bg-gradient-to-r from-[var(--noodle-accent)]/20 to-[var(--noodle-accent)]/5 shadow-sm shadow-[var(--noodle-accent)]/20 ring-1 ring-[var(--noodle-accent)]/35"
-                      : "border-[var(--slurp-outline)] hover:border-[var(--noodle-accent)]/40 hover:bg-[var(--noodle-accent)]/[0.06]",
-                    selectionFull && !selected.has(account.id) && "opacity-40",
-                  )}
-                >
-                  <Avatar
-                    account={{
-                      displayName: account.displayName,
-                      avatarUrl: account.avatarUrl,
-                      avatarCrop: account.avatarCrop,
-                    }}
-                    size="md"
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-semibold">{account.displayName}</span>
-                    <span className="block truncate text-xs text-[var(--slurp-muted)]">@{account.handle}</span>
-                  </span>
-                  <span
-                    aria-hidden="true"
+              {accounts.map((account) => {
+                const checked = selected.has(account.id);
+                return (
+                  <button
+                    key={account.id}
+                    type="button"
+                    role="checkbox"
+                    aria-checked={checked}
+                    disabled={selectionFull && !checked}
+                    onClick={() => toggleSelected(account.id)}
                     className={cn(
-                      "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border",
-                      selected.has(account.id)
-                        ? "border-[var(--noodle-accent)] bg-[var(--noodle-accent)] text-zinc-950 [&_svg]:!text-zinc-950"
-                        : "border-[var(--slurp-outline)]",
+                      "flex min-h-16 items-center gap-3 rounded-2xl px-3 py-2 text-start transition-[transform,background-color] duration-[var(--slurp-motion-fast)] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)] motion-reduce:transform-none",
+                      checked
+                        ? "bg-[image:var(--slurp-nav-active)] ring-1 ring-inset ring-[var(--noodle-accent)]/45"
+                        : "bg-[var(--slurp-surface-raised)] shadow-[var(--slurp-shadow-raised),var(--slurp-highlight)] hover:bg-[var(--accent)]",
+                      selectionFull && !checked && "opacity-40",
                     )}
                   >
-                    {selected.has(account.id) && <Check size={13} />}
-                  </span>
-                </button>
-              ))}
+                    <Avatar
+                      account={{
+                        displayName: account.displayName,
+                        avatarUrl: account.avatarUrl,
+                        avatarCrop: account.avatarCrop,
+                      }}
+                      size="md"
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className={cn(SLP_TYPE.body, "block truncate font-semibold")}>{account.displayName}</span>
+                      <span className={cn(SLP_TYPE.meta, "block truncate text-[var(--slurp-muted)]")}>
+                        @{account.handle}
+                      </span>
+                    </span>
+                    <SlpSquareCheck checked={checked} />
+                  </button>
+                );
+              })}
               {(eligible.isLoading || eligible.hasNextPage) &&
                 Array.from({ length: 4 }, (_, index) => (
                   <span
                     key={`skeleton-${index}`}
-                    className="min-h-14 animate-pulse rounded-lg border border-[var(--slurp-outline)] bg-[var(--slurp-surface-raised)]/40"
+                    className="min-h-16 animate-pulse rounded-2xl bg-[var(--slurp-surface-raised)] motion-reduce:animate-none"
                   >
                     <span className="sr-only">{t("ui.noodle.noodlerwizard.loadingCharacters")}</span>
                   </span>
@@ -196,7 +231,7 @@ export function SlpOnboardingSteps({ model }: { model: SlurpOnboardingWizardMode
             </div>
           )}
           {selectionFull && (
-            <p aria-live="polite" className="text-xs font-semibold text-[var(--slurp-muted)]">
+            <p aria-live="polite" className={cn(SLP_TYPE.meta, "font-semibold text-[var(--slurp-muted)]")}>
               {t("ui.noodle.noodlerwizard.selectionLimit", {
                 count: SLP_CREATOR_BULK_ACCOUNT_MAX,
               })}
@@ -208,134 +243,78 @@ export function SlpOnboardingSteps({ model }: { model: SlurpOnboardingWizardMode
       {intro === null && setupLane !== null && step === 2 && (
         <div className="space-y-4">
           <StepHeading
-            icon={<Eye size={18} />}
             title={t("ui.noodle.noodlerwizard.disclosure.question")}
             help={t("ui.noodle.noodlerwizard.disclosure.help")}
           />
-          <div className="space-y-2">
-            {DISCLOSURES.map((value) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setDisclosure(value)}
-                className={cn(
-                  "w-full rounded-lg border p-3 text-left",
-                  disclosure === value
-                    ? "border-[var(--noodle-accent)] bg-[var(--noodle-accent)]/10"
-                    : "border-[var(--slurp-outline)] hover:bg-[var(--slurp-surface-raised)]",
-                )}
-              >
-                <span className="block text-sm font-bold">
-                  {t(`ui.noodle.noodlerwizard.disclosure.${value}.title`)}
-                </span>
-                <span className="mt-1 block text-xs leading-5 text-[var(--slurp-muted)]">
-                  {t(`ui.noodle.noodlerwizard.disclosure.${value}.detail`)}
-                </span>
-              </button>
-            ))}
-          </div>
+          <DisclosureChoice value={disclosure} onChange={setDisclosure} t={t} />
           {setupLane === "customize" && selected.size > 0 && (
-            <div>
-              <h4 className="mb-2 text-sm font-bold">{t("ui.noodle.noodlerwizard.exceptions")}</h4>
-              <div className="divide-y divide-[var(--noodle-accent)]/20 rounded-lg border border-[var(--noodle-accent)]/30">
+            <section aria-label={t("ui.noodle.noodlerwizard.exceptions")} className="space-y-2">
+              <h4 className={cn(SLP_TYPE.body, "font-semibold")}>{t("ui.noodle.noodlerwizard.exceptions")}</h4>
+              <div className={SLP_GROUP_CLASS}>
                 {accounts
                   .filter((account) => selected.has(account.id))
                   .map((account) => (
-                    <label key={account.id} className="flex min-h-11 items-center gap-3 px-3 text-xs">
-                      <span className="min-w-0 flex-1 truncate font-semibold">{account.displayName}</span>
-                      <select
+                    <div key={account.id} className="flex min-h-14 items-center gap-3 px-4 py-1.5">
+                      <span className={cn(SLP_TYPE.body, "min-w-0 flex-1 truncate font-semibold")}>
+                        {account.displayName}
+                      </span>
+                      <SlpSegment
+                        label={account.displayName}
+                        options={identityOptions}
                         value={exceptions[account.id] ?? disclosure}
-                        onChange={(event) =>
+                        onChange={(value) =>
                           setExceptions((current) => ({
                             ...current,
-                            [account.id]: event.target.value as SlpIdentityDisclosure,
+                            [account.id]: value,
                           }))
                         }
-                        style={{ colorScheme: "dark" }}
-                        className="h-8 rounded-lg border border-[var(--noodle-accent)]/45 bg-[var(--slurp-surface)] px-2 text-[var(--slurp-text)]"
-                      >
-                        {DISCLOSURES.map((value) => (
-                          <option key={value} value={value}>
-                            {disclosureLabel(value, t)}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                      />
+                    </div>
                   ))}
               </div>
-            </div>
+            </section>
           )}
         </div>
       )}
 
       {intro === null && setupLane !== null && step === 3 && (
-        <div className="space-y-5">
-          <StepHeading
-            icon={<Clock size={18} />}
-            title={t("ui.noodle.noodlerwizard.activity")}
-            help={t("ui.noodle.noodlerwizard.activityHelp")}
-          />
-          <p className="rounded-lg border border-[var(--noodle-accent)]/35 bg-[var(--noodle-accent)]/10 px-3 py-2 text-xs leading-5 text-[var(--slurp-muted)]">
+        <div className="space-y-4">
+          <StepHeading title={t("ui.noodle.noodlerwizard.activity")} help={t("ui.noodle.noodlerwizard.activityHelp")} />
+          <p className={cn(SLP_TYPE.meta, "text-pretty text-[var(--slurp-muted)]")}>
             {t("ui.noodle.noodlerschedulemanagermodal.limitsTemporary")}
           </p>
-          <>
-            <label className="flex min-h-12 items-center gap-3 rounded-lg border border-[var(--slurp-outline)] px-3">
-              <input
-                type="checkbox"
-                checked={autoPostingEnabled}
-                onChange={(event) => setAutoPostingEnabled(event.target.checked)}
-                className="h-4 w-4 accent-[var(--noodle-accent)]"
+          <div className={SLP_GROUP_CLASS}>
+            <div className="px-4 py-1">
+              <Toggle
+                label={t("ui.noodle.noodlerwizard.autoPosting")}
+                detail={t("ui.noodle.noodlerwizard.autoPostingHelp")}
+                value={autoPostingEnabled}
+                onChange={setAutoPostingEnabled}
               />
-              <span>
-                <span className="block text-sm font-semibold">{t("ui.noodle.noodlerwizard.autoPosting")}</span>
-                <span className="block text-xs text-[var(--slurp-muted)]">
-                  {t("ui.noodle.noodlerwizard.autoPostingHelp")}
-                </span>
-              </span>
-            </label>
+            </div>
             {autoPostingEnabled && (
               <>
-                <label className="block text-sm font-semibold">
-                  {t("ui.noodle.noodlerwizard.postsPerDay")}
-                  <input
-                    type="number"
-                    min={1}
-                    max={SLP_CREATOR_POSTS_PER_DAY_MAX}
-                    value={postsPerDayDraft}
-                    onChange={(event) => setPostsPerDayDraft(event.target.value)}
-                    onBlur={() => {
-                      const value = clampPostsPerDay(postsPerDayDraft);
-                      setPostsPerDay(value);
-                      setPostsPerDayDraft(String(value));
-                    }}
-                    style={{ colorScheme: "dark" }}
-                    className="mt-2 h-11 w-28 rounded-lg border border-[var(--noodle-accent)]/45 bg-[var(--slurp-surface)] px-3 text-[var(--slurp-text)]"
+                <div className="flex min-h-14 flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-2">
+                  <span className={cn(SLP_TYPE.body, "font-semibold")}>{t("ui.noodle.noodlerwizard.postsPerDay")}</span>
+                  {postsPerDayStepper}
+                </div>
+                <div className="px-4 py-1">
+                  <Toggle
+                    label={t("ui.noodle.noodlerwizard.nightQuiet")}
+                    detail={t("ui.noodle.noodlerwizard.nightQuietHelp")}
+                    value={nightQuiet}
+                    onChange={setNightQuiet}
                   />
-                </label>
-                <label className="flex min-h-12 items-center gap-3 rounded-lg border border-[var(--slurp-outline)] px-3">
-                  <input
-                    type="checkbox"
-                    checked={nightQuiet}
-                    onChange={(event) => setNightQuiet(event.target.checked)}
-                    className="h-4 w-4 accent-[var(--noodle-accent)]"
-                  />
-                  <span>
-                    <span className="block text-sm font-semibold">{t("ui.noodle.noodlerwizard.nightQuiet")}</span>
-                    <span className="block text-xs text-[var(--slurp-muted)]">
-                      {t("ui.noodle.noodlerwizard.nightQuietHelp")}
-                    </span>
-                  </span>
-                </label>
+                </div>
               </>
             )}
-          </>
+          </div>
         </div>
       )}
 
       {intro === null && setupLane !== null && step === 4 && (
-        <div className="space-y-5">
+        <div className="space-y-4">
           <StepHeading
-            icon={<ImageIcon size={18} />}
             title={
               setupLane === "easy" ? t("ui.noodle.noodlerwizard.reviewTitle") : t("ui.noodle.noodlerwizard.images")
             }
@@ -343,209 +322,105 @@ export function SlpOnboardingSteps({ model }: { model: SlurpOnboardingWizardMode
               setupLane === "easy" ? t("ui.noodle.noodlerwizard.reviewHelp") : t("ui.noodle.noodlerwizard.imagesHelp")
             }
           />
-          {setupLane === "customize" && (
-            <label className="flex min-h-12 items-center justify-between gap-4 rounded-lg border border-[var(--slurp-outline)] px-3">
-              <span className="min-w-0">
-                <span className="block text-sm font-semibold">{t("ui.noodle.noodlerwizard.images")}</span>
-                <span className="block text-xs leading-5 text-[var(--slurp-muted)]">
-                  {t("ui.noodle.noodlerwizard.imagesHelp")}
-                </span>
-              </span>
-              <input
-                type="checkbox"
-                role="switch"
-                checked={imagesEnabled}
-                onChange={(event) => setImagesEnabled(event.target.checked)}
-                className="h-5 w-5 shrink-0 accent-[var(--noodle-accent)]"
-              />
-            </label>
-          )}
-          <label className="flex min-h-14 items-center justify-between gap-4 rounded-lg border border-[var(--slurp-outline)] px-3 py-2">
-            <span className="min-w-0">
-              <span className="block text-sm font-semibold">{t("ui.slurp.onboarding.generationConnection")}</span>
-              <span className="block text-xs leading-5 text-[var(--slurp-muted)]">
-                {t("ui.slurp.onboarding.generationConnectionHelp")}
-              </span>
-            </span>
-            <select
-              value={generationConnectionId}
-              onChange={(event) => setGenerationConnectionId(event.target.value)}
-              className="h-9 max-w-[55%] rounded-lg border border-[var(--noodle-accent)]/45 bg-[var(--slurp-surface)] px-2 text-sm text-[var(--slurp-text)]"
-              disabled={connectionsQuery.isLoading}
-            >
-              <option value="">{t("ui.slurp.onboarding.generationConnectionPlaceholder")}</option>
-              {(connectionsQuery.data ?? [])
-                .filter((connection) => connection.provider !== "image_generation")
-                .map((connection) => (
-                  <option key={connection.id} value={connection.id}>
-                    {connection.name ?? connection.model ?? connection.id}
-                  </option>
-                ))}
-            </select>
-          </label>
-          {imagesEnabled && (
-            <label className="flex min-h-14 items-center justify-between gap-4 rounded-lg border border-[var(--slurp-outline)] px-3 py-2">
-              <span className="min-w-0">
-                <span className="block text-sm font-semibold">{t("ui.slurp.onboarding.imageConnection")}</span>
-                <span className="block text-xs leading-5 text-[var(--slurp-muted)]">
-                  {t("ui.slurp.onboarding.imageConnectionHelp")}
-                </span>
-              </span>
-              <select
-                value={imageConnectionId}
-                onChange={(event) => setImageConnectionId(event.target.value)}
-                className="h-9 max-w-[55%] rounded-lg border border-[var(--noodle-accent)]/45 bg-[var(--slurp-surface)] px-2 text-sm text-[var(--slurp-text)]"
-                disabled={connectionsQuery.isLoading}
-              >
-                <option value="">{t("ui.slurp.onboarding.imageConnectionDefault")}</option>
-                {(connectionsQuery.data ?? [])
-                  .filter((connection) => connection.provider === "image_generation")
-                  .map((connection) => (
-                    <option key={connection.id} value={connection.id}>
-                      {connection.name ?? connection.model ?? connection.id}
-                    </option>
-                  ))}
-              </select>
-            </label>
-          )}
           {setupLane === "easy" ? (
-            <div className="divide-y divide-[var(--noodle-accent)]/20 rounded-lg border border-[var(--noodle-accent)]/30 bg-[var(--noodle-accent)]/[0.06]">
-              <div className="flex min-h-14 items-center justify-between gap-4 px-3 py-2.5">
-                <span>
-                  <span className="block text-sm font-semibold">{t("ui.noodle.noodlerwizard.characters")}</span>
-                  <span className="block text-xs text-[var(--slurp-muted)]">
+            <div className={SLP_GROUP_CLASS}>
+              <div className="flex min-h-14 items-center justify-between gap-4 px-4 py-2">
+                <span className="min-w-0">
+                  <span className={cn(SLP_TYPE.body, "block font-semibold")}>
+                    {t("ui.noodle.noodlerwizard.characters")}
+                  </span>
+                  <span className={cn(SLP_TYPE.meta, "block text-[var(--slurp-muted)]")}>
                     {t("ui.noodle.noodlerwizard.selectedCount", {
                       count: selected.size,
                     })}
                   </span>
                 </span>
-                <button
-                  type="button"
-                  onClick={() => setStep(1)}
-                  className="min-h-9 shrink-0 px-2 text-xs font-bold text-[var(--noodle-accent)]"
-                >
+                <SlpButton variant="tertiary" className="shrink-0" onClick={() => setStep(1)}>
                   {t("ui.noodle.noodlerwizard.change")}
-                </button>
+                </SlpButton>
               </div>
-              <label className="flex min-h-14 items-center justify-between gap-4 px-3 py-2.5">
-                <span className="text-sm font-semibold">{t("ui.noodle.noodlerwizard.identity")}</span>
-                <select
+              <div className="flex min-h-14 items-center justify-between gap-4 px-4 py-2">
+                <span className={cn(SLP_TYPE.body, "font-semibold")}>{t("ui.noodle.noodlerwizard.identity")}</span>
+                <SlpSegment
+                  label={t("ui.noodle.noodlerwizard.identity")}
+                  options={identityOptions}
                   value={disclosure}
-                  onChange={(event) => setDisclosure(event.target.value as SlpIdentityDisclosure)}
-                  style={{ colorScheme: "dark" }}
-                  className="h-9 min-w-0 max-w-[65%] rounded-lg border border-[var(--noodle-accent)]/45 bg-[var(--slurp-surface)] px-2 text-sm text-[var(--slurp-text)]"
-                >
-                  {DISCLOSURES.map((value) => (
-                    <option key={value} value={value}>
-                      {disclosureLabel(value, t)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="space-y-3 px-3 py-3">
-                <label className="flex min-h-9 items-center justify-between gap-4">
-                  <span className="text-sm font-semibold">{t("ui.noodle.noodlerwizard.activity")}</span>
-                  <input
-                    type="checkbox"
-                    role="switch"
-                    checked={autoPostingEnabled}
-                    onChange={(event) => setAutoPostingEnabled(event.target.checked)}
-                    className="h-5 w-5 shrink-0 accent-[var(--noodle-accent)]"
-                  />
-                </label>
-                {autoPostingEnabled && (
-                  <label className="flex items-center justify-between gap-4 text-xs text-[var(--slurp-muted)]">
-                    <span>{t("ui.noodle.noodlerwizard.easyPostingPace")}</span>
-                    <span className="flex shrink-0 items-center gap-2">
-                      <input
-                        type="number"
-                        min={1}
-                        max={SLP_CREATOR_POSTS_PER_DAY_MAX}
-                        value={postsPerDayDraft}
-                        onChange={(event) => setPostsPerDayDraft(event.target.value)}
-                        onBlur={() => {
-                          const value = clampPostsPerDay(postsPerDayDraft);
-                          setPostsPerDay(value);
-                          setPostsPerDayDraft(String(value));
-                        }}
-                        aria-label={t("ui.noodle.noodlerwizard.postsPerDay")}
-                        className="h-9 w-16 rounded-lg border border-[var(--slurp-outline)] bg-[var(--background)] px-2 text-center text-sm text-[var(--slurp-text)]"
-                      />
-                      {t("ui.noodle.noodlerwizard.postsPerDayShort")}
-                    </span>
-                  </label>
-                )}
+                  onChange={setDisclosure}
+                />
               </div>
-              <label className="flex min-h-14 items-center justify-between gap-4 px-3 py-2.5">
-                <span className="text-sm font-semibold">{t("ui.noodle.noodlerwizard.nightQuiet")}</span>
-                <input
-                  type="checkbox"
-                  role="switch"
-                  checked={nightQuiet}
-                  onChange={(event) => setNightQuiet(event.target.checked)}
-                  className="h-5 w-5 shrink-0 accent-[var(--noodle-accent)]"
+              <div className="px-4 py-1">
+                <Toggle
+                  label={t("ui.noodle.noodlerwizard.activity")}
+                  value={autoPostingEnabled}
+                  onChange={setAutoPostingEnabled}
                 />
-              </label>
-              <label className="flex min-h-14 items-center justify-between gap-4 px-3 py-2.5">
-                <span className="text-sm font-semibold">{t("ui.noodle.noodlerwizard.images")}</span>
-                <input
-                  type="checkbox"
-                  role="switch"
-                  checked={imagesEnabled}
-                  onChange={(event) => setImagesEnabled(event.target.checked)}
-                  className="h-5 w-5 shrink-0 accent-[var(--noodle-accent)]"
-                />
-              </label>
+              </div>
+              {autoPostingEnabled && (
+                <div className="flex min-h-14 flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-2">
+                  <span className={cn(SLP_TYPE.body, "text-[var(--slurp-muted)]")}>
+                    {t("ui.noodle.noodlerwizard.easyPostingPace")}
+                  </span>
+                  {postsPerDayStepper}
+                </div>
+              )}
+              <div className="px-4 py-1">
+                <Toggle label={t("ui.noodle.noodlerwizard.nightQuiet")} value={nightQuiet} onChange={setNightQuiet} />
+              </div>
+              <div className="px-4 py-1">
+                <Toggle label={t("ui.noodle.noodlerwizard.images")} value={imagesEnabled} onChange={setImagesEnabled} />
+              </div>
             </div>
           ) : (
-            <div className="divide-y divide-[var(--noodle-accent)]/20 rounded-lg border border-[var(--noodle-accent)]/30 bg-[var(--noodle-accent)]/[0.06]">
-              {[
-                [
-                  t("ui.noodle.noodlerwizard.characters"),
-                  t("ui.noodle.noodlerwizard.selectedCount", {
-                    count: selected.size,
-                  }),
-                ],
-                [t("ui.noodle.noodlerwizard.identity"), disclosureLabel(disclosure, t)],
-                [
-                  t("ui.noodle.noodlerwizard.activity"),
-                  autoPostingEnabled
-                    ? t("ui.noodle.noodlerwizard.automaticActivityDetail", {
-                        count: postsPerDay,
-                      })
-                    : t("ui.noodle.noodlerwizard.manualOnly"),
-                ],
-                [
-                  t("ui.noodle.noodlerwizard.nightQuiet"),
-                  nightQuiet ? t("ui.noodle.noodlerwizard.on") : t("ui.noodle.noodlerwizard.off"),
-                ],
-                [
-                  t("ui.noodle.noodlerwizard.images"),
-                  imagesEnabled ? t("ui.noodle.noodlerwizard.on") : t("ui.noodle.noodlerwizard.off"),
-                ],
-              ].map(([label, value]) => (
-                <div key={label} className="flex items-start justify-between gap-4 px-3 py-2.5 text-sm">
-                  <span className="font-semibold">{label}</span>
-                  <span className="max-w-[65%] text-right text-[var(--slurp-muted)]">{value}</span>
+            <>
+              <div className={SLP_GROUP_CLASS}>
+                <div className="px-4 py-1">
+                  <Toggle
+                    label={t("ui.noodle.noodlerwizard.imagesShort")}
+                    value={imagesEnabled}
+                    onChange={setImagesEnabled}
+                  />
                 </div>
-              ))}
-            </div>
+              </div>
+              <div className={SLP_GROUP_CLASS}>
+                {[
+                  [
+                    t("ui.noodle.noodlerwizard.characters"),
+                    t("ui.noodle.noodlerwizard.selectedCount", {
+                      count: selected.size,
+                    }),
+                  ],
+                  [t("ui.noodle.noodlerwizard.identity"), disclosureLabel(disclosure, t)],
+                  [
+                    t("ui.noodle.noodlerwizard.activity"),
+                    autoPostingEnabled
+                      ? t("ui.noodle.noodlerwizard.automaticActivityDetail", {
+                          count: postsPerDay,
+                        })
+                      : t("ui.noodle.noodlerwizard.manualOnly"),
+                  ],
+                  [
+                    t("ui.noodle.noodlerwizard.nightQuiet"),
+                    nightQuiet ? t("ui.noodle.noodlerwizard.on") : t("ui.noodle.noodlerwizard.off"),
+                  ],
+                ].map(([label, value]) => (
+                  <div key={label} className={cn(SLP_TYPE.body, "flex items-start justify-between gap-4 px-4 py-3")}>
+                    <span className="font-semibold">{label}</span>
+                    <span className="max-w-[65%] text-end text-pretty text-[var(--slurp-muted)]">{value}</span>
+                  </div>
+                ))}
+              </div>
+            </>
           )}
-          <div className="rounded-lg bg-[var(--slurp-surface-raised)]/30 p-4 ring-1 ring-inset ring-[var(--slurp-outline)]">
-            <label className="flex min-h-11 items-center gap-3">
-              <input
-                type="checkbox"
-                checked={generateNow}
-                onChange={(event) => setGenerateNow(event.target.checked)}
-                className="h-5 w-5 accent-[var(--noodle-accent)]"
+          <div className={SLP_GROUP_CLASS}>{connectionPickers}</div>
+          <div className={SLP_GROUP_CLASS}>
+            <div className="px-4 py-1">
+              <Toggle
+                label={t("ui.noodle.noodlerwizard.generateNow")}
+                detail={t("ui.noodle.noodlerwizard.generateNowHelp")}
+                value={generateNow}
+                onChange={setGenerateNow}
               />
-              <span>
-                <span className="block text-sm font-semibold">{t("ui.noodle.noodlerwizard.generateNow")}</span>
-                <span className="block text-xs leading-5 text-[var(--slurp-muted)]">
-                  {t("ui.noodle.noodlerwizard.generateNowHelp")}
-                </span>
-              </span>
-            </label>
+            </div>
           </div>
         </div>
       )}
@@ -554,26 +429,32 @@ export function SlpOnboardingSteps({ model }: { model: SlurpOnboardingWizardMode
         <div className="flex min-h-[20rem] flex-col items-center justify-center text-center">
           <div
             className={cn(
-              "flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-br from-[var(--noodle-accent)] to-[var(--noodle-accent)]/70 text-zinc-950 shadow-lg shadow-[var(--noodle-accent)]/25",
+              "grid size-14 place-items-center rounded-full bg-[var(--noodle-accent)] text-[var(--slurp-on-accent)] shadow-[var(--slurp-glow)] [&_svg]:!text-[var(--slurp-on-accent)]",
               completion === "generated" &&
                 "ring-4 ring-[var(--noodle-accent)]/20 transition-shadow duration-500 motion-reduce:transition-none",
             )}
           >
             {completion === "generated" ? (
-              <Check size={26} />
+              <Check size={26} aria-hidden="true" />
+            ) : completion === "writing" ? (
+              <RefreshCw size={24} aria-hidden="true" className="animate-spin motion-reduce:animate-none" />
             ) : completion === "partial" ||
               completion === "failed" ||
               completion === "creationFailed" ||
               completion === "settingsFailed" ? (
-              <RefreshCw size={24} />
+              <RefreshCw size={24} aria-hidden="true" />
             ) : (
-              <Users size={24} />
+              <Users size={24} aria-hidden="true" />
             )}
           </div>
-          <h3 ref={completionHeadingRef} tabIndex={-1} className="mt-4 text-xl font-bold outline-none">
+          <h3
+            ref={completionHeadingRef}
+            tabIndex={-1}
+            className={cn(SLP_TYPE.screen, "mt-4 text-balance outline-none")}
+          >
             {t(`ui.noodle.noodlerwizard.completion.${completion}.title`)}
           </h3>
-          <p className="mt-2 max-w-md text-sm leading-6 text-[var(--slurp-muted)]">
+          <p className={cn(SLP_TYPE.body, "mt-2 max-w-md text-pretty text-[var(--slurp-muted)]")}>
             {t(`ui.noodle.noodlerwizard.completion.${completion}.detail`, {
               created: createdIds.length,
               generated: generatedCount,
@@ -583,7 +464,12 @@ export function SlpOnboardingSteps({ model }: { model: SlurpOnboardingWizardMode
             })}
           </p>
           {creationReasons.length > 0 && (
-            <ul className="mt-3 max-w-md list-disc space-y-1 rounded-lg border border-[var(--noodle-accent)]/25 bg-[var(--noodle-accent)]/[0.06] px-5 py-2 text-left text-xs leading-5 text-[var(--slurp-text)]">
+            <ul
+              className={cn(
+                SLP_TYPE.meta,
+                "mt-3 max-w-md list-disc space-y-1 rounded-2xl bg-[var(--slurp-tint)] px-5 py-2.5 text-start text-[var(--slurp-text)]",
+              )}
+            >
               {creationReasons.map((entry) => {
                 // The eligible list is the same source the selection came from, so the name
                 // is normally known. An unnamed creator still shows its reason.
@@ -593,7 +479,7 @@ export function SlpOnboardingSteps({ model }: { model: SlurpOnboardingWizardMode
                     {name ? (
                       <>
                         <span className="font-semibold">{name}</span>
-                        {" — "}
+                        {" · "}
                       </>
                     ) : null}
                     {entry.reason}
@@ -611,19 +497,19 @@ export function SlpOnboardingSteps({ model }: { model: SlurpOnboardingWizardMode
               ].map((cell) => (
                 <div
                   key={cell.key}
-                  className="min-w-24 rounded-lg bg-[var(--slurp-surface-raised)]/30 px-3 py-2 ring-1 ring-inset ring-[var(--slurp-outline)]"
+                  className="min-w-24 rounded-2xl bg-[var(--slurp-surface-raised)] px-3 py-2 shadow-[var(--slurp-shadow-raised),var(--slurp-highlight)]"
                 >
-                  <dt className="text-[0.7rem] font-semibold text-[var(--slurp-muted)]">
+                  <dt className={cn(SLP_TYPE.meta, "text-[var(--slurp-muted)]")}>
                     {t(`ui.noodle.noodlerwizard.stat.${cell.key}`)}
                   </dt>
-                  <dd className="text-lg font-bold">{cell.value}</dd>
+                  <dd className="text-xl font-extrabold tabular-nums">{cell.value}</dd>
                 </div>
               ))}
             </dl>
           )}
           {completion === "settingsFailed" && (
-            <button
-              type="button"
+            <SlpButton
+              className="mt-5"
               disabled={pending}
               onClick={() => {
                 void (async () => {
@@ -640,43 +526,114 @@ export function SlpOnboardingSteps({ model }: { model: SlurpOnboardingWizardMode
                   );
                 })();
               }}
-              className="mt-5 flex min-h-10 items-center gap-2 rounded-lg border border-[var(--noodle-accent)]/40 px-4 text-sm font-bold text-[var(--noodle-accent)] disabled:opacity-50"
             >
-              <RefreshCw size={15} className={pending ? "animate-spin" : ""} />
+              <RefreshCw size={16} aria-hidden="true" className={pending ? "animate-spin" : ""} />
               {t("ui.noodle.noodlerwizard.retrySettings")}
-            </button>
+            </SlpButton>
           )}
           {(creationFailed || completion === "creationFailed") && (
             <>
               {creationError && (
-                <p className="mt-4 rounded-lg border border-[var(--noodle-accent)]/25 bg-[var(--noodle-accent)]/[0.06] px-3 py-2 text-left text-xs leading-5 text-[var(--slurp-text)]">
+                <p
+                  className={cn(
+                    SLP_TYPE.meta,
+                    "mt-4 rounded-2xl bg-[var(--slurp-tint)] px-4 py-2.5 text-start text-[var(--slurp-text)]",
+                  )}
+                >
                   {creationError}
                 </p>
               )}
-              <button
-                type="button"
-                disabled={pending}
-                onClick={() => void finish()}
-                className="mt-5 flex min-h-10 items-center gap-2 rounded-lg border border-[var(--noodle-accent)]/40 px-4 text-sm font-bold text-[var(--noodle-accent)] disabled:opacity-50"
-              >
-                <RefreshCw size={15} className={pending ? "animate-spin" : ""} />
+              <SlpButton className="mt-5" disabled={pending} onClick={() => void finish()}>
+                <RefreshCw size={16} aria-hidden="true" className={pending ? "animate-spin" : ""} />
                 {t("capabilities.actions.tryAgain")}
-              </button>
+              </SlpButton>
             </>
           )}
+          {creationRetryIds.length > 0 && completion !== "creationFailed" && (
+            <SlpButton className="mt-5" disabled={pending} onClick={retryFailedCreations}>
+              <RefreshCw size={16} aria-hidden="true" className={pending ? "animate-spin" : ""} />
+              {t("ui.noodle.noodlerwizard.retryFailedCreations", { count: creationRetryIds.length })}
+            </SlpButton>
+          )}
           {failedIds.length > 0 && (
-            <button
-              type="button"
+            <SlpButton
+              className="mt-5"
               disabled={refreshTargeted.isPending}
               onClick={() => void runGeneration(failedIds)}
-              className="mt-5 flex min-h-10 items-center gap-2 rounded-lg border border-[var(--noodle-accent)]/40 px-4 text-sm font-bold text-[var(--noodle-accent)] disabled:opacity-50"
             >
-              <RefreshCw size={15} className={refreshTargeted.isPending ? "animate-spin" : ""} />
+              <RefreshCw size={16} aria-hidden="true" className={refreshTargeted.isPending ? "animate-spin" : ""} />
               {t("ui.noodle.noodlerwizard.retryFailed")}
-            </button>
+            </SlpButton>
           )}
         </div>
       )}
+    </>
+  );
+}
+
+/**
+ * A connection choice as a row that opens a sheet of radio rows (the model picker), instead of a
+ * native select. `emptyOption` adds the placeholder as a real choice (the Slurp default).
+ */
+function ConnectionPicker({
+  label,
+  help,
+  placeholder,
+  value,
+  onChange,
+  options,
+  loading,
+  emptyOption = false,
+}: {
+  label: string;
+  help: string;
+  placeholder: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: { id: string; label: string }[];
+  loading: boolean;
+  emptyOption?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const name = useId();
+  const current = options.find((option) => option.id === value)?.label ?? placeholder;
+  const rows = emptyOption ? [{ id: "", label: placeholder }, ...options] : options;
+  return (
+    <>
+      <button
+        type="button"
+        disabled={loading}
+        onClick={() => setOpen(true)}
+        aria-haspopup="dialog"
+        className="flex min-h-14 w-full items-center gap-3 px-4 py-2.5 text-start transition-colors duration-[var(--slurp-motion-fast)] hover:bg-[var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--slurp-focus)] disabled:opacity-60"
+      >
+        {/* Stacked, so a long connection name never squeezes the label. */}
+        <span className="min-w-0 flex-1">
+          <span className={cn(SLP_TYPE.body, "block font-semibold")}>{label}</span>
+          <span className={cn(SLP_TYPE.body, "block truncate font-semibold text-[var(--noodle-accent-foreground)]")}>
+            {current}
+          </span>
+          <span className={cn(SLP_TYPE.meta, "mt-0.5 block text-pretty text-[var(--slurp-muted)]")}>{help}</span>
+        </span>
+        <ChevronRight size={16} aria-hidden="true" className="shrink-0 text-[var(--slurp-muted)] rtl:rotate-180" />
+      </button>
+      <SlpSheet open={open} onClose={() => setOpen(false)} title={label}>
+        <div role="radiogroup" aria-label={label} className="space-y-1 px-1 pb-1">
+          {rows.map((option) => (
+            <SlpRadioRow
+              key={option.id || "default"}
+              name={name}
+              checked={value === option.id}
+              onChange={() => {
+                onChange(option.id);
+                setOpen(false);
+              }}
+            >
+              <span className="block truncate">{option.label}</span>
+            </SlpRadioRow>
+          ))}
+        </div>
+      </SlpSheet>
     </>
   );
 }

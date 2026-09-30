@@ -4,7 +4,13 @@ import { createSlurpEventsStorage } from "../notifications/slp-notification-stor
 import { createSlurpPopulationStorage } from "../audience/slp-audience-storage-funnel.js";
 import type { SlurpFunnelStage } from "../../../../../shared/src/slp/slp-population.js";
 import type { SlurpEventKind } from "../../modules/notifications/slp-event-weight.js";
-import { payout as payoutEarnings, SlurpEarnings } from "../../modules/economy/slp-earnings.js";
+import {
+  payout as payoutEarnings,
+  SlurpEarnings,
+  slurpPaidOutToday,
+  slurpPayoutAllowance,
+  slurpPayoutCoins,
+} from "../../modules/economy/slp-earnings.js";
 import { logger } from "../../../lib/logger.js";
 import { NOODLER_FAN_IDENTITY_PREFIX } from "../../modules/audience/slp-fan-identity-provider.js";
 import { slurpViewerSettingsKey } from "../host/slp-storage-constants.js";
@@ -65,7 +71,12 @@ export function createEconomyStorage3(context: SlurpStorageContext) {
                 : reason === "commission"
                   ? "commission_accepted"
                   : "unlock";
-      await this.recordCreatorEvent(creatorAccountId, kind, { amount, actorLabel, subjectId });
+      // A weekly renewal is not a new subscriber; Activity says "renewed" (R1-096).
+      await this.recordCreatorEvent(creatorAccountId, kind, {
+        amount,
+        actorLabel,
+        subjectId: subjectId ?? (reason === "renew" ? "renewed" : subjectId),
+      });
     },
     /**
      * Move somebody along a Creator's funnel.
@@ -132,6 +143,33 @@ export function createEconomyStorage3(context: SlurpStorageContext) {
      * and a crash between them costs the player money they can see rather than minting money they
      * cannot account for.
      */
+    /**
+     * Today's payout for one Creator: dollars it may still move, and the coins that brings. The daily
+     * limit is shared by every Creator the same persona runs, so a second page does not double it.
+     */
+    async getPayoutState(creatorAccountId: string, at = new Date()) {
+      const crowdWeight = (await this.getSettings()).simulationTuning.economy.crowdWeight;
+      const creator = await this.getNoodlerAccountById(creatorAccountId);
+      const earnings = await this.getEarnings(creatorAccountId);
+      let othersToday = 0;
+      if (creator?.sourceKind === "persona" && creator.sourceEntityId)
+        for (const sibling of await this.listNoodlerAccounts({ includeHidden: true }))
+          if (
+            sibling.id !== creator.id &&
+            sibling.sourceKind === "persona" &&
+            sibling.sourceEntityId === creator.sourceEntityId
+          )
+            othersToday += slurpPaidOutToday(await this.getEarnings(sibling.id), at);
+      const allowance = slurpPayoutAllowance(earnings, at, crowdWeight, othersToday);
+      return {
+        earnings,
+        crowdWeight,
+        othersToday,
+        allowance,
+        allowanceCoins: slurpPayoutCoins(allowance, crowdWeight),
+      };
+    },
+    /** `amount` is in dollars, whole coins' worth; the wallet gets `amount / crowdWeight` coins. */
     async payOutEarnings(
       creatorAccountId: string,
       amount: number,
@@ -140,8 +178,8 @@ export function createEconomyStorage3(context: SlurpStorageContext) {
       if (!creator || creator.sourceKind !== "persona" || !creator.sourceEntityId) return { status: "refused" };
       const recipientId = creator.sourceEntityId;
       const run = enqueueFinancial(async () => {
-        const current = await this.getEarnings(creatorAccountId);
-        const next = payoutEarnings(current, amount, new Date());
+        const { earnings: current, crowdWeight, othersToday } = await this.getPayoutState(creatorAccountId);
+        const next = payoutEarnings(current, amount, new Date(), crowdWeight, othersToday);
         if (!next) return { status: "refused" as const };
         const previousWalletValue = await settingsStore.get(slurpWalletKey(recipientId));
         const previousViewerSettingsValue = await settingsStore.get(slurpViewerSettingsKey(recipientId));
@@ -150,7 +188,7 @@ export function createEconomyStorage3(context: SlurpStorageContext) {
           const wallet = await getWalletNow(recipientId);
           const credited = await writeWallet(
             recipientId,
-            credit(wallet, "topUp", amount, new Date(), `payout: ${creator.handle}`),
+            credit(wallet, "topUp", slurpPayoutCoins(amount, crowdWeight), new Date(), `payout: ${creator.handle}`),
           );
           return { status: "paid" as const, earnings: next, wallet: credited };
         } catch (error) {

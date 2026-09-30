@@ -8,7 +8,7 @@
  * Every later stage of the live-world plan writes here rather than inventing its own surface.
  */
 import { tolerateMissingTables } from "../../base/host/slp-host-tables.js";
-import { and, desc, eq, isNull } from "../../../db/file-query.js";
+import { and, desc, eq, isNull, ne } from "../../../db/file-query.js";
 import { newId, now } from "../../../utils/id-generator.js";
 import type { DB } from "../../../db/connection.js";
 import { slurpEvents } from "../../../db/schema/slurp.js";
@@ -125,11 +125,16 @@ export function createSlurpEventsStorage(db: DB) {
     },
 
     async countUnseen(recipientPersonaId: string): Promise<number> {
-      const rows = await db
-        .select()
-        .from(slurpEvents)
-        .where(and(eq(slurpEvents.recipientPersonaId, recipientPersonaId), isNull(slurpEvents.seenAt)));
-      return rows.length;
+      return db.count(
+        slurpEvents,
+        // A new message already counts in the inbox unread; Activity never lists it, so only
+        // "Mark as read" could clear it from the badge (R1-086).
+        and(
+          eq(slurpEvents.recipientPersonaId, recipientPersonaId),
+          isNull(slurpEvents.seenAt),
+          ne(slurpEvents.kind, "message"),
+        ),
+      );
     },
 
     async markSeen(recipientPersonaId: string): Promise<void> {

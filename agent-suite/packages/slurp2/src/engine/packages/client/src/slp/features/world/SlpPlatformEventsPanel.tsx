@@ -1,10 +1,11 @@
+import { useSlpStoryTimeline } from "./slp-story-hooks";
 import { CalendarDays, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import {
   SLURP_PLATFORM_EVENT_GUIDANCE_MAX,
-  slurpActivePlatformEvents,
+  slurpRunningPlatformEventIds,
   slurpPlatformEventSchema,
   slurpPlatformEventsDefault,
   type SlurpPlatformEvent,
@@ -20,23 +21,56 @@ const buttonClass =
 
 const pad = (value: number) => String(value).padStart(2, "0");
 /** `MM-DD` for a native date input's month/day. The year is a placeholder: events recur. */
-const dateValue = (item: SlurpPlatformEvent) => `2000-${pad(item.month)}-${pad(item.day)}`;
+const dateValue = (item: SlurpPlatformEvent) =>
+  item.activation.kind === "annual" ? `2000-${pad(item.activation.month)}-${pad(item.activation.day)}` : "2000-01-01";
+const eventOrder = (item: SlurpPlatformEvent) =>
+  item.activation.kind === "annual" ? item.activation.month * 100 + item.activation.day : 20_000;
+/** "Jan 1 · 1 day" in the reader's language. The year is a placeholder: annual events recur. */
+const eventWhen = (item: SlurpPlatformEvent, t: ReturnType<typeof useTranslation>["t"], language?: string) => {
+  const rule = item.activation;
+  if (rule.kind === "annual")
+    return t("ui.slurp.settings.events.whenAnnual", {
+      date: new Intl.DateTimeFormat(language, { month: "short", day: "numeric", timeZone: "UTC" }).format(
+        Date.UTC(2000, rule.month - 1, rule.day),
+      ),
+      count: rule.durationDays,
+    });
+  if (rule.kind === "window")
+    return t("ui.slurp.settings.events.whenWindow", {
+      start: rule.startsAt.slice(0, 10),
+      end: rule.endsAt.slice(0, 10),
+    });
+  if (rule.kind === "manual") return t("ui.slurp.settings.events.whenManual", { count: rule.durationDays });
+  if (rule.kind === "creator-milestone")
+    return t("ui.slurp.settings.events.whenMilestone", {
+      metric: rule.metric,
+      threshold: rule.threshold.toLocaleString(language),
+    });
+  if (rule.kind === "notable-post")
+    return t("ui.slurp.settings.events.whenNotablePost", { reach: rule.reach.toLocaleString(language) });
+  if (rule.kind === "arc-lifecycle") return t("ui.slurp.settings.events.whenArc", { phase: rule.phase });
+  return t("ui.slurp.settings.events.whenChance", { percent: rule.chancePercent, period: rule.period });
+};
 
 /** Holidays and site-wide events. Click a row to edit it in place. */
 export function SlurpPlatformEventsSettings({
   events,
   saving,
   onSave,
+  onStartInStir,
 }: {
   events: SlurpPlatformEvent[];
   saving: boolean;
   onSave: (events: SlurpPlatformEvent[]) => Promise<boolean>;
+  /** W: "Start now" left Settings; this opens the Stir tab, where the event card starts it. */
+  onStartInStir?: () => void;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<SlurpPlatformEvent | null>(null);
-  const activeIds = new Set(slurpActivePlatformEvents(events, new Date()).map((item) => item.id));
-  const sorted = [...events].sort((a, b) => a.month - b.month || a.day - b.day);
+  const timeline = useSlpStoryTimeline();
+  const activeIds = slurpRunningPlatformEventIds(events, timeline.data?.occurrences ?? [], new Date());
+  const sorted = [...events].sort((a, b) => eventOrder(a) - eventOrder(b) || a.name.localeCompare(b.name));
   const valid = draft ? slurpPlatformEventSchema.safeParse(draft).success : false;
 
   const open = (item: SlurpPlatformEvent) => {
@@ -51,16 +85,19 @@ export function SlurpPlatformEventsSettings({
     const today = new Date();
     const item: SlurpPlatformEvent = {
       id: `custom-${Date.now().toString(36)}`,
-      kind: "calendar",
+      contentId: `custom-${Date.now().toString(36)}`,
       name: t("ui.slurp.settings.events.newName", { defaultValue: "New event" }),
       enabled: true,
-      month: today.getUTCMonth() + 1,
-      day: today.getUTCDate(),
-      durationDays: 1,
       guidance: "",
-      // A hand-added event carries no modifier. The editor has no control for one, and Slurp ships
-      // no default sale, so the seam exists without anything using it yet.
-      modifiers: [],
+      storyTags: [],
+      activation: { kind: "annual", month: today.getUTCMonth() + 1, day: today.getUTCDate(), durationDays: 1 },
+      target: { kind: "all" },
+      influences: [],
+      arcOpportunities: [],
+      outcomes: [],
+      automation: "inherit",
+      builtin: false,
+      hidden: false,
     };
     setSelectedId(item.id);
     setDraft(item);
@@ -100,7 +137,7 @@ export function SlurpPlatformEventsSettings({
       id="slurp-event-editor"
       className="space-y-3 rounded-xl border border-[var(--slurp-outline)] bg-[var(--slurp-surface-raised)] p-3"
     >
-      <div className="grid gap-3 sm:grid-cols-[2fr_1fr_1fr]">
+      <div className="grid gap-3 sm:grid-cols-2">
         <label className="grid gap-1 text-xs font-semibold">
           {t("ui.slurp.settings.events.name", { defaultValue: "Name" })}
           <input
@@ -111,31 +148,127 @@ export function SlurpPlatformEventsSettings({
           />
         </label>
         <label className="grid gap-1 text-xs font-semibold">
-          {t("ui.slurp.settings.events.start", { defaultValue: "Starts (every year)" })}
-          <input
-            type="date"
-            value={dateValue(draft)}
-            min="2000-01-01"
-            max="2000-12-31"
-            onChange={(event) => {
-              const [, month, day] = event.target.value.split("-").map(Number);
-              if (month && day) setDraft({ ...draft, month, day });
-            }}
+          {t("ui.slurp.settings.events.automation", { defaultValue: "Automation" })}
+          <select
+            value={draft.automation}
+            onChange={(event) =>
+              setDraft({ ...draft, automation: event.target.value as SlurpPlatformEvent["automation"] })
+            }
             className={fieldClass}
-          />
-        </label>
-        <label className="grid gap-1 text-xs font-semibold">
-          {t("ui.slurp.settings.events.duration", { defaultValue: "Days" })}
-          <input
-            type="number"
-            min={1}
-            max={31}
-            value={draft.durationDays}
-            onChange={(event) => setDraft({ ...draft, durationDays: Number(event.target.value) })}
-            className={fieldClass}
-          />
+          >
+            <option value="inherit">{t("ui.slurp.settings.events.automationInherit")}</option>
+            <option value="manual">{t("ui.slurp.settings.events.automationManual")}</option>
+            <option value="suggest">{t("ui.slurp.settings.events.automationSuggest")}</option>
+            <option value="auto">{t("ui.slurp.settings.events.automationAuto")}</option>
+          </select>
         </label>
       </div>
+      <fieldset className="space-y-3 rounded-lg bg-[var(--slurp-canvas)] p-3">
+        <legend className="px-1 text-sm font-bold">
+          {t("ui.slurp.settings.events.whenTitle", { defaultValue: "When" })}
+        </legend>
+        <label className="grid gap-1 text-xs font-semibold">
+          {t("ui.slurp.settings.events.trigger", { defaultValue: "Activation rule" })}
+          <select
+            value={draft.activation.kind}
+            onChange={(event) => {
+              const kind = event.target.value;
+              setDraft({
+                ...draft,
+                activation:
+                  kind === "manual"
+                    ? { kind: "manual", durationDays: 7 }
+                    : { kind: "annual", month: 1, day: 1, durationDays: 1 },
+              });
+            }}
+            className={fieldClass}
+          >
+            <option value="annual">{t("ui.slurp.settings.events.activation.annual")}</option>
+            <option value="manual">{t("ui.slurp.settings.events.activation.manual")}</option>
+            {!(["annual", "manual"] as string[]).includes(draft.activation.kind) && (
+              <option value={draft.activation.kind}>{t("ui.slurp.settings.events.activation.advanced")}</option>
+            )}
+          </select>
+        </label>
+        {draft.activation.kind === "annual" && (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="grid gap-1 text-xs font-semibold">
+              {t("ui.slurp.settings.events.startsEveryYear", { defaultValue: "Starts every year" })}
+              <input
+                type="date"
+                value={dateValue(draft)}
+                min="2000-01-01"
+                max="2000-12-31"
+                onChange={(event) => {
+                  const [, month, day] = event.target.value.split("-").map(Number);
+                  if (month && day && draft.activation.kind === "annual")
+                    setDraft({ ...draft, activation: { ...draft.activation, month, day } });
+                }}
+                className={fieldClass}
+              />
+            </label>
+            <label className="grid gap-1 text-xs font-semibold">
+              {t("ui.slurp.settings.events.duration", { defaultValue: "Duration in days" })}
+              <input
+                type="number"
+                min={1}
+                max={31}
+                value={draft.activation.durationDays}
+                onChange={(event) =>
+                  draft.activation.kind === "annual" &&
+                  setDraft({ ...draft, activation: { ...draft.activation, durationDays: Number(event.target.value) } })
+                }
+                className={fieldClass}
+              />
+            </label>
+          </div>
+        )}
+        {draft.activation.kind === "manual" && (
+          <label className="grid gap-1 text-xs font-semibold">
+            {t("ui.slurp.settings.events.duration", { defaultValue: "Default duration in days" })}
+            <input
+              type="number"
+              min={1}
+              max={365}
+              value={draft.activation.durationDays}
+              onChange={(event) =>
+                draft.activation.kind === "manual" &&
+                setDraft({ ...draft, activation: { ...draft.activation, durationDays: Number(event.target.value) } })
+              }
+              className={fieldClass}
+            />
+          </label>
+        )}
+      </fieldset>
+      <fieldset className="space-y-3 rounded-lg bg-[var(--slurp-canvas)] p-3">
+        <legend className="px-1 text-sm font-bold">
+          {t("ui.slurp.settings.events.whoTitle", { defaultValue: "Who" })}
+        </legend>
+        <label className="grid gap-1 text-xs font-semibold">
+          {t("ui.slurp.settings.events.target", { defaultValue: "Creators" })}
+          <select
+            value={draft.target.kind}
+            onChange={(event) =>
+              setDraft({
+                ...draft,
+                target: event.target.value === "random" ? { kind: "random", min: 1, max: 3 } : { kind: "all" },
+              })
+            }
+            className={fieldClass}
+          >
+            <option value="all">{t("ui.slurp.settings.events.targetAll")}</option>
+            <option value="random">{t("ui.slurp.settings.events.targetRandom")}</option>
+            {!(["all", "random"] as string[]).includes(draft.target.kind) && (
+              <option value={draft.target.kind}>{t("ui.slurp.settings.events.targetAdvanced")}</option>
+            )}
+          </select>
+        </label>
+        {draft.target.kind === "random" && (
+          <p className="text-xs text-[var(--slurp-muted)]">
+            {t("ui.slurp.settings.events.targetRandomDetail", { min: draft.target.min, max: draft.target.max })}
+          </p>
+        )}
+      </fieldset>
       <label className="grid gap-1 text-xs font-semibold">
         {t("ui.slurp.settings.events.guidance", { defaultValue: "Guidance for Creators" })}
         <textarea
@@ -181,7 +314,7 @@ export function SlurpPlatformEventsSettings({
         title={t("ui.slurp.settings.events.title", { defaultValue: "Events and holidays" })}
         detail={t("ui.slurp.settings.events.detail", {
           defaultValue:
-            "While an event runs, its guidance goes into every Creator's posts and messages. Events repeat every year.",
+            "Events can recur, run as campaigns, or react to the world. Suggestions wait for your approval by default.",
         })}
       />
       <div className="flex flex-wrap gap-2">
@@ -200,12 +333,12 @@ export function SlurpPlatformEventsSettings({
           {t("ui.slurp.settings.events.empty", { defaultValue: "No events. Add one or restore the defaults." })}
         </p>
       ) : (
-        <ul className="space-y-2">
+        <ul className="divide-y divide-[var(--slurp-outline)] overflow-hidden rounded-xl bg-[var(--slurp-surface-raised)] ring-1 ring-inset ring-[var(--slurp-outline)]">
           {sorted.map((item) => {
             const expanded = selectedId === item.id;
             return (
-              <li key={item.id} className="space-y-2">
-                <div className="flex items-center gap-2 rounded-xl bg-[var(--slurp-surface-raised)] px-3 py-2 ring-1 ring-inset ring-[var(--slurp-outline)]">
+              <li key={item.id} className="space-y-2 px-3 py-1.5 sm:px-4">
+                <div className="flex items-center gap-2">
                   <input
                     type="checkbox"
                     checked={item.enabled}
@@ -224,24 +357,33 @@ export function SlurpPlatformEventsSettings({
                     onClick={() => open(item)}
                     className="flex min-h-11 min-w-0 flex-1 items-center gap-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)]"
                   >
-                    <CalendarDays size={16} aria-hidden="true" className="shrink-0 text-[var(--noodle-accent)]" />
+                    <CalendarDays
+                      size={16}
+                      aria-hidden="true"
+                      className="shrink-0 text-[var(--noodle-accent-foreground)]"
+                    />
                     <span className={cn("min-w-0 flex-1 truncate text-sm font-bold", !item.enabled && "opacity-60")}>
                       {item.name}
                     </span>
                     {activeIds.has(item.id) && (
-                      <span className="rounded-full bg-[var(--noodle-accent)]/15 px-2 py-0.5 text-xs font-bold text-[var(--noodle-accent)]">
+                      <span className="rounded-full bg-[var(--noodle-accent)]/15 px-2 py-0.5 text-xs font-bold text-[var(--noodle-accent-foreground)]">
                         {t("ui.slurp.settings.events.active", { defaultValue: "Running now" })}
                       </span>
                     )}
                     <span className="shrink-0 text-xs tabular-nums text-[var(--slurp-muted)]">
-                      {t("ui.slurp.settings.events.when", {
-                        defaultValue: "{{month}}/{{day}} · {{count}} days",
-                        month: pad(item.month),
-                        day: pad(item.day),
-                        count: item.durationDays,
-                      })}
+                      {eventWhen(item, t, i18n.language)}
                     </span>
                   </button>
+                  {/* W: starting an event is a story lever, so it lives in Stir (World); the rules stay here. */}
+                  {item.activation.kind === "manual" && item.enabled && onStartInStir && (
+                    <button
+                      type="button"
+                      onClick={onStartInStir}
+                      className="min-h-11 shrink-0 rounded-lg px-3 text-xs font-semibold text-[var(--slurp-ink)] ring-1 ring-inset ring-[var(--slurp-outline)] hover:bg-[var(--slurp-canvas)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)]"
+                    >
+                      {t("ui.slurp.stir.startInStir")}
+                    </button>
+                  )}
                 </div>
                 {expanded && editor}
               </li>

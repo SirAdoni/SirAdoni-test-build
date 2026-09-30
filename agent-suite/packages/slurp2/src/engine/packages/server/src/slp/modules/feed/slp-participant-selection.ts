@@ -54,7 +54,9 @@ export function collectSlpPriorityAccountIds(input: {
 
 export function chooseSlpParticipantAccounts(input: {
   accounts: SlpAccount[];
-  settings: SlurpSettings;
+  settings: Pick<SlurpSettings, "allowProfessorMari" | "allowRandomUsers">;
+  /** How many take part. The old participant settings had no reader and were retired (R1-136). */
+  selection?: { mode: "all" | "random" | "exact"; min: number; max: number };
   selectedGroupCharacterIds: ReadonlySet<string>;
   followedAccountIds?: ReadonlySet<string>;
   recentlyActiveAccountIds?: ReadonlySet<string>;
@@ -72,12 +74,12 @@ export function chooseSlpParticipantAccounts(input: {
     }
     return account.kind === "random_user" && input.settings.allowRandomUsers;
   });
-  if (input.settings.participantSelectionMode === "all") return candidates;
+  const selection = input.selection ?? { mode: "random", min: 1, max: 4 };
+  if (selection.mode === "all") return candidates;
 
-  const min = Math.min(input.settings.participantMin, input.settings.participantMax, candidates.length);
-  const max = Math.min(Math.max(input.settings.participantMin, input.settings.participantMax), candidates.length);
-  const count =
-    input.settings.participantSelectionMode === "exact" ? max : min + Math.floor(random() * Math.max(1, max - min + 1));
+  const min = Math.min(selection.min, selection.max, candidates.length);
+  const max = Math.min(Math.max(selection.min, selection.max), candidates.length);
+  const count = selection.mode === "exact" ? max : min + Math.floor(random() * Math.max(1, max - min + 1));
 
   const ordered = (pool: SlpAccount[]) => {
     const priority = pool.filter((account) => priorityAccountIds.has(account.id));

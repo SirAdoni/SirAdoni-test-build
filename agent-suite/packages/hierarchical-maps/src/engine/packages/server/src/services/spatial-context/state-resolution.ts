@@ -267,10 +267,11 @@ function discoverLocation(
     (directive.relation === "enter" && requestedParentId !== currentLocationId) ||
     (directive.relation === "link" && requestedParentId === currentLocationId)
   ) {
-    logger.warn(
-      { currentLocationId, requestedParentId, directive },
-      "[spatial/assistant] Ignored discovery with contradictory containment",
-    );
+    logger.warn("[spatial/assistant] Ignored discovery with contradictory containment: %o", {
+      currentLocationId,
+      requestedParentId,
+      directive,
+    });
     return null;
   }
   const parent =
@@ -278,10 +279,11 @@ function discoverLocation(
       ? null
       : definition.locations.find((location) => location.id === requestedParentId && location.status === "active");
   if (requestedParentId !== null && !parent) {
-    logger.warn(
-      { currentLocationId, requestedParentId, directive },
-      "[spatial/assistant] Ignored discovery with an unknown or archived parent",
-    );
+    logger.warn("[spatial/assistant] Ignored discovery with an unknown or archived parent: %o", {
+      currentLocationId,
+      requestedParentId,
+      directive,
+    });
     return null;
   }
   const parentId = requestedParentId;
@@ -312,10 +314,11 @@ function discoverLocation(
   };
   if (directive.relation === "link") {
     if (!directive.direction) {
-      logger.warn(
-        { currentLocationId, destinationId, directive },
-        "[spatial/assistant] Ignored link discovery without an explicit direction",
-      );
+      logger.warn("[spatial/assistant] Ignored link discovery without an explicit direction: %o", {
+        currentLocationId,
+        destinationId,
+        directive,
+      });
       return null;
     }
     const linked = addAvailableLink(
@@ -539,6 +542,7 @@ export async function materializeAssistantSpatialState(input: {
       let transitionApplied = false;
 
       if (input.directive?.type === "teleport") {
+        const directive = input.directive;
         if (!state.autoTravelNowEnabled) {
           throw new Error("Narrated teleport requires Automatic Travel now.");
         }
@@ -546,7 +550,7 @@ export async function materializeAssistantSpatialState(input: {
           throw new Error("Narrated teleport requires expected current location and map revision.");
         }
         validateNarratedTeleportEvidence(
-          { ...input, directive: input.directive },
+          { ...input, directive },
           await transaction.listMessages(input.chatId),
           input.chatId,
         );
@@ -554,7 +558,7 @@ export async function materializeAssistantSpatialState(input: {
         if (!current || current.status !== "active") {
           throw new Error("Narrated teleport current location is unknown or archived.");
         }
-        const destination = definition.locations.find((location) => location.id === input.directive.destinationId);
+        const destination = definition.locations.find((location) => location.id === directive.destinationId);
         if (!destination || destination.status !== "active") {
           throw new Error("Narrated teleport destination is unknown or archived.");
         }

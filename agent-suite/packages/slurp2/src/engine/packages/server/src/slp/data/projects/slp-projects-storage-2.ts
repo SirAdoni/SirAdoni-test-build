@@ -22,6 +22,8 @@ import {
   slurpGeneratedArcProject,
 } from "../../modules/projects/slp-arc-library.js";
 import { isSlurpCrossover } from "../../modules/projects/slp-project.js";
+import { readSlurpCreatorFitText } from "../creators/slp-flavour-source.js";
+import { resolveSlurpCreatorSpice } from "../creators/slp-spice-storage.js";
 import {
   slurpCrossoverPartner,
   slurpCrossoverStart,
@@ -122,7 +124,13 @@ export function createProjectsStorage2(context: SlurpStorageContext) {
       const config = resolveSlurpArcConfig(settings, await this.getArcConfig(creatorAccountId));
       if (config.autoMode === "off") return null;
       const creator = await this.getNoodlerAccountById(creatorAccountId, { includeHidden: true });
-      const roll = async () => {
+      // Only a storyline that fits this Creator's card starts on its own (no breakup without a partner).
+      const creatorText = creator
+        ? await readSlurpCreatorFitText(db, { account: creator, source: await this.resolveAccountSource(creator) })
+        : "";
+      // Content-pack storylines also go by the Creator's spice level and hard noes.
+      const creatorSpice = creator ? await resolveSlurpCreatorSpice(db, creator).catch(() => undefined) : undefined;
+      const roll = async (source = config.source) => {
         const projects = await this.listProjects(creatorAccountId);
         // ponytail: reads every Creator's projects per roll (O(n²) per maintenance tick); pass the count in from the world tick if Creator counts grow large.
         let concurrentAuto = 0;
@@ -141,7 +149,9 @@ export function createProjectsStorage2(context: SlurpStorageContext) {
           createdAt: creator?.createdAt ?? null,
           concurrentAuto,
           maxConcurrentAuto: settings.arcMaxConcurrentAuto,
-          source: config.source,
+          source,
+          creatorText,
+          creatorSpice,
         });
         return { pick, projects };
       };
@@ -159,9 +169,16 @@ export function createProjectsStorage2(context: SlurpStorageContext) {
         // so another arc started meanwhile still counts against the cap and the cooldown.
         const raw = await generate(creatorAccountId, partnerId ? [partnerId] : []).catch(() => null);
         project = slurpGeneratedArcProject(newId(), raw, at, { origin: "auto", status });
-        if (!project) return null;
         ({ pick, projects } = await roll());
         if (!pick) return null;
+        // The budget refused the call (the default AI mode does for unattended work) or it failed:
+        // the Creator still gets a storyline, from the library (R1-108).
+        if (!project) {
+          ({ pick, projects } = await roll("library"));
+          if (!pick || !("type" in pick)) return null;
+          project = makeSlurpProject(newId(), { type: pick.type, origin: "auto" }, at);
+          if (project) project = { ...project, status };
+        }
       }
       if (!project) return null;
       project = slurpCrossoverStart(project, partnerId ? [creatorAccountId, partnerId] : []);
@@ -172,13 +189,17 @@ export function createProjectsStorage2(context: SlurpStorageContext) {
           [slurpCrossoverView(project, partnerId), ...(await loadProjects(partnerId))],
           at,
         );
+      if (project.status === "active")
+        await this.recordArcChange(creatorAccountId, { ...project, status: "suggested" }, project);
       // The cooldown starts for every participant.
       for (const id of isSlurpCrossover(project) ? project.creatorIds : [creatorAccountId]) {
         await settingsStore.set(slurpArcAutoKey(id), at.toISOString());
-        await this.recordCreatorEvent(id, "arc_started", {
-          actorLabel: project.title,
-          subjectId: project.id,
-        });
+        // Only a storyline that really started is news; a suggestion waits in Storylines (R1-080).
+        if (project.status === "active")
+          await this.recordCreatorEvent(id, "arc_started", {
+            actorLabel: project.title,
+            subjectId: project.id,
+          });
       }
       return slurpCrossoverView(project, creatorAccountId);
     },
@@ -191,9 +212,7 @@ export function createProjectsStorage2(context: SlurpStorageContext) {
       creator: NonNullable<Awaited<ReturnType<typeof this.getNoodlerAccountById>>>,
       at: Date,
     ): Promise<string | null> {
-      const open = (account: typeof creator) =>
-        (account.settings.privacy.identityDisclosure ?? "open") === "open" &&
-        account.settings.privacy.access.hiddenFromAccountIds.length === 0;
+      const open = (account: typeof creator) => (account.settings.privacy.identityDisclosure ?? "open") === "open";
       if (!open(creator)) return null;
       const sameOwner = (account: typeof creator) =>
         (account.sourceKind === "persona") === (creator.sourceKind === "persona") &&

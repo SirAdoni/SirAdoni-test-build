@@ -28,6 +28,7 @@ import type {
   RulesetLayerOptions,
   RulesetLiveState,
   RulesetSheetEnvelope,
+  RulesetSheetItem,
 } from "@marinara-engine/shared";
 import { toast } from "sonner";
 import { cn, copyToClipboard, getAvatarCropStyle } from "../../lib/utils";
@@ -96,6 +97,8 @@ export type GameCharacterSheetRuleset =
       onLiveChange: (next: RulesetLiveState) => void;
       onEnvelopeSave: (next: RulesetSheetEnvelope) => Promise<void> | void;
       readOnly?: boolean;
+      /** What the character holds, which a value reading their items shows. */
+      items?: ReadonlyArray<RulesetSheetItem>;
     };
 
 interface GameCharacterSheetProps {
@@ -790,6 +793,7 @@ export function GameCharacterSheet({
                   onLiveChange={ruleset.onLiveChange}
                   onEnvelopeSave={ruleset.onEnvelopeSave}
                   readOnly={ruleset.readOnly}
+                  items={ruleset.items}
                 />
               ) : (
                 <p className="text-xs text-[var(--muted-foreground)]">

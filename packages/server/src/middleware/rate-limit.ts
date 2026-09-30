@@ -55,6 +55,12 @@ export const RUNTIME_DIAGNOSTICS_RATE_LIMIT = {
   timeWindow: 60_000,
 } as const satisfies MarinaraRouteRateLimit;
 
+/** One document per guest frame mount; each response reads and embeds the trusted bundle. */
+export const MULTIPLAYER_GUEST_VIEW_RATE_LIMIT = {
+  max: 30,
+  timeWindow: 60_000,
+} as const satisfies MarinaraRouteRateLimit;
+
 /**
  * Operator corrections to Beholder's physical state.
  *
@@ -106,6 +112,14 @@ const ROUTE_RULES: Array<{ pattern: RegExp; rule: RateLimitRule }> = [
       key: "generate-status",
       limit: GENERATE_STATUS_RATE_LIMIT.max,
       windowMs: GENERATE_STATUS_RATE_LIMIT.timeWindow,
+    },
+  },
+  {
+    pattern: /^\/api\/multiplayer\/guest-view(?:\?|$)/,
+    rule: {
+      key: "multiplayer-guest-view",
+      limit: MULTIPLAYER_GUEST_VIEW_RATE_LIMIT.max,
+      windowMs: MULTIPLAYER_GUEST_VIEW_RATE_LIMIT.timeWindow,
     },
   },
   { pattern: /^\/api\/generate(?:\/|$)/, rule: { key: "generate", limit: 60, windowMs: 60_000 } },

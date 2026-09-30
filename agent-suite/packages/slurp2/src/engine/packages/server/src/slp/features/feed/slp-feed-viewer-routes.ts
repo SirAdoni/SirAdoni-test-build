@@ -2,7 +2,6 @@ import { slpCreatorViewerPersonaSchema } from "../../../../../shared/src/slp/slp
 import { z } from "zod";
 import { slpCreatorUnseenCreatorAccountIds } from "../../modules/feed/slp-viewer-unseen.js";
 import { isSlurpViewerActorAccount } from "../../modules/settings/slp-settings.js";
-import { isCreatorHiddenFromViewer } from "../../base/identity/slp-access.js";
 import type { FastifyInstance } from "fastify";
 import {
   SLP_CREATOR_FEED_PAGE_SIZE,
@@ -10,6 +9,7 @@ import {
   type SlpCreatorViewerSignalResponse,
 } from "../../modules/requests/slp-request-schemas.js";
 import type { SlpRouteDeps } from "../viewer/slp-viewer-contract.js";
+import { slurpCollabPostIdsForCreator } from "../projects/slp-projects-contract.js";
 
 const slpCreatorViewerFeedQuerySchema = slpCreatorViewerPersonaSchema
   .extend({
@@ -48,11 +48,7 @@ export async function slpFeedViewerRoutes(app: FastifyInstance, deps: SlpRouteDe
     if (!viewer) return reply.code(404).send({ error: "Slurp persona not found" });
     const accounts = await noodle.listNoodlerAccounts();
     const unseenCreatorAccountIds = slpCreatorUnseenCreatorAccountIds(accounts, viewer.id);
-    const visibleAccounts = accounts.filter(
-      (account) =>
-        !isSlurpViewerActorAccount(account) &&
-        (creatorBelongsToViewer(account, viewer) || !isCreatorHiddenFromViewer(account, viewer.id)),
-    );
+    const visibleAccounts = accounts.filter((account) => !isSlurpViewerActorAccount(account));
     const visibleAccountIds = visibleAccounts.map((account) => account.id);
     const generationKey = [
       app.db._fileStore.getTableWriteGeneration("slurp2_posts"),
@@ -149,9 +145,22 @@ export async function slpFeedViewerRoutes(app: FastifyInstance, deps: SlpRouteDe
           : null,
       limit: parsed.data.limit,
     });
-    const projected = await projectViewerPosts(context, page.items);
+    const storyItems = parsed.data.cursorAt
+      ? []
+      : await noodle.listNoodlerStories({
+          accountIds: accounts.map((account) => account.id),
+          creatorSearchAccountIds,
+          search: parsed.data.search,
+          since: new Date(Date.now() - (await noodle.getSettings()).storyLifetimeHours * 60 * 60 * 1000).toISOString(),
+        });
+    const feedItems = [
+      ...page.items,
+      ...storyItems.filter((story) => !page.items.some((post) => post.id === story.id)),
+    ];
+    const projected = await projectViewerPosts(context, feedItems);
     return {
-      items: page.items.flatMap((post) => {
+      ...buildViewerShell(context),
+      items: feedItems.flatMap((post) => {
         const view = projected.get(post.id);
         return view ? [{ creatorAccountId: post.authorAccountId, post: view }] : [];
       }),
@@ -179,15 +188,18 @@ export async function slpFeedViewerRoutes(app: FastifyInstance, deps: SlpRouteDe
     const viewerOwnsCreator = Boolean(
       context && creatorBelongsToViewer(context.accountById.get(id) ?? null, context.viewer),
     );
+    const pageReadable = !context || viewerOwnsCreator || context.subscribedIds.has(id);
+    // Joint collab posts by a partner show here too; this page's subscribers can read them.
+    const collabPostIds = await slurpCollabPostIdsForCreator(app.db, id).catch(() => []);
+    const readContext =
+      context && pageReadable && collabPostIds.length
+        ? { ...context, unlockedIds: new Set([...context.unlockedIds, ...collabPostIds]) }
+        : context;
     const page = await noodle.listNoodlerPostPage({
       accountIds: [id],
-      readableContentAccountIds:
-        !context ||
-        creatorBelongsToViewer(context.accountById.get(id) ?? null, context.viewer) ||
-        context.subscribedIds.has(id)
-          ? [id]
-          : [],
-      unlockedPostIds: context ? [...context.unlockedIds] : [],
+      extraPostIds: collabPostIds,
+      readableContentAccountIds: pageReadable ? [id] : [],
+      unlockedPostIds: readContext ? [...readContext.unlockedIds] : pageReadable ? collabPostIds : [],
       mediaOnly: parsed.data.filter === "media",
       cursor:
         parsed.data.cursorAt && parsed.data.cursorId
@@ -195,7 +207,7 @@ export async function slpFeedViewerRoutes(app: FastifyInstance, deps: SlpRouteDe
           : null,
       limit: parsed.data.limit,
     });
-    const projected = context ? await projectViewerPosts(context, page.items) : null;
+    const projected = readContext ? await projectViewerPosts(readContext, page.items) : null;
     return {
       items:
         context && !viewerOwnsCreator
@@ -203,10 +215,12 @@ export async function slpFeedViewerRoutes(app: FastifyInstance, deps: SlpRouteDe
               const viewerPost = projected!.get(post.id);
               return viewerPost ? [{ viewerPost }] : [];
             })
-          : page.items.map((managed) => ({
-              managed,
-              viewerPost: projected?.get(managed.id) ?? null,
-            })),
+          : page.items.flatMap((managed) =>
+              // A partner's post on the player's own page is shown, never managed from here.
+              managed.authorAccountId !== id && projected
+                ? [{ viewerPost: projected.get(managed.id) ?? null }].filter((item) => item.viewerPost)
+                : [{ managed, viewerPost: projected?.get(managed.id) ?? null }],
+            ),
       total: page.total,
       nextCursor: page.nextCursor,
     };

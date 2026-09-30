@@ -15,15 +15,7 @@
  */
 
 import type { SlurpAudienceTone } from "../../../../../shared/src/slp/slp-tone.js";
-
-const COMMISSION_OPENERS = [
-  "Would you take a request?",
-  "Hoping you have space for a commission.",
-  "Not sure if you do these, but",
-  "Been saving up for this one.",
-  "If your list is open,",
-  "Long shot, but",
-] as const;
+import { SLURP_COMMISSION_OPENERS, SLURP_FAN_OPENERS } from "../../../../../shared/src/slp/slp-world.js";
 
 const COMMISSION_ASKS = [
   "something soft, whatever direction you feel like taking it",
@@ -78,9 +70,11 @@ function pickIndex(seed: string, salt: string, length: number): number {
 }
 
 /** One commission brief. Three banks combined give several hundred distinct requests. */
-export function slurpCommissionBrief(seed: string): string {
+export function slurpCommissionBrief(seed: string, openers: readonly string[] = []): string {
+  // The player's own openers (Messaging settings) replace the built-in ones when there are any.
+  const bank = openers.length > 0 ? openers : SLURP_COMMISSION_OPENERS;
   return [
-    COMMISSION_OPENERS[pickIndex(seed, "opener", COMMISSION_OPENERS.length)]!,
+    bank[pickIndex(seed, "opener", bank.length)]!,
     COMMISSION_ASKS[pickIndex(seed, "ask", COMMISSION_ASKS.length)]!,
     COMMISSION_CLOSERS[pickIndex(seed, "closer", COMMISSION_CLOSERS.length)]!,
   ].join(" ");
@@ -91,25 +85,10 @@ export function slurpAudienceQuestion(seed: string): string {
   return QUESTIONS[pickIndex(seed, "question", QUESTIONS.length)]!;
 }
 
-/**
- * An opening line from somebody who has never written before.
- *
- * Same rule as the commission briefs: vague on purpose. A first message that pretends to know
- * something specific about a post it has not read is worse than one that simply says hello.
- */
-const OPENERS = [
-  "hi — been reading for a while, finally said something",
-  "hope it is ok to message. just wanted to say I like what you do",
-  "you probably get this a lot but you seem genuinely nice",
-  "not asking for anything, just wanted to say hi",
-  "been meaning to write for weeks and kept chickening out",
-  "hey. long time reader, first time writing",
-  "sorry to appear out of nowhere. your last few posts got me",
-  "is it weird to message? felt weird not to",
-] as const;
-
-export function slurpAudienceOpener(seed: string): string {
-  return OPENERS[pickIndex(seed, "opener-dm", OPENERS.length)]!;
+/** An opening line from somebody who has never written before; the player's own list wins when set. */
+export function slurpAudienceOpener(seed: string, openers: readonly string[] = []): string {
+  const bank = openers.length > 0 ? openers : SLURP_FAN_OPENERS;
+  return bank[pickIndex(seed, "opener-dm", bank.length)]!;
 }
 
 /**
@@ -130,8 +109,67 @@ const COMMISSION_DELIVERIES = [
   "took me a while but here it is",
 ] as const;
 
-export function slurpCommissionDeliveryNote(seed: string): string {
-  return COMMISSION_DELIVERIES[pickIndex(seed, "delivery", COMMISSION_DELIVERIES.length)]!;
+/** The same notes in the other languages Slurp speaks, for a chat held in one of them (7c M-008). */
+const COMMISSION_DELIVERIES_BY_LANGUAGE: Record<SlurpChatLanguage, readonly string[]> = {
+  en: COMMISSION_DELIVERIES,
+  de: [
+    "hier ist es. ich hoffe, es ist so, wie du es dir vorgestellt hast",
+    "gestern abend fertig geworden. hat mir richtig spaß gemacht",
+    "fertig! hat ein paar anläufe gebraucht, aber jetzt mag ich es",
+    "gehört ganz dir. danke, dass du mich sowas fragst",
+    "bitte schön. sag mir ehrlich, wie du es findest",
+    "hat eine weile gedauert, aber hier ist es",
+  ],
+  ko: [
+    "여기 있어요. 생각했던 거랑 비슷했으면 좋겠어요",
+    "어젯밤에 끝냈어요. 만드는 동안 정말 즐거웠어요",
+    "완성! 몇 번 다시 했는데 이제 마음에 들어요",
+    "이제 당신 거예요. 이런 부탁 해줘서 고마워요",
+    "여기요. 솔직하게 어떤지 말해줘요",
+    "시간이 좀 걸렸지만 드디어 완성했어요",
+  ],
+  pl: [
+    "proszę, gotowe. mam nadzieję, że o to ci chodziło",
+    "gotowe od wczoraj wieczorem. robienie tego to była czysta przyjemność",
+    "gotowe! trzeba było kilku podejść, ale efekt mi się podoba",
+    "to już twoje. dzięki za takie zamówienie",
+    "proszę bardzo. powiedz szczerze, co o tym myślisz",
+    "trochę to trwało, ale oto jest",
+  ],
+};
+
+export function slurpCommissionDeliveryNote(seed: string, language: SlurpChatLanguage = "en"): string {
+  const bank = COMMISSION_DELIVERIES_BY_LANGUAGE[language];
+  return bank[pickIndex(seed, "delivery", bank.length)]!;
+}
+
+/** The languages Slurp ships copy in. */
+export type SlurpChatLanguage = "en" | "de" | "ko" | "pl";
+
+const WORDS: Record<Exclude<SlurpChatLanguage, "ko">, ReadonlySet<string>> = {
+  en: new Set("the and you is to it i that this for what with my your me so just are was".split(" ")),
+  de: new Set(
+    "ich du und nicht das ist ein eine mit auf für dich mir sehr danke hallo aber auch wie was der die".split(" "),
+  ),
+  pl: new Set("jest nie się że to jak ale mnie ciebie dzięki bardzo cześć tak co czy mi już".split(" ")),
+};
+
+/**
+ * Which of Slurp's languages a chat is held in, from its newest lines (7c M-008): Hangul is Korean;
+ * otherwise common words and letters decide, and English wins a tie.
+ * ponytail: word and letter counts, not a language detector; other languages read as English.
+ */
+export function slurpChatLanguage(texts: readonly string[]): SlurpChatLanguage {
+  const text = texts.join(" ").toLowerCase();
+  if (/[\uac00-\ud7a3]/u.test(text)) return "ko";
+  const words = text.match(/\p{L}+/gu) ?? [];
+  const score = (language: Exclude<SlurpChatLanguage, "ko">) =>
+    words.filter((word) => WORDS[language].has(word)).length +
+    2 * (text.match(language === "de" ? /[äöüß]/gu : language === "pl" ? /[ąćęłńśźż]/gu : /(?!)/u)?.length ?? 0);
+  const [best] = (["en", "de", "pl"] as const)
+    .map((language) => [language, score(language)] as const)
+    .sort((left, right) => right[1] - left[1]);
+  return best && best[1] > score("en") ? best[0] : "en";
 }
 
 /**
@@ -252,6 +290,96 @@ export function slurpAudienceReactionFrom(seed: string, pool: readonly string[])
   const body = bodies[pickIndex(seed, "reaction", bodies.length)]!;
   const tail = REACTION_TAILS[pickIndex(seed, "reaction-tail", REACTION_TAILS.length)]!;
   return `${opener ? `${opener} ` : ""}${body}${tail}`;
+}
+
+/**
+ * Fans taking sides under a rivalry post (7b-c). Tier 1 like every pulse comment: free, and vague
+ * enough to be true of any spat. `{self}` is the poster, `{rival}` the other Creator.
+ */
+const RIVALRY_SIDES = [
+  "team {self} forever",
+  "ok but {rival} did it first tho",
+  "not {rival} catching strays again 😭",
+  "the way this is 100% about {rival}",
+  "grabbing popcorn 🍿",
+  "{self} would never. {rival} on the other hand…",
+  "you are both iconic, can we not",
+  "{rival} fans in shambles",
+  "staying neutral (I am team {self})",
+  "this is giving subtweet",
+  "I like {rival} too, don't make me choose",
+  "the receipts better be coming",
+] as const;
+
+export function slurpRivalryBodies(self: string, rival: string): string[] {
+  return RIVALRY_SIDES.map((body) => body.replaceAll("{self}", self).replaceAll("{rival}", rival));
+}
+
+/**
+ * Fans reacting to a couple's story (7b-couples), Tier 1 like the rivalry sides. `{self}` is the
+ * poster, `{partner}` the other one. Shipping while it is sweet, worried when it is rocky, sad at the end.
+ */
+const COUPLE_REACTIONS: Record<"flirt" | "sweet" | "rocky" | "over", readonly string[]> = {
+  flirt: [
+    "wait are {self} and {partner} a thing??",
+    "the comment section between these two 👀",
+    "I ship it. I ship it so hard",
+    "{partner} in the likes again, hmm",
+    "just say it already",
+  ],
+  sweet: [
+    "{self} and {partner} are my favourite couple now",
+    "the launch I needed today 😭",
+    "protect them at all costs",
+    "ok this is actually cute",
+    "couple goals, not even joking",
+    "{partner} is so lucky tbh",
+    "I KNEW IT",
+    "wait since when??",
+  ],
+  rocky: [
+    "uh oh… trouble in paradise?",
+    "this is about {partner}, right?",
+    "sending hugs, whatever it is",
+    "team {self}, always",
+    "they'll be fine. right? RIGHT?",
+  ],
+  over: [
+    "not them breaking up 💔",
+    "I'm actually sad about this",
+    "{self} deserves the world",
+    "the end of an era",
+    "take care of yourself ❤️",
+    "wait what happened??",
+  ],
+};
+
+/**
+ * Some fans take it personally (U, user: parasocial): a launch, a date or the partner showing up in a
+ * post stings them. Mixed in with the sweet ones, so a few comments sound hurt, never all.
+ */
+const PARASOCIAL = [
+  "wait so {self} is taken now?? 😭",
+  "I thought we had something tbh",
+  "unsubscribing. (I'm not)",
+  "why does this hurt me personally",
+  "{partner} better treat you right or else",
+  "happy for you. I guess. 🙂",
+] as const;
+
+export function slurpCoupleReactionBodies(self: string, partner: string, moment: string): string[] {
+  const mood =
+    moment === "flirt"
+      ? "flirt"
+      : moment === "fight" || moment === "jealous"
+        ? "rocky"
+        : moment === "breakup" || moment === "pageClose" || moment === "movingOn"
+          ? "over"
+          : "sweet";
+  const hurt = ["launch", "date", "cameo", "anniversary", "reunion"].includes(moment) ? PARASOCIAL : [];
+  return [...COUPLE_REACTIONS[mood], ...hurt].map((body) =>
+    body.replaceAll("{self}", self).replaceAll("{partner}", partner),
+  );
 }
 
 /**

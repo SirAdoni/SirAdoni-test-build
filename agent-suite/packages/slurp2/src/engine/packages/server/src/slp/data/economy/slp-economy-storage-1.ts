@@ -1,13 +1,18 @@
 import { and, desc, eq, lt, or } from "../../../db/file-query.js";
 import { SlpAccountSettings, SlpAccountSubscription } from "../../../../../shared/src/slp/slp-social.types.js";
 import { isSlurpFileUniqueConstraintError } from "../../base/host/slp-file-errors.js";
-import { readSlurpWallet, slurpWalletKey, spend, subscriptionPaidThrough } from "../../modules/economy/slp-wallet.js";
+import {
+  readSlurpWallet,
+  resumeSubscription,
+  slurpWalletKey,
+  spend,
+  subscriptionPaidThrough,
+} from "../../modules/economy/slp-wallet.js";
 import { createSlpActiveModifierProvider } from "../../base/modifiers/slp-active-modifier-provider.js";
 import { slurpSubscriptionCharge } from "../../modules/economy/slp-creator-pricing.js";
 import { slurpPlatformEventModifierSource } from "../../../../../shared/src/slp/slp-platform-events.js";
 import { createSlurpPopulationStorage } from "../audience/slp-audience-storage-funnel.js";
 import { slurpEarningsKey } from "../../modules/economy/slp-earnings.js";
-import { isCreatorHiddenFromViewer } from "../../base/identity/slp-access.js";
 import { slpAccounts, slpAccountSubscriptions, slpPosts, slpPostUnlocks } from "../../../db/schema/slurp.js";
 import { newId, now } from "../../../utils/id-generator.js";
 import { createAppSettingsStorage } from "../../../services/storage/app-settings.storage.js";
@@ -51,11 +56,14 @@ export function createEconomyStorage1(context: SlurpStorageContext) {
      *
      * Returns `null` when the viewer cannot afford the creator's price, alongside the existing
      * "no" for a hidden or self-owned creator. Re-subscribing to a creator that is already paid
-     * up charges nothing, so the route stays idempotent.
+     * up charges nothing, so the route stays idempotent; if that subscription was cancelled, it
+     * resumes (renews again at the end of the paid period).
      */
     async subscribe(viewerAccountId: string, creatorAccountId: string): Promise<SlpAccountSubscription | null> {
       if (viewerAccountId === creatorAccountId) return null;
       const settings = await this.getSettings();
+      // Only events running for this Creator move the charge (R1-112).
+      const influenceStory = await this.platformInfluenceStory(creatorAccountId);
       return enqueueFinancial(async () => {
         const viewer = await this.getViewer(viewerAccountId);
         if (!viewer) return null;
@@ -64,12 +72,7 @@ export function createEconomyStorage1(context: SlurpStorageContext) {
           .from(slpAccounts)
           .where(and(eq(slpAccounts.id, creatorAccountId), eq(slpAccounts.platform, "slurp")));
         const creator = creatorRows[0] ? mapAccount(creatorRows[0]) : null;
-        if (
-          !creator ||
-          (creator.sourceKind === "persona" && creator.sourceEntityId === viewerAccountId) ||
-          isCreatorHiddenFromViewer(creator, viewerAccountId)
-        )
-          return null;
+        if (!creator || (creator.sourceKind === "persona" && creator.sourceEntityId === viewerAccountId)) return null;
         const existing = await db
           .select()
           .from(slpAccountSubscriptions)
@@ -94,6 +97,12 @@ export function createEconomyStorage1(context: SlurpStorageContext) {
             Number.isFinite(Date.parse(existingPayment.paidThroughAt)) &&
             Date.parse(existingPayment.paidThroughAt) > at.getTime());
         if (existing[0] && existingPaymentIsValid) {
+          // Subscribing again while a cancelled subscription is still paid resumes it: the renewal
+          // comes back, the period already paid for is not charged a second time.
+          if (existingWallet) {
+            const resumed = resumeSubscription(existingWallet, creatorAccountId, at);
+            if (resumed !== existingWallet) await writeWallet(viewerAccountId, resumed);
+          }
           const followingAccountIds = viewer.settings.social.followingAccountIds ?? [];
           if (!followingAccountIds.includes(creatorAccountId)) {
             const followingAccountTimestamps = { ...viewer.settings.social.followingAccountTimestamps };
@@ -125,7 +134,10 @@ export function createEconomyStorage1(context: SlurpStorageContext) {
         // not change what an existing subscription costs, so this path never sees a modifier:
         // plan §1 keeps a subscription renewing at its agreed price.
         if (existing[0] && settings.walletEnabled && existingWallet) {
-          const charged = spend(existingWallet, "subscribe", basePrice, at, creatorAccountId);
+          const charged = spend(existingWallet, "subscribe", basePrice, at, creatorAccountId, undefined, {
+            viewerAccountId,
+            creatorAccountId,
+          });
           if (!charged) {
             await this.unsubscribe(viewerAccountId, creatorAccountId, true);
             return null;
@@ -196,13 +208,18 @@ export function createEconomyStorage1(context: SlurpStorageContext) {
         const price = settings.walletEnabled
           ? slurpSubscriptionCharge(
               basePrice,
-              createSlpActiveModifierProvider([slurpPlatformEventModifierSource(settings.platformEvents)]),
+              createSlpActiveModifierProvider([
+                slurpPlatformEventModifierSource(settings.platformEvents, influenceStory),
+              ]),
               at,
             )
           : 0;
         const previousWallet = existingWallet ?? (await getWalletNow(viewerAccountId));
         const charged = settings.walletEnabled
-          ? spend(previousWallet, "subscribe", price, at, creatorAccountId)
+          ? spend(previousWallet, "subscribe", price, at, creatorAccountId, undefined, {
+              viewerAccountId,
+              creatorAccountId,
+            })
           : previousWallet;
         if (!charged) return null;
         const walletAfterCharge = settings.walletEnabled

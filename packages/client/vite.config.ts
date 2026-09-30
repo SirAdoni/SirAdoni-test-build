@@ -40,6 +40,7 @@ function resolveBuildCommit() {
 const BUILD_COMMIT = resolveBuildCommit();
 
 function manualChunks(id: string) {
+  id = id.replace(/\\/gu, "/");
   if (id.endsWith("/components/game/FloatingGamePanel.tsx")) return "game-floating-panels";
   if (id.endsWith("/components/game/game-narration-format.ts")) return "game-narration-format";
   if (id.endsWith("/components/game/GameNarrationVisuals.tsx")) return "game-narration-visuals";
@@ -51,10 +52,37 @@ function manualChunks(id: string) {
   // rather than weight on GameSurface's budget.
   if (id.endsWith("/components/game/GameInventory.tsx") || id.endsWith("/components/game/RulesetItemPicker.tsx"))
     return "game-inventory";
-  if (!id.includes("/node_modules/")) return undefined;
-  // Ignore checkout names, but keep pnpm peer suffixes so React and its consumers stay together.
-  // Removing those suffixes splits eager React imports across chunks and creates startup cycles.
-  id = id.slice(id.search(/\/(?:\.pnpm|node_modules)\//u));
+  // So is the book the inventory reads a ruleset's items through, and the items the Game Master
+  // invents, rather than weight on the game tag parser's chunk, which takes the rest of the shared code.
+  if (/\/shared\/(?:dist|src)\/features\/rulesets\/(?:item-book|invented-items)\.(?:js|ts)$/u.test(id))
+    return "ruleset-items";
+
+  const nodeModulesIndex = id.lastIndexOf("/node_modules/");
+  if (nodeModulesIndex < 0) return undefined;
+
+  // Standard pnpm paths carry peer metadata in the .pnpm locator. Custom virtual stores
+  // use <package@semver_peers>/node_modules/<package>; retain that locator only when it
+  // matches the installed package and its version/peer shape. Plain npm paths normalize
+  // at node_modules, so arbitrary checkout names cannot affect package chunk routing.
+  const pnpmIndex = id.indexOf("/.pnpm/");
+  if (pnpmIndex >= 0) {
+    id = id.slice(pnpmIndex);
+  } else {
+    const prefixSegments = id.slice(0, nodeModulesIndex).split("/");
+    const locator = prefixSegments.at(-1) ?? "";
+    const afterNodeModules = id.slice(nodeModulesIndex + "/node_modules/".length);
+    const installedParts = afterNodeModules.split("/");
+    const installedName = installedParts[0]?.startsWith("@")
+      ? installedParts.slice(0, 2).join("/")
+      : (installedParts[0] ?? "");
+    const locatorSeparator = locator.indexOf("@", locator.startsWith("@") ? 1 : 0);
+    const locatorName = locatorSeparator > 0 ? locator.slice(0, locatorSeparator).replace(/\+/gu, "/") : "";
+    const locatorVersionAndPeers = locatorSeparator > 0 ? locator.slice(locatorSeparator + 1) : "";
+    const isCustomPeerStore =
+      locatorName === installedName &&
+      /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?_.+/u.test(locatorVersionAndPeers);
+    id = isCustomPeerStore ? "/" + locator + "/node_modules/" + afterNodeModules : id.slice(nodeModulesIndex);
+  }
 
   // Keep dynamically selected Lucide glyphs in small alphabetical chunks
   // instead of pulling the complete icon catalog into one eager vendor file.

@@ -3,18 +3,27 @@ import { useStageProfileViewModel, type StageProfileViewProps } from "./slp-prof
 import { SlpProfileModals } from "./SlpProfileModals";
 import { SlpProfilePostCards } from "./SlpProfilePostCards";
 import { SlpProfileLeadingActions } from "./SlpProfileLeadingActions";
-import { ChevronDown, ChevronLeft, Sparkles } from "lucide-react";
-import { Fragment } from "react";
+import { ChevronDown, ChevronLeft, MoreHorizontal, Pencil, Plus, Wrench } from "lucide-react";
+import { Fragment, useEffect, useState } from "react";
 import type { SlpCreatorPostView, SlpCreatorStageProfile } from "../../../../../shared/src/slp/slp-social.types.js";
 import type { SlurpPromotion } from "../../features/ads/slp-ads-contract";
 import { toast } from "sonner";
-import { type SlpPostCardModel } from "../../modules/post/SlpPostCard";
-import { SlurpArcTimelineCard } from "../../features/projects/SlpArcTimelineCard";
+import { type SlpPostCardModel } from "../../modules/post/SlpPostTypes";
+import { SlurpArcEffectsList, SlurpArcTimelineCard } from "../../features/projects/SlpArcTimelineCard";
+import { SlpCouplePageWriteSheet, SlpProfileCoupleLine } from "../../features/projects/SlpCouples";
+import { useSlurpCouplePageClosed } from "../../features/projects/slp-ties-hooks";
 import { useNearViewportSlurpMediaSrc } from "../../base/media/slp-media-src";
 import { SlurpProfileSurface } from "../../features/creators/SlpProfileSurface";
-import { HelpTooltip } from "../../../components/ui/HelpTooltip";
+import { SlpBalanceChip, useSlpShellActions } from "../../modules/chrome/SlpShell";
+import { SlpStirGlyph } from "../../base/chrome/SlpGlyphs";
+import { openSlpStir } from "../../features/stir/slp-stir-contract";
+import { SlpDashboardSheet } from "./SlpDashboard";
+import { SlpButton, slpTagClass } from "../../modules/chrome/SlpButton";
+import { SlpUsesAiMark } from "../../modules/chrome/SlpAiMark";
+import { formatSlpDollars, formatSlpPercent } from "../../base/ui/slp-number-format";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { SlurpInlineAdTile } from "../../features/ads/SlpInlineAd";
+import { openSlpCreatorSettings } from "../../features/creators/settings/slp-creator-settings-store";
 import { SlurpDiscoveryProfileEditor } from "../../features/discovery/SlpDiscoveryProfileEditor";
 import {
   appendAudienceStance,
@@ -22,14 +31,13 @@ import {
   profileAccent,
 } from "../../features/creators/SlpStageProfileForm";
 import { cn } from "../../../lib/utils";
-import {
-  errorMessage,
-  isSlurpStory,
-  toSlpPostCardModel,
-  DisclosureBadge,
-  LoadMoreFeedButton,
-  SlurpPostDialog,
-} from "./SlpHomeHelpers";
+import { SLP_CARD_STACK_CLASS } from "../../modules/post/SlpPostHelpers";
+import { SLP_IMG_FRAME_CLASS, slpImgFade } from "../../base/chrome/SlpChrome";
+import { api } from "../../../lib/api-client";
+import { SlpPostSurfaceMenu } from "../../modules/post/SlpPostMenu";
+import { downloadSlpShareCard, toSlpShareCardInput } from "../../modules/post/slp-share-card";
+import { errorMessage, toSlpPostCardModel, LoadMoreFeedButton, SlurpPostDialog } from "./SlpHomeHelpers";
+import { SlpProfilePage } from "./SlpProfilePage";
 
 // ---------------------------------------------------------------------------
 // Local types
@@ -37,77 +45,71 @@ import {
 
 export type SlurpProfileImagePost = SlpPostCardModel & { imageUrl: string };
 
-type SlpCreatorComposerTool = "image" | "poll" | "media" | "access";
-
 export type SlpCreatorProfileTab = "posts" | "media" | "stories" | "subscribers" | "followers";
 
 // ---------------------------------------------------------------------------
 // Components
 // ---------------------------------------------------------------------------
 
-export function SlurpProfileFeaturedImage({
-  post,
-  onOpenImage,
-}: {
-  post: SlurpProfileImagePost;
-  onOpenImage: (url: string, id: string) => void;
-}) {
-  const { t: localizeUi } = useUiTranslation();
-  const { src: source, observe } = useNearViewportSlurpMediaSrc(post.imageUrl, { width: 960 });
-  return (
-    <button
-      ref={observe}
-      type="button"
-      onClick={() => source && onOpenImage(source, post.id)}
-      disabled={!source}
-      className="block w-full overflow-hidden rounded-lg text-left ring-1 ring-inset ring-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--noodle-accent)]"
-      aria-label={post.title || localizeUi("ui.slurp.post.openFeaturedImage")}
-    >
-      {source ? (
-        <img
-          src={source}
-          alt={post.title || ""}
-          loading="lazy"
-          decoding="async"
-          className="block aspect-[16/8] w-full object-cover"
-        />
-      ) : (
-        <span className="block aspect-[16/8] w-full animate-pulse bg-[var(--muted)] motion-reduce:animate-none" />
-      )}
-    </button>
-  );
-}
-
 export function SlurpProfileMediaTile({
   post,
   onOpenImage,
+  onOpenCreator,
+  withMenu = true,
 }: {
   post: SlurpProfileImagePost;
   onOpenImage: (url: string, id: string) => void;
+  onOpenCreator?: () => void;
+  /** The profile grid has no ⋯ on its tiles (03 §12); the post dialog carries the menu. */
+  withMenu?: boolean;
 }) {
   const { t: localizeUi } = useUiTranslation();
   const { src: source, observe } = useNearViewportSlurpMediaSrc(post.imageUrl, { width: 480 });
   return (
-    <button
-      ref={observe}
-      type="button"
-      onClick={() => source && onOpenImage(source, post.id)}
-      disabled={!source}
-      className="relative aspect-square overflow-hidden bg-[var(--background)] text-left focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--noodle-accent)] disabled:cursor-wait"
-      aria-label={post.title || localizeUi("ui.slurp.post.openImage")}
-    >
-      {source ? (
-        <img
-          src={source}
-          alt={post.title || ""}
-          loading="lazy"
-          decoding="async"
-          className="h-full w-full object-cover transition-transform duration-300 hover:scale-[1.03] motion-reduce:transition-none motion-reduce:hover:scale-100"
-        />
-      ) : (
-        <div className="h-full w-full bg-[var(--muted)]" />
+    <div ref={observe} className="relative aspect-square overflow-hidden bg-[var(--slurp-surface-raised)]">
+      <button
+        type="button"
+        onClick={() => source && onOpenImage(source, post.id)}
+        disabled={!source}
+        className={cn(
+          "relative block h-full w-full text-left focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--noodle-accent)] disabled:cursor-wait",
+          SLP_IMG_FRAME_CLASS,
+        )}
+        aria-label={post.title || localizeUi("ui.slurp.post.openImage")}
+      >
+        {source && (
+          <img
+            key={source}
+            src={source}
+            alt={post.title || ""}
+            loading="lazy"
+            decoding="async"
+            {...slpImgFade}
+            className="slp-crop h-full w-full object-cover transition-[transform,opacity,filter] duration-[360ms] hover:scale-[1.03] motion-reduce:transition-opacity motion-reduce:hover:scale-100"
+          />
+        )}
+      </button>
+      {withMenu && (
+        <div className="absolute end-2 top-2 z-10" onClick={(event) => event.stopPropagation()}>
+          <SlpPostSurfaceMenu
+            onDownload={
+              source
+                ? () =>
+                    void api.download(
+                      `/slurp2/noodler/posts/${encodeURIComponent(post.id)}/media`,
+                      `slurp-${post.id}-image`,
+                    )
+                : undefined
+            }
+            onShare={
+              source ? () => void downloadSlpShareCard(toSlpShareCardInput(post), `slurp-${post.id}.png`) : undefined
+            }
+            onOpenCreator={onOpenCreator}
+            deepDetailsPostId={post.id}
+          />
+        </div>
       )}
-    </button>
+    </div>
   );
 }
 
@@ -161,8 +163,9 @@ export function SlurpMediaWall({
     );
   }
   return (
-    <div className="bg-[var(--slurp-canvas)] pb-6">
-      <div className="grid grid-cols-2 gap-px bg-[var(--noodle-divider)] @min-[620px]:grid-cols-3">
+    <div className="pb-6">
+      {/* Same inset and radius as the feed cards; every tile (picture or ad) gets the same frame. */}
+      <div className="grid grid-cols-2 gap-1.5 px-3 @min-[620px]:grid-cols-3 sm:px-4 [&>*]:overflow-hidden [&>*]:rounded-xl [&>*]:shadow-[var(--slurp-shadow-raised)]">
         {tiles.map((post, index) => {
           // The slot maths counts tiles, not source posts: the wall drops locked and text posts, so
           // indexing off the feed would leave the cadence uneven and some slots permanently empty.
@@ -221,33 +224,22 @@ export function StageProfileView({
   viewerActorAccount,
   slurpSettings,
   postCardCtx,
+  openDashboard = false,
   ...rest
 }: StageProfileViewProps) {
   const model = useStageProfileViewModel({ viewerAccount, viewerActorAccount, slurpSettings, postCardCtx, ...rest });
+  const shellActions = useSlpShellActions();
   const {
     profile,
     onProfileChange,
     onCancelEdit,
     onSaveEdit,
     profileSavePending,
-    posts,
-    draft,
-    onDraftChange,
-    onClearDraft,
-    onDiscardDraft,
-    onEdit,
     onBack,
-    onManualPost,
-    onGuidedPost,
-    manualPending,
-    guidePending,
-    composerOpenSignal,
+    isLoading,
     localizeUi,
+    i18n,
     bannerSrc,
-    setAccessSettingsOpen,
-    setAutomationOpen,
-    creatorToolsOpen,
-    setCreatorToolsOpen,
     locationDraft,
     setLocationDraft,
     uploadProfileAvatar,
@@ -256,79 +248,94 @@ export function StageProfileView({
     profileBannerFileRef,
     setArtworkKind,
     setOpenImagePostId,
-    setArtworkGuidance,
-    autoPosting,
     activeTab,
     setActiveTab,
     subscribersQuery,
     subscriberTotal,
     followerTotal,
     profileLikeTotal,
+    postTabCounts,
     viewingOwnCreator,
     creatorStatus,
     profileLocation,
     profileBioBody,
-    personaBackedCreator,
     managedCreator,
     goalForViewer,
     arcsQuery,
     editing,
     editDraft,
-    featuredPost,
     openImagePost,
+    showProfilePost,
+    setTipOpen,
+    viewerCreator,
   } = model;
   const cards = <SlpProfilePostCards model={model} />;
+  // A closed couple page (7b-couples): no Subscribe, Follow or Tip; its note says why.
+  const closedCouplePage = useSlurpCouplePageClosed(viewerAccount?.entityId ?? null, profile.id);
+  // An open shared page: Message asks which of the two to write to (7c M-002).
+  const couplePage = Boolean(profile.sourceAccountId?.startsWith("slurp-couple:"));
+  const [coupleWriteOpen, setCoupleWriteOpen] = useState(false);
+  // W: the own page's Dashboard (the old Studio's top half), from the action row or an owed #ad in Stir.
+  const [dashboardOpen, setDashboardOpen] = useState(false);
+  useEffect(() => {
+    if (openDashboard && viewingOwnCreator) setDashboardOpen(true);
+  }, [openDashboard, viewingOwnCreator]);
+  // Another Creator Slurp posts for can be stirred from here; a couple's page and your own cannot.
+  const stirrable = !viewingOwnCreator && !model.personaBackedCreator && !couplePage;
+  // No "(0)" while the posts load: a loading page does not claim to be empty.
+  const tabCount = (count: number) => (isLoading ? null : count);
   return (
     <>
       <SlurpProfileSurface
+        storyCreatorId={profile.id}
         mobileHeader={
-          <button
-            type="button"
-            onClick={onBack}
-            className="absolute start-2 top-2 z-20 flex h-11 w-11 items-center justify-center rounded-lg bg-black/50 text-white backdrop-blur-sm hover:bg-black/65 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white @min-[1024px]:hidden"
-            title={localizeUi("ui.slurp.profile.back")}
-            aria-label={localizeUi("ui.slurp.profile.back")}
-          >
-            <ChevronLeft size={22} className="rtl:-scale-x-100" />
-          </button>
-        }
-        account={profile}
-        displayHandle={editing ? editDraft.handle : profile.handle}
-        handleMeta={
           <>
-            {profile.disclosureMode === "hinted" && profile.publicIdentity ? (
-              <HelpTooltip
-                label={localizeUi("ui.noodle.disclosure.hinted.shortLabel")}
-                side="bottom"
-                buttonClassName="border border-[var(--noodle-divider)] px-2 py-0.5 text-[0.68rem] font-bold text-[var(--muted-foreground)] opacity-100 [&_svg]:hidden"
-                text={
-                  <span>
-                    <span className="block font-bold text-[var(--popover-foreground)]">
-                      {localizeUi("ui.noodle.disclosure.open.label")}
-                    </span>
-                    <span className="mt-1 block">
-                      {profile.publicIdentity.displayName} (@{profile.publicIdentity.handle})
-                    </span>
-                  </span>
-                }
-              />
-            ) : (
-              <DisclosureBadge
-                mode={profile.disclosureMode}
-                detail={
-                  profile.disclosureMode === "open" && profile.publicIdentity
-                    ? localizeUi("ui.slurp.disclosure.openLinkedDetail", {
-                        name: profile.publicIdentity.displayName,
-                        handle: profile.publicIdentity.handle,
-                      })
-                    : undefined
-                }
-              />
+            <button
+              type="button"
+              onClick={onBack}
+              className="absolute start-2 top-2 z-30 flex h-11 w-11 items-center justify-center rounded-full bg-black/40 text-white shadow-[var(--slurp-shadow-raised)] ring-1 ring-inset ring-white/15 backdrop-blur-md hover:bg-black/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white @min-[1024px]:hidden [&_svg]:!text-white"
+              title={localizeUi("ui.slurp.profile.back")}
+              aria-label={localizeUi("ui.slurp.profile.back")}
+            >
+              <ChevronLeft size={22} className="rtl:-scale-x-100" />
+            </button>
+            {/* Phones: the balance sits top right over the banner (the coin-fly target), except while
+              the banner's own edit buttons are there. W: beside it ✦ (Stir this Creator), or on your
+              own page ⋯ (Settings, Wallet, switch account: "More" became "Me"). */}
+            {!editing && (
+              <div className="absolute end-2 top-2 z-30 flex items-center gap-2">
+                {stirrable && (
+                  <button
+                    type="button"
+                    data-slp-stir-open=""
+                    onClick={() => openSlpStir({ creatorId: profile.id })}
+                    className="flex h-11 items-center gap-1.5 rounded-full bg-black/40 px-3.5 text-sm font-bold text-white shadow-[var(--slurp-shadow-raised)] ring-1 ring-inset ring-white/15 backdrop-blur-md hover:bg-black/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white [&_svg]:!text-white"
+                    aria-label={localizeUi("ui.slurp.stir.stirName", { name: profile.displayName })}
+                  >
+                    <SlpStirGlyph size={16} filled aria-hidden="true" />
+                    {localizeUi("ui.slurp.stir.stirShort")}
+                  </button>
+                )}
+                {viewingOwnCreator && shellActions.openMore && (
+                  <button
+                    type="button"
+                    onClick={shellActions.openMore}
+                    className="flex h-11 w-11 items-center justify-center rounded-full bg-black/40 text-white shadow-[var(--slurp-shadow-raised)] ring-1 ring-inset ring-white/15 backdrop-blur-md hover:bg-black/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white @min-[1024px]:hidden [&_svg]:!text-white"
+                    aria-label={localizeUi("ui.slurp.navigation.more", { defaultValue: "More" })}
+                    title={localizeUi("ui.slurp.navigation.more", { defaultValue: "More" })}
+                  >
+                    <MoreHorizontal size={20} aria-hidden="true" />
+                  </button>
+                )}
+                <SlpBalanceChip />
+              </div>
             )}
           </>
         }
+        account={profile}
+        displayHandle={editing ? editDraft.handle : profile.handle}
         // A creator inherits a banner from its source at creation (open/hinted only); without
-        // one the shell keeps its plain accent band.
+        // one the banner is a pink wash made from the avatar.
         banner={{
           url: bannerSrc,
           canEdit: editing,
@@ -345,10 +352,7 @@ export function StageProfileView({
               },
             );
           },
-          onGenerate: () => {
-            setArtworkGuidance("");
-            setArtworkKind("banner");
-          },
+          onGenerate: () => setArtworkKind("banner"),
         }}
         avatarUpload={{
           canEdit: editing,
@@ -365,15 +369,10 @@ export function StageProfileView({
               },
             );
           },
-          onGenerate: () => {
-            setArtworkGuidance("");
-            setArtworkKind("avatar");
-          },
+          onGenerate: () => setArtworkKind("avatar"),
         }}
-        decorativeBanner={false}
         editor={{
           isEditing: editing,
-          onStartEditing: onEdit,
           onCancel: onCancelEdit,
           onSave: () => onSaveEdit(locationDraft),
           canSave: Boolean(editDraft.displayName.trim() && editDraft.handle.trim()),
@@ -417,28 +416,39 @@ export function StageProfileView({
             </div>
           ),
         }}
-        leadingActions={<SlpProfileLeadingActions model={model} />}
+        leadingActions={
+          closedCouplePage ? null : (
+            <SlpProfileLeadingActions
+              model={couplePage ? { ...model, onOpenMessages: () => setCoupleWriteOpen(true) } : model}
+              onOpenDashboard={viewingOwnCreator ? () => setDashboardOpen(true) : undefined}
+              onOpenSettings={viewingOwnCreator ? shellActions.openSettings : undefined}
+            />
+          )
+        }
         status={creatorStatus}
-        stats={{ followers: followerTotal, subscribers: subscriberTotal, likes: profileLikeTotal }}
+        stats={{
+          followers: followerTotal,
+          subscribers: subscribersQuery.data ? subscriberTotal : null,
+          likes: profileLikeTotal,
+        }}
         location={profileLocation}
-        bioContent={profileBioBody ? <p className="whitespace-pre-wrap text-sm leading-6">{profileBioBody}</p> : null}
+        coupleLine={
+          <SlpProfileCoupleLine
+            personaId={viewerAccount?.entityId ?? null}
+            accountId={profile.id}
+            onOpenProfile={postCardCtx.openAuthorProfile}
+          />
+        }
+        bioContent={profileBioBody ? <p className="whitespace-pre-wrap">{profileBioBody}</p> : null}
         bioCollapsible={profileBioBody.length > 280 || profileBioBody.split("\n").length > 4}
-        contentActions={null}
         tabs={[
-          {
-            id: "posts",
-            label: `${localizeUi("ui.noodle.profile.tabs.posts")} (${posts.filter((post) => !isSlurpStory(post)).length})`,
-          },
-          {
-            id: "media",
-            label: `${localizeUi("ui.noodle.profile.tabs.media")} (${posts.filter((post) => Boolean(post.imageUrl)).length})`,
-          },
-          { id: "stories", label: `${localizeUi("ui.slurp.stories.archive")} (${posts.filter(isSlurpStory).length})` },
+          { id: "posts", label: localizeUi("ui.noodle.profile.tabs.posts"), count: tabCount(postTabCounts.posts) },
+          { id: "media", label: localizeUi("ui.noodle.profile.tabs.media"), count: tabCount(postTabCounts.media) },
+          { id: "stories", label: localizeUi("ui.slurp.stories.archive"), count: tabCount(postTabCounts.stories) },
           {
             id: "subscribers",
-            label: localizeUi("ui.noodle.stageProfile.tabs.subscribers", {
-              count: subscribersQuery.data ? subscriberTotal : "…",
-            }),
+            label: localizeUi("ui.slurp.profile.subscribers", { defaultValue: "Subscribers" }),
+            count: subscribersQuery.data ? subscriberTotal : null,
             ariaLabel: localizeUi("ui.noodle.stageProfile.tabs.subscribersAria", {
               count: subscribersQuery.data ? subscriberTotal : localizeUi("ui.noodle.stageProfile.tabs.loading"),
             }),
@@ -446,158 +456,69 @@ export function StageProfileView({
           },
           {
             id: "followers",
-            label: localizeUi("ui.slurp.profile.tabs.followers", { count: followerTotal }),
+            label: localizeUi("ui.slurp.profile.followers", { defaultValue: "Followers" }),
+            count: followerTotal,
             management: true,
           },
         ]}
         activeTab={activeTab}
         onTabChange={setActiveTab}
-        editorActionInPreTabs
-        preTabsContent={
-          <>
-            {/* Both, never either: a set tip goal used to take this slot and hide the composer,
-              so Create post and Add story opened nothing while still leaving a draft behind. */}
-            {goalForViewer && !editing && (
-              <section className="border-b border-[var(--noodle-divider)] bg-[var(--slurp-surface)] px-4 py-3 sm:px-6">
-                <div className="flex items-baseline justify-between gap-3">
-                  <p className="min-w-0 truncate text-xs font-bold">{goalForViewer.label}</p>
-                  <p className="shrink-0 text-xs tabular-nums text-[var(--muted-foreground)]">
-                    {goalForViewer.met
-                      ? localizeUi("ui.slurp.profile.goalMet", { defaultValue: "Goal met" })
-                      : localizeUi("ui.slurp.profile.goalProgress", {
-                          defaultValue: "{{raised}} / {{target}}",
-                          raised: goalForViewer.raised.toLocaleString(),
-                          target: goalForViewer.target.toLocaleString(),
-                        })}
-                  </p>
-                </div>
-                <div className="mt-2 h-2 overflow-hidden rounded-full bg-[var(--accent)]">
-                  <div
-                    className="h-full rounded-full bg-[var(--noodle-accent)] transition-[width] motion-reduce:transition-none"
-                    style={{ width: `${Math.round(goalForViewer.progress * 100)}%` }}
-                  />
-                </div>
-              </section>
-            )}
-            {!editing && arcsQuery.data && (
-              <SlurpArcTimelineCard
-                arcs={arcsQuery.data.arcs}
-                onOpenPost={postCardCtx.openPost}
-                onOpenProfile={postCardCtx.openAuthorProfile}
-              />
-            )}
-            {managedCreator && !editing && (
-              <section data-slurp-creator-tools className="min-w-0">
-                {/* Open by default: this panel only renders on a creator you own, and posting is
-                  what you came here to do. The line above it still collapses the whole thing. */}
-                <div className="flex h-11 items-stretch">
-                  <button
-                    type="button"
-                    onClick={() => setCreatorToolsOpen((open) => !open)}
-                    aria-expanded={creatorToolsOpen}
-                    aria-controls="slurp-creator-tools-panel"
-                    title={localizeUi("ui.slurp.profile.creatorToolsDetail")}
-                    className="flex min-w-0 flex-1 items-center gap-2 rounded-s-2xl px-3 text-start text-xs font-semibold text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--noodle-accent)]"
-                  >
-                    <Sparkles size={13} className="shrink-0 text-[var(--muted-foreground)]" aria-hidden="true" />
-                    <span className="min-w-0 flex-1 truncate">{localizeUi("ui.slurp.profile.creatorTools")}</span>
-                    {viewingOwnCreator && (
-                      <span className="hidden shrink-0 text-[0.68rem] font-semibold text-[var(--muted-foreground)] lg:inline">
-                        {localizeUi("ui.noodle.stageprofileview.yourProfile")}
-                      </span>
-                    )}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={onEdit}
-                    className="group/edit flex min-h-11 items-center px-2 text-xs font-bold text-[var(--noodle-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--noodle-accent)]"
-                  >
-                    <span className="rounded-lg bg-[color-mix(in_srgb,var(--noodle-accent)_18%,transparent)] px-2.5 py-1.5 transition-[background-color,transform] group-hover/edit:bg-[color-mix(in_srgb,var(--noodle-accent)_26%,transparent)] group-active/edit:scale-[0.96] motion-reduce:transition-none motion-reduce:group-active/edit:scale-100">
-                      {localizeUi("ui.noodle.stageprofileview.editProfile")}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCreatorToolsOpen((open) => !open)}
-                    aria-expanded={creatorToolsOpen}
-                    aria-controls="slurp-creator-tools-panel"
-                    aria-label={localizeUi("ui.slurp.profile.creatorTools")}
-                    className="flex w-11 shrink-0 items-center justify-center rounded-e-2xl text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--noodle-accent)]"
-                  >
-                    <ChevronDown
-                      size={16}
-                      strokeWidth={2.5}
-                      className={cn(
-                        "transition-transform motion-reduce:transition-none",
-                        creatorToolsOpen && "rotate-180",
-                      )}
-                      aria-hidden="true"
+        pageContent={<SlpProfilePage model={model} />}
+        afterTabsContent={
+          editing ? null : (
+            <>
+              {/* Fan cards open the Posts tab (step 3.2), so the header ends on its actions. */}
+              {activeTab === "posts" && (goalForViewer || arcsQuery.data?.arcs.length) ? (
+                <div className={cn(SLP_CARD_STACK_CLASS, "mx-3 mt-4 @min-[680px]:mx-0")}>
+                  {goalForViewer && (
+                    <section className="rounded-2xl bg-[var(--slurp-surface-raised)] px-4 py-3.5 shadow-[var(--slurp-shadow-raised),var(--slurp-highlight)]">
+                      <div className="flex items-center gap-3">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-semibold text-[var(--slurp-muted)]">
+                            {localizeUi("ui.slurp.profile.tipGoal", { defaultValue: "Tip goal" })}
+                          </p>
+                          <p className="truncate text-[15px] font-bold leading-5">{goalForViewer.label}</p>
+                        </div>
+                        {/* The natural action next to a goal: open the tip sheet. */}
+                        {!viewingOwnCreator && viewerCreator && !goalForViewer.met && (
+                          <SlpButton onClick={() => setTipOpen(true)} className="min-h-9 shrink-0 px-3.5 text-xs">
+                            {localizeUi("ui.slurp.profile.chipIn", { defaultValue: "Chip in" })}
+                          </SlpButton>
+                        )}
+                      </div>
+                      <div className="mt-3 h-2 overflow-hidden rounded-full bg-[color-mix(in_srgb,var(--slurp-text)_10%,transparent)]">
+                        <div
+                          className="h-full rounded-full bg-[var(--noodle-accent)] shadow-[0_0_10px_var(--noodle-accent)] transition-[width] motion-reduce:transition-none"
+                          style={{ width: `${Math.round(Math.min(1, goalForViewer.progress) * 100)}%` }}
+                        />
+                      </div>
+                      <p className="mt-1.5 text-xs tabular-nums text-[var(--slurp-muted)]">
+                        {goalForViewer.met
+                          ? localizeUi("ui.slurp.profile.goalMet", { defaultValue: "Goal met" })
+                          : localizeUi("ui.slurp.profile.goalProgressDollars", {
+                              defaultValue: "{{raised}} of {{target}} · {{percent}}",
+                              raised: formatSlpDollars(goalForViewer.raised, i18n.language),
+                              target: formatSlpDollars(goalForViewer.target, i18n.language),
+                              percent: formatSlpPercent(Math.min(1, goalForViewer.progress), i18n.language),
+                            })}
+                      </p>
+                    </section>
+                  )}
+                  {arcsQuery.data && (
+                    <SlurpArcTimelineCard
+                      arcs={arcsQuery.data.arcs}
+                      onOpenPost={showProfilePost}
+                      onOpenProfile={postCardCtx.openAuthorProfile}
                     />
-                  </button>
+                  )}
                 </div>
-                <div
-                  id="slurp-creator-tools-panel"
-                  hidden={!creatorToolsOpen}
-                  className="mt-1 rounded-xl bg-[var(--background)] shadow-inner ring-1 ring-inset ring-[var(--noodle-divider)]"
-                >
-                  {/* Edit lives on the profile header with Follow and Subscribe. It used to be
-                    duplicated here too, which gave the same action two homes and made this panel
-                    look like the place to go. */}
-                  <div className="flex flex-wrap gap-2 px-3 py-2 @min-[760px]:px-4">
-                    <button
-                      type="button"
-                      onClick={() => setAccessSettingsOpen(true)}
-                      className="min-h-11 rounded-lg border border-[var(--noodle-divider)] px-3 text-xs font-bold hover:bg-[var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--noodle-accent)]"
-                    >
-                      {localizeUi("ui.noodle.stageprofileview.access")}
-                    </button>
-                    {!personaBackedCreator && (
-                      <button
-                        type="button"
-                        onClick={() => setAutomationOpen(true)}
-                        className="min-h-11 rounded-lg border border-[var(--noodle-divider)] px-3 text-xs font-bold hover:bg-[var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--noodle-accent)]"
-                      >
-                        {autoPosting.enabled
-                          ? localizeUi("ui.noodle.stageprofileview.automationOn")
-                          : localizeUi("ui.noodle.stageprofileview.automation")}
-                      </button>
-                    )}
-                  </div>
-                  <NoodlerPostComposer
-                    key={profile.id}
-                    profile={profile}
-                    openSignal={composerOpenSignal}
-                    availablePosts={posts}
-                    draft={draft}
-                    onDraftChange={onDraftChange}
-                    onClearDraft={onClearDraft}
-                    onDiscardDraft={onDiscardDraft}
-                    onManualPost={onManualPost}
-                    onGuidedPost={onGuidedPost}
-                    manualPending={manualPending}
-                    guidePending={guidePending}
-                  />
-                </div>
-              </section>
-            )}
-          </>
-        }
-        featuredContent={
-          featuredPost && !bannerSrc && activeTab === "posts" ? (
-            <div className="border-b border-[var(--noodle-divider)] bg-[var(--noodle-accent)]/[0.04] px-4 py-4 sm:px-6">
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <span className="text-[0.68rem] font-bold uppercase tracking-[0.14em] text-[var(--noodle-accent)]">
-                  {localizeUi("ui.slurp.profile.featuredDrop")}
-                </span>
-                <span className="text-xs text-[var(--muted-foreground)]">{profile.displayName}</span>
-              </div>
-              <SlurpProfileFeaturedImage post={featuredPost} onOpenImage={(_url, id) => setOpenImagePostId(id)} />
-            </div>
-          ) : null
+              ) : null}
+              {managedCreator && <SlpCreatorToolsCard model={model} />}
+            </>
+          )
         }
         postList={cards}
         accent={profileAccent(profile.id)}
-        spotlight
       />
       {openImagePost && (
         <SlurpPostDialog
@@ -607,12 +528,196 @@ export function StageProfileView({
         />
       )}
       <SlpProfileModals model={model} />
+      {viewingOwnCreator && (
+        <SlpDashboardSheet
+          open={dashboardOpen}
+          onClose={() => setDashboardOpen(false)}
+          personaId={viewerAccount?.entityId ?? null}
+          creatorId={profile.id}
+          onOpenProfile={() => setDashboardOpen(false)}
+        />
+      )}
+      {couplePage && (
+        <SlpCouplePageWriteSheet
+          personaId={viewerAccount?.entityId ?? null}
+          accountId={profile.id}
+          open={coupleWriteOpen}
+          onClose={() => setCoupleWriteOpen(false)}
+          onWrite={(creatorId) => model.onOpenMessages(creatorId)}
+        />
+      )}
+      {managedCreator && (
+        <NoodlerPostComposer
+          key={profile.id}
+          open={model.composerOpen}
+          onClose={() => model.setComposerOpen(false)}
+          profile={profile}
+          availablePosts={model.posts}
+          draft={model.draft}
+          onDraftChange={model.onDraftChange}
+          onClearDraft={model.onClearDraft}
+          onDiscardDraft={model.onDiscardDraft}
+          onManualPost={model.onManualPost}
+          manualPending={model.manualPending}
+        />
+      )}
     </>
   );
+}
 
-  // ---------------------------------------------------------------------------
-  // Composer
-  // ---------------------------------------------------------------------------
+/**
+ * Everything an operator does on a profile, in one collapsible muted card under the tabs (design
+ * language §8: after the fan content, never the primary). Closed by default except on the viewer's
+ * own persona-backed Creator, where posting is the reason for the visit.
+ */
+function SlpCreatorToolsCard({ model }: { model: ReturnType<typeof useStageProfileViewModel> }) {
+  const {
+    arcsQuery,
+    autoPosting,
+    creatorToolsOpen,
+    localizeUi,
+    onEdit,
+    onRunNow,
+    openComposer,
+    personaBackedCreator,
+    profile,
+    runNowPending,
+    setCreatorToolsOpen,
+    viewingOwnCreator,
+  } = model;
+  const mode = profile.disclosureMode;
+  const identity = profile.publicIdentity;
+  const identityDetail =
+    mode === "open" && identity
+      ? localizeUi("ui.slurp.disclosure.openLinkedDetail", { name: identity.displayName, handle: identity.handle })
+      : mode === "hinted"
+        ? `${localizeUi("ui.slurp.disclosure.hintedDetail")}${identity ? ` (${identity.displayName}, @${identity.handle})` : ""}`
+        : mode === "secret"
+          ? localizeUi("ui.slurp.disclosure.secretDetail")
+          : localizeUi("ui.slurp.disclosure.setupDetail");
+  const hasEffects = Boolean(arcsQuery.data?.arcs.length);
+  return (
+    <section
+      data-slurp-creator-tools
+      className="mx-3 mt-3 rounded-2xl bg-[color-mix(in_srgb,var(--slurp-surface)_72%,transparent)] ring-1 ring-inset ring-[var(--noodle-divider)] @min-[680px]:mx-0"
+    >
+      <button
+        type="button"
+        onClick={() => setCreatorToolsOpen((open) => !open)}
+        aria-expanded={creatorToolsOpen}
+        aria-controls="slurp-creator-tools-panel"
+        className="flex min-h-12 w-full items-center gap-3 rounded-2xl px-4 py-2 text-start text-[var(--slurp-muted)] transition-colors hover:text-[var(--slurp-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--slurp-focus)] [&_svg]:!text-current"
+      >
+        <Wrench size={16} aria-hidden="true" className="shrink-0" />
+        <span className="min-w-0 flex-1">
+          <span className="block text-[13px] font-semibold text-[var(--slurp-text)]">
+            {localizeUi("ui.slurp.profile.creatorTools")}
+          </span>
+          <span className="block truncate text-xs">
+            {viewingOwnCreator
+              ? localizeUi("ui.slurp.profile.creatorToolsOwn", { defaultValue: "Post, edit and automate your page" })
+              : localizeUi("ui.slurp.profile.creatorToolsOthers", {
+                  defaultValue: "Edit, automate and post as {{name}}",
+                  name: profile.displayName,
+                })}
+          </span>
+        </span>
+        <ChevronDown
+          size={16}
+          strokeWidth={2.5}
+          className={cn(
+            "shrink-0 transition-transform motion-reduce:transition-none",
+            creatorToolsOpen && "rotate-180",
+          )}
+          aria-hidden="true"
+        />
+      </button>
+      <div
+        id="slurp-creator-tools-panel"
+        hidden={!creatorToolsOpen}
+        className="space-y-4 border-t border-[var(--noodle-divider)] px-4 pb-4 pt-3"
+      >
+        {/* The own page edits from its action row, and a persona-backed Creator has no automation,
+            so the own page has no buttons here. */}
+        {!viewingOwnCreator && (
+          <div className="flex flex-wrap gap-2">
+            <SlpButton variant="quiet" onClick={() => openComposer()} className="min-h-10 px-3.5 text-xs">
+              <Plus size={14} aria-hidden="true" />
+              {localizeUi("ui.slurp.profile.newPost", { defaultValue: "New post" })}
+            </SlpButton>
+            <SlpButton variant="quiet" onClick={onEdit} className="min-h-10 px-3.5 text-xs">
+              <Pencil size={14} aria-hidden="true" />
+              {localizeUi("ui.slurp.profile.editProfile", { defaultValue: "Edit profile" })}
+            </SlpButton>
+            {/* Automation used to open a dialog of its own here. It is a Creator setting like the
+                rest, so it opens the one place they all live now. */}
+            {!personaBackedCreator && (
+              <>
+                <SlpButton
+                  variant="quiet"
+                  onClick={() => openSlpCreatorSettings(profile.id, { tab: "automation" })}
+                  className="min-h-10 px-3.5 text-xs"
+                >
+                  {autoPosting.enabled
+                    ? localizeUi("ui.noodle.stageprofileview.automationOn")
+                    : localizeUi("ui.noodle.stageprofileview.automation")}
+                </SlpButton>
+                {/* Generating a post talks to the provider, so it keeps its own disclosure gate and
+                    stays an action here rather than moving in with the settings. */}
+                <SlpButton
+                  variant="quiet"
+                  disabled={runNowPending}
+                  onClick={() => onRunNow(profile.id)}
+                  className="min-h-10 px-3.5 text-xs"
+                >
+                  {runNowPending
+                    ? localizeUi("ui.noodle.stageprofileview.running")
+                    : localizeUi("ui.noodle.stageprofileview.runNow")}
+                  <SlpUsesAiMark />
+                </SlpButton>
+              </>
+            )}
+          </div>
+        )}
+        {/* W: steering (mood, life, pace, ideas, spice) moved into the Stir ✦ sheet with the rest of the
+          levers. Only for Creators Slurp writes for: not a couple's shared page (7b-couples). */}
+        {!viewingOwnCreator && !personaBackedCreator && !profile.sourceAccountId?.startsWith("slurp-couple:") && (
+          <button
+            type="button"
+            onClick={() => openSlpStir({ creatorId: profile.id })}
+            className="flex min-h-12 w-full items-center gap-3 rounded-xl bg-[var(--slurp-tint)] px-3 text-start transition-colors hover:bg-[color-mix(in_srgb,var(--noodle-accent)_22%,var(--slurp-surface-raised))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)] [&_svg]:!text-[var(--slurp-ink)]"
+          >
+            <SlpStirGlyph size={18} filled aria-hidden="true" className="shrink-0" />
+            <span className="min-w-0 flex-1">
+              <span className="block text-[13px] font-semibold text-[var(--slurp-text)]">
+                {localizeUi("ui.slurp.stir.stirName", { name: profile.displayName })}
+              </span>
+              <span className="block truncate text-xs text-[var(--slurp-muted)]">
+                {localizeUi("ui.slurp.stir.toolsRow")}
+              </span>
+            </span>
+          </button>
+        )}
+        <div>
+          <p className="text-xs font-semibold text-[var(--slurp-muted)]">
+            {localizeUi("ui.slurp.profile.identity", { defaultValue: "Identity" })}
+          </p>
+          <p className="mt-1 flex flex-wrap items-center gap-2 text-xs leading-4">
+            <span className={slpTagClass(true)}>
+              {mode ? localizeUi(`ui.noodle.disclosure.${mode}.label`) : localizeUi("ui.noodle.disclosure.setupNeeded")}
+            </span>
+            <span className="min-w-0 text-[var(--slurp-muted)]">{identityDetail}</span>
+          </p>
+        </div>
+        {hasEffects && (
+          <SlurpArcEffectsList
+            arcs={arcsQuery.data!.arcs}
+            heading={localizeUi("ui.slurp.arcs.effectsHeading", { defaultValue: "Storyline effects" })}
+          />
+        )}
+      </div>
+    </section>
+  );
 }
 
 export type { SlpCreatorComposerTool } from "./SlpScreenComposer";

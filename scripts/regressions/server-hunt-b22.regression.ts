@@ -122,7 +122,7 @@ try {
     const start = source.indexOf("async function handleDownloadSse(");
     assert.ok(start > 0);
     const body = source.slice(start, source.indexOf("async function handleSpeechDownloadSse(", start));
-    const guard = body.indexOf("if (activeSetupStream)");
+    const guard = body.search(/if\s*\(\s*activeSetupStream\s*\|\|\s*modelSwitchInProgress\s*\)/);
     assert.ok(guard > 0 && guard < body.indexOf("reply.hijack()"), "second stream is rejected before hijack");
     assert.match(body, /status\(409\)/);
     assert.match(body.slice(body.indexOf("const cancelActiveWork")), /releaseSetupStream\(\)/);

@@ -13,8 +13,12 @@ import {
   swapGameInventoryStacks,
   type GameInventoryOp,
   type GameInventoryOpResult,
+  type GameInventoryWear,
+  type RulesetItemBookSheets,
   type GameInventoryStack,
   type PlayerStats,
+  rulesetCardItems,
+  rulesetReadsItems,
 } from "@marinara-engine/shared";
 import type { ChatMetadata } from "@marinara-engine/shared";
 import {
@@ -54,7 +58,14 @@ import {
   type GameAssetManifest,
 } from "../../hooks/use-game-assets";
 import { gameAssetGenerationTimeoutMs } from "../../lib/game-asset-generation-timeout";
-import { cleanNpcAvatarDisplayName, normalizeNpcAvatarName } from "../../lib/game-npc-avatar";
+import {
+  cleanNpcAvatarDisplayName,
+  hasAuthoritativeNpcAvatarState,
+  isNpcAvatarRemoved,
+  mergeGameNpcsPreservingAvatars,
+  normalizeNpcAvatarName,
+  resolveNpcAvatarStateForIdentity,
+} from "../../lib/game-npc-avatar";
 import { useChatStore } from "../../stores/chat.store";
 import { useUIStore } from "../../stores/ui.store";
 import { useGameStateStore } from "../../stores/game-state.store";
@@ -203,7 +214,7 @@ import type {
   SpatialMapDraftSize,
   PendingSpatialTransition,
 } from "@marinara-engine/shared";
-import type { AvatarCrop, SceneSegmentEffect } from "@marinara-engine/shared";
+import type { AvatarCrop, GameNpcAvatarState, SceneSegmentEffect } from "@marinara-engine/shared";
 import type { Journal } from "./GameJournal";
 import {
   PROFESSOR_MARI_ID,
@@ -309,6 +320,7 @@ import {
   buildMissingSceneAssetGenerationPayload,
   DEFAULT_CAMPAIGN_PORTRAIT_STYLE_PROMPT,
   normalizeSceneAssetNameForGeneration,
+  sceneAssetNpcAvatarKey,
   type SceneAssetNpcAvatarCandidate,
 } from "./game-asset-generation-payload";
 import { PinnedImageOverlay } from "../chat/PinnedImageOverlay";
@@ -402,7 +414,13 @@ type GameAssetGenerationResult = {
   generatedBackground: string | null;
   fallbackBackground?: string | null;
   generatedIllustration: { tag: string; segment?: number } | null;
-  generatedNpcAvatars: Array<{ npcId?: string | null; characterId?: string | null; name: string; avatarUrl: string }>;
+  generatedNpcAvatars: Array<{
+    npcId?: string | null;
+    characterId?: string | null;
+    name: string;
+    avatarUrl: string;
+    avatarState?: GameNpcAvatarState;
+  }>;
   failedNpcAvatars?: Array<{ name: string; reason: string }>;
 };
 
@@ -1469,6 +1487,12 @@ function mergeSceneAssetNpcCandidates(
 ): GameNpc[] {
   const excluded = new Set(excludedNames.map(normalizeSceneAssetName));
   const candidates = new Map<string, GameNpc>();
+  const candidateKey = (npc: GameNpc, normalizedName: string) =>
+    npc.id?.trim()
+      ? `id:${npc.id.trim()}`
+      : npc.characterId?.trim()
+        ? `character:${npc.characterId.trim()}`
+        : `name:${normalizedName}`;
   const descriptionPriority = (source: GameNpc["descriptionSource"] | undefined) => {
     switch (source) {
       case "user":
@@ -1518,20 +1542,36 @@ function mergeSceneAssetNpcCandidates(
     const name = typeof npc.name === "string" ? npc.name.trim() : "";
     const normalizedName = normalizeSceneAssetName(name);
     if (!normalizedName) return;
-    const existing = candidates.get(normalizedName);
+    const key = candidateKey(npc, normalizedName);
+    const existing = candidates.get(key);
     if (!existing) {
-      candidates.set(normalizedName, { ...npc, name });
+      candidates.set(key, { ...npc, name });
       return;
     }
     const chosenDescription = chooseDescription(existing, npc);
-    candidates.set(normalizedName, {
+    const avatarState = resolveNpcAvatarStateForIdentity(
+      existing.avatarState,
+      existing.characterId,
+      npc.avatarState,
+      npc.characterId,
+    );
+    const avatarStateOwner = avatarState === npc.avatarState ? npc : existing;
+    candidates.set(key, {
       ...existing,
+      characterId: npc.characterId?.trim() || existing.characterId?.trim() || null,
       description: chosenDescription.description,
       descriptionSource: chosenDescription.descriptionSource,
       gender: existing.gender ?? npc.gender ?? null,
       pronouns: existing.pronouns ?? npc.pronouns ?? null,
       location: existing.location || npc.location,
-      avatarUrl: existing.avatarUrl || npc.avatarUrl,
+      avatarUrl: isNpcAvatarRemoved(avatarState)
+        ? undefined
+        : hasAuthoritativeNpcAvatarState(avatarState)
+          ? (avatarStateOwner.avatarUrl ?? undefined)
+          : npc.characterId?.trim() && npc.characterId.trim() !== existing.characterId?.trim()
+            ? npc.avatarUrl
+            : existing.avatarUrl || npc.avatarUrl,
+      avatarState,
     });
   };
 
@@ -1558,12 +1598,21 @@ function mergeSceneAssetNpcCandidates(
       typeof presentCharacter.avatarPath === "string" && presentCharacter.avatarPath.trim()
         ? presentCharacter.avatarPath.trim()
         : null;
-    const existing = candidates.get(normalizedName);
+    const namedCandidates = [...candidates.entries()].filter(
+      ([, candidate]) => normalizeSceneAssetName(candidate.name) === normalizedName,
+    );
+    const matchedCandidate = presentCharacter.characterId
+      ? namedCandidates.find(([, candidate]) => candidate.characterId === presentCharacter.characterId)
+      : namedCandidates.length === 1
+        ? namedCandidates[0]
+        : undefined;
 
-    if (!existing) continue;
+    if (!matchedCandidate) continue;
+    const [key, existing] = matchedCandidate;
 
-    candidates.set(normalizedName, {
+    candidates.set(key, {
       ...existing,
+      characterId: existing.characterId ?? presentCharacter.characterId ?? null,
       description: existing.description || description,
       descriptionSource: existing.description
         ? existing.descriptionSource
@@ -1571,7 +1620,11 @@ function mergeSceneAssetNpcCandidates(
           ? (existing.descriptionSource ?? "narration")
           : existing.descriptionSource,
       location: existing.location || currentLocation || "",
-      avatarUrl: existing.avatarUrl || avatarUrl,
+      avatarUrl: hasAuthoritativeNpcAvatarState(existing.avatarState)
+        ? isNpcAvatarRemoved(existing.avatarState)
+          ? undefined
+          : (existing.avatarUrl ?? undefined)
+        : existing.avatarUrl || avatarUrl,
     });
   }
 
@@ -1579,10 +1632,13 @@ function mergeSceneAssetNpcCandidates(
     const normalizedName = normalizeSceneAssetName(candidate.name);
     if (!normalizedName) continue;
 
-    const existing = candidates.get(normalizedName);
-    if (!existing) continue;
+    const namedCandidates = [...candidates.entries()].filter(
+      ([, entry]) => normalizeSceneAssetName(entry.name) === normalizedName,
+    );
+    if (namedCandidates.length !== 1) continue;
+    const [key, existing] = namedCandidates[0]!;
 
-    candidates.set(normalizedName, {
+    candidates.set(key, {
       ...existing,
       description: existing.description || candidate.description,
       descriptionSource: existing.description
@@ -1603,25 +1659,115 @@ function buildNpcAvatarLookup(
   libraryAvatars?: ReadonlyMap<string, string>,
 ): Map<string, string> {
   const lookup = new Map<string, string>();
-  const add = (name: unknown, avatarUrl: unknown) => {
+  const metadata = Array.isArray(metadataNpcs)
+    ? metadataNpcs.filter((npc): npc is GameNpc => !!npc && typeof npc === "object")
+    : [];
+  const mergedMetadataNpcs = mergeGameNpcsPreservingAvatars(trackedNpcs, metadata);
+  const metadataNpcIds = new Set(metadata.map((npc) => npc.id?.trim()).filter(Boolean));
+  const metadataIdentities = new Set(
+    metadata.map((npc) =>
+      npc.characterId?.trim()
+        ? `character:${npc.characterId.trim()}`
+        : npc.id
+          ? `id:${npc.id}`
+          : `name:${normalizeSceneAssetNameForGeneration(npc.name)}`,
+    ),
+  );
+  const effectiveNpcs = [
+    ...mergedMetadataNpcs,
+    ...trackedNpcs.filter((npc) => {
+      if (npc.id && metadataNpcIds.has(npc.id.trim())) return false;
+      const identity = npc.characterId?.trim()
+        ? `character:${npc.characterId.trim()}`
+        : npc.id
+          ? `id:${npc.id}`
+          : `name:${normalizeSceneAssetNameForGeneration(npc.name)}`;
+      return !metadataIdentities.has(identity);
+    }),
+  ];
+  const nameIdentities = new Map<string, Set<string>>();
+  const addNameIdentity = (name: unknown, identity: string) => {
+    if (typeof name !== "string") return;
+    const normalizedName = normalizeSceneAssetNameForGeneration(name);
+    if (!normalizedName) return;
+    const identities = nameIdentities.get(normalizedName) ?? new Set<string>();
+    identities.add(identity);
+    nameIdentities.set(normalizedName, identities);
+  };
+  for (const npc of effectiveNpcs) {
+    addNameIdentity(
+      npc.name,
+      npc.characterId?.trim() ? `character:${npc.characterId.trim()}` : npc.id ? `id:${npc.id}` : `name:${npc.name}`,
+    );
+  }
+  for (const presentCharacter of presentCharacters) {
+    const characterId = presentCharacter.characterId?.trim();
+    if (characterId) {
+      if (!effectiveNpcs.some((npc) => npc.characterId?.trim() === characterId)) {
+        addNameIdentity(presentCharacter.name, `character:${characterId}`);
+      }
+      continue;
+    }
+    const normalizedName = normalizeSceneAssetNameForGeneration(presentCharacter.name ?? "");
+    const mappedByUniqueName =
+      effectiveNpcs.filter((npc) => normalizeSceneAssetNameForGeneration(npc.name) === normalizedName).length === 1;
+    if (!mappedByUniqueName) addNameIdentity(presentCharacter.name, `name:${normalizedName}`);
+  }
+
+  const removedCharacterIds = new Set(
+    effectiveNpcs
+      .filter((npc) => isNpcAvatarRemoved(npc.avatarState))
+      .map((npc) => npc.characterId?.trim())
+      .filter((id): id is string => !!id),
+  );
+  const removedUniqueNames = new Set(
+    effectiveNpcs
+      .filter((npc) => isNpcAvatarRemoved(npc.avatarState))
+      .map((npc) => normalizeSceneAssetNameForGeneration(npc.name))
+      .filter((name) => name && nameIdentities.get(name)?.size === 1),
+  );
+  const add = (name: unknown, avatarUrl: unknown, identityKeys: string[] = [], allowNameFallback = false) => {
     if (typeof name !== "string" || typeof avatarUrl !== "string") return;
-    const normalizedName = normalizeSceneAssetName(name);
+    const normalizedName = normalizeSceneAssetNameForGeneration(name);
     const normalizedAvatarUrl = avatarUrl.trim();
     if (!normalizedName || !normalizedAvatarUrl) return;
-    lookup.set(normalizedName, normalizedAvatarUrl);
+    for (const key of identityKeys) lookup.set(key, normalizedAvatarUrl);
+    if (allowNameFallback && !removedUniqueNames.has(normalizedName)) lookup.set(normalizedName, normalizedAvatarUrl);
   };
 
-  for (const npc of trackedNpcs) add(npc.name, npc.avatarUrl);
-  for (const presentCharacter of presentCharacters) add(presentCharacter.name, presentCharacter.avatarPath);
-  if (Array.isArray(metadataNpcs)) {
-    for (const npc of metadataNpcs) {
-      if (!npc || typeof npc !== "object") continue;
-      const record = npc as Record<string, unknown>;
-      add(record.name, record.avatarUrl);
-    }
+  for (const npc of effectiveNpcs) {
+    if (isNpcAvatarRemoved(npc.avatarState) || (hasAuthoritativeNpcAvatarState(npc.avatarState) && !npc.avatarUrl))
+      continue;
+    const normalizedName = normalizeSceneAssetNameForGeneration(npc.name);
+    const uniqueName = nameIdentities.get(normalizedName)?.size === 1;
+    add(
+      npc.name,
+      npc.avatarUrl,
+      [npc.id ? `id:${npc.id}` : "", npc.characterId ? `character:${npc.characterId}` : ""].filter(Boolean),
+      uniqueName,
+    );
+  }
+  for (const presentCharacter of presentCharacters) {
+    const characterId = presentCharacter.characterId?.trim();
+    if (characterId && removedCharacterIds.has(characterId)) continue;
+    const normalizedName = normalizeSceneAssetNameForGeneration(presentCharacter.name ?? "");
+    if (removedUniqueNames.has(normalizedName)) continue;
+    const uniqueName = nameIdentities.get(normalizedName)?.size === 1;
+    add(
+      presentCharacter.name,
+      presentCharacter.avatarPath,
+      characterId ? [`character:${characterId}`] : [],
+      uniqueName,
+    );
   }
   for (const [normalizedName, avatarUrl] of libraryAvatars ?? []) {
-    if (!lookup.has(normalizedName)) lookup.set(normalizedName, avatarUrl);
+    if (
+      !removedUniqueNames.has(normalizedName) &&
+      nameIdentities.get(normalizedName)?.size === 1 &&
+      !lookup.has(normalizedName)
+    ) {
+      lookup.set(normalizedName, avatarUrl);
+    }
   }
 
   return lookup;
@@ -1641,13 +1787,25 @@ function buildNpcAvatarRequests(
       const normalizedName = normalizeSceneAssetName(npc.name);
       if (!normalizedName || !npc.description) return false;
       if (failedNpcAvatarNameSet.has(normalizedName)) return true;
-      return !npc.avatarUrl && !npcAvatarLookup.has(normalizedName);
+      const identityKey = sceneAssetNpcAvatarKey(npc);
+      const characterId = npc.characterId?.trim();
+      const hasIdentityAvatar =
+        npcAvatarLookup.has(identityKey) || (!!characterId && npcAvatarLookup.has(`character:${characterId}`));
+      const hasUniqueNameAvatar =
+        sceneAssetNpcs.filter((candidate) => normalizeSceneAssetName(candidate.name) === normalizedName).length === 1 &&
+        npcAvatarLookup.has(normalizedName);
+      return !npc.avatarUrl && !hasIdentityAvatar && !hasUniqueNameAvatar;
     })
     .map((npc) => ({
+      id: npc.id,
+      npcId: npc.id,
+      characterId: npc.characterId ?? null,
       name: npc.name,
       description: npc.description,
       gender: npc.gender ?? null,
       pronouns: npc.pronouns ?? null,
+      avatarUrl: npc.avatarUrl ?? null,
+      avatarState: npc.avatarState,
     }))
     .slice(0, 10);
 }
@@ -3296,7 +3454,14 @@ function GameSurfaceComponent({
   // What a fight offers: one line per item, however the player split its stacks.
   // What a fight lists: one line per item, each under a name no other line has, with each item's
   // effect found under that line's name.
-  const fightInventoryLines = useMemo(() => gameInventoryFightLines(inventoryItems), [inventoryItems]);
+  const gameRuleset = useGameRuleset(chatMeta);
+  // A ruleset that turns Game Mode's own items off keeps them out of fights, as the server does: no
+  // item is offered until the ruleset says what it does.
+  const itemsOutOfFights = gameRuleset.status === "ok" && gameRuleset.definition.items?.native === false;
+  const fightInventoryLines = useMemo(
+    () => (itemsOutOfFights ? [] : gameInventoryFightLines(inventoryItems)),
+    [inventoryItems, itemsOutOfFights],
+  );
   const fightItemEffects = useMemo(
     () => gameInventoryFightEffects(fightInventoryLines, combatItemEffects),
     [fightInventoryLines, combatItemEffects],
@@ -3569,6 +3734,7 @@ function GameSurfaceComponent({
   const [introPresented, setIntroPresented] = useState(() => readIntroPresentedFlag(introPresentationStorageKey));
   const npcPortraitUploadInputRef = useRef<HTMLInputElement>(null);
   const [pendingNpcPortraitUploadName, setPendingNpcPortraitUploadName] = useState<string | null>(null);
+  const [pendingNpcPortraitUploadNpcId, setPendingNpcPortraitUploadNpcId] = useState<string | null>(null);
   const [generatingNpcPortraitNames, setGeneratingNpcPortraitNames] = useState<Set<string>>(() => new Set());
   const [campaignPortraitProgress, setCampaignPortraitProgress] = useState<{
     completedBatches: number;
@@ -3773,13 +3939,30 @@ function GameSurfaceComponent({
             ? localizeUi("ui.game.gamesurfacecomponent.inventoryWhoLost", { who: update.who, item })
             : localizeUi("ui.game.gamesurfacecomponent.inventoryYouLost", { item });
         }
+        if (
+          update.action === "equip" ||
+          update.action === "unequip" ||
+          update.action === "bind" ||
+          update.action === "unbind"
+        ) {
+          const key = { equip: "Equipped", unequip: "Unequipped", bind: "Bound", unbind: "Unbound" }[update.action];
+          return update.who
+            ? localizeUi(`ui.game.gamesurfacecomponent.inventoryWho${key}`, { who: update.who, item })
+            : localizeUi(`ui.game.gamesurfacecomponent.inventoryYou${key}`, { item });
+        }
         return update.who
           ? localizeUi("ui.game.gamesurfacecomponent.inventoryWhoGained", { who: update.who, item })
           : localizeUi("ui.game.gamesurfacecomponent.inventoryYouGained", { item });
       };
+      // Putting something on or binding it is shown like a gain; nothing is lost by either.
       const notifications = updates.flatMap((update) =>
-        update.ok
-          ? [{ gain: update.action === "add", text: describe(update, inventoryLabel(update.item, update.count)) }]
+        update.ok && update.count > 0
+          ? [
+              {
+                gain: update.action === "add" || update.action === "equip" || update.action === "bind",
+                text: describe(update, inventoryLabel(update.item, update.count)),
+              },
+            ]
           : [],
       );
       if (notifications.length > 0) {
@@ -3934,12 +4117,27 @@ function GameSurfaceComponent({
   });
 
   useEffect(() => {
-    const avatarPatches: Array<{ name: string; avatarUrl: string }> = [];
+    const avatarPatches: Array<{ npcId: string; characterId: string; name: string; avatarUrl: string }> = [];
+    const npcNameCounts = new Map<string, number>();
+    for (const npc of npcs) {
+      const name = normalizeNpcAvatarName(npc.name);
+      if (name) npcNameCounts.set(name, (npcNameCounts.get(name) ?? 0) + 1);
+    }
     for (const npc of npcs) {
       if (!npc.name) continue;
-      const libraryCharacter = findNamedEntry(characters, npc.name, (character) => character.name);
+      if (hasAuthoritativeNpcAvatarState(npc.avatarState)) continue;
+      const libraryCharacter = npc.characterId
+        ? characters.find((character) => character.id === npc.characterId)
+        : npcNameCounts.get(normalizeNpcAvatarName(npc.name)) === 1
+          ? findNamedEntry(characters, npc.name, (character) => character.name)
+          : undefined;
       if (libraryCharacter?.avatarUrl && !npc.avatarUrl) {
-        avatarPatches.push({ name: npc.name, avatarUrl: libraryCharacter.avatarUrl });
+        avatarPatches.push({
+          npcId: npc.id,
+          characterId: libraryCharacter.id,
+          name: npc.name,
+          avatarUrl: libraryCharacter.avatarUrl,
+        });
       }
     }
     if (avatarPatches.length > 0) {
@@ -7886,11 +8084,14 @@ function GameSurfaceComponent({
       const normalizedName = normalizeNpcAvatarName(displayName);
       if (!normalizedName) return;
 
-      const targetNpc = useGameModeStore
+      const matches = useGameModeStore
         .getState()
-        .npcs.find((npc) => normalizeNpcAvatarName(npc.name) === normalizedName);
+        .npcs.filter((npc) => normalizeNpcAvatarName(npc.name) === normalizedName);
+      if (matches.length > 1) return;
+      const targetNpc = matches[0];
 
       setPendingNpcPortraitUploadName(targetNpc?.name ?? displayName);
+      setPendingNpcPortraitUploadNpcId(targetNpc?.id ?? buildPartyNpcId(displayName));
       npcPortraitUploadInputRef.current?.click();
     },
     [activeChatId],
@@ -7905,7 +8106,8 @@ function GameSurfaceComponent({
       if (!normalizedName) return;
 
       const currentNpcs = useGameModeStore.getState().npcs;
-      const existingNpcIndex = currentNpcs.findIndex((npc) => normalizeNpcAvatarName(npc.name) === normalizedName);
+      const pendingNpcId = pendingNpcPortraitUploadNpcId ?? buildPartyNpcId(displayName);
+      const existingNpcIndex = currentNpcs.findIndex((npc) => npc.id === pendingNpcId);
       const targetNpc =
         existingNpcIndex >= 0
           ? currentNpcs[existingNpcIndex]!
@@ -7924,12 +8126,29 @@ function GameSurfaceComponent({
 
       try {
         const avatar = await readFileAsDataUrl(file);
-        const response = await api.post<{ avatarPath: string }>(`/avatars/npc/${activeChatId}`, {
+        const response = await api.post<{
+          avatarPath: string;
+          characterId?: string | null;
+          avatarState?: GameNpcAvatarState;
+        }>(`/avatars/npc/${activeChatId}`, {
+          npcId: targetNpc.id,
+          characterId: targetNpc.characterId ?? null,
           name: targetNpc.name,
           avatar,
         });
 
-        const nextNpc = { ...targetNpc, avatarUrl: response.avatarPath };
+        const avatarState = resolveNpcAvatarStateForIdentity(
+          targetNpc.avatarState,
+          targetNpc.characterId,
+          response.avatarState,
+          response.characterId,
+        );
+        const nextNpc = {
+          ...targetNpc,
+          characterId: response.characterId ?? targetNpc.characterId ?? null,
+          avatarUrl: isNpcAvatarRemoved(avatarState) ? undefined : response.avatarPath,
+          ...(avatarState ? { avatarState } : {}),
+        };
         const nextNpcs =
           existingNpcIndex >= 0
             ? currentNpcs.map((npc, index) => (index === existingNpcIndex ? nextNpc : npc))
@@ -7940,7 +8159,15 @@ function GameSurfaceComponent({
           gameNpcs: nextNpcs,
         });
 
-        useGameModeStore.getState().patchNpcAvatars([{ name: targetNpc.name, avatarUrl: response.avatarPath }]);
+        useGameModeStore.getState().patchNpcAvatars([
+          {
+            npcId: targetNpc.id,
+            characterId: response.characterId ?? targetNpc.characterId ?? null,
+            name: targetNpc.name,
+            avatarUrl: response.avatarPath,
+            avatarState: response.avatarState,
+          },
+        ]);
         clearFailedNpcAvatars([targetNpc.name]);
         toast.success(localizeUi("ui.game.gamesurfacecomponent.value1PortraitUpdated", { value1: targetNpc.name }));
       } catch (error) {
@@ -7951,7 +8178,7 @@ function GameSurfaceComponent({
         );
       }
     },
-    [activeChatId, clearFailedNpcAvatars, updateChatMetadata, localizeUi],
+    [activeChatId, clearFailedNpcAvatars, localizeUi, pendingNpcPortraitUploadNpcId, updateChatMetadata],
   );
 
   const handlePartyPortraitUpload = useCallback(
@@ -8275,31 +8502,95 @@ function GameSurfaceComponent({
     notificationTimerRef.current = setTimeout(() => setInventoryNotifications([]), 4000);
   }, []);
 
+  /** What a refused inventory change says, by why it was refused. `who` is the bag a weight was too
+   *  much for: a name, "" for the player's own, or absent when the whole party was asked. */
+  const inventoryRefusal = useCallback(
+    (reason: string | undefined, value1: string, fallbackKey: string, who?: string) => {
+      switch (reason) {
+        case "not-ruleset-item":
+          return localizeUi("ui.game.gamesurfacecomponent.notARulesetItemValue1", { value1 });
+        case "too-heavy":
+          return who === undefined
+            ? localizeUi("ui.game.gamesurfacecomponent.nobodyCanCarryValue1", { value1 })
+            : who
+              ? localizeUi("ui.game.gamesurfacecomponent.whoCannotCarryValue1", { who, value1 })
+              : localizeUi("ui.game.gamesurfacecomponent.youCannotCarryValue1", { value1 });
+        case "cursed":
+          return localizeUi("ui.game.gamesurfacecomponent.cursedValue1", { value1 });
+        case "no-slot":
+          return localizeUi("ui.game.gamesurfacecomponent.noSlotValue1", { value1 });
+        case "not-wearable":
+          return localizeUi("ui.game.gamesurfacecomponent.notWearableValue1", { value1 });
+        case "not-bindable":
+          return localizeUi("ui.game.gamesurfacecomponent.notBindableValue1", { value1 });
+        case "binding-full":
+          return localizeUi("ui.game.gamesurfacecomponent.bindingFullValue1", { value1 });
+        case "missing-stack":
+          return localizeUi("ui.game.gamesurfacecomponent.thatStackIsNoLongerInYourInventory");
+        default:
+          return localizeUi(fallbackKey, { value1 });
+      }
+    },
+    [localizeUi],
+  );
+
+  /** Who additions went to, one line per bag each went into (a ruleset that says what everyone
+   *  carries may have shared them out), and in one message, what nobody could carry. */
+  const announceAdditions = useCallback(
+    (
+      additions: ReadonlyArray<{
+        name: string;
+        result: { count?: number; placed?: Array<{ holder?: string; count: number }>; left?: number };
+      }>,
+      holder?: string,
+    ) => {
+      setInventoryNotifications(
+        additions.flatMap(({ name, result }) =>
+          (result.placed ?? [{ ...(holder ? { holder } : {}), count: result.count ?? 1 }]).map((share) => {
+            const item = inventoryLabel(name, share.count);
+            return {
+              gain: true,
+              text: share.holder
+                ? localizeUi("ui.game.gamesurfacecomponent.inventoryWhoGained", { who: share.holder, item })
+                : localizeUi("ui.game.gamesurfacecomponent.inventoryYouGained", { item }),
+            };
+          }),
+        ),
+      );
+      if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current);
+      notificationTimerRef.current = setTimeout(() => setInventoryNotifications([]), 4000);
+      const left = additions.flatMap(({ name, result }) => (result.left ? [inventoryLabel(name, result.left)] : []));
+      if (left.length > 0) {
+        toast.error(localizeUi("ui.game.gamesurfacecomponent.leftBehindValue1", { value1: left.join(", ") }));
+      }
+    },
+    [inventoryLabel, localizeUi],
+  );
+
   /** An item added by name into one party member's bag (the player's without `holder`): onto that
    *  bag's stack of it, or a new stack. Resolves to the stack's id, so the screen can select it. */
   const handleAddInventoryItem = useCallback(
-    async (addedItemName: string, holder?: string) => {
+    async (addedItemName: string, holder?: string, among?: readonly string[]) => {
       if (!activeChatId) return null;
       try {
-        const [result] = await commitInventory([{ op: "add", name: addedItemName, count: 1, holder }]);
+        const [result] = await commitInventory([
+          among
+            ? { op: "add", name: addedItemName, count: 1, among: [...among] }
+            : { op: "add", name: addedItemName, count: 1, holder },
+        ]);
         if (!result?.ok)
           throw new Error(
-            localizeUi(
-              result?.reason === "not-ruleset-item"
-                ? "ui.game.gamesurfacecomponent.notARulesetItemValue1"
-                : "ui.game.gamesurfacecomponent.failedToAddValue1ToInventory",
-              { value1: addedItemName },
+            inventoryRefusal(
+              result?.reason,
+              addedItemName,
+              "ui.game.gamesurfacecomponent.failedToAddValue1ToInventory",
+              among ? undefined : (holder ?? ""),
             ),
           );
         // Said by the name the stack it went onto is shown by, which may be a nickname.
         const landed = result.id ? inventoryItemsRef.current.find((stack) => stack.id === result.id) : undefined;
         const shownName = landed ? gameInventoryStackLabel(landed) : addedItemName;
-        showInventoryNotification(
-          holder
-            ? localizeUi("ui.game.gamesurfacecomponent.inventoryWhoGained", { who: holder, item: shownName })
-            : localizeUi("ui.game.gamesurfacecomponent.inventoryYouGained", { item: shownName }),
-          true,
-        );
+        announceAdditions([{ name: shownName, result }], holder);
         toast.success(localizeUi("ui.game.gamesurfacecomponent.addedValue1ToInventory", { value1: shownName }));
         return result.id ?? null;
       } catch (error) {
@@ -8311,19 +8602,23 @@ function GameSurfaceComponent({
         return null;
       }
     },
-    [activeChatId, commitInventory, showInventoryNotification, localizeUi],
+    [activeChatId, announceAdditions, commitInventory, inventoryRefusal, localizeUi],
   );
 
   /** Items picked from the ruleset, one of each, into one party member's bag (the player's without
    *  `holder`), in one change. Resolves to the stack the last one went onto, so the screen can select
    *  it. */
   const handleAddRulesetItems = useCallback(
-    async (picks: ReadonlyArray<{ item: string; name: string }>, holder?: string) => {
+    async (picks: ReadonlyArray<{ item: string; name: string }>, holder?: string, among?: readonly string[]) => {
       if (!activeChatId || picks.length === 0) return null;
       const names = picks.map((pick) => pick.name).join(", ");
       try {
         const results = await commitInventory(
-          picks.map((pick) => ({ op: "add" as const, name: pick.name, item: pick.item, count: 1, holder })),
+          picks.map((pick) =>
+            among
+              ? { op: "add" as const, name: pick.name, item: pick.item, count: 1, among: [...among] }
+              : { op: "add" as const, name: pick.name, item: pick.item, count: 1, holder },
+          ),
         );
         const added = picks.filter((_, index) => results[index]?.ok);
         // A pick the ruleset no longer offers (a layer hides it, or its catalog changed since the
@@ -8340,16 +8635,48 @@ function GameSurfaceComponent({
         const failed = failedFor(false);
         if (unoffered)
           toast.error(localizeUi("ui.game.gamesurfacecomponent.noLongerRulesetItemValue1", { value1: unoffered }));
-        if (failed)
-          toast.error(localizeUi("ui.game.gamesurfacecomponent.failedToAddValue1ToInventory", { value1: failed }));
+        if (failed) {
+          // One refusal says why when every other pick went in; several are named together.
+          const refusedAt = results.findIndex((result) => result && !result.ok && result.reason !== "not-ruleset-item");
+          const only = results.filter((result) => result && !result.ok && result.reason !== "not-ruleset-item");
+          const refused = results[refusedAt];
+          toast.error(
+            only.length === 1 && refused && !refused.ok
+              ? inventoryRefusal(
+                  refused.reason,
+                  failed,
+                  "ui.game.gamesurfacecomponent.failedToAddValue1ToInventory",
+                  among ? undefined : (holder ?? ""),
+                )
+              : localizeUi("ui.game.gamesurfacecomponent.failedToAddValue1ToInventory", { value1: failed }),
+          );
+        }
         if (added.length === 0) return null;
         const shown = added.map((pick) => pick.name).join(", ");
-        showInventoryNotification(
-          holder
-            ? localizeUi("ui.game.gamesurfacecomponent.inventoryWhoGained", { who: holder, item: shown })
-            : localizeUi("ui.game.gamesurfacecomponent.inventoryYouGained", { item: shown }),
-          true,
-        );
+        // Each pick said where it went, when the party shared them out.
+        const landed = picks.flatMap((pick, index) => {
+          const result = results[index];
+          return result?.ok ? [{ pick, result }] : [];
+        });
+        if (
+          landed.some(
+            ({ result }) =>
+              result.placed &&
+              result.placed.some((share) => gameInventoryBagKey(share.holder) !== gameInventoryBagKey(holder)),
+          )
+        ) {
+          announceAdditions(
+            landed.map(({ pick, result }) => ({ name: pick.name, result })),
+            holder,
+          );
+        } else {
+          showInventoryNotification(
+            holder
+              ? localizeUi("ui.game.gamesurfacecomponent.inventoryWhoGained", { who: holder, item: shown })
+              : localizeUi("ui.game.gamesurfacecomponent.inventoryYouGained", { item: shown }),
+            true,
+          );
+        }
         toast.success(localizeUi("ui.game.gamesurfacecomponent.addedValue1ToInventory", { value1: shown }));
         const last = [...results].reverse().find((result) => result?.ok);
         return last?.ok ? (last.id ?? null) : null;
@@ -8362,7 +8689,44 @@ function GameSurfaceComponent({
         return null;
       }
     },
-    [activeChatId, commitInventory, showInventoryNotification, localizeUi],
+    [activeChatId, announceAdditions, commitInventory, inventoryRefusal, showInventoryNotification, localizeUi],
+  );
+
+  /** One stack put on or taken off, bound or unbound, by whoever carries it. Resolves to the stack it
+   *  is in afterwards, which is a new one when one item of a larger stack was taken into its own. */
+  const handleWearInventoryStack = useCallback(
+    async (stackId: string, wear: GameInventoryWear) => {
+      if (!activeChatId) return null;
+      const stack = inventoryItemsRef.current.find((entry) => entry.id === stackId);
+      if (!stack) {
+        toast.error(localizeUi("ui.game.gamesurfacecomponent.thatStackIsNoLongerInYourInventory"));
+        return null;
+      }
+      try {
+        const [result] = await commitInventory([{ op: wear, id: stackId }]);
+        if (!result?.ok) {
+          toast.error(
+            inventoryRefusal(
+              result?.reason,
+              gameInventoryStackLabel(stack),
+              "ui.game.gamesurfacecomponent.failedToChangeValue1",
+            ),
+          );
+          return null;
+        }
+        return result.id ?? stackId;
+      } catch (error) {
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : localizeUi("ui.game.gamesurfacecomponent.failedToChangeValue1", {
+                value1: gameInventoryStackLabel(stack),
+              }),
+        );
+        return null;
+      }
+    },
+    [activeChatId, commitInventory, inventoryRefusal, localizeUi],
   );
 
   /** One stack set to a count: the +1 and -1 buttons, and whatever the player typed. Zero removes it. */
@@ -8380,11 +8744,12 @@ function GameSurfaceComponent({
         const [result] = await commitInventory([{ op: "set", id: stackId, quantity }]);
         if (!result?.ok) {
           toast.error(
-            result?.reason === "refused"
-              ? localizeUi("ui.game.gamesurfacecomponent.failedToChangeValue1", {
-                  value1: gameInventoryStackLabel(stack),
-                })
-              : localizeUi("ui.game.gamesurfacecomponent.thatStackIsNoLongerInYourInventory"),
+            inventoryRefusal(
+              result?.reason,
+              gameInventoryStackLabel(stack),
+              "ui.game.gamesurfacecomponent.failedToChangeValue1",
+              stack.holder ?? "",
+            ),
           );
           return;
         }
@@ -8426,7 +8791,7 @@ function GameSurfaceComponent({
         );
       }
     },
-    [activeChatId, commitInventory, showInventoryNotification, inventoryLabel, localizeUi],
+    [activeChatId, commitInventory, showInventoryNotification, inventoryLabel, inventoryRefusal, localizeUi],
   );
 
   /** Part of a stack into a new stack beside it. Nothing about the item changes, only how it is piled. */
@@ -8468,6 +8833,16 @@ function GameSurfaceComponent({
       try {
         const [result] = await commitInventory([{ op: "merge", from: fromId, into: intoId }]);
         if (result?.ok) toast.success(localizeUi("ui.game.gamesurfacecomponent.mergedValue1", { value1: into.name }));
+        else {
+          toast.error(
+            inventoryRefusal(
+              result?.reason,
+              into.name,
+              "ui.game.gamesurfacecomponent.failedToMergeValue1",
+              into.holder ?? "",
+            ),
+          );
+        }
       } catch (error) {
         toast.error(
           error instanceof Error
@@ -8476,7 +8851,7 @@ function GameSurfaceComponent({
         );
       }
     },
-    [activeChatId, commitInventory, localizeUi],
+    [activeChatId, commitInventory, inventoryRefusal, localizeUi],
   );
 
   /** Some or all of one stack handed to another party member (the player without `to`). Resolves to
@@ -8495,7 +8870,12 @@ function GameSurfaceComponent({
         ]);
         if (!result?.ok) {
           toast.error(
-            localizeUi("ui.game.gamesurfacecomponent.failedToGiveValue1", { value1: gameInventoryStackLabel(stack) }),
+            inventoryRefusal(
+              result?.reason,
+              gameInventoryStackLabel(stack),
+              "ui.game.gamesurfacecomponent.failedToGiveValue1",
+              to ?? "",
+            ),
           );
           return null;
         }
@@ -8515,7 +8895,7 @@ function GameSurfaceComponent({
         return null;
       }
     },
-    [activeChatId, commitInventory, inventoryLabel, localizeUi],
+    [activeChatId, commitInventory, inventoryLabel, inventoryRefusal, localizeUi],
   );
 
   /** A fight used one of an item: taken by name, the player's own bag first, since a fight sees one
@@ -9153,10 +9533,45 @@ function GameSurfaceComponent({
   // and slots, and turns the catalog rows the sheet carries into skills. Health travels as a share
   // of the maximum, because the damage is still Marinara's and the two scales are nothing alike,
   // which is what the notice says out loud. A game with no ruleset, or one whose ruleset has no
-  // block, never reaches any of this.
-  const gameRuleset = useGameRuleset(chatMeta);
+  // block, never reaches any of this. (`gameRuleset` is read further up, where the fight's items are.)
   // The ruleset's items, which the inventory shows and offers; undefined without an items block.
-  const inventoryItemBook = useRulesetItemBook(gameRuleset);
+  // The party's sheets, which what each character carries and binds is read off, as the server reads
+  // them: the player's is the card named for who the chat plays as (the first card when no card has
+  // that name), the rest by the name their bag has, and a card with no readable sheet reads a blank one.
+  const inventoryPlayerName = partyMembers.find((member) => member.id.startsWith("persona:"))?.name;
+  const inventorySheets = useMemo<RulesetItemBookSheets | undefined>(() => {
+    if (gameRuleset.status !== "ok" || !gameRuleset.definition.items) return undefined;
+    const cards = (Array.isArray(chatMeta.gameCharacterCards) ? chatMeta.gameCharacterCards : []) as Array<
+      Record<string, unknown>
+    >;
+    const named = cards.flatMap((card) => {
+      const name = typeof card.name === "string" ? card.name.trim() : "";
+      return name ? [{ name, card }] : [];
+    });
+    const playerKey = inventoryPlayerName ? gameInventoryBagKey(inventoryPlayerName) : "";
+    const player =
+      (playerKey ? named.find((entry) => gameInventoryBagKey(entry.name) === playerKey) : undefined) ?? named[0];
+    const buildOf = (card: Record<string, unknown>) => {
+      const parsed = rulesetSheetEnvelopeSchema.safeParse(card.rulesetSheet);
+      return parsed.success ? parsed.data.build : undefined;
+    };
+    const playerBuild = player ? buildOf(player.card) : undefined;
+    return {
+      ...(playerBuild ? { player: playerBuild } : {}),
+      // Every card by its name, as the server keeps them: the first card read for the player may also
+      // be a companion's own.
+      members: named.flatMap((entry) => {
+        const build = buildOf(entry.card);
+        return build ? [{ name: entry.name, build }] : [];
+      }),
+    };
+  }, [chatMeta.gameCharacterCards, gameRuleset, inventoryPlayerName]);
+  const inventoryItemBook = useRulesetItemBook(gameRuleset, inventorySheets, chatMeta.gameInventedItems);
+  // Who an item added in the shared view may go to, in order: the player, then the party.
+  const inventoryPlaceAmong = useMemo(
+    () => ["", ...partyMembers.filter((member) => !member.id.startsWith("persona:")).map((member) => member.name)],
+    [partyMembers],
+  );
   /** What each seeded member started this battle with, keyed the way live state is. Null while this
    *  session has not seeded a battle, which is what a battle restored after a reload looks like. */
   const rulesetBattleSeedsRef = useRef<RulesetCombatSeeds | null>(null);
@@ -10629,6 +11044,17 @@ function GameSurfaceComponent({
     // its place would invite a Save that overwrites it, so the block says so and offers nothing.
     const parsed = index >= 0 ? rulesetSheetEnvelopeSchema.safeParse(cards[index]?.rulesetSheet) : null;
     if (parsed && !parsed.success && cards[index]?.rulesetSheet != null) return { status: "unreadable" };
+    // What this card holds, as the server reads it for checks and fights: the player's card the
+    // player's bag, every other card its own.
+    const items =
+      inventoryItemBook && rulesetReadsItems(gameRuleset.definition)
+        ? rulesetCardItems(
+            inventoryItemBook,
+            inventoryItems,
+            cards.flatMap((card) => (typeof card.name === "string" && card.name.trim() ? [card.name.trim()] : [])),
+            inventoryPlayerName,
+          )(cardTitle)
+        : undefined;
     return {
       status: "ok",
       definition: gameRuleset.definition,
@@ -10640,6 +11066,7 @@ function GameSurfaceComponent({
       live: gameSnapshot?.rulesetLive?.[normalizeCharacterLookupName(cardTitle)],
       onLiveChange: (next) => handleRulesetLiveChange(cardTitle, next),
       onEnvelopeSave: (next) => handleSaveRulesetSheet(cardTitle, next),
+      ...(items ? { items } : {}),
     };
   }, [
     characterSheetCharId,
@@ -10648,6 +11075,9 @@ function GameSurfaceComponent({
     gameSnapshot?.rulesetLive,
     handleRulesetLiveChange,
     handleSaveRulesetSheet,
+    inventoryItemBook,
+    inventoryItems,
+    inventoryPlayerName,
     partyCards,
   ]);
 
@@ -10681,18 +11111,68 @@ function GameSurfaceComponent({
 
   const librarySpeakerAvatars = useMemo(() => {
     const map = new Map<string, SpeakerAvatarEntry>();
+    const metadataNpcs = Array.isArray(chatMeta.gameNpcs)
+      ? chatMeta.gameNpcs.filter((npc): npc is GameNpc => !!npc && typeof npc === "object")
+      : [];
+    const metadataNpcIds = new Set(metadataNpcs.map((npc) => npc.id?.trim()).filter(Boolean));
+    const metadataIdentities = new Set(
+      metadataNpcs.map((npc) =>
+        npc.characterId?.trim()
+          ? `character:${npc.characterId.trim()}`
+          : npc.id
+            ? `id:${npc.id}`
+            : `name:${normalizeSceneAssetNameForGeneration(npc.name)}`,
+      ),
+    );
+    const effectiveNpcs = [
+      ...mergeGameNpcsPreservingAvatars(npcs, metadataNpcs),
+      ...npcs.filter((npc) => {
+        if (npc.id && metadataNpcIds.has(npc.id.trim())) return false;
+        const identity = npc.characterId?.trim()
+          ? `character:${npc.characterId.trim()}`
+          : npc.id
+            ? `id:${npc.id}`
+            : `name:${normalizeSceneAssetNameForGeneration(npc.name)}`;
+        return !metadataIdentities.has(identity);
+      }),
+    ];
+    const nameIdentityCounts = new Map<string, Set<string>>();
+    for (const npc of effectiveNpcs) {
+      const key = normalizeTextForMatch(npc.name);
+      if (!key) continue;
+      const identity = npc.characterId?.trim()
+        ? `character:${npc.characterId.trim()}`
+        : npc.id
+          ? `id:${npc.id}`
+          : `name:${key}`;
+      const identities = nameIdentityCounts.get(key) ?? new Set<string>();
+      identities.add(identity);
+      nameIdentityCounts.set(key, identities);
+    }
+    const removedUniqueNames = new Set(
+      effectiveNpcs
+        .filter((npc) => isNpcAvatarRemoved(npc.avatarState))
+        .map((npc) => normalizeTextForMatch(npc.name))
+        .filter((key) => key && nameIdentityCounts.get(key)?.size === 1),
+    );
     // Selected cards are resolved by characterIds; never borrow an unrelated card by name.
     // Experiences can still supply their own cast portraits, excluding the player persona.
     const extra = activeExperienceAvatars?.speakerAvatars;
     if (extra?.size) {
       const playerKey = personaInfo?.name ? normalizeTextForMatch(personaInfo.name) : "";
       for (const [key, info] of extra) {
-        if (!key || key === playerKey || map.has(key)) continue;
+        if (!key || key === playerKey || removedUniqueNames.has(key) || map.has(key)) continue;
         map.set(key, info);
       }
     }
     for (const [key, avatarUrl] of sceneLibraryPresence.libraryAvatarLookup) {
-      if (!key || key === (personaInfo?.name ? normalizeTextForMatch(personaInfo.name) : "") || map.has(key)) continue;
+      if (
+        !key ||
+        key === (personaInfo?.name ? normalizeTextForMatch(personaInfo.name) : "") ||
+        removedUniqueNames.has(key) ||
+        map.has(key)
+      )
+        continue;
       const libraryCandidate = sceneLibraryPresence.scopedLibraryCandidates.find(
         (candidate) => normalizeTextForMatch(candidate.name) === key,
       );
@@ -10716,10 +11196,16 @@ function GameSurfaceComponent({
       ...(personaInfo?.name ? [personaInfo.name] : []),
       ...npcs.filter((npc) => npc.avatarUrl).map((npc) => npc.name),
     ];
-    addUniqueLibrarySpeakerAvatars(map, renderedSpeakers, libraryCharacters, protectedNames);
+    addUniqueLibrarySpeakerAvatars(
+      map,
+      new Set([...renderedSpeakers].filter((key) => !removedUniqueNames.has(key))),
+      libraryCharacters,
+      protectedNames,
+    );
     return map;
   }, [
     activeExperienceAvatars,
+    chatMeta.gameNpcs,
     characters,
     libraryCharacters,
     narrationMessages,
@@ -14586,6 +15072,7 @@ function GameSurfaceComponent({
                       const targetName = pendingNpcPortraitUploadName;
                       const file = e.target.files?.[0];
                       setPendingNpcPortraitUploadName(null);
+                      setPendingNpcPortraitUploadNpcId(null);
                       e.target.value = "";
                       if (file && targetName) {
                         void handleNpcPortraitUpload(targetName, file);
@@ -14625,6 +15112,8 @@ function GameSurfaceComponent({
                     itemBook={inventoryItemBook}
                     rulesetDefinition={gameRuleset.status === "ok" ? gameRuleset.definition : undefined}
                     onAddRulesetItems={handleAddRulesetItems}
+                    placeAmong={inventoryPlaceAmong}
+                    onWearItem={handleWearInventoryStack}
                     onRenameItem={handleRenameInventoryItem}
                     onSetItemQuantity={handleSetInventoryStackQuantity}
                     onSplitItem={handleSplitInventoryStack}
@@ -14636,6 +15125,7 @@ function GameSurfaceComponent({
                       const second = inventoryItems[toIndex];
                       if (first && second) void handleSwapInventoryStacks(first.id, second.id);
                     }}
+
                     canInteract={sessionInteractive && narrationDone && !isStreaming}
                     onUseItem={(itemName) => {
                       setInventoryOpen(false);

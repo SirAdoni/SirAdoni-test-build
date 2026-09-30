@@ -21,6 +21,8 @@ export type LorebookTextFormat = "markdown" | "csv";
 export type LorebookTextDuplicateMode = "skip" | "rename" | "overwrite";
 
 export const LOREBOOK_TEXT_MAX_NAME_LENGTH = 200;
+export const LOREBOOK_TEXT_MAX_CHARS = 1024 * 1024;
+export const LOREBOOK_TEXT_MAX_ENTRIES = 20_000;
 /** Folder paths are written as "Parent / Child". */
 export const LOREBOOK_TEXT_FOLDER_SEPARATOR = " / ";
 
@@ -46,7 +48,9 @@ export type LorebookTextIssueCode =
   | "extra_cells"
   | "unterminated_quote"
   | "duplicate_in_file"
-  | "no_entries";
+  | "no_entries"
+  | "input_too_large"
+  | "too_many_entries";
 
 export interface LorebookTextIssue {
   severity: "error" | "warning";
@@ -218,9 +222,13 @@ function escapeMarkdownLine(line: string): string {
 }
 
 export function parseLorebookMarkdown(text: string): ParsedLorebookText {
+  if (text.length > LOREBOOK_TEXT_MAX_CHARS) {
+    return finish("markdown", null, [], [{ severity: "error", code: "input_too_large", line: null, entryIndex: null }]);
+  }
   const lines = normalizeNewlines(stripBom(text)).split("\n");
   let title: string | null = null;
   const built: Array<{ entry: LorebookTextEntry; issues: FieldIssue[]; line: number }> = [];
+  const fileIssues: LorebookTextIssue[] = [];
   let index = 0;
 
   // Preamble: an optional "# Title"; anything else before the first entry is ignored.
@@ -232,6 +240,10 @@ export function parseLorebookMarkdown(text: string): ParsedLorebookText {
   }
 
   while (index < lines.length) {
+    if (built.length >= LOREBOOK_TEXT_MAX_ENTRIES) {
+      fileIssues.push({ severity: "error", code: "too_many_entries", line: index + 1, entryIndex: null });
+      break;
+    }
     const headingLine = index + 1;
     const name = lines[index]!.replace(/^##/, "")
       .replace(/\s+#+\s*$/, "")
@@ -269,7 +281,7 @@ export function parseLorebookMarkdown(text: string): ParsedLorebookText {
     built.push({ ...result, line: headingLine });
   }
 
-  return finish("markdown", title, built, []);
+  return finish("markdown", title, built, fileIssues);
 }
 
 // ── CSV ──
@@ -280,7 +292,10 @@ interface CsvRow {
 }
 
 /** RFC 4180 style reader: quoted cells, doubled quotes, newlines inside quotes, any line ending. */
-export function readCsvRows(text: string): { rows: CsvRow[]; unterminatedAt: number | null } {
+export function readCsvRows(
+  text: string,
+  maxRows = LOREBOOK_TEXT_MAX_ENTRIES + 1,
+): { rows: CsvRow[]; unterminatedAt: number | null; truncated: boolean } {
   const source = stripBom(text);
   const rows: CsvRow[] = [];
   let cells: string[] = [];
@@ -289,9 +304,13 @@ export function readCsvRows(text: string): { rows: CsvRow[]; unterminatedAt: num
   let line = 1;
   let rowLine = 1;
   let quoteLine = 1;
+  let truncated = false;
   const pushRow = () => {
     cells.push(cell);
-    if (cells.some((value) => value.trim() !== "")) rows.push({ cells, line: rowLine });
+    if (cells.some((value) => value.trim() !== "")) {
+      if (rows.length >= maxRows) truncated = true;
+      else rows.push({ cells, line: rowLine });
+    }
     cells = [];
     cell = "";
   };
@@ -325,15 +344,16 @@ export function readCsvRows(text: string): { rows: CsvRow[]; unterminatedAt: num
     } else if (char === "\n" || char === "\r") {
       if (char === "\r" && source[i + 1] === "\n") i++;
       pushRow();
+      if (truncated) break;
       line++;
       rowLine = line;
     } else {
       cell += char;
     }
   }
-  if (inQuotes) return { rows, unterminatedAt: quoteLine };
+  if (inQuotes) return { rows, unterminatedAt: quoteLine, truncated };
   if (cell !== "" || cells.length > 0) pushRow();
-  return { rows, unterminatedAt: null };
+  return { rows, unterminatedAt: null, truncated };
 }
 
 const CSV_COLUMN_ALIASES: Record<string, keyof RawEntryFields> = {
@@ -350,10 +370,23 @@ const CSV_COLUMN_ALIASES: Record<string, keyof RawEntryFields> = {
   constant: "constant",
   probability: "probability",
 };
+const CSV_ESCAPE_COLUMN = "marinara_csv_escape";
+const CSV_ESCAPE_VERSION = "apostrophe-v1";
 
 export function parseLorebookCsv(text: string): ParsedLorebookText {
-  const { rows, unterminatedAt } = readCsvRows(text);
+  if (text.length > LOREBOOK_TEXT_MAX_CHARS) {
+    return finish("csv", null, [], [{ severity: "error", code: "input_too_large", line: null, entryIndex: null }]);
+  }
+  const { rows, unterminatedAt, truncated } = readCsvRows(text);
   const fileIssues: LorebookTextIssue[] = [];
+  if (truncated) {
+    fileIssues.push({
+      severity: "error",
+      code: "too_many_entries",
+      line: rows[rows.length - 1]?.line ?? null,
+      entryIndex: null,
+    });
+  }
   if (unterminatedAt !== null) {
     fileIssues.push({ severity: "error", code: "unterminated_quote", line: unterminatedAt, entryIndex: null });
     return finish("csv", null, [], fileIssues);
@@ -361,9 +394,12 @@ export function parseLorebookCsv(text: string): ParsedLorebookText {
   const header = rows.shift();
   if (!header) return finish("csv", null, [], fileIssues);
 
-  const columns = header.cells.map((cell) => CSV_COLUMN_ALIASES[cell.trim().toLowerCase()] ?? null);
+  const columnNames = header.cells.map((cell) => cell.trim().toLowerCase());
+  const columns = columnNames.map((name) => CSV_COLUMN_ALIASES[name] ?? null);
+  const escapeIndex = columnNames.indexOf(CSV_ESCAPE_COLUMN);
+  const uniqueEscapeColumn = escapeIndex >= 0 && escapeIndex === columnNames.lastIndexOf(CSV_ESCAPE_COLUMN);
   header.cells.forEach((cell, index) => {
-    if (!columns[index] && cell.trim()) {
+    if (!columns[index] && cell.trim() && columnNames[index] !== CSV_ESCAPE_COLUMN) {
       fileIssues.push({
         severity: "warning",
         code: "unknown_column",
@@ -386,6 +422,8 @@ export function parseLorebookCsv(text: string): ParsedLorebookText {
   }
 
   const built = rows.map((row) => {
+    // External CSV data stays literal unless this row explicitly declares our escaping format.
+    const escaped = uniqueEscapeColumn && row.cells[escapeIndex] === CSV_ESCAPE_VERSION;
     const fields: RawEntryFields = {
       name: "",
       keys: "",
@@ -397,7 +435,9 @@ export function parseLorebookCsv(text: string): ParsedLorebookText {
     };
     row.cells.forEach((cell, index) => {
       const column = columns[index];
-      if (column) fields[column] = cell;
+      if (column) {
+        fields[column] = escaped && cell.startsWith("'") && csvNeedsTextPrefix(cell.slice(1)) ? cell.slice(1) : cell;
+      }
     });
     const result = buildEntry(fields);
     if (row.cells.length > header.cells.length && row.cells.slice(header.cells.length).some((cell) => cell.trim())) {
@@ -417,10 +457,21 @@ export function detectLorebookTextFormat(text: string, fileName?: string): Loreb
   const lower = fileName?.toLowerCase() ?? "";
   if (lower.endsWith(".csv")) return "csv";
   if (lower.endsWith(".md") || lower.endsWith(".markdown") || lower.endsWith(".txt")) return "markdown";
-  const firstLine =
-    normalizeNewlines(stripBom(text))
-      .split("\n")
-      .find((line) => line.trim()) ?? "";
+  const source = stripBom(text.slice(0, LOREBOOK_TEXT_MAX_CHARS));
+  let firstLine = "";
+  let start = 0;
+  while (start <= source.length) {
+    let end = source.indexOf("\n", start);
+    const crEnd = source.indexOf("\r", start);
+    if (end < 0 || (crEnd >= 0 && crEnd < end)) end = crEnd;
+    const line = source.slice(start, end < 0 ? source.length : end).trim();
+    if (line) {
+      firstLine = line;
+      break;
+    }
+    if (end < 0) break;
+    start = end + 1;
+  }
   if (/^#/.test(firstLine)) return "markdown";
   return /(^|,)\s*"?name"?\s*,/i.test(firstLine) ? "csv" : "markdown";
 }
@@ -474,7 +525,7 @@ function joinKeys(keys: string[]): string {
 }
 
 function singleLine(value: string): string {
-  return value.replace(/\s*\n\s*/g, " ").trim();
+  return value.replace(/\s+/g, (whitespace) => (whitespace.includes("\n") ? " " : whitespace)).trim();
 }
 
 export function exportLorebookToMarkdown(input: LorebookTextExportInput): string {
@@ -495,8 +546,16 @@ export function exportLorebookToMarkdown(input: LorebookTextExportInput): string
   return `${blocks.join("\n\n")}\n`;
 }
 
+/** Escape literal apostrophes too, so imports can undo one spreadsheet-safety prefix without losing them. */
+function csvNeedsTextPrefix(value: string): boolean {
+  return value.startsWith("'") || /^[\u0000-\u0020]*[=+\-@]/u.test(value) || /^[\t\r\n]/u.test(value);
+}
+
 function csvCell(value: string): string {
-  return /[",\r\n]/.test(value) || value !== value.trim() ? `"${value.replace(/"/g, '""')}"` : value;
+  const safeValue = csvNeedsTextPrefix(value) ? `'${value}` : value;
+  return /[",\r\n]/.test(safeValue) || safeValue !== safeValue.trim()
+    ? `"${safeValue.replace(/"/g, '""')}"`
+    : safeValue;
 }
 
 export const LOREBOOK_CSV_COLUMNS = [
@@ -507,6 +566,7 @@ export const LOREBOOK_CSV_COLUMNS = [
   "enabled",
   "constant",
   "probability",
+  CSV_ESCAPE_COLUMN,
 ] as const;
 
 export function exportLorebookToCsv(input: LorebookTextExportInput): string {
@@ -522,6 +582,7 @@ export function exportLorebookToCsv(input: LorebookTextExportInput): string {
         entry.enabled === false ? "false" : "true",
         entry.constant ? "true" : "false",
         entry.probability === null || entry.probability === undefined ? "" : String(entry.probability),
+        CSV_ESCAPE_VERSION,
       ]
         .map(csvCell)
         .join(","),

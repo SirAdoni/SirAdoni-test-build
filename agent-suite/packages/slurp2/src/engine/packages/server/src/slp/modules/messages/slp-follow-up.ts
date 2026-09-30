@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 /**
  * Creator-initiated follow-up messages with promise tracking.
  *
@@ -11,7 +13,8 @@
  * The AI signals intent to follow up, and this system schedules and generates messages.
  */
 
-export type FollowUpType = "reminder" | "promise_delivery" | "task_update" | "check_in" | "recurring";
+/** `opener`: the Creator writes first in a quiet chat on their own (the world tick plans it), nothing promised. */
+export type FollowUpType = "reminder" | "promise_delivery" | "task_update" | "check_in" | "recurring" | "opener";
 
 export type ScheduledFollowUp = {
   id: string;
@@ -26,6 +29,8 @@ export type ScheduledFollowUp = {
   totalInSequence?: number;
   /** For recurring: pattern like "every 4 hours" */
   recurringPattern?: string;
+  /** When it first came due; `scheduledAt` moves with each wait (task E). */
+  firstDueAt?: string;
 };
 
 /**
@@ -51,12 +56,13 @@ export type FollowUpIntent = {
 export function parseTimingToMinutes(timing: string): number | null {
   const lower = timing.toLowerCase().trim();
 
-  // Direct numbers: "30 minutes", "2 hours"
-  const directMatch = lower.match(/(\d+)\s*(minute|hour|min|hr)s?/);
+  // Direct numbers: "30 minutes", "1.5 hours", "2 days". The decimal and the day and week units
+  // were missing, so "1.5 hours" read as 5 hours and "2 days" fell through to the one-hour default.
+  const directMatch = lower.match(/(\d+(?:\.\d+)?)\s*(minute|min|hour|hr|day|week)s?\b/);
   if (directMatch) {
-    const amount = parseInt(directMatch[1], 10);
-    const unit = directMatch[2];
-    return unit.startsWith("h") ? amount * 60 : amount;
+    const amount = Number(directMatch[1]);
+    const perUnit = { minute: 1, min: 1, hour: 60, hr: 60, day: 1440, week: 10080 }[directMatch[2]] ?? 1;
+    return Math.round(amount * perUnit);
   }
 
   // Named times
@@ -85,7 +91,7 @@ export function detectPromiseFromText(text: string): {
 
   // Promise delivery patterns
   const promisePatterns = [
-    /i['']ll (?:send|give|show) (?:you )?(.+?) (?:later|tonight|tomorrow|soon)/i,
+    /i['’]ll (?:send|give|show) (?:you )?(.+?) (?:later|tonight|tomorrow|soon)/i,
     /(?:will|gonna) (?:send|give|show) (?:you )?(.+?) (?:later|tonight|tomorrow|soon)/i,
     /(?:promised|promise) (?:to )?(?:send|give|show) (?:you )?(.+)/i,
   ];
@@ -107,8 +113,9 @@ export function detectPromiseFromText(text: string): {
 
   // Task update patterns
   const taskPatterns = [
-    /(?:working on|finishing|completing) (?:your |the )?(.+)/i,
-    /(?:i['']ll|will) (?:let you know|update you|keep you posted) (?:about|on|when)/i,
+    // Only work for the fan. Without "your", "finishing my coffee" scheduled a task update.
+    /(?:working on|finishing|completing) your (.+)/i,
+    /(?:i['’]ll|will) (?:let you know|update you|keep you posted) (?:about|on|when)/i,
   ];
 
   for (const pattern of taskPatterns) {
@@ -125,7 +132,7 @@ export function detectPromiseFromText(text: string): {
 
   // Reminder patterns
   const reminderPatterns = [
-    /(?:i['']ll|will) remind (?:you|u) (?:about|to) (.+?) in (\d+) (\w+)/i,
+    /(?:i['’]ll|will) remind (?:you|u) (?:about|to) (.+?) in (\d+) (\w+)/i,
     /remind(?:er)? (?:about|for) (.+)/i,
   ];
 
@@ -173,7 +180,7 @@ export function createScheduledFollowUps(
     for (let i = 0; i < intent.count; i++) {
       const delayMinutes = intervalMinutes * (i + 1);
       followUps.push({
-        id: `followup-${Date.now()}-${i}`,
+        id: `followup-${randomUUID()}`,
         scheduledAt: new Date(currentTime.getTime() + delayMinutes * 60_000).toISOString(),
         type: intent.type,
         reason: intent.reason,
@@ -188,7 +195,7 @@ export function createScheduledFollowUps(
     // Single follow-up
     const delayMinutes = parseTimingToMinutes(intent.timing) ?? 60;
     followUps.push({
-      id: `followup-${Date.now()}`,
+      id: `followup-${randomUUID()}`,
       scheduledAt: new Date(currentTime.getTime() + delayMinutes * 60_000).toISOString(),
       type: intent.type,
       reason: intent.reason,
@@ -208,13 +215,66 @@ export function isFollowUpDue(followUp: ScheduledFollowUp, now: Date = new Date(
 }
 
 /**
+ * Follow-ups are promises (task E): a blocked one waits and tries again, it is never dropped for
+ * being old. Only an opener (nobody asked for it) ends two days after it was planned; a promise
+ * ends only with its thread (gone, closed, cleared). The Creator's "writes on their own" switch
+ * stops openers only; a promise made in a reply still goes out.
+ */
+export const SLURP_FOLLOW_UP_OVERDUE_MS = 2 * 24 * 60 * 60_000;
+/** `createdAt`: when it was planned (the follow-up row's creation). */
+export function isFollowUpOverdue(followUp: { createdAt?: string }, now: Date = new Date()): boolean {
+  const promised = Date.parse(followUp.createdAt ?? "");
+  return Number.isFinite(promised) && now.getTime() - promised > SLURP_FOLLOW_UP_OVERDUE_MS;
+}
+/** Whether a wait may end this follow-up: an old opener only. */
+export function slurpFollowUpExpires(followUp: { type: string; createdAt?: string }, now: Date = new Date()): boolean {
+  return followUp.type === "opener" && isFollowUpOverdue(followUp, now);
+}
+
+/** More than this past its first due time, the Creator says sorry for the wait. */
+export const SLURP_FOLLOW_UP_LATE_MS = 2 * 60 * 60_000;
+export function isFollowUpLate(firstDueAt: string | undefined, now: Date = new Date()): boolean {
+  const due = Date.parse(firstDueAt ?? "");
+  return Number.isFinite(due) && now.getTime() - due > SLURP_FOLLOW_UP_LATE_MS;
+}
+
+/**
+ * The next try after a failed generation: half the time the promise is already late, between 15
+ * minutes and 12 hours. A failure right after it came due retries soon; a promise failing for days
+ * costs two model calls a day at most. No attempt count is stored: the lateness is the count.
+ */
+export function slurpFollowUpRetryAt(firstDueAt: string | undefined, now: Date = new Date()): string {
+  const due = Date.parse(firstDueAt ?? "");
+  const late = Number.isFinite(due) ? Math.max(0, now.getTime() - due) : 0;
+  const delay = Math.min(12 * 60 * 60_000, Math.max(15 * 60_000, late / 2));
+  return new Date(now.getTime() + delay).toISOString();
+}
+
+/**
+ * The row update after a failed generation. A promise goes back to the queue at the retry time;
+ * an opener fails for good. `firstDueAt` is pinned, because a row from before 0.3.0 has none and
+ * its moving `scheduledAt` would keep the lateness (and so the back-off) at zero forever.
+ */
+export function slurpFailedFollowUpPatch(
+  row: { type?: unknown; scheduledAt?: unknown; firstDueAt?: unknown } | undefined,
+  now: Date = new Date(),
+): { status: "failed" | "pending"; scheduledAt: string; firstDueAt: string } {
+  const firstDueAt = String(row?.firstDueAt ?? row?.scheduledAt ?? now.toISOString());
+  return row?.type === "opener"
+    ? { status: "failed", scheduledAt: String(row.scheduledAt ?? now.toISOString()), firstDueAt }
+    : { status: "pending", scheduledAt: slurpFollowUpRetryAt(firstDueAt, now), firstDueAt };
+}
+
+/**
  * Generate a follow-up message prompt context.
  */
-export function formatFollowUpContext(followUp: ScheduledFollowUp): string {
-  const timeAgo = Math.round((Date.now() - new Date(followUp.scheduledAt).getTime()) / 60_000);
-  const timing = timeAgo > 2 ? `about ${timeAgo} minutes ago` : "just now";
-
-  let context = `You scheduled a ${followUp.type} ${timing}. Reason: ${followUp.reason}.`;
+export function formatFollowUpContext(followUp: ScheduledFollowUp, promiseText?: string, late = false): string {
+  // `scheduledAt` is when it came due, not when it was promised, so no "minutes ago" is stated:
+  // the old count told the model a false fact.
+  // Nobody asked for an opener, so it must not claim a promise.
+  if (followUp.type === "opener")
+    return `Nobody asked and you promised nothing: you are writing first in this quiet chat. ${followUp.reason}`;
+  let context = `You promised a ${followUp.type} earlier and it is due now. Reason: ${followUp.reason}.`;
 
   if (followUp.sequenceNumber && followUp.totalInSequence) {
     context += ` This is update ${followUp.sequenceNumber} of ${followUp.totalInSequence}.`;
@@ -222,6 +282,16 @@ export function formatFollowUpContext(followUp: ScheduledFollowUp): string {
 
   if (followUp.context) {
     context += ` Context: ${followUp.context}`;
+  }
+
+  // The words she remembered, so the follow-up keeps the promise she actually made.
+  if (promiseText) {
+    context += ` What you promised: "${promiseText}". Keep this promise now.`;
+  }
+
+  // A promise kept late is still kept (task E): she owns the wait in her own words, then delivers.
+  if (late) {
+    context += ` You are late with this. Open with a short, casual sorry for the wait in your own voice (one line, no excuses list), then keep the promise.`;
   }
 
   return context;

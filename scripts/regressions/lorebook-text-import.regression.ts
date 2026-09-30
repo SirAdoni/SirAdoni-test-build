@@ -5,6 +5,8 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import {
   detectLorebookTextFormat,
+  LOREBOOK_TEXT_MAX_CHARS,
+  LOREBOOK_TEXT_MAX_ENTRIES,
   exportLorebookToCsv,
   exportLorebookToMarkdown,
   parseLorebookCsv,
@@ -76,6 +78,7 @@ const codes = (issues: Array<{ code: string }>) => issues.map((issue) => issue.c
   assert.equal(parseLorebookCsv("name,content\nA,b").issues[0]!.detail, "keys");
   assert.deepEqual(codes(parseLorebookCsv('name,keys,content\n"A,b,c').issues), ["unterminated_quote"]);
   assert.deepEqual(codes(parseLorebookCsv("name,keys,content\n").issues), ["no_entries"]);
+  assert.deepEqual(codes(parseLorebookCsv("x".repeat(LOREBOOK_TEXT_MAX_CHARS + 1)).issues), ["input_too_large"]);
 }
 
 // ── Markdown parser ──
@@ -101,6 +104,14 @@ const codes = (issues: Array<{ code: string }>) => issues.map((issue) => issue.c
   assert.equal(orphan!.invalid, true);
   assert.ok(parsed.issues.some((issue) => issue.code === "missing_name" && issue.line === 15));
   assert.deepEqual(codes(parseLorebookMarkdown("just text").issues), ["no_entries"]);
+  assert.deepEqual(codes(parseLorebookMarkdown("x".repeat(LOREBOOK_TEXT_MAX_CHARS + 1)).issues), ["input_too_large"]);
+  const oversizedMarkdown = Array.from(
+    { length: LOREBOOK_TEXT_MAX_ENTRIES + 1 },
+    (_, index) => `## Entry ${index}\n\nContent ${index}`,
+  ).join("\n\n");
+  const markdownLimit = parseLorebookMarkdown(oversizedMarkdown);
+  assert.equal(markdownLimit.entries.length, LOREBOOK_TEXT_MAX_ENTRIES);
+  assert.ok(markdownLimit.issues.some((issue) => issue.code === "too_many_entries"));
 }
 
 // ── Format detection ──
@@ -147,6 +158,15 @@ assert.equal(detectLorebookTextFormat("## Entry\n"), "markdown");
   const strip = (parsed: ReturnType<typeof parseLorebookCsv>) =>
     parsed.entries.map(({ line: _line, invalid: _invalid, ...entry }) => entry);
 
+  assert.equal(
+    exportLorebookToMarkdown({
+      name: "Heading" + "\t".repeat(10_000) + "\n\n\t\tbody",
+      entries: [],
+      folders: [],
+    }),
+    "# Heading body\n",
+    "large tab runs around newlines normalize in linear-time-safe whitespace runs",
+  );
   const markdown = exportLorebookToMarkdown({ name: "Test World", entries, folders });
   const fromMarkdown = parseLorebookMarkdown(markdown);
   assert.equal(fromMarkdown.title, "Test World");
@@ -166,6 +186,78 @@ assert.equal(detectLorebookTextFormat("## Entry\n"), "markdown");
   assert.ok(csv.includes("\r\n"), "CSV uses CRLF rows");
   assert.deepEqual(strip(parseLorebookCsv(csv)), expected, "CSV round trip");
   assert.deepEqual(strip(parseLorebookCsv(`﻿${csv}`)), expected, "CSV round trip with BOM");
+  const formulaCsv = exportLorebookToCsv({
+    entries: [
+      { name: "=1+1", keys: ["=2+2"], content: "@SUM(A1:A2)", enabled: true, constant: false },
+      { name: "  =3+3", keys: [], content: "safe", enabled: true, constant: false },
+    ],
+  });
+  assert.ok(formulaCsv.includes("'=1+1,'=2+2,'@SUM(A1:A2)"), "formula-leading cells are exported as text");
+  assert.ok(formulaCsv.includes("'  =3+3"), "leading whitespace before a formula is neutralized too");
+  const formulaEntries = parseLorebookCsv(formulaCsv).entries;
+  assert.equal(formulaEntries[0]!.name, "=1+1", "import removes the export-added formula prefix");
+  assert.deepEqual(formulaEntries[0]!.keys, ["=2+2"]);
+  assert.equal(formulaEntries[0]!.content, "@SUM(A1:A2)");
+  assert.equal(formulaEntries[1]!.name, "=3+3");
+  const csvContents = [
+    "=1+1",
+    "+1",
+    "-1",
+    "@SUM(A1:A2)",
+    "  =1+1",
+    "\u0000=1+1",
+    "\tplain",
+    "\nplain",
+    "'plain",
+    "''plain",
+    "'=1+1",
+    "''=1+1",
+    "'\tplain",
+    "'",
+    '\'"quoted",\nnext line',
+  ];
+  for (const content of csvContents) {
+    const original = [{ name: "Round trip", keys: ["key"], content }];
+    const exported = exportLorebookToCsv({ entries: original });
+    assert.equal(readCsvRows(exported).rows[1]!.cells[2]![0], "'", "spreadsheet formula triggers stay neutralized");
+    const imported = parseLorebookCsv(exported).entries[0]!;
+    assert.equal(
+      imported.content,
+      content,
+      `CSV preserves formula-like text and literal apostrophes: ${JSON.stringify(content)}`,
+    );
+    assert.equal(exportLorebookToCsv({ entries: [imported] }), exported, "re-export does not accumulate prefixes");
+  }
+  assert.equal(parseLorebookCsv("name,keys,content\nLiteral,key,'plain").entries[0]!.content, "'plain");
+  for (const content of ["'=foo", "''foo", "''=foo", "'  =foo", "'\tfoo"]) {
+    const raw = parseLorebookCsv(`name,keys,content\n'=Name,''key,${content}`).entries[0]!;
+    assert.equal(raw.name, "'=Name", "unmarked CSV names are literal");
+    assert.deepEqual(raw.keys, ["''key"], "unmarked CSV keys are literal");
+    assert.equal(raw.content, content, "unmarked CSV apostrophes are literal");
+  }
+  const markerHeader = "name,keys,content,marinara_csv_escape";
+  for (const marker of ["", "apostrophe-v2", "apostrophe-v1 "]) {
+    const raw = parseLorebookCsv(`${markerHeader}\nRaw,key,'=foo,${marker}`);
+    assert.equal(raw.entries[0]!.content, "'=foo", "unknown or empty markers never remove apostrophes");
+    assert.ok(!raw.issues.some((issue) => issue.code === "unknown_column"), "metadata column is recognized");
+  }
+  const mixed = parseLorebookCsv(`${markerHeader}\nEngine,key,'=foo,apostrophe-v1\nRaw,key,'=foo`);
+  assert.deepEqual(
+    mixed.entries.map((entry) => entry.content),
+    ["=foo", "'=foo"],
+    "escaping is marked per row",
+  );
+  const duplicateMarker = parseLorebookCsv(
+    `${markerHeader},marinara_csv_escape\nRaw,key,'=foo,apostrophe-v1,apostrophe-v1`,
+  );
+  assert.equal(duplicateMarker.entries[0]!.content, "'=foo", "ambiguous duplicate markers preserve literal data");
+  const oversizedCsv = [
+    "name,keys,content",
+    ...Array.from({ length: LOREBOOK_TEXT_MAX_ENTRIES + 1 }, (_, index) => `Entry ${index},key${index},content`),
+  ].join("\n");
+  const csvLimit = parseLorebookCsv(oversizedCsv);
+  assert.equal(csvLimit.entries.length, LOREBOOK_TEXT_MAX_ENTRIES);
+  assert.ok(csvLimit.issues.some((issue) => issue.code === "too_many_entries"));
 }
 
 // ── Duplicate planning ──
@@ -220,6 +312,9 @@ const previous = {
 };
 type Response = { statusCode: number; body: string; headers: Record<string, unknown>; json(): any };
 let app: { close(): Promise<void>; inject(options: Record<string, unknown>): Promise<Response> } | null = null;
+let db: Awaited<
+  ReturnType<typeof import("../../packages/server/src/db/file-backed-store.js").createFileNativeDB>
+> | null = null;
 
 try {
   const fileStorageDir = join(dataDir, "file-storage");
@@ -233,7 +328,7 @@ try {
     import("../../packages/server/src/routes/lorebook-text.routes.js"),
     import("../../packages/server/src/services/storage/lorebooks.storage.js"),
   ]);
-  const db = await createFileNativeDB();
+  db = await createFileNativeDB();
   const Fastify = createRequire(new URL("../../packages/server/package.json", import.meta.url))("fastify");
   const server = Fastify({ bodyLimit: 256 * 1024 * 1024 });
   server.decorate("db", db);
@@ -282,6 +377,46 @@ try {
   assert.equal(harbor.folderId, coast.id);
   assert.equal(folders.find((folder) => folder.id === coast.parentFolderId)?.name, "Places");
 
+  // A later write failure must undo earlier overwrites and newly created folders.
+  const { lorebookEntries } = await import("../../packages/server/src/db/schema/index.js");
+  const originalInsert = db.insert;
+  let failedEntryWrite = false;
+  db.insert = (table) => {
+    if (table === lorebookEntries) {
+      failedEntryWrite = true;
+      throw new Error("Injected text import failure");
+    }
+    return originalInsert(table);
+  };
+  try {
+    await request(
+      "POST",
+      `/api/lorebooks/${book.id}/import-text`,
+      {
+        format: "markdown",
+        duplicateMode: "overwrite",
+        text: "## Harbor\n\nMust roll back.\n\n## New entry\nFolder: Failed folder\n\nCannot save.",
+      },
+      500,
+    );
+    const booksBeforeFailure = await storage.list();
+    await request(
+      "POST",
+      "/api/lorebooks/import-text",
+      {
+        name: "Failed new book",
+        format: "markdown",
+        text: "## New entry\nFolder: Failed folder\n\nCannot save.",
+      },
+      500,
+    );
+    assert.deepEqual(await storage.list(), booksBeforeFailure, "failed imports also roll back the new lorebook");
+  } finally {
+    db.insert = originalInsert;
+  }
+  assert.equal(failedEntryWrite, true, "the failure occurs after the first overwrite");
+  assert.deepEqual(await storage.listEntries(book.id), entries, "failed imports preserve existing entries");
+  assert.deepEqual(await storage.listFolders(book.id), folders, "failed imports remove newly created folders");
   await request("POST", `/api/lorebooks/${book.id}/import-text`, { format: "csv", text: "name,content\nA,b" }, 400);
   await request("POST", `/api/lorebooks/${book.id}/import-text`, { format: "xml", text: "x" }, 400);
   await request("POST", "/api/lorebooks/missing/import-text", { format: "csv", text: "name,keys,content\nA,a,b" }, 404);
@@ -289,7 +424,10 @@ try {
   // Export, then import into a new lorebook, reproduces the entries and folders.
   const exported = await request("GET", `/api/lorebooks/${book.id}/export-text?format=csv`);
   assert.match(String(exported.headers["content-type"]), /text\/csv/);
-  assert.match(String(exported.headers["content-disposition"]), /Test%20World\.csv/);
+  assert.equal(
+    exported.headers["content-disposition"],
+    "attachment; filename=\"Test World.csv\"; filename*=UTF-8''Test%20World.csv",
+  );
   const fresh = (
     await request("POST", "/api/lorebooks/import-text", { name: "Copy", format: "csv", text: exported.body })
   ).json();
@@ -305,6 +443,23 @@ try {
   const md = await request("GET", `/api/lorebooks/${book.id}/export-text?format=markdown`);
   assert.ok(md.body.startsWith("# Test World\n\n## "));
 
+  for (const name of ["Test World", "Zażółć gęślą jaźń", 'A "quote"\\path\r\nX-Injected: yes \'()*']) {
+    const namedBook = (await storage.create({ name } as any)) as { id: string };
+    for (const [format, extension] of [
+      ["csv", "csv"],
+      ["markdown", "md"],
+    ]) {
+      const response = await request("GET", `/api/lorebooks/${namedBook.id}/export-text?format=${format}`);
+      const disposition = String(response.headers["content-disposition"]);
+      const filenames = disposition.match(/^attachment; filename="([^"\\]*)"; filename\*=UTF-8''([^']*)$/);
+      assert.ok(filenames, `safe quoted fallback and UTF-8 filename: ${disposition}`);
+      assert.match(filenames[1]!, /^[\x20-\x7E]+$/, "fallback contains printable ASCII only");
+      assert.ok(filenames[1]!.endsWith(`.${extension}`));
+      assert.doesNotMatch(filenames[2]!, /['()*\r\n]/, "extended filename uses safe RFC 5987 encoding");
+      assert.equal(decodeURIComponent(filenames[2]!), `${name}.${extension}`);
+      assert.equal(response.headers["x-injected"], undefined, "a lorebook name cannot inject response headers");
+    }
+  }
   // A failed import into a new lorebook does not leave an empty book behind.
   const before = (await storage.list()).length;
   await request("POST", "/api/lorebooks/import-text", { name: "Nope", format: "csv", text: "title\nx" }, 400);
@@ -315,6 +470,7 @@ try {
   console.log("lorebook-text-import regression passed");
 } finally {
   await app?.close();
+  await db?._fileStore.close();
   for (const [key, value] of Object.entries(previous)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;

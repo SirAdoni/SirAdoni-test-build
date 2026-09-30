@@ -39,6 +39,8 @@ export async function generateAndApplyCreatorReply(
       input.parentInteractionId,
       input.viewerPersonaId,
       input.viewerActorAccountId,
+      undefined,
+      settings.creatorRepliesPerDay,
     );
     if (claim.status !== "claimed") return claim;
     let content: string;

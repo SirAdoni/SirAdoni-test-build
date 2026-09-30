@@ -2319,6 +2319,7 @@ export function ConversationInput({
         <textarea
           ref={textareaRef}
           data-chat-composer="true"
+          data-chat-id={activeChatId}
           placeholder={inputPlaceholder}
           rows={1}
           onInput={handleInput}

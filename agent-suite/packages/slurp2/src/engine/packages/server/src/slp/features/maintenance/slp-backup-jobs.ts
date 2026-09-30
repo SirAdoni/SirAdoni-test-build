@@ -1,4 +1,5 @@
 import { unlink, readdir, readFile, stat } from "node:fs/promises";
+import { slurpAccountRowIsCreator } from "../../../../../shared/src/slp/slp-audience-characters.js";
 import { DATA_DIR } from "../../../utils/data-dir.js";
 import { join } from "path";
 import { randomUUID } from "node:crypto";
@@ -10,6 +11,7 @@ import { type StoredZipEntry, jsonEntry, writeStoredZip, readStoredZip } from ".
 import { createWriteStream } from "fs";
 import { finished } from "node:stream/promises";
 import type { FastifyInstance } from "fastify";
+import { migrateSlurpSupportThreads } from "../../data/messages/slp-support-migration.js";
 import type { SlpRouteDeps } from "../viewer/slp-viewer-contract.js";
 
 /**
@@ -151,7 +153,7 @@ export function createSlpBackupJobs(app: FastifyInstance, deps: SlpRouteDeps) {
       job.stage = "reading-data";
       job.detail = "Reading Slurp database records.";
       const backup = await noodle.exportSlurpBackup();
-      job.creators = backup.tables.accounts.length;
+      job.creators = backup.tables.accounts.filter(slurpAccountRowIsCreator).length;
       job.posts = backup.tables.posts.length;
       job.interactions = backup.tables.interactions.length;
       const mediaFiles = await listCreatorMediaFiles();
@@ -252,7 +254,7 @@ export function createSlpBackupJobs(app: FastifyInstance, deps: SlpRouteDeps) {
       summary: {
         sourcePackage: manifest.sourcePackage,
         exportedAt: manifest.exportedAt ?? null,
-        creators: tables.accounts?.length ?? 0,
+        creators: (tables.accounts ?? []).filter(slurpAccountRowIsCreator).length,
         posts: tables.posts?.length ?? 0,
         interactions: tables.interactions?.length ?? 0,
         mediaFiles: mediaEntries.length,
@@ -272,7 +274,7 @@ export function createSlpBackupJobs(app: FastifyInstance, deps: SlpRouteDeps) {
       const inspection = inspectRestoreArchive(archive);
       const { tables, settings, mediaEntries } = inspection;
 
-      job.creators = tables.accounts?.length ?? 0;
+      job.creators = (tables.accounts ?? []).filter(slurpAccountRowIsCreator).length;
       job.posts = tables.posts?.length ?? 0;
       job.interactions = tables.interactions?.length ?? 0;
       job.stage = "writing-data";
@@ -280,6 +282,8 @@ export function createSlpBackupJobs(app: FastifyInstance, deps: SlpRouteDeps) {
       job.detail = `Restoring ${job.creators} creator${job.creators === 1 ? "" : "s"} and ${job.posts} post${job.posts === 1 ? "" : "s"}.`;
       const result = await noodle.importSlurpBackup({ settings, tables, importSettings });
       job.skipped = result.skipped;
+      // An older backup keeps Slurp Support's lines inside persona chats; give them Support's own threads.
+      await migrateSlurpSupportThreads(app.db);
 
       job.stage = "writing-media";
       job.detail = "Restoring media files.";

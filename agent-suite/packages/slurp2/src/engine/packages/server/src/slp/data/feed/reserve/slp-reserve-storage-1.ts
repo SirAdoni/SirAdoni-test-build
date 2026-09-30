@@ -11,9 +11,12 @@ import { newId, now } from "../../../../utils/id-generator.js";
 import {
   hasSlurpCreatorPostingIntervalConflict,
   slurpCreatorPostingIntervalMs,
+  slurpPacedPostsPerDay,
 } from "../../../modules/feed/slp-posting-interval.js";
+import { readSlurpCreatorPaceFactor } from "../../creators/slp-steering-storage.js";
 import { SLP_CREATOR_RESERVE_STATE_ID, ROLLING_DAY_MS } from "../../host/slp-storage-constants.js";
-import { slpCreatorReservePolicyFingerprint, parseRecord } from "../../../modules/records/slp-storage-model.js";
+import { parseRecord } from "../../../modules/records/slp-storage-model.js";
+import { slpCreatorReserveFingerprintFor } from "../../creators/slp-source-resolve.js";
 import type {
   SlpCreatorPreparedPostPayload,
   SlpCreatorPreparedPostState,
@@ -196,7 +199,8 @@ export function createReserveStorage1(context: SlurpStorageContext) {
     }): Promise<string | null> {
       const id = newId();
       return db.transaction(async (tx) => {
-        const settings = await this.getSettings();
+        // Posting settings: "feed.posting-rate" events scale posts per day here (R1-112).
+        const settings = await this.getPostingSettings();
         const publishMs = Date.parse(input.publishAt);
         const posts = await tx.select().from(slpPosts).where(eq(slpPosts.authorAccountId, input.creatorAccountId));
         const prepared = await tx
@@ -209,7 +213,12 @@ export function createReserveStorage1(context: SlurpStorageContext) {
             .filter((item) => item.state === "scheduled" || item.state === "prepared")
             .map((item) => Date.parse(item.publishAt)),
         ];
-        if (hasSlurpCreatorPostingIntervalConflict(activityTimes, publishMs, settings.postsPerDay)) return null;
+        // The Creator's own spacing follows the pace the player set for them.
+        const perCreator = slurpPacedPostsPerDay(
+          settings.postsPerDay,
+          await readSlurpCreatorPaceFactor(db, input.creatorAccountId),
+        );
+        if (hasSlurpCreatorPostingIntervalConflict(activityTimes, publishMs, perCreator)) return null;
         await tx.insert(slpCreatorPreparedPosts).values({
           id,
           creatorAccountId: input.creatorAccountId,
@@ -255,6 +264,24 @@ export function createReserveStorage1(context: SlurpStorageContext) {
         return true;
       });
     },
+    /**
+     * Retire a scheduled slot the Creator chose not to post in.
+     *
+     * Discarded rather than filled: there is no payload, no image, and no failure. The slot is
+     * spent, so the reserve does not try again for the same time and nothing downstream reads it
+     * as a run that went wrong.
+     */
+    async skipNoodlerScheduledPost(id: string, expectedPublishAt: string, at: Date): Promise<boolean> {
+      return db.transaction(async (tx) => {
+        const current = (await tx.select().from(slpCreatorPreparedPosts).where(eq(slpCreatorPreparedPosts.id, id)))[0];
+        if (!current || current.state !== "scheduled" || current.publishAt !== expectedPublishAt) return false;
+        await tx
+          .update(slpCreatorPreparedPosts)
+          .set({ state: "discarded", updatedAt: at.toISOString() })
+          .where(eq(slpCreatorPreparedPosts.id, id));
+        return true;
+      });
+    },
     async rescheduleNoodlerPost(
       id: string,
       publishAt: string,
@@ -262,7 +289,8 @@ export function createReserveStorage1(context: SlurpStorageContext) {
     ): Promise<"updated" | "not_found" | "not_future" | "not_editable" | "conflict"> {
       const publishMs = Date.parse(publishAt);
       if (Number.isNaN(publishMs) || publishMs <= at.getTime()) return "not_future";
-      const settings = await this.getSettings();
+      // Posting settings: "feed.posting-rate" events scale posts per day here (R1-112).
+      const settings = await this.getPostingSettings();
       let mediaPath: string | null = null;
       const result = await db.transaction(async (tx) => {
         const current = (await tx.select().from(slpCreatorPreparedPosts).where(eq(slpCreatorPreparedPosts.id, id)))[0];
@@ -281,7 +309,11 @@ export function createReserveStorage1(context: SlurpStorageContext) {
             .filter((item) => item.id !== current.id && (item.state === "scheduled" || item.state === "prepared"))
             .map((item) => Date.parse(item.publishAt)),
         ];
-        if (hasSlurpCreatorPostingIntervalConflict(activityTimes, publishMs, settings.postsPerDay)) {
+        const perCreator = slurpPacedPostsPerDay(
+          settings.postsPerDay,
+          await readSlurpCreatorPaceFactor(db, current.creatorAccountId),
+        );
+        if (hasSlurpCreatorPostingIntervalConflict(activityTimes, publishMs, perCreator)) {
           return "conflict" as const;
         }
         if (current.state === "prepared") {
@@ -298,7 +330,7 @@ export function createReserveStorage1(context: SlurpStorageContext) {
             publishAt: new Date(publishMs).toISOString(),
             generatedAt: timestamp,
             payload: "{}",
-            policyFingerprint: slpCreatorReservePolicyFingerprint(account, settings, source?.updatedAt ?? null),
+            policyFingerprint: await slpCreatorReserveFingerprintFor(db, account, settings, source),
             state: "scheduled",
             publishedPostId: null,
             imageState: "none",
@@ -367,7 +399,8 @@ export function createReserveStorage1(context: SlurpStorageContext) {
     },
     async discardPreparedPostsAfterManualPost(creatorAccountId: string, manualCreatedAt: string): Promise<number> {
       const start = Date.parse(manualCreatedAt);
-      const settings = await this.getSettings();
+      // Posting settings: "feed.posting-rate" events scale posts per day here (R1-112).
+      const settings = await this.getPostingSettings();
       const end = start + slurpCreatorPostingIntervalMs(settings.postsPerDay);
       const rows = await db
         .select()

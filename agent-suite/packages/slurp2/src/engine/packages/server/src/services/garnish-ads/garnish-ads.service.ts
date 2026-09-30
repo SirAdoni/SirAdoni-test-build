@@ -1,6 +1,6 @@
 import type { DB } from "../../db/connection.js";
 import { createAppSettingsStorage } from "../storage/app-settings.storage.js";
-import { qualityScores } from "./garnish-ads.rating.js";
+import { garnishRotateInline, qualityScores } from "./garnish-ads.rating.js";
 import { createGarnishAdsStorage, type GarnishAdEvent } from "./garnish-ads.storage.js";
 import {
   garnishRatingAllowed,
@@ -69,14 +69,13 @@ export function createGarnishAds(db: DB) {
       const [state, ads, events] = await Promise.all([load(subjectId), pool.listActive(platform), pool.listEvents()]);
       const hidden = new Set(state.hiddenAdIds);
       const hiddenBrands = new Set(state.hiddenBrands.map((brand) => brand.toLowerCase()));
-      const recent = new Set(state.recentAdIds);
       const quality = qualityScores(events);
       // A host that states no ceiling has not said what it is allowed to show, so it gets the
       // safest tier rather than everything. Defaulting the other way turned one dropped field
       // into an open gate instead of a visible breakage.
       const ceiling = context.contentCeiling ?? "tame";
 
-      return ads
+      const ranked = ads
         .filter(
           (ad) =>
             ad.kind === "inline" &&
@@ -85,10 +84,11 @@ export function createGarnishAds(db: DB) {
             garnishRatingAllowed(ad.contentRating, ceiling),
         )
         .map((ad, index) => ({ ad, score: scoreAd(ad, context, quality.get(ad.id) ?? 0), index }))
-        .sort((left, right) => right.score - left.score || left.index - right.index)
-        .filter(({ ad }) => !recent.has(ad.id))
-        .slice(0, 2)
-        .map(({ ad }) => ad);
+        .sort((left, right) => right.score - left.score || left.index - right.index);
+      return garnishRotateInline(
+        ranked.map(({ ad }) => ad),
+        state.recentAdIds,
+      );
     },
 
     async hide(subjectId: string, adId: string) {

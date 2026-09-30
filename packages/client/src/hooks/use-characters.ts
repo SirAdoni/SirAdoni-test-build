@@ -27,6 +27,7 @@ import { personaCacheKeys, syncCachedPersona } from "../lib/persona-cache";
 import {
   PROFESSOR_MARI_ID,
   type CharacterData,
+  type GameNpcAvatarState,
   type CharacterCatalogEntry,
   type CharacterCatalogPage,
   type CharacterCardVersion,
@@ -37,6 +38,7 @@ import {
   type TrackerCardColorConfig,
 } from "@marinara-engine/shared";
 import type { CustomKind, CustomTagPatch } from "../lib/custom-emoji";
+import { useGameModeStore } from "../stores/game-mode.store";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -419,8 +421,10 @@ export function useRestoreCharacterVersion() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, versionId }: { id: string; versionId: string }) =>
-      api.post(`/characters/${id}/versions/${versionId}/restore`, {}),
-    onSuccess: (_data, variables) => {
+      api.post<CharacterData & CharacterAvatarMutationResult>(`/characters/${id}/versions/${versionId}/restore`, {}),
+    onSuccess: (result, variables) => {
+      reconcileCharacterAvatarMutation(variables.id, result);
+      invalidateAvatarMutationQueries(qc, result);
       qc.invalidateQueries({ queryKey: characterKeys.list() });
       qc.invalidateQueries({ queryKey: characterKeys.detail(variables.id) });
       qc.invalidateQueries({ queryKey: characterKeys.versions(variables.id) });
@@ -462,15 +466,45 @@ export function useResetCharacterVersions() {
   });
 }
 
+type CharacterAvatarMutationResult = {
+  avatarState?: GameNpcAvatarState;
+  avatarPath?: string | null;
+  avatarUrl?: string | null;
+  affectedChatIds?: string[];
+};
+
+function reconcileCharacterAvatarMutation(id: string, result: CharacterAvatarMutationResult): void {
+  if (result.avatarState) {
+    useGameModeStore
+      .getState()
+      .patchNpcAvatars([
+        { characterId: id, avatarUrl: result.avatarPath ?? result.avatarUrl ?? null, avatarState: result.avatarState },
+      ]);
+  }
+}
+
+function invalidateAvatarMutationQueries(qc: QueryClient, result: CharacterAvatarMutationResult): void {
+  for (const chatId of result.affectedChatIds ?? []) {
+    if (!chatId) continue;
+    qc.invalidateQueries({ queryKey: chatKeys.detail(chatId) });
+    qc.invalidateQueries({ queryKey: ["game-contact-book", chatId] });
+  }
+}
+
 export function useUploadAvatar() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, avatar, data }: { id: string; avatar: string; data?: CharacterData }) =>
-      api.post(`/characters/${id}/avatar`, { avatar, ...(data ? { data } : {}) }),
-    onSuccess: (_data, variables) => {
+      api.post<CharacterData & CharacterAvatarMutationResult>(`/characters/${id}/avatar`, {
+        avatar,
+        ...(data ? { data } : {}),
+      }),
+    onSuccess: (result, variables) => {
+      reconcileCharacterAvatarMutation(variables.id, result);
       qc.invalidateQueries({ queryKey: characterKeys.list() });
       qc.invalidateQueries({ queryKey: characterKeys.summariesRoot() });
       qc.invalidateQueries({ queryKey: characterKeys.detail(variables.id) });
+      invalidateAvatarMutationQueries(qc, result);
     },
   });
 }
@@ -478,11 +512,13 @@ export function useUploadAvatar() {
 export function useRemoveAvatar() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.delete(`/characters/${id}/avatar`),
-    onSuccess: (_data, id) => {
+    mutationFn: (id: string) => api.delete<CharacterData & CharacterAvatarMutationResult>(`/characters/${id}/avatar`),
+    onSuccess: (result, id) => {
+      reconcileCharacterAvatarMutation(id, result);
       qc.invalidateQueries({ queryKey: characterKeys.list() });
       qc.invalidateQueries({ queryKey: characterKeys.summariesRoot() });
       qc.invalidateQueries({ queryKey: characterKeys.detail(id) });
+      invalidateAvatarMutationQueries(qc, result);
     },
   });
 }
@@ -1009,11 +1045,14 @@ export function useDeleteCharacterGalleryImage(characterId: string) {
 export function useSetCharacterGalleryImageAsAvatar(characterId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (imageId: string) => api.post(`/characters/${characterId}/gallery/${imageId}/avatar`),
-    onSuccess: () => {
+    mutationFn: (imageId: string) =>
+      api.post<CharacterData & CharacterAvatarMutationResult>(`/characters/${characterId}/gallery/${imageId}/avatar`),
+    onSuccess: (result) => {
+      reconcileCharacterAvatarMutation(characterId, result);
       qc.invalidateQueries({ queryKey: characterKeys.detail(characterId) });
       qc.invalidateQueries({ queryKey: characterKeys.list() });
       qc.invalidateQueries({ queryKey: characterKeys.listWithBuiltIns() });
+      invalidateAvatarMutationQueries(qc, result);
     },
   });
 }
@@ -1530,22 +1569,22 @@ export function useBulkEditCharacterTags() {
       // The server takes at most 5000 cards per request; bigger selections go in slices.
       const merged = { updatedIds: [] as string[], unchangedIds: [] as string[], failedIds: [] as string[] };
       for (let start = 0; start < input.ids.length; start += 5000) {
-        const result = await api.post<typeof merged>("/characters/bulk-tags", {
-          ...input,
-          ids: input.ids.slice(start, start + 5000),
-        });
-        merged.updatedIds.push(...result.updatedIds);
-        merged.unchangedIds.push(...result.unchangedIds);
-        merged.failedIds.push(...result.failedIds);
+        const ids = input.ids.slice(start, start + 5000);
+        try {
+          const result = await api.post<typeof merged>("/characters/bulk-tags", { ...input, ids });
+          merged.updatedIds.push(...result.updatedIds);
+          merged.unchangedIds.push(...result.unchangedIds);
+          merged.failedIds.push(...result.failedIds);
+        } catch {
+          merged.failedIds.push(...ids);
+        }
       }
       return merged;
     },
-    onSuccess: (result) => {
-      if (result.updatedIds.length === 0) return;
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: characterKeys.list() });
       qc.invalidateQueries({ queryKey: characterKeys.summariesRoot() });
-      // One prefix match instead of one cache walk per card (a selection can be thousands);
-      // it also covers each card's version history, which gained a snapshot.
+      // One prefix match covers all selected cards and their version histories.
       qc.invalidateQueries({ queryKey: [...characterKeys.all, "detail"] });
     },
   });

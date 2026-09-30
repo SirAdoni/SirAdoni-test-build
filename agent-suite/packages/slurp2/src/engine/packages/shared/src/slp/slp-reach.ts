@@ -144,6 +144,13 @@ function viralFollowerRush(accountId: string, createdAt: string, ceiling: number
 }
 
 /**
+ * How many subscribers a creator appears to have (0.3.7). Each real paying fan stands for
+ * `crowdWeight` people, like the earnings they bring; a player's own subscription counts once.
+ */
+export const slurpShownSubscribers = (fans: number, players: number, crowdWeight: number): number =>
+  Math.max(0, players) + Math.max(0, fans) * Math.max(1, crowdWeight);
+
+/**
  * How many followers a creator appears to have.
  *
  * The ceiling is log-spread across the id, so the roster gets a believable mix: a few large

@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../../lib/api-client.js";
 import { slpKeys } from "../../base/state/slp-query-keys.js";
@@ -43,25 +44,42 @@ export function useSetSlurpGoal() {
     onSuccess: () => qc.invalidateQueries({ queryKey: [...slpKeys.noodlerRoot(), "studio"] }),
   });
 }
-/** The Creator home. Reading it also re-marks the point future deltas are measured from. */
-export function useSlurpStudio(personaId: string | null, enabled = true) {
+/**
+ * The Creator home. With `markVisit` (the Studio page) the first read of each visit re-marks the point
+ * future deltas are measured from; every later read, and every read from the Wallet, is read-only
+ * (R1-065), so Collect, a goal edit or a tip no longer zero the trends on screen.
+ */
+export function useSlurpStudio(personaId: string | null, enabled = true, markVisit = false) {
+  const marked = useRef(false);
   return useQuery({
-    queryKey: [...slpKeys.noodlerRoot(), "studio", personaId ?? "none"],
-    queryFn: () =>
-      api.get<{ since: string | null; creators: SlurpStudioCreator[] }>(
-        `/slurp2/slurp/studio?personaId=${encodeURIComponent(personaId!)}`,
-      ),
-    enabled: Boolean(personaId) && enabled,
-    // The snapshot is rewritten on every read, so refetching would silently zero the deltas the
-    // player is looking at. Read once per visit.
+    queryKey: [...slpKeys.noodlerRoot(), "studio", personaId ?? "none", markVisit ? "visit" : "read"],
+    // Read once per visit; actions invalidate it.
     staleTime: Infinity,
     refetchOnWindowFocus: false,
+    queryFn: () => {
+      const mark = markVisit && !marked.current;
+      marked.current = true;
+      return api.get<{ since: string | null; creators: SlurpStudioCreator[] }>(
+        `/slurp2/slurp/studio?personaId=${encodeURIComponent(personaId!)}${mark ? "&markVisit=1" : ""}`,
+      );
+    },
+    enabled: Boolean(personaId) && enabled,
+    // A visit starts with a fresh read, so the mark is taken when the page opens.
+    ...(markVisit ? { refetchOnMount: "always" as const } : {}),
   });
 }
 export function useSlurpWallet(personaId: string | null) {
+  const qc = useQueryClient();
   return useQuery({
     queryKey: [...slpKeys.noodlerRoot(), "wallet", personaId ?? "none"],
-    queryFn: () => api.get<SlurpWallet>(`/slurp2/slurp/viewer/wallet?personaId=${encodeURIComponent(personaId!)}`),
+    queryFn: async () => {
+      const wallet = await api.get<SlurpWallet>(
+        `/slurp2/slurp/viewer/wallet?personaId=${encodeURIComponent(personaId!)}`,
+      );
+      // Reading the wallet renews due subscriptions, so the balance chip reads again (R1-098).
+      void qc.invalidateQueries({ queryKey: [...slpKeys.noodlerRoot(), "viewer-wallets"] });
+      return wallet;
+    },
     enabled: Boolean(personaId),
   });
 }

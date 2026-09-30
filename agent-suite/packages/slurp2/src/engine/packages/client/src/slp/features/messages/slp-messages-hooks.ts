@@ -1,4 +1,6 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { SlpMessageDetailsPatch } from "../../../../../shared/src/slp/slp-message-details.js";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
 import { api } from "../../../lib/api-client.js";
 import { slpKeys } from "../../base/state/slp-query-keys.js";
 import { invalidateSlurpMessages, messageKeys } from "./slp-message-keys.js";
@@ -13,6 +15,8 @@ import type {
   SlurpThreadRelationship,
 } from "./slp-messages-contract.js";
 
+type SlurpUnreadCountResponse = { unread: number; inboundUnread: number };
+
 export function useSlurpThreads(personaId: string | null) {
   return useQuery({
     queryKey: messageKeys.threads(personaId),
@@ -25,11 +29,24 @@ export function useSlurpThreads(personaId: string | null) {
         unread: number;
         inboundUnread: number;
         attentionCommissions: Array<SlurpCommission & { side: "viewer" | "creator" }>;
+        /** Slurp Support's threads live on the Stir desk; the inbox shows one row for them. */
+        desk?: { threads: number; unread: number; lastMessageAt: string | null };
       }>(`/slurp2/messages/threads?personaId=${encodeURIComponent(personaId!)}`),
     enabled: Boolean(personaId),
     // A creator who is offline answers minutes or hours later, through the scheduler. Without a
     // poll that reply only appeared once some other mutation happened to invalidate the cache,
     // so the whole off-hours pacing model was invisible while the app was open.
+    refetchInterval: personaId ? 30_000 : false,
+    refetchIntervalInBackground: false,
+  });
+}
+export function useSlurpUnreadCount(personaId: string | null) {
+  return useQuery({
+    queryKey: messageKeys.unreadCount(personaId),
+    queryFn: () =>
+      api.get<SlurpUnreadCountResponse>(`/slurp2/messages/unread-count?personaId=${encodeURIComponent(personaId!)}`),
+    enabled: Boolean(personaId),
+    staleTime: 15_000,
     refetchInterval: personaId ? 30_000 : false,
     refetchIntervalInBackground: false,
   });
@@ -54,7 +71,8 @@ export function useOpenSlurpCreatorThread() {
   });
 }
 export function useSlurpThread(threadId: string | null, personaId: string | null) {
-  return useQuery({
+  const queryClient = useQueryClient();
+  const query = useQuery({
     queryKey: messageKeys.thread(threadId ?? "none", personaId),
     queryFn: () =>
       api.get<{
@@ -81,6 +99,26 @@ export function useSlurpThread(threadId: string | null, personaId: string | null
     refetchInterval: threadId && personaId ? 30_000 : false,
     refetchIntervalInBackground: false,
   });
+  useEffect(() => {
+    if (!personaId || !query.data?.thread) return;
+    // Opening marks the thread read on the server; the inbox row badge comes from `threads`.
+    void queryClient.invalidateQueries({ queryKey: messageKeys.unreadCount(personaId) });
+    void queryClient.invalidateQueries({ queryKey: messageKeys.threads(personaId) });
+  }, [personaId, query.data?.thread?.id, queryClient]);
+  return query;
+}
+export function useSlurpMessageSearch(threadId: string | null, personaId: string | null, search: string) {
+  return useInfiniteQuery({
+    queryKey: [...messageKeys.thread(threadId ?? "none", personaId), "search", search.trim()],
+    initialPageParam: null as { createdAt: string; id: string } | null,
+    queryFn: ({ pageParam }) =>
+      api.get<{ messages: SlurpMessage[]; nextCursor: { createdAt: string; id: string } | null }>(
+        `/slurp2/messages/threads/${encodeURIComponent(threadId!)}?personaId=${encodeURIComponent(personaId!)}&search=${encodeURIComponent(search.trim())}&limit=120${pageParam ? `&cursorAt=${encodeURIComponent(pageParam.createdAt)}&cursorId=${encodeURIComponent(pageParam.id)}` : ""}`,
+      ),
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    enabled: Boolean(threadId && personaId && search.trim()),
+    staleTime: 15_000,
+  });
 }
 export function useSlurpOlderMessages() {
   return useMutation({
@@ -104,13 +142,56 @@ export function useSlurpMessagePrompt(threadId: string | null, personaId: string
     staleTime: 0,
   });
 }
+export type SlurpThreadRequest = {
+  id: string;
+  text: string;
+  occurredAt: string;
+  action: "fulfill" | "tease" | "decline" | "delay" | "ignore" | "aggregate" | null;
+};
+
+/** Requests a fan made in this thread. Creator side only; a fan never sees how theirs was filed. */
+export function useSlurpThreadRequests(threadId: string | null, personaId: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: [...messageKeys.thread(threadId ?? "none", personaId), "requests"],
+    queryFn: () =>
+      api.get<{ requests: SlurpThreadRequest[] }>(
+        `/slurp2/messages/threads/${encodeURIComponent(threadId!)}/requests?personaId=${encodeURIComponent(personaId!)}`,
+      ),
+    enabled: enabled && Boolean(threadId && personaId),
+  });
+}
+
+/** Answer one request. The answer is recorded once, so the same content is never promised twice. */
+export function useSlurpRequestAction(threadId: string | null, personaId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { requestId: string; action: NonNullable<SlurpThreadRequest["action"]>; topic?: string }) =>
+      api.post<{ requests: SlurpThreadRequest[] }>(
+        `/slurp2/messages/threads/${encodeURIComponent(threadId!)}/requests/${encodeURIComponent(input.requestId)}/action`,
+        { personaId, action: input.action, ...(input.topic ? { topic: input.topic } : {}) },
+      ),
+    onSuccess: (data) => {
+      queryClient.setQueryData([...messageKeys.thread(threadId ?? "none", personaId), "requests"], data);
+      // Fulfil, tease and delay schedule promises and follow-ups, which the Memories panel shows.
+      void queryClient.invalidateQueries({ queryKey: messageKeys.thread(threadId ?? "none", personaId) });
+    },
+  });
+}
+
 /**
  * The conversation with one creator, started or not. Used when the player opens a chat from a
  * profile, where there may be no thread yet and creating one on sight would charge a fee.
  */
-export function useSlurpCompose(creatorAccountId: string | null, personaId: string | null) {
+/** `support`: Slurp Support's one thread with this Creator, the same from every persona. */
+export function useSlurpCompose(creatorAccountId: string | null, personaId: string | null, support = false) {
   return useQuery({
-    queryKey: [...slpKeys.noodlerRoot(), "messages", "compose", creatorAccountId ?? "none", personaId ?? "none"],
+    queryKey: [
+      ...slpKeys.noodlerRoot(),
+      "messages",
+      "compose",
+      creatorAccountId ?? "none",
+      support ? "support" : (personaId ?? "none"),
+    ],
     queryFn: () =>
       api.get<{
         thread: SlurpThread | null;
@@ -131,7 +212,7 @@ export function useSlurpCompose(creatorAccountId: string | null, personaId: stri
         subscribed?: boolean;
         relationship?: SlurpThreadRelationship;
       }>(
-        `/slurp2/messages/compose?personaId=${encodeURIComponent(personaId!)}&creatorAccountId=${encodeURIComponent(creatorAccountId!)}`,
+        `/slurp2/messages/compose?personaId=${encodeURIComponent(personaId!)}&creatorAccountId=${encodeURIComponent(creatorAccountId!)}${support ? "&support=1" : ""}`,
       ),
     enabled: Boolean(creatorAccountId && personaId),
     // Same poll as `useSlurpThread`. Without it a chat opened from a profile never saw the
@@ -141,12 +222,17 @@ export function useSlurpCompose(creatorAccountId: string | null, personaId: stri
   });
 }
 export function useRecordSlurpStoryView() {
+  const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: { storyId: string; personaId: string }) =>
       api.post<{ viewed: boolean; duplicate: boolean }>(
         `/slurp2/slurp/stories/${encodeURIComponent(input.storyId)}/view`,
         { personaId: input.personaId },
       ),
+    // A first view drops the Story's ring on the shelf (R1-024).
+    onSuccess: (result, input) => {
+      if (!result.duplicate) void qc.invalidateQueries({ queryKey: slpKeys.viewer(input.personaId) });
+    },
   });
 }
 export function useSlurpStoryViews(storyId: string | null, personaId: string | null, enabled = true) {
@@ -160,14 +246,25 @@ export function useSlurpStoryViews(storyId: string | null, personaId: string | n
   });
 }
 /** The rapport breakdown, read only by the Creator edit panel. */
-export function useSlurpRapport(creatorAccountId: string | null, personaId: string | null) {
+export function useSlurpRapport(
+  creatorAccountId: string | null,
+  personaId: string | null,
+  viewerAccountId: string | null,
+) {
   return useQuery({
-    queryKey: [...slpKeys.noodlerRoot(), "messages", "rapport", creatorAccountId ?? "none", personaId ?? "none"],
+    queryKey: [
+      ...slpKeys.noodlerRoot(),
+      "messages",
+      "rapport",
+      creatorAccountId ?? "none",
+      personaId ?? "none",
+      viewerAccountId ?? "none",
+    ],
     queryFn: () =>
       api.get<{ messaging: SlurpCreatorMessaging; rapport: SlurpRapport; facts: Record<string, unknown> }>(
-        `/slurp2/messages/creators/${encodeURIComponent(creatorAccountId!)}/rapport?personaId=${encodeURIComponent(personaId!)}`,
+        `/slurp2/messages/creators/${encodeURIComponent(creatorAccountId!)}/rapport?personaId=${encodeURIComponent(personaId!)}&viewerAccountId=${encodeURIComponent(viewerAccountId!)}`,
       ),
-    enabled: Boolean(creatorAccountId && personaId),
+    enabled: Boolean(creatorAccountId && personaId && viewerAccountId),
   });
 }
 /** A Creator's own message policy and prices, for the panel that edits them. */
@@ -202,5 +299,14 @@ export function useSetSlurpCreatorMessaging() {
       );
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: slpKeys.noodlerRoot() }),
+  });
+}
+
+export function useSetSlurpMessageDetails(threadId: string | null, personaId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: SlpMessageDetailsPatch) =>
+      api.patch(`/slurp2/messages/threads/${encodeURIComponent(threadId!)}/details`, { personaId, ...patch }),
+    onSuccess: () => invalidateSlurpMessages(queryClient),
   });
 }

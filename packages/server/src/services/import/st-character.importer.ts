@@ -1,3 +1,4 @@
+import { syncCharacterBookFromLorebook } from "../lorebook/character-book-sync.js";
 // ──────────────────────────────────────────────
 // Importer: SillyTavern Character (JSON / V2 Card / CharX)
 // ──────────────────────────────────────────────
@@ -320,6 +321,7 @@ export async function importSTCharacter(raw: Record<string, unknown>, db: DB, op
           updatedAt: normalizedTimestamps?.updatedAt ?? normalizedTimestamps?.createdAt ?? null,
           skipVersionSnapshot: true,
         });
+        await syncCharacterBookFromLorebook(db, result.lorebookId as string);
       } else if (hasEmbeddedLorebook) {
         throw new Error(
           typeof result?.error === "string"

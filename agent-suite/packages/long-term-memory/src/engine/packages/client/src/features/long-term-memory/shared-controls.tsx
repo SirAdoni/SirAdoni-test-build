@@ -33,7 +33,11 @@ export const Button = forwardRef<
       type="button"
       data-ltm-control="button"
       className={`mari-editor-action min-h-11 px-3 ${tone} ${className}`}
-      style={className.includes("mari-editor-action--compact") ? style : { minHeight: "2.75rem", ...style }}
+      style={
+        className.includes("mari-editor-action--compact")
+          ? style
+          : { minHeight: "2.75rem", minWidth: "2.75rem", ...style }
+      }
       {...props}
     >
       {children}
@@ -46,6 +50,7 @@ export function IconButton({
   label,
   destructive = false,
   iconSize = "0.875rem",
+  iconClassName,
   className = "",
   ...props
 }: Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children"> & {
@@ -53,6 +58,7 @@ export function IconButton({
   label: string;
   destructive?: boolean;
   iconSize?: string;
+  iconClassName?: string;
 }) {
   return (
     <button
@@ -63,7 +69,7 @@ export function IconButton({
       className={`mari-editor-action h-11 min-h-11 w-11 min-w-11 shrink-0 p-0 ${destructive ? "mari-editor-action--danger" : ""} ${className}`}
       {...props}
     >
-      <Icon aria-hidden="true" size={iconSize} />
+      <Icon aria-hidden="true" size={iconSize} className={iconClassName} />
     </button>
   );
 }

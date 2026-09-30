@@ -1231,7 +1231,9 @@ export function MobileMapButton({
               className="relative flex max-h-[min(68dvh,26rem)] flex-col overflow-hidden"
               // Fit the visible viewport below the button (browser chrome, keyboard, home indicator) instead
               // of a fixed 26rem cap, so a tall package view such as place details stays reachable.
-              style={{ maxHeight: `calc(${position.maxHeight}px - env(safe-area-inset-bottom, 0px))` }}
+              style={{
+                maxHeight: `calc(${position.maxHeight}px - var(--mari-safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))`,
+              }}
               onClick={(e) => e.stopPropagation()}
             >
               {/* Header */}

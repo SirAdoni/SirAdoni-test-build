@@ -71,7 +71,7 @@ On your turn, you pick one action from the menu. The six actions are:
 - **Skills**: use a special ability. Skills can cost MP. Some heal an ally, some hit an enemy, and some apply a buff or debuff.
 - **Special**: type a free-form action in your own words, then press **Ask GM**. For example, "I kick sand into the Ruin Guard's cracked lens." The GM decides what happens.
 - **Defend**: raise your Defense for the rest of the round to take less damage.
-- **Items**: use an item from your bag. Choose **Full inventory** to open your full item list from here.
+- **Items**: use an item from your bag. Choose **Full inventory** to open your full item list from here. In a game whose ruleset turns off Game Mode's own items, a fight offers no items until the ruleset says what they do.
 - **Flee**: leave the fight at once. Fleeing ends combat immediately.
 
 After you choose, the round plays out. The results appear as floating damage numbers, changing health bars, and lines in the combat log.

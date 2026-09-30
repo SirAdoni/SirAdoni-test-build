@@ -1,3 +1,4 @@
+import { embedCharacterBookImages, LOREBOOK_EXPORT_IMAGE_MAX_BYTES } from "../services/lorebook/lorebook-images.js";
 // ──────────────────────────────────────────────
 // Routes: Characters, Personas & Groups
 // ──────────────────────────────────────────────
@@ -45,6 +46,8 @@ import { encodePersonaCreate, encodePersonaUpdate, projectPersona } from "../ser
 import { createCharacterGalleryStorage } from "../services/storage/character-gallery.storage.js";
 import { createPersonaGalleryStorage } from "../services/storage/persona-gallery.storage.js";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
+import { readCharacterAvatarState, withoutCharacterAvatarState } from "../services/game/npc-avatar-state.js";
+import { chats } from "../db/schema/index.js";
 import { createGameSceneVideosStorage } from "../services/storage/game-scene-videos.storage.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
 import { createLorebooksStorage } from "../services/storage/lorebooks.storage.js";
@@ -106,6 +109,7 @@ import {
   clearEmbeddedLorebookFromCharacter,
   embedLorebookIntoCharacter,
   getEmbeddedLorebookId,
+  syncCharacterBookFromLorebook,
 } from "../services/lorebook/character-book-sync.js";
 import AdmZip from "adm-zip";
 import { extname } from "path";
@@ -758,7 +762,7 @@ async function buildNativeCharacterEnvelope(
     typeof extensions.characterSheetImageId === "string" ? extensions.characterSheetImageId : null;
   const portableExtensions = { ...extensions };
   delete portableExtensions.characterSheetImageId;
-  const portableData = { ...data, extensions: portableExtensions };
+  const portableData = withoutCharacterAvatarState({ ...data, extensions: portableExtensions });
   const [avatar, sprites, gallery] = await Promise.all([
     readAvatarDataUrl(char.avatarPath),
     readSpritesForId(char.id),
@@ -785,6 +789,7 @@ async function buildNativeCharacterEnvelope(
 }
 
 export function buildCompatibleCharacterExport(data: any, sprites: Array<{ filename: string; data: string }> = []) {
+  data = withoutCharacterAvatarState(data);
   const extensions = { ...parseCharacterDataRecord(data?.extensions) };
   const description = [typeof data?.description === "string" ? data.description : ""];
   for (const [key, label] of [
@@ -976,6 +981,19 @@ export async function charactersRoutes(app: FastifyInstance) {
     return next;
   }
 
+  const npcChats = createChatsStorage(app.db);
+  async function refreshNpcPortraitReferences(character: NonNullable<Awaited<ReturnType<typeof storage.getById>>>) {
+    const affectedChatIds: string[] = [];
+    for (const chat of await app.db.select().from(chats)) {
+      const metadata = parseCharacterDataRecord(chat.metadata);
+      if (!Array.isArray(metadata.gameNpcs) || !metadata.gameNpcs.some((npc) => npc?.characterId === character.id))
+        continue;
+      await npcChats.patchMetadata(chat.id, (fresh) => ({ gameNpcs: fresh.gameNpcs }));
+      affectedChatIds.push(chat.id);
+    }
+    return { ...character, avatarState: readCharacterAvatarState(character.data), affectedChatIds };
+  }
+
   // ── Characters ──
 
   app.get<{
@@ -1102,7 +1120,18 @@ export async function charactersRoutes(app: FastifyInstance) {
       const body = req.body ?? {};
       const stringList = (value: unknown) =>
         Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-      const ids = Array.from(new Set(stringList(body.ids))).filter((id) => id !== PROFESSOR_MARI_ID);
+      const ids = Array.from(
+        new Set(
+          stringList(body.ids)
+            .map((id) => id.trim())
+            .filter((id) => id.length > 0),
+        ),
+      ).filter((id) => id !== PROFESSOR_MARI_ID);
+      if (ids.length === 0) return reply.status(400).send({ error: "No characters selected" });
+      if (ids.length > BULK_TAG_MAX_CHARACTERS) {
+        return reply.status(400).send({ error: `At most ${BULK_TAG_MAX_CHARACTERS} characters per request` });
+      }
+      if (ids.some((id) => id.length > 256)) return reply.status(400).send({ error: "Character ID is too long" });
       const edit = normalizeCharacterTagEdit({
         add: stringList(body.add),
         remove: stringList(body.remove),
@@ -1114,10 +1143,6 @@ export async function charactersRoutes(app: FastifyInstance) {
             )
           : [],
       });
-      if (ids.length === 0) return reply.status(400).send({ error: "No characters selected" });
-      if (ids.length > BULK_TAG_MAX_CHARACTERS) {
-        return reply.status(400).send({ error: `At most ${BULK_TAG_MAX_CHARACTERS} characters per request` });
-      }
       if (isEmptyCharacterTagEdit(edit)) return reply.status(400).send({ error: "No tag changes requested" });
 
       const versionReason = [
@@ -1538,7 +1563,7 @@ export async function charactersRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string; versionId: string } }>("/:id/versions/:versionId/restore", async (req, reply) => {
     const restored = await storage.restoreVersion(req.params.id, req.params.versionId);
     if (!restored) return reply.status(404).send({ error: "Character version not found" });
-    return restored;
+    return refreshNpcPortraitReferences(restored);
   });
 
   app.delete<{ Params: { id: string; versionId: string } }>("/:id/versions/:versionId", async (req, reply) => {
@@ -2180,15 +2205,19 @@ export async function charactersRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Gallery image not found" });
     }
 
+    const current = await storage.getById(id);
+    if (!current) return reply.status(404).send({ error: "Character not found" });
+    const expectedAvatarRevision = readCharacterAvatarState(current.data)?.revision ?? 0;
+
     let avatarPath: string | null = null;
     try {
       avatarPath = await copyGalleryImageToAvatar("character", id, image.filePath);
-      const updated = await storage.updateAvatar(id, avatarPath);
+      const updated = await storage.updateAvatar(id, avatarPath, { expectedAvatarRevision });
       if (!updated) {
         await removeUnattachedAvatarFile({ avatarPath });
-        return reply.status(404).send({ error: "Character not found" });
+        return reply.status(409).send({ error: "Character portrait changed while selecting a gallery image" });
       }
-      return updated;
+      return refreshNpcPortraitReferences(updated);
     } catch (error) {
       if (avatarPath) await removeUnattachedAvatarFile({ avatarPath });
       logger.warn(error, "Failed to set character %s avatar from gallery image %s", id, imageId);
@@ -2233,7 +2262,7 @@ export async function charactersRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string }; Querystring: { format?: ExportFormat } }>("/:id/export", async (req, reply) => {
     const char = await storage.getById(req.params.id);
     if (!char) return reply.status(404).send({ error: "Character not found" });
-    const charData = JSON.parse(char.data);
+    const charData = await embedCharacterBookImages(JSON.parse(char.data));
     const compatible = req.query.format === "compatible";
     const payload = compatible
       ? buildCompatibleCharacterExport(charData)
@@ -2253,11 +2282,12 @@ export async function charactersRoutes(app: FastifyInstance) {
     }
 
     const zip = new AdmZip();
+    const exportBudget = { remainingBytes: LOREBOOK_EXPORT_IMAGE_MAX_BYTES };
     let exportedCount = 0;
     for (const id of ids) {
       const char = await storage.getById(id);
       if (!char) continue;
-      const charData = JSON.parse(char.data);
+      const charData = await embedCharacterBookImages(JSON.parse(char.data), exportBudget);
       const payload =
         format === "compatible"
           ? buildCompatibleCharacterExport(charData)
@@ -2306,6 +2336,7 @@ export async function charactersRoutes(app: FastifyInstance) {
       app.db,
       {
         characterId: req.params.id,
+        allowLocalImagePaths: true,
         namePrefix: String(charData.name ?? "Character"),
         existingLorebookId:
           typeof embeddedLorebookMetadata.lorebookId === "string" ? embeddedLorebookMetadata.lorebookId : null,
@@ -2335,6 +2366,7 @@ export async function charactersRoutes(app: FastifyInstance) {
       );
     });
 
+    await syncCharacterBookFromLorebook(app.db, result.lorebookId);
     return {
       success: true,
       lorebookId: result.lorebookId,
@@ -2432,7 +2464,7 @@ export async function charactersRoutes(app: FastifyInstance) {
     const char = await storage.getById(req.params.id);
     if (!char) return reply.status(404).send({ error: "Character not found" });
 
-    const charData = JSON.parse(char.data);
+    const charData = await embedCharacterBookImages(JSON.parse(char.data));
     const sprites = await readSpritesForId(char.id, true);
     if (!sprites) {
       return reply.status(413).send({ error: "Sprite collection exceeds compatible PNG export limits" });
@@ -2536,13 +2568,15 @@ export async function charactersRoutes(app: FastifyInstance) {
         );
         return storage.update(id, validatedData, avatarPath, {
           versionReason: body.data === undefined ? "Avatar update" : "Character card and avatar update",
+          avatarIntent: true,
+          expectedAvatarRevision: readCharacterAvatarState(char.data)?.revision ?? 0,
         });
       });
       if (!updated) {
         await removeUnattachedAvatarFile({ avatarPath });
-        return reply.status(404).send({ error: "Character not found" });
+        return reply.status(409).send({ error: "Character portrait changed during upload" });
       }
-      return updated;
+      return refreshNpcPortraitReferences(updated);
     } catch (error) {
       await removeUnattachedAvatarFile({ filePath: filepath });
       throw error;
@@ -2555,7 +2589,7 @@ export async function charactersRoutes(app: FastifyInstance) {
     if (!char) return reply.status(404).send({ error: "Character not found" });
 
     const updated = await storage.updateAvatar(id, null);
-    return updated ?? reply.status(404).send({ error: "Character not found" });
+    return updated ? refreshNpcPortraitReferences(updated) : reply.status(404).send({ error: "Character not found" });
   });
 
   // ── Personas ──

@@ -23,7 +23,8 @@
 import { randomUUID } from "node:crypto";
 import {
   isClaudeAdaptiveOnlyNoSamplingModel,
-  isClaudeOpus55Model,
+  isClaudeSonnet55Model,
+  isClaudeStrictRequestModel,
   shouldSuppressUnknownModelParameters,
 } from "@marinara-engine/shared";
 import { BaseLLMProvider, LLMHttpError, type ChatMessage, type ChatOptions, type LLMUsage } from "../base-provider.js";
@@ -509,10 +510,14 @@ export class ClaudeSubscriptionProvider extends BaseLLMProvider {
     };
     if (systemPrompt !== undefined) sdkOptions.systemPrompt = systemPrompt;
 
+    // ponytail: Agent SDK 0.3.282 has no "between_tools" thinking type and Sonnet 5.5 rejects
+    // "disabled", so its Off runs adaptive at low effort here. Upgrade path: send between_tools
+    // once the SDK's ThinkingConfig accepts it.
     if (
       !suppressModelParameters &&
       options.reasoningEffort === "none" &&
-      supportsAnthropicThinkingDisable(options.model)
+      supportsAnthropicThinkingDisable(options.model) &&
+      !isClaudeSonnet55Model(options.model)
     ) {
       sdkOptions.thinking = { type: "disabled" };
     } else if (!suppressModelParameters && (options.enableThinking || isAdaptiveOnly)) {
@@ -526,7 +531,7 @@ export class ClaudeSubscriptionProvider extends BaseLLMProvider {
       const activeEffort = options.reasoningEffort !== "none" ? options.reasoningEffort : undefined;
       if (
         this.shouldSendParameter(options, "reasoningEffort") &&
-        (activeEffort || options.enableThinking || isClaudeOpus55Model(options.model))
+        (activeEffort || options.enableThinking || isClaudeStrictRequestModel(options.model))
       ) {
         sdkOptions.effort = resolveAnthropicAdaptiveEffort(options) as "low" | "medium" | "high" | "xhigh" | "max";
       }
@@ -571,7 +576,7 @@ export class ClaudeSubscriptionProvider extends BaseLLMProvider {
         sdkOptionRecord[key] = customGenerationOptions[key];
       }
     }
-    if (isClaudeOpus55Model(options.model)) {
+    if (isClaudeStrictRequestModel(options.model)) {
       sdkOptions.thinking = {
         type: "adaptive",
         ...(options.captureReasoning ? { display: "summarized" as const } : {}),

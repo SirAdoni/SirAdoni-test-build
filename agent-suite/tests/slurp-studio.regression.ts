@@ -108,7 +108,8 @@ assert.match(
 assert.match(routes, /earningsDelta: previous \? earnings\.lifetime - previous\.lifetimeEarnings : null/u);
 
 const home = read("client/src/components/slurp/SlurpHome.tsx");
-assert.match(home, /function SlurpStudioView/u);
+// W: the Studio page is the own profile's Dashboard sheet now.
+assert.match(home, /function SlpDashboardBody/u);
 assert.match(home, /useSlurpStudio/u);
 
 // Reading the studio rewrites the snapshot, so a refetch would silently zero the deltas the
@@ -122,7 +123,13 @@ assert.match(routes, /app\.put\("\/slurp\/accounts\/:id\/goal"/u);
 assert.match(home, /function SlurpGoalEditor/u);
 
 const shell = read("client/src/components/slurp/SlurpShell.tsx");
-assert.match(shell, /onOpenStudio && hasOperatedCreator/u, "the studio entry needs an operated Creator");
+// W: the Dashboard opens from the own page only, so it always has an operated Creator.
+assert.match(
+  read("client/src/components/slurp/SlurpHome.tsx"),
+  /onOpenDashboard=\{viewingOwnCreator \? \(\) => setDashboardOpen\(true\) : undefined\}/u,
+  "the dashboard entry needs an operated Creator",
+);
+void shell;
 
 // Milestones were computed here, rendered here, and reported nowhere.
 assert.match(routes, /recordCreatorEvent\(creator\.id, "milestone", \{ amount: target \}\)/u);
@@ -134,7 +141,8 @@ assert.match(routes, /goal: context\.goalByAccountId\.get\(account\.id\) \?\? nu
 assert.match(home, /function slpCreatorGoalOf/u);
 assert.match(
   home,
-  /goalForViewer && !editing && \(/u,
+  // Step 3.2: the goal moved under the tabs; the editing guard wraps the whole fan-card slot now.
+  /afterTabsContent=\{\s+editing \? null : \([\s\S]*?\{goalForViewer && \(/u,
   "The audience goal must render without taking the composer's slot",
 );
 const disclosure = slurp2Source(join(root, "server/src/services/slurp/slurp-disclosure.ts"));
@@ -146,7 +154,9 @@ assert.match(disclosure, /AUDIENCE_FIELDS\.map/u, "the audience projection must 
 // leaving them on screen invites playing the meta instead of the character.
 assert.match(home, /const \[showPerformance, setShowPerformance\] = useState\(false\)/u);
 assert.match(home, /showPerformance && creator\.milestone\.next !== null/u);
-assert.match(home, /showPerformance && creator\.posts\.length > 0/u);
+// Step 7: recent posts (likes, comments) are part of the page; reach and unlocks stay behind the door.
+assert.match(home, /showPerformance\s*\?\s*localizeUi\("ui\.slurp\.studio\.reached"/u);
+assert.match(home, /showPerformance && post\.unlockCount !== null/u);
 // Earnings, followers, top fans, and the tip goal stay visible without asking.
 assert.doesNotMatch(home, /showPerformance && creator\.topFans/u, "who is showing up is in character");
 

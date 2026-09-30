@@ -189,10 +189,7 @@ import {
 import { persistGeneratedImageToEntityGalleries } from "../../packages/server/src/services/image/generated-image-entity-gallery.js";
 import { withGalleryFileLifecycleLock } from "../../packages/server/src/services/image/gallery-file-lifecycle.js";
 import { runRetrySetupPhase } from "../../packages/server/src/routes/generate/retry-agents-route.js";
-import {
-  parseImageGenerationUserSettings,
-  resolveIllustratorImageSize,
-} from "../../packages/server/src/services/image/image-generation-settings.js";
+import { resolveIllustratorImageSize } from "../../packages/server/src/services/image/image-generation-settings.js";
 import { generateIllustratorImageVariants } from "../../packages/server/src/services/image/illustrator-image-variants.js";
 import { fetchBotBrowserJson } from "../../packages/server/src/services/bot-browser/fetch-json.js";
 import { isAllowedResponseContentType, validateOutboundUrl } from "../../packages/server/src/utils/security.js";
@@ -5362,7 +5359,7 @@ assert.equal(
 );
 const termuxClientBuildHelper = termuxLauncher.split("build_termux_client() (")[1]?.split("\n)")[0];
 assert.ok(termuxClientBuildHelper, "Termux must define the isolated client build helper");
-assert.match(termuxClientBuildHelper, /SKIP_PWA=1 run_pnpm --filter @marinara-engine\/client exec vite build/u);
+assert.match(termuxClientBuildHelper, /MARINARA_LOW_MEMORY_BUILD=1 run_pnpm --filter @marinara-engine\/client build/u);
 assert.match(
   termuxClientBuildBlock,
   /    node scripts\/check-client-build\.mjs$/u,
@@ -6171,7 +6168,7 @@ assert.match(
 );
 assert.match(
   conversationGenerationSource,
-  /await waitForConversationPresenceDelay\(remainingDelayMs, abortController\.signal\);\s*if \(abortController\.signal\.aborted\) break;\s*\}\s*if \(responderDelay\) \{\s*const refreshedMessages = await chats\.listMessages/u,
+  /await waitForConversationPresenceDelay\(remainingDelayMs, generationSignal\);\s*if \(generationSignal\.aborted\) break;\s*\}\s*if \(responderDelay\) \{\s*const refreshedMessages = await chats\.listMessages/u,
   "delayed Conversation responders should refresh user history even when an earlier reply consumed their wait",
 );
 assert.match(
@@ -6920,7 +6917,7 @@ assert.match(
 );
 assert.match(
   backupRoutesSource,
-  /const hasAutomaticBackup = await automaticBackupExists\(backupsRoot\);[\s\S]*runAutomaticBackupIfDue\(!current\.enabled \|\| !hasAutomaticBackup\)/u,
+  /const hasAutomaticBackup = await scheduledBackupExists\(backupsRoot\);[\s\S]*runAutomaticBackupIfDue\(!current\.enabled \|\| !hasAutomaticBackup\)/u,
   "enabling automatic backups or repairing a missing archive should run immediately",
 );
 assert.doesNotMatch(backupGuideSource, /Export profile as ZIP\?/u);
@@ -10575,12 +10572,12 @@ assert.equal(({} as { tags?: string[] }).tags, undefined, "Background metadata m
   assert.match(turnGameResumeBlock, /await runTurnGameBotTurns\(/u);
   assert.match(
     turnGameResumeBlock,
-    /if \(abortController\.signal\.aborted \|\| isAbortLikeError\(turnGameErr\)\) return;/u,
+    /if \(generationSignal\.aborted \|\| isAbortLikeError\(turnGameErr\)\) return;/u,
     "Turn-game recovery must propagate cancellation without logging it as a failure",
   );
   assert.match(
     turnGameResumeBlock,
-    /await runTurnGameBotTurns\([\s\S]*?if \(abortController\.signal\.aborted\) return;/u,
+    /await runTurnGameBotTurns\([\s\S]*?if \(generationSignal\.aborted\) return;/u,
     "Turn-game recovery must re-check cancellation after a bot runner resolves",
   );
   assert.match(turnGameResumeBlock, /logger\.warn\(turnGameErr/u);
@@ -10818,7 +10815,7 @@ assert.equal(({} as { tags?: string[] }).tags, undefined, "Background metadata m
     join(REPOSITORY_ROOT, "packages/client/src/components/panels/SettingsPanel.tsx"),
     "utf8",
   );
-  assert.match(backupRoutesSource, /app\.post\("\/download\/start"/u);
+  assert.match(backupRoutesSource, /app\.post(?:<[^>]+>)?\(\s*"\/download\/start"/u);
   assert.match(backupRoutesSource, /app\.get<\{ Params: \{ jobId: string \} \}>\(\s*"\/download\/status\/:jobId"/u);
   assert.match(
     backupRoutesSource,

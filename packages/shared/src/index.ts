@@ -3,6 +3,7 @@
 // ──────────────────────────────────────────────
 
 // Types
+export * from "./types/multiplayer.js";
 export * from "./types/tts.js";
 export * from "./types/chat.js";
 export * from "./types/advanced-memory.js";
@@ -52,6 +53,7 @@ export * from "./types/diagnostics.js";
 export * from "./types/chat-insights.js";
 
 // Schemas
+export * from "./schemas/multiplayer.schema.js";
 export * from "./schemas/chat.schema.js";
 export * from "./schemas/chat-preset.schema.js";
 export * from "./schemas/character.schema.js";
@@ -82,6 +84,7 @@ export * from "./schemas/folder.schema.js";
 export * from "./schemas/scene-analysis.schema.js";
 export * from "./schemas/library-folder.schema.js";
 export * from "./schemas/library-campaign.schema.js";
+export * from "./schemas/lorebook-enabled.schema.js";
 export * from "./schemas/home-widget.schema.js";
 export * from "./schemas/private-notebook.schema.js";
 
@@ -230,6 +233,8 @@ export * from "./features/rulesets/scaled-rows.js";
 export * from "./features/rulesets/combat-bridge.js";
 export * from "./features/rulesets/layers.js";
 export * from "./features/rulesets/item-book.js";
+export * from "./features/rulesets/check-effects.js";
+export * from "./features/rulesets/invented-items.js";
 export * from "./features/ruleset-combat/index.js";
 
 export * from "./constants/request-timeouts.js";
@@ -252,3 +257,6 @@ export * from "./types/campaign-memory-api.js";
 export * from "./utils/game-narration-text.js";
 export * from "./utils/family-tree.js";
 export * from "./utils/world-history.js";
+
+export * from "./utils/game-tag-parser.js";
+export * from "./utils/game-widget-update.js";

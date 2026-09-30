@@ -1,7 +1,10 @@
 import { z } from "zod";
 import { type SlurpCommissionPricing, slurpCommissionQuote } from "../../modules/economy/slp-creator-pricing.js";
 import { selectSlurpAttentionCommissions } from "./slp-inbox-attention.js";
-import { activeSlurpStrikes } from "../../modules/world/slp-stance.js";
+import { activeSlurpStrikes, slurpDmPictureVerdict } from "../../modules/world/slp-stance.js";
+import { slurpAdultRiseBlock, slurpCreatorStateMediaBlock } from "../../modules/creators/slp-creator-state.js";
+import { isSlurpSupportThread } from "../../modules/messages/slp-support.js";
+import { resolveSlurpThreadStance } from "./slp-thread-stance.js";
 import { describeSlurpDayVibe } from "../world/slp-world-contract.js";
 import { readSlurpAudienceTone } from "../../../../../shared/src/slp/slp-tone.js";
 import { isSlurpViewerActorAccount } from "../../modules/settings/slp-settings.js";
@@ -11,32 +14,156 @@ import {
   SLURP_LONGTERM_NOTE_LIMIT,
 } from "../../modules/messages/slp-thread-notes.js";
 import type { FastifyInstance } from "fastify";
+import { SLURP_SUPPORT_ACCOUNT_ID } from "../../../../../shared/src/slp/slp-support.js";
+import { SLURP_SUPPORT_NAME } from "../../modules/messages/slp-dm-roles.js";
 import { personaQuerySchema } from "../../modules/messages/slp-messages-schemas.js";
+import { slurpIsCouplePage } from "../../modules/projects/slp-creator-couples.js";
 import type { SlpMessagesContext } from "./slp-messages-context.js";
+import { readSlurpSupportDesk } from "../../data/creators/slp-support-desk-storage.js";
 
 const messagePageSchema = personaQuerySchema.extend({
   cursorAt: z.string().datetime().optional(),
   cursorId: z.string().trim().min(1).max(200).optional(),
   limit: z.coerce.number().int().min(1).max(120).default(120),
+  search: z.string().trim().max(200).optional(),
 });
 
 /** The quote each open brief would get from the Creator's own pricing, for the quote form. */
 const withSuggestedQuotes = <T extends { brief: string }>(commissions: T[], pricing: SlurpCommissionPricing) =>
   commissions.map((commission) => ({ ...commission, suggestedPrice: slurpCommissionQuote(commission.brief, pricing) }));
 export async function slpMessagesThreadRoutes(app: FastifyInstance, messaging: SlpMessagesContext) {
-  const { creatorPresence, freshView, messages, ownsCreator, population, requireViewer, slurp, visibleMessages } =
-    messaging;
+  const {
+    creatorPresence,
+    freshView,
+    maskForViewer,
+    messages,
+    ownsCreator,
+    population,
+    requireViewer,
+    seatIn,
+    slurp,
+    visibleMessages,
+  } = messaging;
+  type Thread = NonNullable<Awaited<ReturnType<typeof messages.getThreadById>>>;
+  type Creator = NonNullable<Awaited<ReturnType<typeof slurp.getNoodlerAccountById>>>;
+
+  /**
+   * What the Details panel shows, for the thread route and the compose route alike. "Pictures" and
+   * "blocked by" are the server's verdicts, read off the stance the reply itself is written from,
+   * not a second copy of its thresholds on the client (R1-012).
+   */
+  const relationshipFor = async (
+    thread: Thread,
+    creator: Creator,
+    side: "viewer" | "creator",
+    availability: Awaited<ReturnType<typeof creatorPresence>>["creatorAvailability"],
+  ) => {
+    // Slurp Support is not a fan: no rapport, mood, strikes, pictures or fees. Its Details panel
+    // shows where the Creator stands with Slurp (docs/SUPPORT-DESK.md).
+    if (isSlurpSupportThread(thread))
+      return {
+        side,
+        desk: await readSlurpSupportDesk(app.db, thread.creatorAccountId),
+        availability,
+        notes: thread.notes,
+        coolUntil: null,
+        scheduledFollowUps: thread.scheduledFollowUps,
+      };
+    const details = await messages.getDetailsOverrides(thread.id);
+    const settings = await slurp.getSettings();
+    const dayVibe =
+      details.dayVibe !== undefined ? details.dayVibe : await describeSlurpDayVibe(app.db, thread.creatorAccountId);
+    const creatorState = await slurp.getCreatorState(thread.creatorAccountId);
+    const strikes = activeSlurpStrikes(thread.strikes, thread.lastStrikeAt);
+    const stance = await resolveSlurpThreadStance(app.db, {
+      creator,
+      viewerId: thread.viewerAccountId,
+      rapport: thread.rapport,
+      mood: thread.mood,
+      moodUpdatedAt: thread.moodUpdatedAt,
+      dayVibe,
+      availability,
+      subscribed: (await slurp.listSubscriptionsForViewer(thread.viewerAccountId)).some(
+        (entry: { creatorAccountId: string }) => entry.creatorAccountId === thread.creatorAccountId,
+      ),
+      isRequest: thread.state === "request",
+      coolingOff: Boolean(thread.coolUntil && thread.coolUntil > new Date().toISOString()),
+      strikes,
+      details,
+      settings,
+    });
+    return {
+      side,
+      tier: thread.rapport.tier,
+      score: thread.rapport.score,
+      contributions: thread.rapport.contributions,
+      mood: thread.mood,
+      strikes,
+      notes: thread.notes,
+      spentCoins: await messages.spentWithCreator(thread.viewerAccountId, thread.creatorAccountId),
+      coolUntil: thread.coolUntil,
+      dayVibe,
+      availability,
+      audienceTone: details.audienceTone ?? readSlurpAudienceTone(settings.audienceTone),
+      imageMode: stance.imageMode,
+      pictures: slurpDmPictureVerdict({
+        stance,
+        support: isSlurpSupportThread(thread),
+        imagesEnabled: creator.settings.scheduler.autoPosting?.imagesEnabled === true,
+        stateBlock: slurpCreatorStateMediaBlock(creatorState, thread.threadState),
+      }),
+      escalation: { blockedBy: slurpAdultRiseBlock(thread.threadState) },
+      creatorState,
+      threadState: thread.threadState,
+      // The same list on both routes, so a chat opened from a profile lists its follow-ups (R1-008).
+      scheduledFollowUps: thread.scheduledFollowUps,
+    };
+  };
+  app.get("/messages/unread-count", async (req, reply) => {
+    const parsed = personaQuerySchema.safeParse(req.query);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    const viewer = await requireViewer(parsed.data.personaId);
+    if (!viewer) return reply.code(404).send({ error: "Slurp persona not found" });
+    const accounts = await slurp.listNoodlerAccounts();
+    const operatedCreatorAccountIds = accounts
+      .filter((account) => account.sourceKind === "persona" && account.sourceEntityId === viewer.id)
+      .map((account) => account.id);
+    const own = await messages.countUnread(
+      viewer.id,
+      operatedCreatorAccountIds,
+      accounts.map((account) => account.id),
+    );
+    // Slurp Support's threads live on the Stir desk, not in the inbox (docs/SUPPORT-DESK.md): their
+    // unread is counted apart, for the desk and the inbox's one link row.
+    const support = await messages.countUnread(
+      SLURP_SUPPORT_ACCOUNT_ID,
+      [],
+      accounts.filter((account) => !operatedCreatorAccountIds.includes(account.id)).map((account) => account.id),
+    );
+    return { ...own, deskUnread: support.unread };
+  });
   app.get("/messages/threads", async (req, reply) => {
     const parsed = personaQuerySchema.safeParse(req.query);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const viewer = await requireViewer(parsed.data.personaId);
     if (!viewer) return reply.code(404).send({ error: "Slurp persona not found" });
-    const threads = await messages.listThreadsForViewer(viewer.id);
+    // Slurp Support's threads are the player's from every persona (`slp-support.ts`), but they live on
+    // the Stir desk (docs/SUPPORT-DESK.md); the inbox gets one link row with their count. With a
+    // Creator this persona runs, Support is someone writing to them: that stays in the inbound list.
+    const operatedIds = new Set(
+      (await slurp.listNoodlerAccounts())
+        .filter((account) => account.sourceKind === "persona" && account.sourceEntityId === viewer.id)
+        .map((account) => account.id),
+    );
+    const threads = (await messages.listThreadsForViewer(viewer.id)).sort((left, right) =>
+      right.lastMessageAt.localeCompare(left.lastMessageAt),
+    );
+    const deskThreads = (await messages.listThreadsForViewer(SLURP_SUPPORT_ACCOUNT_ID)).filter(
+      (thread) => !operatedIds.has(thread.creatorAccountId),
+    );
     // Threads written *to* the Creators this persona operates. Without these the inbox showed only
     // conversations the player started, and anything a fan or the world opened was unreachable.
-    const operated = (await slurp.listNoodlerAccounts())
-      .filter((account) => account.sourceKind === "persona" && account.sourceEntityId === viewer.id)
-      .map((account) => account.id);
+    const operated = [...operatedIds];
     const inbound = await messages.listThreadsForCreators(operated);
     const inboundViews = await Promise.all(
       inbound.map(async (thread) => ({
@@ -44,6 +171,7 @@ export async function slpMessagesThreadRoutes(app: FastifyInstance, messaging: S
         side: "creator" as const,
         // The counterpart is the fan here, not the Creator, so name them or the row is a blank.
         counterpartName:
+          (thread.viewerAccountId === SLURP_SUPPORT_ACCOUNT_ID ? SLURP_SUPPORT_NAME : null) ??
           (await population.get(thread.viewerAccountId))?.displayName ??
           (await slurp.getNoodlerAccountById(thread.viewerAccountId))?.displayName ??
           (await slurp.getViewer(thread.viewerAccountId).catch(() => null))?.displayName ??
@@ -69,10 +197,24 @@ export async function slpMessagesThreadRoutes(app: FastifyInstance, messaging: S
         .filter((thread) => thread.state !== "declined")
         .map((thread) => ({ ...thread, side: "viewer" as const })),
       inbound: inboundViews.filter((thread) => thread.state !== "declined"),
-      unread: threads.reduce((sum, thread) => sum + thread.viewerUnread, 0),
+      // Counted over the threads the list shows, like the nav badge: a closed thread is hidden, so
+      // its unread never cleared (R1-007).
+      unread: threads
+        .filter((thread) => thread.state !== "declined")
+        .reduce((sum, thread) => sum + thread.viewerUnread, 0),
       // Unread on the Creator side is what the player owes an answer to.
-      inboundUnread: inboundViews.reduce((sum, thread) => sum + thread.creatorUnread, 0),
+      inboundUnread: inboundViews
+        .filter((thread) => thread.state !== "declined")
+        .reduce((sum, thread) => sum + thread.creatorUnread, 0),
       attentionCommissions,
+      desk: {
+        threads: deskThreads.length,
+        unread: deskThreads.reduce((sum, thread) => sum + thread.viewerUnread, 0),
+        lastMessageAt: deskThreads.reduce<string | null>(
+          (latest, thread) => (!latest || thread.lastMessageAt > latest ? thread.lastMessageAt : latest),
+          null,
+        ),
+      },
     };
   });
 
@@ -87,15 +229,13 @@ export async function slpMessagesThreadRoutes(app: FastifyInstance, messaging: S
     if (!viewer) return reply.code(404).send({ error: "Slurp persona not found" });
     const thread = await messages.getThreadById(threadId);
     // Scoped to the requesting persona: a thread id must never be enough to read someone
-    // else's inbox, even on a single-user install.
-    if (!thread || (thread.viewerAccountId !== viewer.id && !(await ownsCreator(viewer.id, thread.creatorAccountId))))
-      return reply.code(404).send({ error: "Thread not found" });
-    const side = thread.viewerAccountId === viewer.id ? "viewer" : "creator";
+    // else's inbox, even on a single-user install. Slurp Support's threads are every persona's.
+    const side = thread ? await seatIn(viewer.id, thread) : null;
+    if (!thread || !side) return reply.code(404).send({ error: "Thread not found" });
     await messages.markRead(thread.id, side);
     const creator = await slurp.getNoodlerAccountById(thread.creatorAccountId);
     if (!creator) return reply.code(404).send({ error: "Creator not found" });
     const presence = await creatorPresence(creator, thread.id);
-    const audienceTone = readSlurpAudienceTone((await slurp.getSettings()).audienceTone);
     const counterpart =
       side === "creator"
         ? ((await population.get(thread.viewerAccountId)) ??
@@ -111,26 +251,11 @@ export async function slpMessagesThreadRoutes(app: FastifyInstance, messaging: S
       parsed.data.cursorAt && parsed.data.cursorId
         ? { createdAt: parsed.data.cursorAt, id: parsed.data.cursorId }
         : null,
+      parsed.data.search,
     );
     return {
       thread: await freshView(thread.id, side),
-      messages: page.messages.map((message) =>
-        side === "viewer" && message.kind === "ppv" && !message.unlockedAt
-          ? {
-              ...message,
-              content: "",
-              imageUrl: null,
-              metadata: { ...message.metadata, imagePrompt: undefined, imageDescription: undefined },
-            }
-          : side === "viewer" && message.kind === "post_preview" && message.metadata.previewLocked === true
-            ? {
-                ...message,
-                content: "",
-                imageUrl: null,
-                metadata: { ...message.metadata, content: "", imageUrl: null },
-              }
-            : message,
-      ),
+      messages: side === "viewer" ? page.messages.map(maskForViewer) : page.messages,
       nextCursor: page.nextCursor,
       creator,
       counterpart,
@@ -140,25 +265,7 @@ export async function slpMessagesThreadRoutes(app: FastifyInstance, messaging: S
         await messages.listCommissionsForThread(thread.id),
         await messages.getCreatorMessaging(thread.creatorAccountId),
       ),
-      relationship: {
-        side,
-        tier: thread.rapport.tier,
-        score: thread.rapport.score,
-        contributions: thread.rapport.contributions,
-        mood: thread.mood,
-        strikes: activeSlurpStrikes(thread.strikes, thread.lastStrikeAt),
-        notes: thread.notes,
-        spentCoins: await messages.spentWithCreator(thread.viewerAccountId, thread.creatorAccountId),
-        coolUntil: thread.coolUntil,
-        dayVibe: await describeSlurpDayVibe(app.db, thread.creatorAccountId),
-        availability: presence.creatorAvailability,
-        audienceTone,
-        imageMode:
-          thread.mood <= -40 && audienceTone === "unfiltered" ? "hostile" : thread.mood >= 20 ? "friendly" : "none",
-        creatorState: await slurp.getCreatorState(thread.creatorAccountId),
-        threadState: thread.threadState,
-        scheduledFollowUps: thread.scheduledFollowUps,
-      },
+      relationship: await relationshipFor(thread, creator, side, presence.creatorAvailability),
     };
   });
 
@@ -168,8 +275,13 @@ export async function slpMessagesThreadRoutes(app: FastifyInstance, messaging: S
     const viewer = await requireViewer(parsed.data.personaId);
     if (!viewer) return reply.code(404).send({ error: "Slurp persona not found" });
     await slurp.ensureAudienceCharacterAccounts().catch(() => undefined);
-    const profiles = await slurp.listNoodlerStageProfiles();
-    const operatedAccounts = (await slurp.listNoodlerAccounts()).filter(
+    const accounts = await slurp.listNoodlerAccounts();
+    // A shared couple page is not someone to write to: the two partners are listed on their own.
+    const couplePages = new Set(accounts.filter(slurpIsCouplePage).map((account: { id: string }) => account.id));
+    const profiles = (await slurp.listNoodlerStageProfiles()).filter(
+      (profile: { id: string }) => !couplePages.has(profile.id),
+    );
+    const operatedAccounts = accounts.filter(
       (account) => account.sourceKind === "persona" && account.sourceEntityId === viewer.id,
     );
     const creatorAccount = operatedAccounts.find((account) => !isSlurpViewerActorAccount(account));
@@ -232,10 +344,9 @@ export async function slpMessagesThreadRoutes(app: FastifyInstance, messaging: S
     const viewer = await requireViewer(parsed.data.personaId);
     if (!viewer) return reply.code(404).send({ error: "Slurp persona not found" });
     const thread = await messages.getThreadById(threadId);
-    if (!thread || (thread.viewerAccountId !== viewer.id && !(await ownsCreator(viewer.id, thread.creatorAccountId))))
-      return reply.code(404).send({ error: "Thread not found" });
+    const side = thread ? await seatIn(viewer.id, thread) : null;
+    if (!thread || !side) return reply.code(404).send({ error: "Thread not found" });
     await messages.resetThread(thread.id);
-    const side = thread.viewerAccountId === viewer.id ? "viewer" : "creator";
     // Empty, but read back through the masking helper all the same: every route that returns a
     // thread's messages goes through one door.
     return { thread: await freshView(thread.id, side), messages: await visibleMessages(thread.id, side) };
@@ -265,6 +376,8 @@ export async function slpMessagesThreadRoutes(app: FastifyInstance, messaging: S
             }),
           )
           .max(SLURP_WORKING_NOTE_LIMIT + SLURP_LONGTERM_NOTE_LIMIT),
+        /** The note ids the editor was showing. Anything else was written since, and stays. */
+        baseNoteIds: z.array(z.string().max(32)).max(64).optional(),
       })
       .safeParse(req.body ?? {});
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
@@ -272,9 +385,8 @@ export async function slpMessagesThreadRoutes(app: FastifyInstance, messaging: S
     const viewer = await requireViewer(parsed.data.personaId);
     if (!viewer) return reply.code(404).send({ error: "Slurp persona not found" });
     const thread = await messages.getThreadById(threadId);
-    if (!thread || (thread.viewerAccountId !== viewer.id && !(await ownsCreator(viewer.id, thread.creatorAccountId))))
-      return reply.code(404).send({ error: "Thread not found" });
-    return { notes: await messages.setThreadNotes(thread.id, parsed.data.notes) };
+    if (!thread || !(await seatIn(viewer.id, thread))) return reply.code(404).send({ error: "Thread not found" });
+    return { notes: await messages.mergeThreadNotes(thread.id, parsed.data.notes, parsed.data.baseNoteIds) };
   });
 
   /**
@@ -285,60 +397,27 @@ export async function slpMessagesThreadRoutes(app: FastifyInstance, messaging: S
    * changes their mind. The fee is taken on the first send, which is where it belongs.
    */
   app.get("/messages/compose", async (req, reply) => {
-    const parsed = personaQuerySchema.extend({ creatorAccountId: z.string().trim().min(1) }).safeParse(req.query);
+    const parsed = personaQuerySchema
+      .extend({ creatorAccountId: z.string().trim().min(1), support: z.enum(["1", "true"]).optional() })
+      .safeParse(req.query);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const viewer = await requireViewer(parsed.data.personaId);
     if (!viewer) return reply.code(404).send({ error: "Slurp persona not found" });
     const creator = await slurp.getNoodlerAccountById(parsed.data.creatorAccountId);
     if (!creator) return reply.code(404).send({ error: "Creator not found" });
-    const thread = await messages.getThread(viewer.id, creator.id);
+    // Writing as Slurp Support opens Support's one thread with this Creator, from any persona.
+    const thread = await messages.getThread(parsed.data.support ? SLURP_SUPPORT_ACCOUNT_ID : viewer.id, creator.id);
     if (thread) await messages.markRead(thread.id, "viewer");
     const page = thread ? await messages.listMessagePage(thread.id) : { messages: [], nextCursor: null };
     const presence = await creatorPresence(creator, thread?.id);
-    const audienceTone = thread ? readSlurpAudienceTone((await slurp.getSettings()).audienceTone) : null;
     return {
       thread: thread ? await freshView(thread.id) : null,
-      messages: page.messages.map((message) =>
-        message.kind === "ppv" && !message.unlockedAt
-          ? {
-              ...message,
-              content: "",
-              imageUrl: null,
-              metadata: { ...message.metadata, imagePrompt: undefined, imageDescription: undefined },
-            }
-          : message.kind === "post_preview" && message.metadata.previewLocked === true
-            ? {
-                ...message,
-                content: "",
-                imageUrl: null,
-                metadata: { ...message.metadata, content: "", imageUrl: null },
-              }
-            : message,
-      ),
+      messages: page.messages.map(maskForViewer),
       nextCursor: page.nextCursor,
       commissions: thread ? await messages.listCommissionsForThread(thread.id) : [],
       creator,
       ...presence,
-      relationship: thread
-        ? {
-            side: "viewer" as const,
-            tier: thread.rapport.tier,
-            score: thread.rapport.score,
-            contributions: thread.rapport.contributions,
-            mood: thread.mood,
-            strikes: activeSlurpStrikes(thread.strikes, thread.lastStrikeAt),
-            notes: thread.notes,
-            spentCoins: await messages.spentWithCreator(thread.viewerAccountId, thread.creatorAccountId),
-            coolUntil: thread.coolUntil,
-            dayVibe: await describeSlurpDayVibe(app.db, thread.creatorAccountId),
-            availability: presence.creatorAvailability,
-            audienceTone,
-            imageMode:
-              thread.mood <= -40 && audienceTone === "unfiltered" ? "hostile" : thread.mood >= 20 ? "friendly" : "none",
-            creatorState: await slurp.getCreatorState(thread.creatorAccountId),
-            threadState: thread.threadState,
-          }
-        : undefined,
+      relationship: thread ? await relationshipFor(thread, creator, "viewer", presence.creatorAvailability) : undefined,
       // The client shows the gate before the first message is written, so it must know the
       // policy even when no thread exists yet.
       messaging: await messages.getCreatorMessaging(creator.id),

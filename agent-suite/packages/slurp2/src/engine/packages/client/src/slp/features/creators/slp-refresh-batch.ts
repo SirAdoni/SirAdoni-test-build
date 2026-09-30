@@ -30,3 +30,16 @@ export async function refreshSlurpCreatorBatch(
   );
   return { outcomes: outcomes.flat() };
 }
+
+/** What "Generate posts" did, for the toast after it (R1-068: failures and skips were never told). */
+export function countSlurpRefreshOutcomes(outcomes: readonly SlpCreatorRefreshNowOutcome[]) {
+  let made = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const outcome of outcomes) {
+    if (outcome.status === "generated") made += 1;
+    else if (outcome.status === "skipped" || outcome.status === "disabled" || outcome.status === "busy") skipped += 1;
+    else failed += 1;
+  }
+  return { made, skipped, failed };
+}

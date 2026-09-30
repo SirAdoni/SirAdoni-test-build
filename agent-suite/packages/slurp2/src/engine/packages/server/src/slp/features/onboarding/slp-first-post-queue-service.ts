@@ -12,6 +12,14 @@ const queues = new WeakMap<object, ReturnType<typeof createSlurpFirstPostQueue>>
 
 /** Transient outcomes: the run never reached the model, so the job is worth another pass. */
 const RETRYABLE_STATUSES = new Set(["busy"]);
+/**
+ * How long a first post waits for its Creator. Right after a bulk add the artwork backfill and the
+ * reserve poll take new Creators one by one, and a picture holds the Creator for minutes; three
+ * quick "busy" attempts ran out inside that window and failed the first post of a busy Creator.
+ * A busy pass never reached the model, so it does not use up an attempt.
+ */
+const FIRST_POST_BUSY_WAIT_MS = 20 * 60_000;
+const FIRST_POST_BUSY_RETRY_MS = 15_000;
 
 function retryAt(attempt: number): string {
   return new Date(Date.now() + RETRY_DELAYS_MS[Math.min(attempt - 1, RETRY_DELAYS_MS.length - 1)]!).toISOString();
@@ -118,12 +126,21 @@ export function createSlurpFirstPostQueue(db: DB) {
           .update(slpCreatorFirstPostJobs)
           .set({ status: "generated", postId: result.post.id, updatedAt: now() })
           .where(eq(slpCreatorFirstPostJobs.id, job.id));
-      } else if (RETRYABLE_STATUSES.has(result.status) && attempt < MAX_ATTEMPTS) {
+      } else if (
+        RETRYABLE_STATUSES.has(result.status) &&
+        Date.now() - Date.parse(job.createdAt) < FIRST_POST_BUSY_WAIT_MS
+      ) {
         // "busy" only means another operation held this account's lock for a moment. Recording it
         // as a permanent failure threw away the creator's first post over a transient collision.
         await db
           .update(slpCreatorFirstPostJobs)
-          .set({ status: "queued", nextAttemptAt: retryAt(attempt), error: result.status, updatedAt: now() })
+          .set({
+            status: "queued",
+            attempts: String(attempt - 1),
+            nextAttemptAt: new Date(Date.now() + FIRST_POST_BUSY_RETRY_MS).toISOString(),
+            error: result.status,
+            updatedAt: now(),
+          })
           .where(eq(slpCreatorFirstPostJobs.id, job.id));
       } else if (result.status === "disabled") {
         // A persona-backed Creator never auto-posts. That is the mode, not a failed job, so the

@@ -107,10 +107,11 @@ const appSource = readFileSync(new URL("../../packages/server/src/app.ts", impor
 const install = appSource.indexOf("holdInjectUntilRegistered(app)");
 const runtimeStart = appSource.indexOf("capabilityModuleRuntime.start(app)");
 const continuityStart = appSource.indexOf("gameContinuity.start()");
+const schedulerStart = appSource.search(/startServerAutonomousScheduler\(\s*app\s*[,)]/u);
 const releaseAt = appSource.indexOf("releaseInjectGate();");
 const returnAt = appSource.lastIndexOf("return app;");
 assert.ok(
-  install > 0 && install < continuityStart && install < runtimeStart,
+  install > 0 && install < continuityStart && install < schedulerStart && install < runtimeStart,
   "gate is installed before background work and packages start",
 );
 assert.ok(

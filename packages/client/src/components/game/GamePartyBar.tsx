@@ -382,7 +382,7 @@ export function GamePartyBar({
               style={{
                 left: menuPosition.left,
                 top: menuPosition.top,
-                maxHeight: `calc(${menuPosition.maxHeight}px - env(safe-area-inset-bottom, 0px))`,
+                maxHeight: `calc(${menuPosition.maxHeight}px - var(--mari-safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))`,
               }}
               className={cn(
                 NEUTRAL_SURFACE_VARIABLES,

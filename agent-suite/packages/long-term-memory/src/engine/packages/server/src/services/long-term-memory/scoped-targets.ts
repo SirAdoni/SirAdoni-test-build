@@ -5,6 +5,7 @@ import {
   isLtmSourceLikeNote,
   ltmNoteIdSchema,
   ltmScopesOverlap,
+  normalizeLtmScope,
   type LtmEvidenceUnit,
   type LtmNote,
   type LtmScope,
@@ -33,7 +34,29 @@ export function canUpdateLtmScopedTarget(existingScope: LtmScope, incomingScope:
   const existingGlobal = isGlobalLtmScope(existingScope);
   const incomingGlobal = isGlobalLtmScope(incomingScope);
   if (existingGlobal || incomingGlobal) return existingGlobal && incomingGlobal;
-  return ltmScopesOverlap(existingScope, incomingScope, { includeGlobal: false });
+  if (!ltmScopesOverlap(existingScope, incomingScope, { includeGlobal: false })) return false;
+  return (
+    getLtmScopeChatIds(existingScope).every((id) => getLtmScopeChatIds(incomingScope).includes(id)) &&
+    getLtmScopeGroupIds(existingScope).every((id) => getLtmScopeGroupIds(incomingScope).includes(id)) &&
+    (existingScope.characterIds ?? []).every((id) => incomingScope.characterIds?.includes(id)) &&
+    getLtmScopePersonaIds(existingScope).every((id) => getLtmScopePersonaIds(incomingScope).includes(id))
+  );
+}
+
+export function equivalentLtmForkAvailability(left: LtmNote, right: LtmNote) {
+  const normalize = (scope: LtmScope) => {
+    const value = normalizeLtmScope(scope);
+    return JSON.stringify({
+      chats: getLtmScopeChatIds(value).sort(),
+      groups: getLtmScopeGroupIds(value).sort(),
+      characters: [...(value.characterIds ?? [])].sort(),
+      personas: getLtmScopePersonaIds(value).sort(),
+    });
+  };
+  return (
+    normalize(left.scope) === normalize(right.scope) &&
+    JSON.stringify([...new Set(left.modes)].sort()) === JSON.stringify([...new Set(right.modes)].sort())
+  );
 }
 
 export function scopedVariantNoteId(baseId: string, scope: LtmScope, attempt = 0) {
@@ -164,7 +187,7 @@ async function getNoteById(storage: ScopedTargetStorage, id: string) {
   return (await storage.getNotesByIds([id])).get(id) ?? null;
 }
 
-function remapEvidenceUnitTargets(units: LtmEvidenceUnit[], remaps: Map<string, string>) {
+export function remapEvidenceUnitTargets(units: LtmEvidenceUnit[], remaps: Map<string, string>) {
   if (remaps.size === 0) return units;
   return units.map((unit) => {
     const currentNoteId = noteIdForEvidenceUnit(unit);
@@ -186,6 +209,16 @@ function subjectIdForResolvedNoteId(unit: LtmEvidenceUnit, noteId: string) {
   const prefix = `${noteIdPrefixForUnit(unit)}_`;
   if (unit.subjectId.startsWith(prefix)) return noteId;
   return noteId.startsWith(prefix) ? noteId.slice(prefix.length) : noteId;
+}
+
+/**
+ * True only when `noteId` is reachable through the unit's own target derivation. World notes may
+ * legally store `faction_`/`location_`/`rule_` ids, but `noteIdForEvidenceUnit` only emits a
+ * canonical `world_` target, so remapping to such a legacy id would compile against a new note.
+ */
+export function isRemappableEvidenceUnitTarget(unit: LtmEvidenceUnit, noteId: string) {
+  if (!ltmNoteIdSchema.safeParse(noteId).success) return false;
+  return noteIdForEvidenceUnit({ ...unit, subjectId: subjectIdForResolvedNoteId(unit, noteId) }) === noteId;
 }
 
 function noteIdPrefixForUnit(unit: LtmEvidenceUnit) {

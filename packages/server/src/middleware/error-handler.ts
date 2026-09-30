@@ -3,6 +3,7 @@
 // ──────────────────────────────────────────────
 import type { FastifyError, FastifyReply, FastifyRequest } from "fastify";
 import { ZodError } from "zod";
+import { failureLevel } from "../lib/log-context.js";
 import { reportDiagnosticError } from "../lib/diagnostic-operation.js";
 import { formatDiagnosticError, sanitizeDiagnosticText } from "../lib/diagnostics.js";
 import { routeLabel } from "../lib/http-diagnostics.js";
@@ -17,7 +18,7 @@ export function errorHandler(error: FastifyError, request: FastifyRequest, reply
     { requestId: request.id, operation: `${request.method} ${route}`, stage: "http" },
     undefined,
     {
-      level: status >= 500 ? "error" : "warn",
+      level: failureLevel(error, status >= 500 ? "error" : "warn"),
       event: "request.error",
       message: `${request.method} ${route} -> ${status}`,
       fields: {

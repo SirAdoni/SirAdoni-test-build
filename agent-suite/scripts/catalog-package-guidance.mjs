@@ -60,6 +60,14 @@ export const OFFICIAL_PACKAGE_GUIDANCE = Object.freeze({
     modes: ["roleplay"],
     activation: "Add the Agent in Chat Settings → Agents → Tracker Agents for Roleplay mode.",
   },
+  quartermaster: {
+    modes: ["roleplay"],
+    activation: "Add the Agent in Chat Settings → Agents → Tracker Agents for Roleplay mode.",
+  },
+  "relationship-tracker": {
+    modes: ["roleplay"],
+    activation: "Add the Agent in Chat Settings → Agents → Tracker Agents for Roleplay mode.",
+  },
   quest: {
     modes: ["roleplay"],
     activation: "Add the Agent in Chat Settings → Agents → Tracker Agents for Roleplay mode.",
@@ -125,17 +133,17 @@ export const OFFICIAL_PACKAGE_GUIDANCE = Object.freeze({
     modes: ["conversation", "roleplay", "game"],
     activation: "Install it, restart Marinara Engine when prompted, then open Home → Noodle.",
   },
-  slurp: {
-    modes: ["conversation", "roleplay", "game"],
-    activation: "Install it, restart Marinara Engine when prompted, then open Home → Slurp.",
-  },
   slurp2: {
     modes: ["conversation", "roleplay", "game"],
-    activation: "Install it, restart Marinara Engine when prompted, then open Home → Slurp Remastered.",
+    activation: "Install it, restart Marinara Engine when prompted, then open Home → Slurp.",
   },
   "gacha-forge": {
     modes: ["conversation", "roleplay", "game"],
     activation: "Install it, restart Marinara Engine when prompted, then open Home → Gacha Forge.",
+  },
+  "modern-life-sim": {
+    modes: ["conversation", "roleplay", "game"],
+    activation: "Install it, restart Marinara Engine when prompted, then open Home → Life Sim.",
   },
   pixelforge: {
     modes: ["game"],

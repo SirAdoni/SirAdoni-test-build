@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import type { GameNpc } from "../../packages/shared/src/index.js";
-import { buildMissingSceneAssetGenerationPayload } from "../../packages/client/src/components/game/game-asset-generation-payload.js";
-import { mergeGameNpcsPreservingAvatars } from "../../packages/client/src/lib/game-npc-avatar.js";
+import {
+  buildCampaignPortraitRosterCandidates,
+  buildMissingSceneAssetGenerationPayload,
+} from "../../packages/client/src/components/game/game-asset-generation-payload.js";
+import { mergeGameNpcsPreservingAvatars, resolveNpcAvatarStateForIdentity } from "../../packages/client/src/lib/game-npc-avatar.js";
 import {
   gameNpcCharacterSyncRetryDelay,
   isRetryableGameNpcCharacterSyncError,
@@ -13,7 +16,7 @@ import {
   npcAvatarUploadSlug,
 } from "../../packages/server/src/routes/avatars.routes.js";
 
-function trackedNpc(id: string, name: string, avatarUrl?: string): GameNpc {
+function trackedNpc(id: string, name: string, avatarUrl?: string | null, avatarState?: GameNpc["avatarState"]): GameNpc {
   return {
     id,
     name,
@@ -23,6 +26,7 @@ function trackedNpc(id: string, name: string, avatarUrl?: string): GameNpc {
     reputation: 0,
     notes: [],
     avatarUrl,
+    avatarState,
   };
 }
 
@@ -101,7 +105,7 @@ for (const recovery of [
   });
   assert.deepEqual(
     result?.npcsNeedingAvatars,
-    [{ npcId: null, ...npc, gender: null, pronouns: null }],
+    [{ id: undefined, npcId: null, characterId: null, ...npc, gender: null, pronouns: null, avatarUrl: null, avatarState: undefined }],
     `${recovery.label} payload`,
   );
   assert.deepEqual(result?.forceNpcAvatarNames, [npc.name], `${recovery.label} force list`);
@@ -137,7 +141,7 @@ const sameNameFailurePayload = buildMissingSceneAssetGenerationPayload({
 });
 assert.deepEqual(
   sameNameFailurePayload?.npcsNeedingAvatars,
-  [{ npcId: "npc:alex-one", name: "Alex", description: "A red scarf.", gender: null, pronouns: null }],
+  [{ id: "npc:alex-one", npcId: "npc:alex-one", characterId: null, name: "Alex", description: "A red scarf.", gender: null, pronouns: null, avatarUrl: null, avatarState: undefined }],
   "a portrait load failure must retry only the exact same-name NPC identity",
 );
 assert.deepEqual(
@@ -219,6 +223,154 @@ assert.equal(
   sameNameMetadataRefresh[0]?.avatarUrl,
   undefined,
   "a stale metadata refresh must not transfer a portrait to a different same-named NPC",
+);
+
+for (const missingAvatarUrl of [undefined, null]) {
+  const ordinaryMissingAvatar = mergeGameNpcsPreservingAvatars(
+    [trackedNpc("npc:ordinary", "Ordinary", libraryAvatar)],
+    [trackedNpc("npc:ordinary", "Ordinary", missingAvatarUrl)],
+  );
+  assert.equal(
+    ordinaryMissingAvatar[0]?.avatarUrl,
+    libraryAvatar,
+    "ordinary missing or null model fields must preserve a locally generated portrait",
+  );
+}
+
+const newerRemoval = mergeGameNpcsPreservingAvatars(
+  [trackedNpc("npc:alex-one", "Alex", generatedAvatar, { revision: 1, removed: false })],
+  [trackedNpc("npc:alex-one", "Alex", libraryAvatar, { revision: 2, removed: true })],
+);
+assert.equal(newerRemoval[0]?.avatarUrl, undefined, "a newer explicit removal must beat stale metadata URLs");
+assert.deepEqual(newerRemoval[0]?.avatarState, { revision: 2, removed: true });
+
+const laterAssignment = mergeGameNpcsPreservingAvatars(
+  newerRemoval,
+  [trackedNpc("npc:alex-one", "Alex", generatedAvatar, { revision: 3, removed: false })],
+);
+assert.equal(laterAssignment[0]?.avatarUrl, generatedAvatar, "a newer assignment must supersede an earlier removal");
+assert.deepEqual(laterAssignment[0]?.avatarState, { revision: 3, removed: false });
+
+const linkedAfterUnlinkedRevision = mergeGameNpcsPreservingAvatars(
+  [trackedNpc("npc:domain", "Domain", undefined, { revision: 5, removed: true })],
+  [{ ...trackedNpc("npc:domain", "Domain", generatedAvatar, { revision: 1, removed: false }), characterId: "character:linked" }],
+);
+assert.equal(linkedAfterUnlinkedRevision[0]?.avatarUrl, generatedAvatar, "a new character authority accepts its lower-domain revision");
+assert.deepEqual(linkedAfterUnlinkedRevision[0]?.avatarState, { revision: 1, removed: false });
+assert.equal(linkedAfterUnlinkedRevision[0]?.characterId, "character:linked");
+for (const missingUrl of [undefined, null]) {
+  const newLinkedWithoutAvatar = mergeGameNpcsPreservingAvatars(
+    [trackedNpc("npc:domain", "Domain", generatedAvatar, { revision: 5, removed: false })],
+    [{ ...trackedNpc("npc:domain", "Domain", missingUrl), characterId: "character:new" }],
+  );
+  assert.equal(newLinkedWithoutAvatar[0]?.avatarUrl, undefined, "a new linked authority without a marker must not inherit an unlinked portrait");
+  assert.equal(newLinkedWithoutAvatar[0]?.characterId, "character:new");
+}
+const switchedCardWithoutAvatar = mergeGameNpcsPreservingAvatars(
+  [{ ...trackedNpc("npc:domain", "Domain", generatedAvatar, { revision: 5, removed: false }), characterId: "character:old" }],
+  [{ ...trackedNpc("npc:domain", "Domain", null), characterId: "character:new" }],
+);
+assert.equal(switchedCardWithoutAvatar[0]?.avatarUrl, undefined, "a different linked card must not inherit the prior card portrait");
+assert.equal(switchedCardWithoutAvatar[0]?.characterId, "character:new");
+const linkedRosterAfterUnlinkedRevision = buildCampaignPortraitRosterCandidates(
+  [trackedNpc("npc:domain", "Domain", undefined, { revision: 5, removed: true })],
+  [{ ...trackedNpc("npc:domain", "Domain", generatedAvatar, { revision: 1, removed: false }), characterId: "character:linked" }],
+  [],
+  new Set(),
+);
+assert.equal(linkedRosterAfterUnlinkedRevision[0]?.avatarUrl, generatedAvatar, "roster candidates must honor the fresh linked revision domain");
+assert.deepEqual(linkedRosterAfterUnlinkedRevision[0]?.avatarState, { revision: 1, removed: false });
+const linkedRosterRejectsUnlinkedRemoval = buildCampaignPortraitRosterCandidates(
+  [{ ...trackedNpc("npc:domain", "Domain", generatedAvatar, { revision: 1, removed: false }), characterId: "character:linked" }],
+  [trackedNpc("npc:domain", "Domain", null, { revision: 5, removed: true })],
+  [],
+  new Set(),
+);
+assert.equal(linkedRosterRejectsUnlinkedRemoval[0]?.avatarUrl, generatedAvatar, "roster merge must ignore higher unlinked removal for a linked character");
+assert.deepEqual(linkedRosterRejectsUnlinkedRemoval[0]?.avatarState, { revision: 1, removed: false });
+const linkedRosterRejectsUnlinkedAssignment = buildCampaignPortraitRosterCandidates(
+  [{ ...trackedNpc("npc:domain", "Domain", undefined, { revision: 1, removed: true }), characterId: "character:linked" }],
+  [trackedNpc("npc:domain", "Domain", generatedAvatar, { revision: 5, removed: false })],
+  [],
+  new Set(),
+);
+assert.equal(linkedRosterRejectsUnlinkedAssignment[0]?.avatarUrl, undefined, "roster merge must not revive a linked removal from a higher unlinked revision");
+assert.deepEqual(linkedRosterRejectsUnlinkedAssignment[0]?.avatarState, { revision: 1, removed: true });
+const rosterNewLinkedWithoutAvatar = buildCampaignPortraitRosterCandidates(
+  [trackedNpc("npc:domain", "Domain", generatedAvatar, { revision: 5, removed: false })],
+  [{ ...trackedNpc("npc:domain", "Domain", null), characterId: "character:new" }],
+  [],
+  new Set(),
+);
+assert.equal(rosterNewLinkedWithoutAvatar[0]?.avatarUrl, undefined, "roster merge must not inherit an unlinked portrait into a new card domain");
+const rosterSwitchedCardWithoutAvatar = buildCampaignPortraitRosterCandidates(
+  [{ ...trackedNpc("npc:domain", "Domain", generatedAvatar, { revision: 5, removed: false }), characterId: "character:old" }],
+  [{ ...trackedNpc("npc:domain", "Domain", null), characterId: "character:new" }],
+  [],
+  new Set(),
+);
+assert.equal(rosterSwitchedCardWithoutAvatar[0]?.avatarUrl, undefined, "roster merge must not carry a portrait across linked cards");
+
+const switchedCharacterAuthority = resolveNpcAvatarStateForIdentity(
+  { revision: 5, removed: true },
+  "character:old",
+  { revision: 1, removed: false },
+  "character:new",
+);
+assert.deepEqual(switchedCharacterAuthority, { revision: 1, removed: false }, "an explicit character switch starts a new revision domain");
+assert.deepEqual(
+  resolveNpcAvatarStateForIdentity({ revision: 5, removed: true }, "character:linked", undefined, undefined),
+  { revision: 5, removed: true },
+  "an incoming snapshot without characterId must retain the existing linked authority",
+);
+const linkedAssignmentRejectsUnlinkedRemoval = mergeGameNpcsPreservingAvatars(
+  [{ ...trackedNpc("npc:domain", "Domain", generatedAvatar, { revision: 1, removed: false }), characterId: "character:linked" }],
+  [trackedNpc("npc:domain", "Domain", null, { revision: 5, removed: true })],
+);
+assert.equal(linkedAssignmentRejectsUnlinkedRemoval[0]?.avatarUrl, generatedAvatar, "higher unlinked removal must not clear a linked assignment");
+assert.deepEqual(linkedAssignmentRejectsUnlinkedRemoval[0]?.avatarState, { revision: 1, removed: false });
+
+const linkedRemovalRejectsUnlinkedAssignment = mergeGameNpcsPreservingAvatars(
+  [{ ...trackedNpc("npc:domain", "Domain", undefined, { revision: 1, removed: true }), characterId: "character:linked" }],
+  [trackedNpc("npc:domain", "Domain", generatedAvatar, { revision: 5, removed: false })],
+);
+assert.equal(linkedRemovalRejectsUnlinkedAssignment[0]?.avatarUrl, undefined, "higher unlinked assignment must not revive a linked removal");
+assert.deepEqual(linkedRemovalRejectsUnlinkedAssignment[0]?.avatarState, { revision: 1, removed: true });
+
+const sameCardAssignment = mergeGameNpcsPreservingAvatars(
+  [{ ...trackedNpc("npc:domain", "Domain", undefined, { revision: 1, removed: true }), characterId: "character:linked" }],
+  [{ ...trackedNpc("npc:domain", "Domain", generatedAvatar, { revision: 2, removed: false }), characterId: "character:linked" }],
+);
+assert.equal(sameCardAssignment[0]?.avatarUrl, generatedAvatar, "same-card increasing revision must still attach normally");
+assert.deepEqual(sameCardAssignment[0]?.avatarState, { revision: 2, removed: false });
+const missingCharacterIdRefresh = mergeGameNpcsPreservingAvatars(
+  [{ ...trackedNpc("npc:domain", "Domain", undefined, { revision: 5, removed: true }), characterId: "character:linked" }],
+  [trackedNpc("npc:domain", "Domain", generatedAvatar)],
+);
+assert.equal(missingCharacterIdRefresh[0]?.avatarUrl, undefined, "missing characterId must not revive a linked portrait");
+assert.equal(missingCharacterIdRefresh[0]?.characterId, "character:linked");
+
+const sameNameRemovalControl = mergeGameNpcsPreservingAvatars(
+  [
+    trackedNpc("npc:alex-one", "Alex", generatedAvatar, { revision: 1, removed: false }),
+    trackedNpc("npc:alex-two", "Alex", libraryAvatar),
+  ],
+  [
+    trackedNpc("npc:alex-one", "Alex", libraryAvatar, { revision: 2, removed: true }),
+    trackedNpc("npc:alex-two", "Alex"),
+  ],
+);
+assert.equal(sameNameRemovalControl[0]?.avatarUrl, undefined, "removal must clear only the targeted stable identity");
+assert.equal(sameNameRemovalControl[1]?.avatarUrl, libraryAvatar, "same-name sibling portrait must remain attached");
+
+const ambiguousLegacyNames = mergeGameNpcsPreservingAvatars(
+  [trackedNpc("legacy-existing", "Alex", libraryAvatar)],
+  [trackedNpc("", "Alex"), trackedNpc("", "Alex")],
+);
+assert.deepEqual(
+  ambiguousLegacyNames.map((entry) => entry.avatarUrl),
+  [undefined, undefined],
+  "legacy same-name NPCs without stable IDs must not share a portrait when identity is ambiguous",
 );
 
 console.log("Game portrait recovery regression passed.");

@@ -39,6 +39,7 @@ import { decisionProcessService } from "./services/sidecar/decision-process.serv
 import { sidecarProcessService } from "./services/sidecar/sidecar-process.service.js";
 import { utilitySidecarService } from "./services/utility-sidecar/utility-sidecar.service.js";
 import { startServerAutonomousScheduler } from "./services/conversation/server-autonomous-scheduler.service.js";
+import { createMultiplayerAutonomyAdapter, type MultiplayerAutonomyService } from "./services/multiplayer/autonomy.js";
 import { preparePersonalExtensionTrust } from "./services/setup/personal-extension-trust.js";
 import { personalServerExtensionRuntime } from "./services/extensions/personal-server-extension-runtime.js";
 import { runWithGenerationFallbackNotifier } from "./services/generation/fallback-notification.js";
@@ -58,6 +59,7 @@ import { getLastFreeze } from "./lib/freeze-detector.js";
 import { buildSidecarHealthSection } from "./services/sidecar/sidecar-slot-report.js";
 import { getPreviousSessionStatus, getUncleanExitHistory } from "./lib/session-postmortem.js";
 import { followLogLevel, logger, protectTerminalLogger } from "./lib/logger.js";
+import { flushLorebookActivationStats } from "./services/lorebook/activation-stats.js";
 import { logRateLimited } from "./lib/log-rate-limit.js";
 import { genRequestId, registerRequestLogging } from "./lib/request-logging.js";
 import { startup } from "./lib/startup-timeline.js";
@@ -66,8 +68,8 @@ import { runWithRootDiagnosticContext, sanitizeDiagnosticText, type DiagnosticCo
 import { reportDiagnosticError } from "./lib/diagnostic-operation.js";
 import { logSuppressed } from "./lib/best-effort.js";
 import { kDiagnosticContext, MarinaraLogController, routeLabel } from "./lib/http-diagnostics.js";
-import { flushLorebookActivationStats } from "./services/lorebook/activation-stats.js";
 import { createGameContinuityRuntime, type ContinuityRuntime } from "./services/game/continuity-runtime.js";
+import { startMessageTrashMaintenance, sweepExpiredMessageTrash } from "./services/storage/message-trash.storage.js";
 
 type SessionSummaryRefreshRuntime = {
   start(): Promise<void>;
@@ -236,6 +238,7 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
   // ── Storage ──
   const db = (await startup.phase("storage.init", () => getDB())) as DB;
   app.decorate("db", db);
+  let stopMessageTrashMaintenance: (() => Promise<void>) | undefined;
   // Accessor decoration: game routes assign the service from an encapsulated
   // child context, and a plain property would only shadow on that child. The
   // setter routes the assignment to shared state so the root (start/stop,
@@ -265,6 +268,7 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
     try {
       // Every runtime has a bounded stop so storage can close before the force-exit deadline.
       const { failed, timedOut, records } = await runShutdownStepsWithin([
+        { name: "messageTrashMaintenance", run: () => stopMessageTrashMaintenance?.() },
         { name: "sessionSummaryRefresh", run: () => app.sessionSummaryRefresh?.stop() },
         { name: "gameContinuity", run: () => gameContinuity.stop() },
         { name: "capabilityModuleRuntime", run: () => capabilityModuleRuntime.stop() },
@@ -462,7 +466,21 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
   await startup.phase("agents.registry", () => initializeCapabilityAgentRegistry());
 
   // ── Server-side autonomous conversation scheduler ──
-  startServerAutonomousScheduler(app);
+  startServerAutonomousScheduler(
+    app,
+    createMultiplayerAutonomyAdapter(
+      () => (app as unknown as { multiplayer?: MultiplayerAutonomyService }).multiplayer,
+    ),
+  );
+
+  // Expired trash in chats that are never reopened still needs to be removed.
+  // Cold trash shards load only when expired; wait for active cleanup before closing the DB.
+  const messageTrashMaintenance = startMessageTrashMaintenance(() => sweepExpiredMessageTrash(db), {
+    info: (purged) => app.log.info("Purged %d expired message trash entries", purged),
+    warn: (error) =>
+      app.log.warn({ err: error }, "Expired message trash cleanup failed; it will retry on the next sweep"),
+  });
+  stopMessageTrashMaintenance = messageTrashMaintenance.stop;
 
   // ── Sidecar bootstrap (background, skipped in lite mode) ──
   if (!isLite) {

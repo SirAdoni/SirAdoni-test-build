@@ -6,6 +6,7 @@ import { type SlpAccount, type SlpBootstrap } from "../../../../../shared/src/sl
 import type { DB } from "../../../db/connection.js";
 import type { SlurpSettings } from "../../modules/settings/slp-settings.js";
 import { logger, logDebugOverride } from "../../../lib/logger.js";
+import { slpResolveCardMacros } from "../../base/prompting/slp-prompt-safety.js";
 import { newId } from "../../../utils/id-generator.js";
 import { resolveImageConnectionFallback } from "../../../services/generation/media-connection-fallback.js";
 import { loadImageGenerationUserSettings } from "../../../services/image/image-generation-settings.js";
@@ -13,8 +14,9 @@ import { generateImage, stageImageToDisk, type StagedGalleryImage } from "../../
 import { resolveConnectionImageDefaults } from "../../../services/image/image-generation-defaults.js";
 import { compileImagePrompt, resolveImageStyleGuidanceText } from "../../../services/image/image-prompt-compiler.js";
 import { resolveImagePromptReviewSize } from "../../../services/image/image-prompt-review.js";
+import type { SlurpVisualBrief } from "../../base/media/slp-visual-brief.js";
+import { slurpVisualBriefPromptViolatesPolicy, slurpVisualBriefText } from "../../base/media/slp-visual-brief.js";
 import {
-  normalizeIllustratorAppearance,
   readIllustratorAppearance,
   resolveIllustratorCharacterReferences,
 } from "../../../services/image/illustrator-references.js";
@@ -26,8 +28,19 @@ import { createPromptOverridesStorage } from "../../../services/storage/prompt-o
 import { loadPrompt, NOODLE_IMAGE_POST } from "../../../services/prompt-overrides/index.js";
 import { generateSlpImageWithRetry } from "../../base/media/slp-image-retry.js";
 import { rewriteSlpImagePrompt } from "../../base/media/slp-image-prompt-rewrite.js";
-import { selectSlpImageProviderPrompt } from "../../base/media/slp-image-prompt.js";
-import { resolveCreatorImageConnectionId } from "../../base/media/slp-image-connections.js";
+import { slpImageReferencesSupported } from "../../base/media/slp-image-references.js";
+import { resolveImageAppearance } from "./slp-appearance-service.js";
+import {
+  slurpApplyImageLook,
+  slurpLookForWriter,
+  selectSlpImageProviderPrompt,
+  slurpWithoutCameraDevice,
+  stripAppearanceLabel,
+} from "../../base/media/slp-image-prompt.js";
+import {
+  resolveCreatorImageConnectionId,
+  resolveCreatorImageStyleProfileId,
+} from "../../base/media/slp-image-connections.js";
 import type { ConnectionAdmissionMode } from "../../../services/generation/connection-admission.js";
 import {
   characterGalleryImageUrl,
@@ -37,6 +50,7 @@ import {
   parseRecord,
 } from "../../modules/creators/slp-public-support.js";
 import { bootstrapVisibleSlp } from "../../data/creators/slp-creator-accounts.js";
+import { slurpPromptContext } from "../../base/prompting/slp-prompt-blocks.js";
 
 type ImageConnection = NonNullable<Awaited<ReturnType<ReturnType<typeof createConnectionsStorage>["getWithKey"]>>>;
 
@@ -90,9 +104,17 @@ function readProfessorMariReferenceImages(): string[] {
   });
 }
 
+/**
+ * The card's own appearance field, and nothing else.
+ *
+ * This used to fall back to the whole `description` when a card had no appearance field. Many
+ * downloaded cards have none, so their entire description — backstory, personality, scenario —
+ * was appended to every image prompt. A Creator's Stage appearance is the place to set a look.
+ */
 export function characterAppearanceFromRow(row: { data: unknown }) {
   const data = parseRecord(row.data);
-  return readIllustratorAppearance(data) ?? normalizeIllustratorAppearance(data.description) ?? "";
+  // Picture prompts get the card's appearance as written; `{{char}}` there reached the image model.
+  return slpResolveCardMacros(readIllustratorAppearance(data) ?? "", typeof data.name === "string" ? data.name : "");
 }
 
 /**
@@ -117,6 +139,8 @@ export async function generateSlpPostImage(input: {
   referenceAccounts: SlpAccount[];
   postContent: string;
   draftPrompt: string;
+  contentPolicy?: string;
+  visualBrief?: SlurpVisualBrief;
   settings: SlurpSettings;
   characters: ReturnType<typeof createCharactersStorage>;
   characterGallery: ReturnType<typeof createCharacterGalleryStorage>;
@@ -129,7 +153,18 @@ export async function generateSlpPostImage(input: {
   admissionMode?: ConnectionAdmissionMode;
 }) {
   const imageSettings = await loadImageGenerationUserSettings(input.db);
+  const creatorStyleProfileId = await resolveCreatorImageStyleProfileId(input.db, input.account.id);
   const imageDefaults = resolveConnectionImageDefaults(input.imageConnection);
+  const selectedStyleProfileId = creatorStyleProfileId ?? input.settings.imageStyleProfileId;
+  if (imageDefaults && selectedStyleProfileId) {
+    imageDefaults.styleProfileId = selectedStyleProfileId;
+    for (const providerDefaults of [imageDefaults.automatic1111, imageDefaults.comfyui, imageDefaults.novelai]) {
+      if (providerDefaults) {
+        providerDefaults.promptPrefix = "";
+        providerDefaults.negativePromptPrefix = "";
+      }
+    }
+  }
   const imageModel = input.imageConnection.model || "";
   const imageBaseUrl = input.imageConnection.baseUrl || "https://image.pollinations.ai";
   const imageSource = input.imageConnection.imageGenerationSource || imageModel;
@@ -138,7 +173,25 @@ export async function generateSlpPostImage(input: {
     createConnectionsStorage(input.db),
     input.imageConnection.id,
   );
-  let characterDescription = "";
+  const allowAvatarReferences = slpImageReferencesSupported(input.imageConnection, imageFallback);
+  // The Creator's own appearance, written on the Creator rather than borrowed from a card.
+  //
+  // It is applied unconditionally, unlike the block below it. `imageGenerationIncludeDescriptions`
+  // decides whether to pull the *source character's* description into the picture; it was never
+  // meant to decide whether the picture knows who the Creator is. With it off, a Creator with no
+  // linked source, or a source card with an empty Appearance field, the image model received a
+  // scene containing nobody and invented somebody — a different somebody every post.
+  const stageAppearance = input.settings.imageGenerationIncludeDescriptions
+    ? await resolveImageAppearance({
+        db: input.db,
+        account: input.account,
+        connectionId: input.settings.generationConnectionId,
+        mode: input.settings.appearanceProfileMode,
+      })
+    : "";
+  let characterDescription = stageAppearance;
+  // This Creator's look only: the reference block below may describe the other people in the post too.
+  let ownLook = stageAppearance;
   let characterImageInstructions = "";
   let characterPersonality = "";
   let referenceImages: string[] | undefined;
@@ -150,6 +203,8 @@ export async function generateSlpPostImage(input: {
         character,
         input.settings.characterImageInstructions[character.id],
       );
+      if (input.settings.imageGenerationIncludeDescriptions && !stageAppearance)
+        characterDescription = ownLook = characterAppearanceFromRow(character);
       characterPersonality = imageContext.personality;
       characterImageInstructions = imageContext.imageInstructions;
 
@@ -183,10 +238,14 @@ export async function generateSlpPostImage(input: {
           promptText: [input.account.displayName, input.postContent, input.draftPrompt].join("\n"),
           maxReferences: 6,
         });
-        if (input.settings.imageGenerationIncludeDescriptions && referenceResolution.appearanceBlock) {
+        if (
+          input.settings.imageGenerationIncludeDescriptions &&
+          !stageAppearance &&
+          referenceResolution.appearanceBlock
+        ) {
           characterDescription = referenceResolution.appearanceBlock;
         }
-        if (input.settings.imageGenerationUseAvatarReferences) {
+        if (input.settings.imageGenerationUseAvatarReferences && allowAvatarReferences) {
           const builtInMariReferences =
             input.account.entityId === PROFESSOR_MARI_ID ? readProfessorMariReferenceImages() : [];
           const combinedReferences = [...builtInMariReferences, ...referenceResolution.referenceImages];
@@ -199,11 +258,18 @@ export async function generateSlpPostImage(input: {
   const postPrompt = await loadPrompt(input.promptOverrides, NOODLE_IMAGE_POST, {
     authorName: input.account.displayName,
     postContent: input.postContent,
+    visualBrief: input.visualBrief,
     draftPrompt: input.draftPrompt,
     userInstructions: input.settings.imageGenerationPrompt,
-    characterDescription,
+    characterDescription: stripAppearanceLabel(characterDescription),
     characterImageInstructions,
-    characterPersonality,
+    // Empty on purpose. The default template concatenates this straight into the prompt the image
+    // provider receives, and "arrogant, impatient with staged sentimentality" is not a visual
+    // fact — it is noise a diffusion model still tries to draw. The rewrite already treats
+    // personality as private context that must never appear in a visual prompt; the template that
+    // produces the fallback prompt should not be the one place that disagrees. A custom template
+    // that genuinely wants it can still read the character card.
+    characterPersonality: "",
   });
   const compiledPrompt = compileImagePrompt({
     kind: "illustration",
@@ -246,10 +312,12 @@ export async function generateSlpPostImage(input: {
   ]
     .filter(Boolean)
     .join("\n");
+  const lookMode = input.settings.imageAppearanceMode ?? "writer";
   const characterContext = [
-    characterDescription ? `Appearance:\n${characterDescription}` : "",
+    characterDescription && slurpLookForWriter(lookMode) ? `Appearance:\n${characterDescription}` : "",
     characterPersonality ? `Personality:\n${characterPersonality}` : "",
     characterImageInstructions ? `Character image preferences:\n${characterImageInstructions}` : "",
+    input.contentPolicy ? `Creator content policy:\n${input.contentPolicy}` : "",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -262,11 +330,14 @@ export async function generateSlpPostImage(input: {
     ? await rewriteSlpImagePrompt({
         db: input.db,
         prompt: rawFinalPrompt,
+        postContent: input.postContent,
         interpretationInstruction: input.settings.imagePromptInterpretation,
         instructions: imagePromptInstructions,
         characterContext,
         styleGuidance,
-        promptBlocks: input.settings.promptBlocks,
+        promptBlocks: slurpPromptContext(input.settings).blocks,
+        connectionId: input.settings.imagePromptConnectionId || input.settings.generationConnectionId,
+        budget: input.settings.modelBudget,
       })
     : null;
   // The style profile is an Engine setting, not something the interpretation model owns. The
@@ -283,17 +354,40 @@ export async function generateSlpPostImage(input: {
         imageDefaults,
       })
     : null;
-  const finalPrompt = selectSlpImageProviderPrompt({
-    rewrittenPrompt: compiledRewrittenPrompt?.prompt || rewrittenPrompt,
+  const acceptedRewrittenPrompt =
+    input.visualBrief && rewrittenPrompt && slurpVisualBriefPromptViolatesPolicy(input.visualBrief, rewrittenPrompt)
+      ? null
+      : compiledRewrittenPrompt?.prompt || rewrittenPrompt;
+  let usedRewrite = Boolean(acceptedRewrittenPrompt);
+  const finalPromptBase = selectSlpImageProviderPrompt({
+    rewrittenPrompt: acceptedRewrittenPrompt,
     rawPrompt: rawProviderPrompt,
+    fallbackPrefix: [
+      characterDescription ? `Appearance: ${stripAppearanceLabel(characterDescription)}` : "",
+      input.visualBrief ? slurpVisualBriefText(input.visualBrief) : "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
     rewriteAttempted,
-    onFallback: (reason) => logger.warn("[slurp] Image prompt rewrite unusable (%s); sending the capped draft", reason),
+    onFallback: (reason) => {
+      usedRewrite = false;
+      logger.warn("[slurp] Image prompt rewrite unusable (%s); sending the capped draft", reason);
+    },
     // Art style and the character's image habits are meant to reach the provider, so a rewrite
     // that applies them is doing its job. Personality never belongs in a visual prompt at any
     // length; the instruction fields are guidance and only leak as a copied block.
     privateContext: [characterPersonality],
     guidanceContext: [configuredImageInstructions, connectionImageInstructions],
   });
+  // The rewrite reads the caption, which may say "I held my phone up", so the device is removed
+  // once more from what actually reaches the provider.
+  // One copy of the look: the writer's words, Slurp's insert, or the writer's plus the missing traits.
+  const finalPrompt = slurpApplyImageLook(
+    slurpWithoutCameraDevice(finalPromptBase) || finalPromptBase,
+    ownLook,
+    lookMode,
+    usedRewrite,
+  );
   // A reviewer who cleared the negative prompt still gets the style profile's own negatives back,
   // for the same reason the positive prompt is recompiled above.
   const finalNegativePrompt = input.promptOverride

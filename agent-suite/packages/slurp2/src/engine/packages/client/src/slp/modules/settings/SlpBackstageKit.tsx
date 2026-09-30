@@ -3,10 +3,9 @@
 // import no feature, so they are a reusable module rather than feature-owned.
 
 import { Modal } from "../../../components/ui/Modal";
-import { cn } from "../../../lib/utils";
 import { Avatar } from "../../base/chrome/SlpChrome";
 import type { SlurpReserveStatus, SlurpScheduleSlot } from "../../base/state/slp-state-types";
-import { formatClockTime, formatDateTime } from "../../base/ui/slp-date-time";
+import { formatClockTime } from "../../base/ui/slp-date-time";
 import type { SlpCreatorManagedStageProfile } from "../../../../../shared/src/slp/slp-social.types.js";
 import {
   Activity,
@@ -21,100 +20,125 @@ import {
   RefreshCw,
   RotateCcw,
   Save,
-  Sparkles,
 } from "lucide-react";
+import { SlpSparkleGlyph } from "../../base/chrome/SlpGlyphs";
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { localDateTimeValue } from "./slp-backstage-format";
+import { toast } from "sonner";
+import { slpLocalDay, slpLocalTime, slpScheduleDays, slpSlotAtTime, slpSlotOnDay } from "./slp-schedule-agenda";
 
-export function ChoiceRow<T extends string>({
-  title,
-  detail,
-  options,
-  value,
-  onChange,
-  extra,
+/**
+ * The posting schedule as a day list. Each row edits only the time; "Another day" moves the slot
+ * to a new day at the same time. A change saves when the field is left, so there is no Save button.
+ */
+export function ScheduleAgenda({
+  slots,
+  pending,
+  onMove,
 }: {
-  title: string;
-  detail: string;
-  options: ReadonlyArray<{ value: T; label: string }>;
-  value: string;
-  onChange: (value: T) => void;
-  extra?: ReactNode;
+  slots: readonly SlurpScheduleSlot[];
+  pending: boolean;
+  onMove: (slot: SlurpScheduleSlot, publishAt: string) => Promise<void>;
 }) {
+  const { i18n } = useTranslation();
+  const dayLabel = new Intl.DateTimeFormat(i18n.language, { weekday: "long", month: "short", day: "numeric" });
   return (
-    <fieldset className="space-y-3 pt-2">
-      <legend className="text-sm font-bold">{title}</legend>
-      <p className="text-xs leading-5 text-[var(--slurp-muted)]">{detail}</p>
-      <div className="flex flex-wrap gap-2">
-        {options.map((option) => (
-          <button
-            key={option.value}
-            type="button"
-            onClick={() => onChange(option.value)}
-            aria-pressed={value === option.value}
-            className={cn(
-              "min-h-10 rounded-lg border px-3 text-xs font-semibold transition-colors",
-              value === option.value
-                ? "border-[var(--noodle-accent)] bg-[var(--noodle-accent)]/10 text-[var(--noodle-accent)]"
-                : "border-[var(--border)] hover:bg-[var(--accent)]",
-            )}
-          >
-            {option.label}
-          </button>
-        ))}
-        {extra}
-      </div>
-    </fieldset>
+    <div className="space-y-4">
+      {slpScheduleDays(slots).map(({ day, slots: daySlots }) => (
+        <section key={day} aria-label={dayLabel.format(new Date(`${day}T12:00`))} className="space-y-1.5">
+          <h4 className="text-xs font-bold uppercase tracking-wide text-[var(--slurp-muted,var(--muted-foreground))]">
+            {dayLabel.format(new Date(`${day}T12:00`))}
+          </h4>
+          <ul className="divide-y divide-[var(--slurp-outline,var(--border))] rounded-lg ring-1 ring-inset ring-[var(--slurp-outline,var(--border))]">
+            {daySlots.map((slot) => (
+              <ScheduleAgendaRow
+                key={`${slot.id}:${slot.publishAt}`}
+                slot={slot}
+                pending={pending}
+                onMove={(publishAt) => onMove(slot, publishAt)}
+              />
+            ))}
+          </ul>
+        </section>
+      ))}
+    </div>
   );
 }
 
-export function ScheduleSlotEditor({
+function ScheduleAgendaRow({
   slot,
   pending,
-  onSave,
+  onMove,
 }: {
   slot: SlurpScheduleSlot;
   pending: boolean;
-  onSave: (publishAt: string) => Promise<void>;
+  onMove: (publishAt: string) => Promise<void>;
 }) {
-  const { t, i18n } = useTranslation();
-  const [draft, setDraft] = useState(() => localDateTimeValue(slot.publishAt));
-  const parsed = Date.parse(draft);
-  const unchanged = !Number.isNaN(parsed) && new Date(parsed).toISOString() === slot.publishAt;
-  const valid = !Number.isNaN(parsed) && parsed > Date.now();
+  const { t } = useTranslation();
+  const [time, setTime] = useState(() => slpLocalTime(slot.publishAt));
+  const [dayOpen, setDayOpen] = useState(false);
+  const commitTime = () => {
+    if (time === slpLocalTime(slot.publishAt)) return;
+    const next = slpSlotAtTime(slot.publishAt, time);
+    if (next) void onMove(next);
+    else {
+      toast.error(t("ui.slurp.settings.creators.schedulePast"));
+      setTime(slpLocalTime(slot.publishAt));
+    }
+  };
+  const inputClass =
+    "min-h-11 rounded-lg bg-[var(--slurp-canvas,var(--background))] px-3 text-base tabular-nums ring-1 ring-inset ring-[var(--slurp-outline,var(--border))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--noodle-accent)] disabled:opacity-50 sm:text-sm";
   return (
-    <div className="rounded-lg border border-[var(--border)] p-3">
-      <div className="mb-2 flex items-center justify-between gap-2 text-xs text-[var(--muted-foreground)]">
-        <span>
-          {slot.state === "prepared"
-            ? t("ui.slurp.settings.creators.prepared")
-            : t("ui.slurp.settings.creators.scheduled")}
-        </span>
-        <span>{formatDateTime(slot.publishAt, i18n.language)}</span>
-      </div>
-      <div className="flex flex-col gap-2 sm:flex-row">
+    <li className="flex flex-wrap items-center gap-2 px-3 py-2">
+      <input
+        type="time"
+        aria-label={t("ui.slurp.settings.creators.publicationTime")}
+        value={time}
+        disabled={pending}
+        onChange={(event) => setTime(event.target.value)}
+        onBlur={commitTime}
+        onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()}
+        className={inputClass}
+      />
+      <span
+        className={`rounded-full px-2 py-0.5 text-xs font-semibold ${slot.state === "prepared" ? "bg-[var(--slurp-success)]/12 text-[var(--slurp-success)]" : "bg-[var(--slurp-canvas,var(--accent))] text-[var(--slurp-muted,var(--muted-foreground))]"}`}
+      >
+        {slot.state === "prepared"
+          ? t("ui.slurp.settings.creators.prepared")
+          : t("ui.slurp.settings.creators.scheduled")}
+      </span>
+      {dayOpen ? (
         <input
-          type="datetime-local"
-          aria-label={t("ui.slurp.settings.creators.publicationTime")}
-          value={draft}
-          min={localDateTimeValue(new Date(Date.now() + 60_000).toISOString())}
+          type="date"
+          autoFocus
+          aria-label={t("ui.slurp.settings.creators.anotherDay")}
+          defaultValue={slpLocalDay(slot.publishAt)}
+          min={slpLocalDay(new Date().toISOString())}
           disabled={pending}
-          onChange={(event) => setDraft(event.target.value)}
-          className="min-h-11 min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-[var(--slurp-canvas,var(--background))] px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--noodle-accent)] disabled:opacity-50 sm:text-sm"
+          onBlur={(event) => {
+            setDayOpen(false);
+            const day = event.currentTarget.value;
+            if (!day || day === slpLocalDay(slot.publishAt)) return;
+            const next = slpSlotOnDay(slot.publishAt, day);
+            if (next) void onMove(next);
+            else toast.error(t("ui.slurp.settings.creators.schedulePast"));
+          }}
+          onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()}
+          className={`ms-auto ${inputClass}`}
         />
+      ) : (
         <button
           type="button"
-          disabled={pending || unchanged || !valid}
-          onClick={() => void onSave(new Date(parsed).toISOString())}
-          className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg bg-[var(--noodle-accent)] px-4 text-xs font-bold text-[var(--noodle-accent-foreground)] disabled:opacity-45"
+          disabled={pending}
+          onClick={() => setDayOpen(true)}
+          className="ms-auto min-h-11 rounded-lg px-3 text-sm font-semibold text-[var(--noodle-accent-foreground)] hover:bg-[var(--slurp-canvas,var(--accent))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--noodle-accent)] disabled:opacity-50"
         >
-          {pending ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
-          {t("ui.slurp.settings.creators.saveTime")}
+          {t("ui.slurp.settings.creators.anotherDay")}
         </button>
-      </div>
-    </div>
+      )}
+      {pending && <Loader2 size={15} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />}
+    </li>
   );
 }
 
@@ -230,7 +254,7 @@ export function OverviewActivity({
     >
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
-          <Activity size={17} className="shrink-0 text-[var(--noodle-accent)]" aria-hidden="true" />
+          <Activity size={17} className="shrink-0 text-[var(--noodle-accent-foreground)]" aria-hidden="true" />
           <h2 id="slurp-activity-title" className="text-sm font-black">
             {t("ui.slurp.settings.overview.activity.title")}
           </h2>
@@ -239,7 +263,7 @@ export function OverviewActivity({
           <button
             type="button"
             onClick={onRetry}
-            className="inline-flex min-h-9 items-center gap-1.5 rounded-lg px-2 text-xs font-semibold text-[var(--noodle-accent)] hover:bg-[var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)]"
+            className="inline-flex min-h-9 items-center gap-1.5 rounded-lg px-2 text-xs font-semibold text-[var(--noodle-accent-foreground)] hover:bg-[var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)]"
           >
             <RefreshCw size={13} aria-hidden="true" />
             {t("capabilities.actions.tryAgain")}
@@ -275,7 +299,7 @@ export function OverviewActivity({
           tone="waiting"
         />
         <ActivityRow
-          icon={<Sparkles size={15} />}
+          icon={<SlpSparkleGlyph size={15} />}
           label={t("ui.slurp.settings.overview.activity.textUsage")}
           value={usage}
           detail={t("ui.slurp.settings.overview.activity.today")}
@@ -312,7 +336,7 @@ export function ActivityRow({
 }) {
   const toneClass =
     tone === "active"
-      ? "text-[var(--noodle-accent)]"
+      ? "text-[var(--noodle-accent-foreground)]"
       : tone === "waiting"
         ? "text-[var(--slurp-warning)]"
         : "text-[var(--slurp-success)]";
@@ -323,7 +347,7 @@ export function ActivityRow({
       </span>
       <span className="min-w-0 flex-1">
         <span className="block text-xs font-semibold text-[var(--slurp-muted)]">{label}</span>
-        {detail && <span className="block truncate text-[0.68rem] text-[var(--slurp-muted)]">{detail}</span>}
+        {detail && <span className="block truncate text-xs text-[var(--slurp-muted)]">{detail}</span>}
       </span>
       <span className={`shrink-0 text-sm font-black ${toneClass}`}>{value}</span>
     </div>
@@ -353,43 +377,59 @@ export function PromptCard({
   disabled?: boolean;
 }) {
   const { t } = useTranslation();
+  // A prompt is read in full only when someone wants to; four lines tell which one it is.
+  const [expanded, setExpanded] = useState(false);
   return (
-    <div className="space-y-3 rounded-lg border border-[var(--border)] p-4">
-      <div className="flex items-start gap-3">
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--noodle-accent)]/10 text-[var(--noodle-accent)]">
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--noodle-accent)]/10 text-[var(--noodle-accent-foreground)]">
           <FileText size={16} />
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <p className="text-sm font-semibold">{title}</p>
-            <span className="rounded-full border border-[var(--noodle-accent)]/30 bg-[var(--noodle-accent)]/10 px-2 py-0.5 text-[0.625rem] font-semibold text-[var(--noodle-accent)]">
+            <span className="rounded-full border border-[var(--noodle-accent)]/30 bg-[var(--noodle-accent)]/10 px-2 py-0.5 text-[11px] font-semibold text-[var(--noodle-accent-foreground)]">
               {isDefault ? t("ui.slurp.settings.prompts.default") : t("ui.slurp.settings.prompts.custom")}
             </span>
           </div>
-          <p className="mt-2 line-clamp-3 whitespace-pre-line text-xs leading-5 text-[var(--muted-foreground)]">
-            {value}
-          </p>
         </div>
-      </div>
-      <div className="flex flex-wrap justify-end gap-2">
-        <button
-          type="button"
-          onClick={onRestore}
-          disabled={disabled || isDefault}
-          className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-[var(--noodle-accent)]/35 px-3 text-xs font-semibold text-[var(--noodle-accent)] hover:bg-[var(--noodle-accent)]/10 disabled:opacity-45"
-        >
-          <RotateCcw size={13} />
-          {restoreLabel ?? t("ui.slurp.settings.prompts.restoreDefault")}
-        </button>
+        {!isDefault && (
+          <button
+            type="button"
+            onClick={onRestore}
+            disabled={disabled}
+            className="inline-flex min-h-11 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold text-[var(--noodle-accent-foreground)] hover:bg-[var(--noodle-accent)]/10 disabled:opacity-45"
+          >
+            <RotateCcw size={13} />
+            {restoreLabel ?? t("ui.slurp.settings.prompts.restoreDefault")}
+          </button>
+        )}
         <button
           type="button"
           onClick={onEdit}
           disabled={disabled}
-          className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-[var(--border)] px-3 text-xs font-semibold hover:bg-[var(--accent)] disabled:opacity-45"
+          className="inline-flex min-h-11 shrink-0 items-center gap-2 rounded-lg border border-[var(--border)] px-3 text-xs font-semibold hover:bg-[var(--accent)] disabled:opacity-45"
         >
-          <Pencil size={14} className="text-[var(--noodle-accent)]" />
+          <Pencil size={14} className="text-[var(--noodle-accent-foreground)]" />
           {t("ui.slurp.settings.prompts.edit")}
         </button>
+      </div>
+      <div className="rounded-lg bg-[var(--slurp-canvas)] p-3 ring-1 ring-inset ring-[var(--slurp-outline)] sm:p-4">
+        <p
+          className={`whitespace-pre-wrap break-words text-sm leading-6 text-[var(--slurp-muted)] ${expanded ? "" : "line-clamp-4"}`}
+        >
+          {value}
+        </p>
+        {(value.length > 320 || value.split("\n").length > 4) && (
+          <button
+            type="button"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((open) => !open)}
+            className="mt-1 min-h-11 text-xs font-semibold text-[var(--noodle-accent-foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)]"
+          >
+            {expanded ? t("ui.slurp.settings.prompts.showLess") : t("ui.slurp.settings.prompts.showAll")}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -404,6 +444,7 @@ export function PromptEditor({
   onRestore,
   pending,
   restoreLabel,
+  saveLabel,
 }: {
   open: boolean;
   title: string;
@@ -414,6 +455,7 @@ export function PromptEditor({
   onRestore: () => void;
   pending: boolean;
   restoreLabel?: string;
+  saveLabel?: string;
 }) {
   const { t } = useTranslation();
   return (
@@ -433,7 +475,7 @@ export function PromptEditor({
             type="button"
             onClick={onRestore}
             disabled={pending}
-            className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-[var(--noodle-accent)]/35 px-3 text-xs font-semibold text-[var(--noodle-accent)] disabled:opacity-45"
+            className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-[var(--noodle-accent)]/35 px-3 text-xs font-semibold text-[var(--noodle-accent-foreground)] disabled:opacity-45"
           >
             <RotateCcw size={13} />
             {restoreLabel ?? t("ui.slurp.settings.prompts.restoreDefault")}
@@ -451,10 +493,10 @@ export function PromptEditor({
               type="button"
               onClick={() => void onSave()}
               disabled={!value.trim() || pending}
-              className="inline-flex min-h-10 flex-1 items-center justify-center gap-1.5 rounded-lg bg-[var(--noodle-accent)] px-4 text-xs font-bold text-zinc-950 [&_svg]:!text-zinc-950 disabled:opacity-45"
+              className="inline-flex min-h-10 flex-1 items-center justify-center gap-1.5 rounded-lg bg-[var(--noodle-accent)] px-4 text-xs font-bold text-[var(--slurp-on-accent)] [&_svg]:!text-[var(--slurp-on-accent)] disabled:opacity-45"
             >
               {pending ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
-              {t("ui.slurp.settings.prompts.save")}
+              {saveLabel ?? t("ui.slurp.settings.prompts.save")}
             </button>
           </div>
         </div>

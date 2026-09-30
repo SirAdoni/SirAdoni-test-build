@@ -1,17 +1,30 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // The parameter panel only shows settings that change the request for the selected provider and model. This test is
-// the source of truth for those rules: it sends every setting through the real provider code to a local stub, changes
-// one setting at a time, and records which changes alter the request. The shared rules must match exactly, for effort
-// on and effort off, so a provider change that makes a hidden setting matter (or a shown one stop mattering) fails
-// here instead of silently misleading the panel.
+// the source of truth for those rules: it changes one setting at a time and records which changes alter the request.
+// Most providers use a local HTTP stub; ChatGPT uses its production Responses body builder before transport, and the
+// subscription provider uses an SDK stub.
+// The shared rules must match exactly, for effort on and effort off, so a provider change that makes a hidden setting
+// matter (or a shown one stop mattering) fails here instead of silently misleading the panel.
 const root = mkdtempSync(join(tmpdir(), "marinara-param-relevance-"));
+const previousCodexHome = process.env.CODEX_HOME;
 process.env.DATA_DIR = root;
 process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
+process.env.CODEX_HOME = join(root, "codex-home");
+mkdirSync(process.env.CODEX_HOME, { recursive: true });
+const testTokenPayload = Buffer.from(JSON.stringify({ exp: 9_999_999_999 })).toString("base64url");
+writeFileSync(
+  join(process.env.CODEX_HOME, "auth.json"),
+  JSON.stringify({
+    auth_mode: "chatgpt",
+    last_refresh: new Date().toISOString(),
+    tokens: { access_token: `test.${testTokenPayload}.signature` },
+  }),
+);
 // Every stubbed request fails on purpose; keep those expected provider errors out of the output.
 process.env.LOG_LEVEL = "silent";
 process.env.LOG_FILE_LEVEL = "silent";
@@ -41,16 +54,28 @@ const PROBED: ProbedKey[] = [
 try {
   const { createLLMProvider } = await import("../../packages/server/src/services/llm/provider-registry.js");
   const { OpenAIProvider } = await import("../../packages/server/src/services/llm/providers/openai.provider.js");
-  const { __setSdkForTesting, ClaudeSubscriptionProvider } = await import(
-    "../../packages/server/src/services/llm/providers/claude-subscription.provider.js"
-  );
-  const { isClaudeAdaptiveOnlyNoSamplingModel, resolveProviderReasoningEffort } = await import(
-    "../../packages/shared/src/constants/model-lists.js"
-  );
-  const { relevantGenerationParameters, reasoningEffortChoices, verbosityChoices } = await import(
-    "../../packages/shared/src/constants/generation-parameter-relevance.js"
-  );
+  const { OpenAIChatGPTProvider } =
+    await import("../../packages/server/src/services/llm/providers/openai-chatgpt.provider.js");
+  const { __setSdkForTesting, ClaudeSubscriptionProvider } =
+    await import("../../packages/server/src/services/llm/providers/claude-subscription.provider.js");
+  const { isClaudeAdaptiveOnlyNoSamplingModel, resolveProviderReasoningEffort } =
+    await import("../../packages/shared/src/constants/model-lists.js");
+  const { relevantGenerationParameters, reasoningEffortChoices, verbosityChoices } =
+    await import("../../packages/shared/src/constants/generation-parameter-relevance.js");
+  const { readOpenRouterModelCapabilities } = await import("../../packages/server/src/routes/connections.routes.js");
 
+  assert.deepEqual(
+    readOpenRouterModelCapabilities({
+      supported_parameters: ["temperature", "reasoning", "max_completion_tokens", "unknown"],
+    }),
+    { supportedParameters: ["temperature", "reasoningEffort", "maxTokens"] },
+    "OpenRouter catalog capabilities map only controls recognized by the panel",
+  );
+  assert.equal(
+    readOpenRouterModelCapabilities({ supported_parameters: ["unknown"] }),
+    undefined,
+    "an unrecognized OpenRouter parameter list does not hide all controls",
+  );
   let firstBody: string | null = null;
   const server = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
@@ -74,6 +99,16 @@ try {
       })();
     }) as never,
   });
+
+  const requireRequestCapture = (captured: string | null, provider: string, model: string): string => {
+    assert.ok(captured, `${provider}/${model} did not produce a request body`);
+    return captured;
+  };
+  assert.throws(
+    () => requireRequestCapture(null, "capture-fixture", "no-request"),
+    /capture-fixture\/no-request did not produce a request body/,
+    "a provider probe without a captured body must fail instead of comparing a sentinel",
+  );
 
   type Values = {
     temperature: number;
@@ -133,17 +168,38 @@ try {
     firstBody = null;
     sdkOptions = null;
     const instance = make();
+    if (provider === "openai_chatgpt") {
+      // This probe inspects serialization only; never fall through to subscription transport.
+      instance.chat = () => assert.fail("ChatGPT parameter probes must not send provider requests");
+      const messages = [{ role: "user" as const, content: "test" }];
+      const delegated = await instance.delegate(messages);
+      const body = delegated.buildResponsesBody(messages, chatOptions(provider, model, values));
+      return JSON.stringify(body);
+    }
     const run = (async () => {
       try {
-        for await (const _chunk of instance.chat([{ role: "user", content: "test" }], chatOptions(provider, model, values))) {
+        for await (const _chunk of instance.chat(
+          [{ role: "user", content: "test" }],
+          chatOptions(provider, model, values),
+        )) {
           // drain
         }
       } catch {
         // The stub rejects every request; only the request body matters.
       }
     })();
-    await Promise.race([run, new Promise((resolve) => setTimeout(resolve, 5000))]);
-    return (sdk ? sdkOptions : firstBody) ?? "<no request>";
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        run,
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => reject(new Error(`${provider}/${model} request capture timed out`)), 5000);
+        }),
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+    return requireRequestCapture(sdk ? sdkOptions : firstBody, provider, model);
   };
 
   const registry = (id: string, url: string) => () => createLLMProvider(id, url, "test");
@@ -151,7 +207,19 @@ try {
     {
       provider: "openai",
       baseUrl: `${base}/v1`,
-      models: ["gpt-4o", "gpt-4.1", "o3", "gpt-5", "gpt-5.4", "gpt-5.6-sol", "some-unknown-model"],
+      models: [
+        "gpt-4o",
+        "gpt-4.1",
+        "o3",
+        "gpt-5",
+        "gpt-5.4",
+        "gpt-5.6-sol",
+        "gpt-6-astra",
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "gpt-6.1-sol",
+        "some-unknown-model",
+      ],
       make: registry("openai", `${base}/v1`),
     },
     {
@@ -161,6 +229,7 @@ try {
         "openai/gpt-5",
         "anthropic/claude-sonnet-4.5",
         "anthropic/claude-opus-5",
+        "anthropic/claude-sonnet-5.5",
         "deepseek/deepseek-v4-pro",
         "meta-llama/llama-3.3-70b-instruct",
         "x-ai/grok-4.3",
@@ -213,6 +282,7 @@ try {
         "claude-sonnet-4-5",
         "claude-opus-4-6",
         "claude-opus-5",
+        "claude-sonnet-5-5",
         "claude-3-7-sonnet-20250219",
         "claude-unknown-9",
       ],
@@ -228,7 +298,7 @@ try {
       provider: "openai_chatgpt",
       baseUrl: `${base}/v1`,
       models: ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-astra", "gpt-5.5"],
-      make: () => new OpenAIProvider(`${base}/v1`, "test", undefined, undefined, undefined, "openai-chatgpt"),
+      make: () => new OpenAIChatGPTProvider(`${base}/v1`, "test"),
     },
     {
       provider: "local_sidecar",
@@ -239,7 +309,14 @@ try {
     {
       provider: "claude_subscription",
       baseUrl: "",
-      models: ["claude-opus-5", "claude-fable-5-1", "claude-haiku-4-5-20251001", "claude-sonnet-4-6", "claude-unknown-9"],
+      models: [
+        "claude-opus-5",
+        "claude-sonnet-5-5",
+        "claude-fable-5-1",
+        "claude-haiku-4-5-20251001",
+        "claude-sonnet-4-6",
+        "claude-unknown-9",
+      ],
       make: () => new ClaudeSubscriptionProvider("", ""),
       sdk: true,
     },
@@ -394,5 +471,7 @@ try {
   await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   console.log("generation-parameter-relevance regression passed");
 } finally {
+  if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+  else process.env.CODEX_HOME = previousCodexHome;
   rmSync(root, { recursive: true, force: true });
 }

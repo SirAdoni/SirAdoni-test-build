@@ -85,6 +85,8 @@ const ltmGlobalSettingsShape = z
     longTermMemoryLexicalWeight: z.number().finite().min(0).max(1).nullable().optional(),
     longTermMemoryGraphWeight: z.number().finite().min(0).max(1).nullable().optional(),
     longTermMemoryKeywordWeight: z.number().finite().min(0).max(1).nullable().optional(),
+    longTermMemoryStopWords: z.array(z.string().trim().min(1).max(80)).max(200).optional(),
+    longTermMemoryStopWordsFilterGenerated: z.boolean().optional(),
     longTermMemoryIncludeResolved: z.boolean().optional(),
     longTermMemoryRecallPreamble: z.string().max(500).optional(),
     longTermMemoryDebug: z.boolean().optional(),
@@ -129,6 +131,8 @@ export const ltmResolvedGlobalSettingsSchema = z
     longTermMemoryLexicalWeight: z.number().finite().min(0).max(1),
     longTermMemoryGraphWeight: z.number().finite().min(0).max(1),
     longTermMemoryKeywordWeight: z.number().finite().min(0).max(1),
+    longTermMemoryStopWords: z.array(z.string().trim().min(1).max(80)).max(200),
+    longTermMemoryStopWordsFilterGenerated: z.boolean(),
     longTermMemoryIncludeResolved: z.boolean(),
     longTermMemoryRecallPreamble: z.string().max(500),
     longTermMemoryDebug: z.boolean(),
@@ -148,6 +152,8 @@ export const DEFAULT_LTM_GLOBAL_SETTINGS = ltmResolvedGlobalSettingsSchema.parse
   longTermMemoryLexicalWeight: DEFAULT_LTM_RECALL_STYLE_WEIGHTS.lexicalWeight,
   longTermMemoryGraphWeight: DEFAULT_LTM_RECALL_STYLE_WEIGHTS.graphWeight,
   longTermMemoryKeywordWeight: DEFAULT_LTM_RECALL_STYLE_WEIGHTS.keywordWeight,
+  longTermMemoryStopWords: [],
+  longTermMemoryStopWordsFilterGenerated: true,
   longTermMemoryIncludeResolved: false,
   longTermMemoryRecallPreamble: DEFAULT_LTM_RECALL_PREAMBLE,
   longTermMemoryDebug: false,
@@ -220,6 +226,9 @@ function normalizeLegacyExtractionSettings(value: unknown) {
   }
   delete normalized.refinePass;
   delete normalized.rejectPlaceholderOutput;
+  // The broad existing-note prompt budget no longer exists (issue #1086); discard
+  // stale persisted values instead of rejecting the whole strict settings object.
+  delete normalized.maxExistingNoteTokens;
   delete normalized.systemPrompt;
   delete normalized.systemPromptsByMode;
   delete normalized.activePromptTemplateId;
@@ -325,7 +334,6 @@ const ltmExtractionSettingsFields = {
   maxOutputTokens: z.number().int().min(512).max(32_768).optional(),
   temperature: z.number().finite().min(0).max(2).optional(),
   maxSourceTokens: z.number().int().min(128).max(65_536).optional(),
-  maxExistingNoteTokens: z.number().int().min(128).max(32_768).optional(),
   existingNoteMaxChunks: z.number().int().min(1).max(100).optional(),
   existingNoteMaxTokens: z.number().int().min(128).max(32_768).optional(),
   promptTemplates: ltmPromptTemplatesSchema,
@@ -371,7 +379,6 @@ export const ltmResolvedExtractionSettingsSchema = z
     maxOutputTokens: z.number().int().min(512).max(32_768),
     temperature: z.number().finite().min(0).max(2),
     maxSourceTokens: z.number().int().min(128).max(65_536),
-    maxExistingNoteTokens: z.number().int().min(128).max(32_768),
     existingNoteMaxChunks: z.number().int().min(1).max(100),
     existingNoteMaxTokens: z.number().int().min(128).max(32_768),
     promptTemplates: z.array(ltmExtractionPromptTemplateSchema).max(50),
@@ -742,23 +749,25 @@ export const ltmSourceDerivedMemoriesResponseSchema = z
   })
   .strict();
 
+export const ltmLinkRelationSchema = z.enum([
+  "occurred_in",
+  "triggered_by",
+  "resolved_in",
+  "evidenced_by",
+  "affects_relationship",
+  "affects_character",
+  "caused_by",
+  "involves",
+  "blocks",
+  "planted_in",
+  "paid_off_in",
+  "extracted_from",
+]);
+
 export const ltmLinkSchema = z
   .object({
     target: ltmNoteIdSchema,
-    relation: z.enum([
-      "occurred_in",
-      "triggered_by",
-      "resolved_in",
-      "evidenced_by",
-      "affects_relationship",
-      "affects_character",
-      "caused_by",
-      "involves",
-      "blocks",
-      "planted_in",
-      "paid_off_in",
-      "extracted_from",
-    ]),
+    relation: ltmLinkRelationSchema,
     aspect: z.string().max(50).optional(),
   })
   .strict();
@@ -1688,6 +1697,46 @@ export const ltmRepairResponseSchema = z
   })
   .strict();
 
+const ltmNoteForkRequestBaseSchema = z
+  .object({
+    noteIds: z.array(ltmNoteIdSchema).min(2).max(100),
+  })
+  .strict();
+
+export const ltmNoteForkPreviewRequestSchema = ltmNoteForkRequestBaseSchema.refine(
+  (request) => new Set(request.noteIds).size === request.noteIds.length,
+  "Fork note IDs must be unique.",
+);
+
+export const ltmNoteForkCandidateSchema = z
+  .object({
+    noteIds: z.array(ltmNoteIdSchema).min(2).max(100),
+    canonicalNoteId: ltmNoteIdSchema,
+    noteType: z.enum(["thread", "world"]),
+    similarity: z.number().min(0).max(1),
+    blockingReasons: z.array(z.string().min(1).max(500)).max(20),
+    contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict();
+
+export const ltmNoteForkPreviewResponseSchema = z
+  .object({
+    candidates: z.array(ltmNoteForkCandidateSchema).max(100),
+  })
+  .strict();
+
+export const ltmNoteForkApplyRequestSchema = ltmNoteForkRequestBaseSchema
+  .extend({ canonicalNoteId: ltmNoteIdSchema, contentHash: z.string().regex(/^[a-f0-9]{64}$/) })
+  .refine((request) => new Set(request.noteIds).size === request.noteIds.length, "Fork note IDs must be unique.");
+
+export const ltmNoteForkApplyResponseSchema = z
+  .object({
+    canonicalNoteId: ltmNoteIdSchema,
+    archivedNoteIds: z.array(ltmNoteIdSchema).max(99),
+    backupId: z.string().uuid(),
+  })
+  .strict();
+
 export const ltmIdentityMatchBasisSchema = z.enum([
   "bound_subjects",
   "exact_name",
@@ -2059,6 +2108,13 @@ export const ltmDraftMutationSchema = z.discriminatedUnion("kind", [
     .strip(),
   ltmDraftMutationBaseSchema
     .extend({
+      kind: z.literal("set_title"),
+      noteId: ltmNoteIdSchema,
+      title: ltmNoteTitleSchema,
+    })
+    .strip(),
+  ltmDraftMutationBaseSchema
+    .extend({
       kind: z.literal("set_subjects"),
       noteId: ltmNoteIdSchema,
       subjects: ltmSubjectsSchema,
@@ -2099,7 +2155,25 @@ export const ltmExtractionDroppedCandidateSchema = z
     snippet: z.string().min(1).max(280).optional(),
     issues: z.array(z.string().trim().min(1).max(240)).max(8).optional(),
     recovery: ltmExtractionRecoveryHintSchema.optional(),
-    recoveryCandidate: ltmEvidenceUnitSchema.optional(),
+    recoveryCandidate: ltmEvidenceUnitSchema
+      .extend({
+        subjectId: z.preprocess(
+          (value) =>
+            typeof value === "string"
+              ? value
+                  .trim()
+                  .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+                  .toLowerCase()
+                  .replace(/[^a-z0-9]+/g, "_")
+                  .replace(/^_+|_+$/g, "")
+                  .replace(/_+/g, "_")
+                  .slice(0, 120)
+                  .replace(/_+$/g, "")
+              : value,
+          ltmIdentifierSchema,
+        ),
+      })
+      .optional(),
   })
   .strict();
 
@@ -2238,7 +2312,7 @@ export const ltmMutationDispositionSchema = z.enum(["new", "merge", "rewrite"]);
 
 export const ltmDraftReviewChangeSchema = z
   .object({
-    kind: z.enum(["section", "link", "keywords", "status", "subjects"]),
+    kind: z.enum(["section", "link", "keywords", "status", "subjects", "title"]),
     key: z.string().min(1).max(240),
     before: z.string().max(20_000).optional(),
     after: z.string().max(20_000),
@@ -2301,6 +2375,17 @@ export const ltmDraftReviewResponseSchema = z
   })
   .strict();
 
+export const ltmDraftLinkChoiceSchema = z
+  .object({
+    mutationId: z.string().uuid(),
+    linkTarget: ltmNoteIdSchema,
+    linkRelation: ltmLinkRelationSchema,
+    selectedTarget: ltmNoteIdSchema,
+  })
+  .strict();
+
+export type LtmDraftLinkChoice = z.infer<typeof ltmDraftLinkChoiceSchema>;
+
 export const ltmDraftPreflightRequestSchema = z
   .object({
     mutationIds: z
@@ -2309,6 +2394,7 @@ export const ltmDraftPreflightRequestSchema = z
       .max(1_000)
       .refine((ids) => new Set(ids).size === ids.length, "Mutation IDs must be unique."),
     editedMutations: z.array(ltmDraftMutationSchema).max(1_000).optional(),
+    linkChoices: z.array(ltmDraftLinkChoiceSchema).max(1_000).optional(),
     bulk: z.boolean().default(false),
   })
   .strict();
@@ -2703,7 +2789,7 @@ export const ltmImportedSourceResultSchema = z
     ltmImportedSourceResultBaseSchema
       .extend({
         extractionStatus: z.literal("failed"),
-        retryable: z.literal(true),
+        retryable: z.boolean(),
         error: z
           .object({
             code: z.string().min(1).max(120),
@@ -2933,6 +3019,11 @@ export type LtmRepairAction = z.infer<typeof ltmRepairActionSchema>;
 export type LtmRepairRequest = z.infer<typeof ltmRepairRequestSchema>;
 export type LtmRepairActionResult = z.infer<typeof ltmRepairActionResultSchema>;
 export type LtmRepairResponse = z.infer<typeof ltmRepairResponseSchema>;
+export type LtmNoteForkPreviewRequest = z.infer<typeof ltmNoteForkPreviewRequestSchema>;
+export type LtmNoteForkCandidate = z.infer<typeof ltmNoteForkCandidateSchema>;
+export type LtmNoteForkPreviewResponse = z.infer<typeof ltmNoteForkPreviewResponseSchema>;
+export type LtmNoteForkApplyRequest = z.infer<typeof ltmNoteForkApplyRequestSchema>;
+export type LtmNoteForkApplyResponse = z.infer<typeof ltmNoteForkApplyResponseSchema>;
 export type LtmIdentityMatchBasis = z.infer<typeof ltmIdentityMatchBasisSchema>;
 export type LtmIdentityRepairNoteMatch = z.infer<typeof ltmIdentityRepairNoteMatchSchema>;
 export type LtmIdentityRepairAdditiveContent = z.infer<typeof ltmIdentityRepairAdditiveContentSchema>;
@@ -3018,7 +3109,7 @@ export type LtmPendingDraftsCountResponse = z.infer<typeof ltmPendingDraftsCount
  * them so existing rows load without a destructive migration.
  */
 const LTM_AGENT_LEGACY_RECALL_KEYS =
-  /^(longTermMemoryBudgetTokens|longTermMemoryMaxChunks|longTermMemoryScoreThreshold|longTermMemoryRecallContextMessages|longTermMemoryRecallStyle|longTermMemorySemanticWeight|longTermMemoryLexicalWeight|longTermMemoryGraphWeight|longTermMemoryKeywordWeight|longTermMemoryIncludeResolved|longTermMemoryRecallPreamble|longTermMemoryDebug)$/;
+  /^(longTermMemoryBudgetTokens|longTermMemoryMaxChunks|longTermMemoryScoreThreshold|longTermMemoryRecallContextMessages|longTermMemoryRecallStyle|longTermMemorySemanticWeight|longTermMemoryLexicalWeight|longTermMemoryGraphWeight|longTermMemoryKeywordWeight|longTermMemoryStopWords|longTermMemoryStopWordsFilterGenerated|longTermMemoryIncludeResolved|longTermMemoryRecallPreamble|longTermMemoryDebug)$/;
 
 const ltmAgentSettingsShape = z
   .object({

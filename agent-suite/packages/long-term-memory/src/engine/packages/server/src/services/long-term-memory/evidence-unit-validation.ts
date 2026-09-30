@@ -104,6 +104,7 @@ export function validateLtmEvidenceUnits({
   existingNotes,
   expectedSourceHash,
   allowedBuckets,
+  eventSubjectIdentityKeys,
 }: {
   units: LtmEvidenceUnit[];
   sourceText: string;
@@ -111,6 +112,7 @@ export function validateLtmEvidenceUnits({
   existingNotes: LtmNote[];
   expectedSourceHash?: string;
   allowedBuckets?: readonly LtmEvidenceUnit["bucket"][];
+  eventSubjectIdentityKeys?: ReadonlySet<string>;
 }): LtmEvidenceUnitValidationResult {
   const diagnostics: LtmExtractionDiagnostic[] = [];
   const droppedCandidates: LtmExtractionDroppedCandidate[] = [];
@@ -191,6 +193,20 @@ export function validateLtmEvidenceUnits({
       });
     }
 
+    if (
+      unit.bucket === "timeline_event" &&
+      eventSubjectIdentityKeys?.has(normalizeEventSubjectIdentifier(unit.subjectId))
+    ) {
+      unitDiagnostics.push({
+        severity: "error",
+        code: "event_subject_matches_character_alias",
+        candidateIndex,
+        mutationId: unit.id,
+        noteId,
+        message: "Timeline event identifiers must describe the event, not a known character alias.",
+      });
+    }
+
     if (unit.evidence.length === 0) {
       unitDiagnostics.push({
         severity: "error",
@@ -257,13 +273,16 @@ export function validateLtmEvidenceUnits({
     }
 
     if (isEventShapedCharacterFact(unit)) {
+      // Lexical event shape is ambiguous: durable abilities/roles/possessions are often
+      // phrased with the same verbs. Keep the candidate for review instead of deleting it.
       unitDiagnostics.push({
-        severity: "error",
+        severity: "warning",
         code: "event_shaped_character_fact",
         candidateIndex,
         mutationId: unit.id,
         noteId,
-        message: "Character fact candidates must not capture ordinary scene actions or timeline beats.",
+        message:
+          "Character fact wording looks event-shaped; confirm it is a durable outcome rather than an ordinary scene action.",
       });
     }
 
@@ -439,6 +458,16 @@ export function validateLtmEvidenceUnits({
   }
 
   return { keptUnits: finalKeptUnits, diagnostics, droppedCandidates };
+}
+
+function normalizeEventSubjectIdentifier(value: string) {
+  return value
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/_+/g, "_");
 }
 
 function placeholderDiagnostics(
@@ -706,7 +735,7 @@ function isValidNoteId(noteId: string) {
   return ltmNoteIdSchema.safeParse(noteId).success;
 }
 
-function targetNoteTypeForUnit(unit: LtmEvidenceUnit): LtmNote["type"] {
+export function targetNoteTypeForUnit(unit: LtmEvidenceUnit): LtmNote["type"] {
   if (unit.bucket.startsWith("relationship_")) return "relationship";
   if (unit.bucket === "timeline_event") return "timeline_event";
   if (unit.bucket === "thread") return "thread";
@@ -749,13 +778,13 @@ function diagnosticToDropReason(code: string): LtmExtractionDropReason | null {
     code === "unsupported_mode_bucket" ||
     code === "transient_character_state" ||
     code === "invalid_timeline_section" ||
+    code === "event_subject_matches_character_alias" ||
     code === "relationship_state_without_history" ||
     code === "relationship_state_missing_caused_by" ||
     code === "invalid_relationship_dimension" ||
     code === "invalid_relationship_dimension_change" ||
     code === "static_relationship_dimension_change" ||
     code === "unknown_link_target" ||
-    code === "event_shaped_character_fact" ||
     code === "scene_only_tone_or_anchor"
   ) {
     return "unsupported_bucket";

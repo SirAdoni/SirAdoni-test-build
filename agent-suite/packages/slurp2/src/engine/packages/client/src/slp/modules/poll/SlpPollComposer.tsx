@@ -115,7 +115,7 @@ export function SlpPollComposer({
             placeholder={localizeUi("ui.noodle.noodlepollcomposer.whatQuestionDoYouWantToAsk")}
             className="mari-chrome-field h-14 w-full rounded-xl border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--noodle-accent)]/5 px-4 text-sm outline-none transition-colors placeholder:text-[var(--muted-foreground)] focus:border-[var(--noodle-accent)]"
           />
-          <span className="block text-right text-xs tabular-nums text-[var(--noodle-accent)]">
+          <span className="block text-right text-xs tabular-nums text-[var(--noodle-accent-foreground)]">
             {poll.question.length} / 240
           </span>
         </label>
@@ -141,7 +141,7 @@ export function SlpPollComposer({
                     emojiAnchorRef.current = event.currentTarget;
                     setEmojiOptionIndex((current) => (current === index ? null : index));
                   }}
-                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--muted-foreground)] transition-colors hover:bg-[var(--noodle-accent)]/10 hover:text-[var(--noodle-accent)]"
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--muted-foreground)] transition-colors hover:bg-[var(--noodle-accent)]/10 hover:text-[var(--noodle-accent-foreground)]"
                 >
                   {emoji ? <span className="text-base leading-none">{emoji}</span> : <Smile size={18} />}
                 </button>
@@ -159,7 +159,7 @@ export function SlpPollComposer({
                       ),
                     })
                   }
-                  className="min-w-0 flex-1 border-0 bg-transparent text-sm text-[var(--noodle-accent)] outline-none placeholder:text-[var(--noodle-accent)]"
+                  className="min-w-0 flex-1 border-0 bg-transparent text-sm text-[var(--noodle-accent-foreground)] outline-none placeholder:text-[var(--noodle-accent-foreground)]"
                 />
                 <button
                   type="button"
@@ -186,7 +186,7 @@ export function SlpPollComposer({
                 options: [...poll.options, ""],
               })
             }
-            className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-[var(--noodle-accent)]/15 px-3 text-xs font-bold text-[var(--noodle-accent)] transition-colors hover:bg-[var(--noodle-accent)]/20 disabled:cursor-not-allowed disabled:opacity-40"
+            className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-[var(--noodle-accent)]/15 px-3 text-xs font-bold text-[var(--noodle-accent-foreground)] transition-colors hover:bg-[var(--noodle-accent)]/20 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Plus size={15} />
             {localizeUi("ui.agents.agenteditor.addOption")}
@@ -196,7 +196,7 @@ export function SlpPollComposer({
               type="button"
               onClick={onSubmit}
               disabled={disabled || submitDisabled || !slpPollInputSchema.safeParse(value).success}
-              className="inline-flex h-9 items-center gap-1.5 rounded-full bg-[var(--noodle-accent)] px-5 text-xs font-bold text-zinc-950 transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 [&_svg]:!text-zinc-950"
+              className="inline-flex h-9 items-center gap-1.5 rounded-full bg-[var(--noodle-accent)] px-5 text-xs font-bold text-[var(--slurp-on-accent)] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 [&_svg]:!text-[var(--slurp-on-accent)]"
             >
               <Send size={14} />
               {submitLabel}

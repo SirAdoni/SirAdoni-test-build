@@ -54,6 +54,7 @@ assert.equal(
   "restored pins never exceed the default cap",
 );
 
+assert.deepEqual(applyContextMessageLimitWithPins(history, 0.5), history, "a positive fractional limit that floors to zero keeps the full history");
 // ── Pure: mark patch validation and note stripping ──
 const fixedNow = () => "2026-09-22T00:00:00.000Z";
 assert.deepEqual(normalizeMessageMarkPatch({ bookmark: true }, fixedNow), {

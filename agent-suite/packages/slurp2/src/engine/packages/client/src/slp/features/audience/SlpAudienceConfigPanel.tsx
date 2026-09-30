@@ -1,19 +1,33 @@
 import { Download, RefreshCw, Upload } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { slurpFanTypesSchema, type SlurpFanType } from "../../../../../shared/src/slp/slp-fan-types.js";
 import {
-  SLURP_MODEL_JOB_KINDS,
+  resolveSlurpModelBudget,
+  setSlurpModelBudgetLimit,
+  SLURP_MODEL_BUDGET_SIZING,
+  SLURP_WORLD_JOB_KINDS,
+  slurpModelBudgetOutlook,
   slurpModelBudgetSchema,
   type SlurpModelBudget,
   type SlurpModelBudgetLedger,
+  type SlurpModelBudgetLimit,
 } from "../../../../../shared/src/slp/slp-model-budget.js";
 import { slurpSimulationTuningSchema, type SlurpSimulationTuning } from "../../../../../shared/src/slp/slp-tuning.js";
 import { api } from "../../../lib/api-client";
-import { Field, NumberSetting, SectionTitle, SettingsGroup, Toggle } from "../../modules/settings/SlpSettingsControls";
+import { SlpSegment } from "../../modules/chrome/SlpButton";
+import {
+  AdvancedGroup,
+  Field,
+  NumberSetting,
+  RangeSetting,
+  SectionTitle,
+  SettingsGroup,
+  Toggle,
+} from "../../modules/settings/SlpSettingsControls";
 
-type Connection = { id: string; name?: string; model?: string; provider?: string };
 type PortableAudienceConfig = {
   version: 1;
   tuning: SlurpSimulationTuning;
@@ -35,6 +49,40 @@ function downloadConfig(config: PortableAudienceConfig) {
   URL.revokeObjectURL(href);
 }
 
+type SlurpModelBudgetUsage = SlurpModelBudgetLedger & {
+  activeCreators?: number;
+  /** Fan messages and requests still written from the built-in lines, waiting for a rewrite. */
+  pendingRewrites?: number;
+  /** A "Rewrite all now" run is still going. */
+  rewritingAll?: boolean;
+};
+
+/** Today's usage and the active Creator count that sizes every limit the player did not set (task F). */
+export function useSlurpModelBudgetUsage() {
+  return useQuery({
+    queryKey: ["slurp", "model-budget", "usage"],
+    queryFn: () => api.get<SlurpModelBudgetUsage>("/slurp2/model-budget/usage"),
+    staleTime: 30_000,
+    // Follow a "Rewrite all now" run until it ends, so the count goes down while the player watches.
+    refetchInterval: (query) => (query.state.data?.rewritingAll ? 3000 : false),
+  });
+}
+
+/** The saved budget sized for today's Creators; the saved one until the count is known. */
+export function useSlurpEffectiveModelBudget(budget: SlurpModelBudget): SlurpModelBudget {
+  const creators = useSlurpModelBudgetUsage().data?.activeCreators;
+  return creators === undefined ? budget : resolveSlurpModelBudget(budget, creators);
+}
+
+function BudgetStat({ value, label }: { value: number; label: string }) {
+  return (
+    <div className="min-w-0 rounded-lg bg-[var(--slurp-surface-raised,var(--background))] px-3 py-2 ring-1 ring-inset ring-[var(--slurp-outline,var(--border))]">
+      <div className="text-lg font-bold tabular-nums leading-6">{value.toLocaleString()}</div>
+      <div className="text-xs leading-4 text-[var(--muted-foreground)]">{label}</div>
+    </div>
+  );
+}
+
 function PromptTextArea({ value, onSave, label }: { value: string; onSave: (value: string) => void; label: string }) {
   const [draft, setDraft] = useState(value);
   useEffect(() => setDraft(value), [value]);
@@ -54,34 +102,60 @@ export function SlurpAudienceConfigSettings({
   tuning,
   fanTypes,
   budget,
-  connections,
+  postsPerDay,
   onSave,
 }: {
   tuning: SlurpSimulationTuning;
   fanTypes: SlurpFanType[];
   budget: SlurpModelBudget;
-  connections: Connection[];
+  /** Posts and Stories a day ("Posts per day"): outside the budget, but part of what the day costs. */
+  postsPerDay: number;
   onSave: (patch: {
     simulationTuning?: SlurpSimulationTuning;
     fanTypes?: SlurpFanType[];
     modelBudget?: SlurpModelBudget;
   }) => Promise<boolean>;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const uploadRef = useRef<HTMLInputElement>(null);
-  const [usage, setUsage] = useState<SlurpModelBudgetLedger | null>(null);
-  const [status, setStatus] = useState("");
-
-  const refreshUsage = async () => {
+  const usageQuery = useSlurpModelBudgetUsage();
+  const usage = usageQuery.data ?? null;
+  const refreshUsage = () => void usageQuery.refetch();
+  const [rewriteStarting, setRewriteStarting] = useState(false);
+  const rewriteAll = async () => {
+    setRewriteStarting(true);
     try {
-      setUsage(await api.get<SlurpModelBudgetLedger>("/slurp2/model-budget/usage"));
-    } catch {
-      setUsage(null);
+      await api.post<{ started: boolean }>("/slurp2/model-budget/rewrite-pending", {});
+    } finally {
+      setRewriteStarting(false);
+      refreshUsage();
     }
   };
-  useEffect(() => void refreshUsage(), []);
+  const rewriting = rewriteStarting || Boolean(usage?.rewritingAll);
+  const [status, setStatus] = useState("");
+  const creators = usage?.activeCreators ?? 0;
+  // Shown sized for today's Creators; saved as the player's own budget (only limits they set carry numbers).
+  const shown = useSlurpEffectiveModelBudget(budget);
+  const recommended = resolveSlurpModelBudget({ ...budget, customLimits: [] }, creators);
+  const outlook = slurpModelBudgetOutlook(shown, postsPerDay);
+  const compact = new Intl.NumberFormat(i18n.language, { notation: "compact", maximumFractionDigits: 1 });
 
   const saveBudget = (next: SlurpModelBudget) => onSave({ modelBudget: slurpModelBudgetSchema.parse(next) });
+  const saveLimit = (limit: SlurpModelBudgetLimit, value: number) =>
+    saveBudget(setSlurpModelBudgetLimit(budget, limit, value));
+  const limitDetail = (limit: SlurpModelBudgetLimit) => {
+    const value =
+      limit === "callsPerHour" || limit === "callsPerDay" ? recommended[limit] : recommended.jobs[limit].maxPerDay;
+    if (budget.customLimits.includes(limit))
+      return t("ui.slurp.settings.aiBudget.setByYou", { defaultValue: "Set by you · recommended {{value}}", value });
+    const sizing =
+      limit === "callsPerHour" || limit === "callsPerDay"
+        ? SLURP_MODEL_BUDGET_SIZING[limit]
+        : SLURP_MODEL_BUDGET_SIZING.jobs[limit];
+    return sizing && sizing.perCreator > 0
+      ? t("ui.slurp.settings.aiBudget.grows", { defaultValue: "Grows with your Creators" })
+      : undefined;
+  };
   const importConfig = async (file?: File) => {
     if (!file) return;
     try {
@@ -90,7 +164,7 @@ export function SlurpAudienceConfigSettings({
       const parsed = {
         simulationTuning: slurpSimulationTuningSchema.parse(raw.tuning),
         fanTypes: slurpFanTypesSchema.parse(raw.fanTypes),
-        modelBudget: slurpModelBudgetSchema.parse(raw.budget),
+        modelBudget: { ...slurpModelBudgetSchema.parse(raw.budget), raisedNotice: false },
       };
       const saved = await onSave(parsed);
       setStatus(
@@ -109,128 +183,221 @@ export function SlurpAudienceConfigSettings({
     <div className="space-y-6">
       <SectionTitle
         title={t("ui.slurp.settings.aiBudget.title", { defaultValue: "AI budget" })}
-        detail={t("ui.slurp.settings.aiBudget.detail", {
-          defaultValue: "The free simulation always runs. These limits only control model-written text.",
+        detail={t("ui.slurp.settings.aiBudget.worldDetail", {
+          defaultValue:
+            "Only what the world writes on its own counts. What you ask for (Write, Stir plans, replies to your messages, pictures you request) is never limited.",
         })}
       />
 
-      <div className="grid gap-5 lg:grid-cols-2">
-        <SettingsGroup title={t("ui.slurp.settings.aiBudget.worker", { defaultValue: "Model worker" })}>
-          <Field
-            label={t("ui.slurp.settings.aiBudget.mode", { defaultValue: "When models may run" })}
-            detail={t("ui.slurp.settings.aiBudget.modeDetail", {
-              defaultValue: "Present runs only while Slurp is open. Background is opt-in.",
-            })}
-          >
-            <select
-              className={inputClass}
-              value={budget.mode}
-              onChange={(event) => void saveBudget({ ...budget, mode: event.target.value as SlurpModelBudget["mode"] })}
-            >
-              <option value="off">
-                {t("ui.slurp.settings.aiBudget.modes.off", { defaultValue: "Off — banks only" })}
-              </option>
-              <option value="present">
-                {t("ui.slurp.settings.aiBudget.modes.present", { defaultValue: "Only while Slurp is open" })}
-              </option>
-              <option value="background">
-                {t("ui.slurp.settings.aiBudget.modes.background", { defaultValue: "Also in the background" })}
-              </option>
-            </select>
-          </Field>
-          <Field label={t("ui.slurp.settings.aiBudget.connection", { defaultValue: "Model connection" })}>
-            <select
-              className={inputClass}
-              value={budget.connectionId ?? ""}
-              onChange={(event) => void saveBudget({ ...budget, connectionId: event.target.value || null })}
-            >
-              <option value="">
-                {t("ui.slurp.settings.connections.engineDefault", { defaultValue: "Engine default" })}
-              </option>
-              {connections
-                .filter((connection) => connection.provider !== "image_generation")
-                .map((connection) => (
-                  <option key={connection.id} value={connection.id}>
-                    {connection.name ?? connection.model ?? connection.id}
-                  </option>
-                ))}
-            </select>
-          </Field>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label={t("ui.slurp.settings.aiBudget.hourly", { defaultValue: "Calls per hour" })}>
-              <NumberSetting
-                value={budget.callsPerHour}
-                min={0}
-                max={100}
-                onSave={(callsPerHour) => saveBudget({ ...budget, callsPerHour })}
-              />
-            </Field>
-            <Field label={t("ui.slurp.settings.aiBudget.daily", { defaultValue: "Calls per day" })}>
-              <NumberSetting
-                value={budget.callsPerDay}
-                min={0}
-                max={500}
-                onSave={(callsPerDay) => saveBudget({ ...budget, callsPerDay })}
-              />
-            </Field>
-          </div>
-          <div className="rounded-lg bg-[var(--accent)]/35 p-3 text-sm" aria-live="polite">
-            {usage
-              ? t("ui.slurp.settings.aiBudget.usage", {
-                  defaultValue: "Used {{hour}} this hour and {{day}} today.",
-                  hour: usage.callsThisHour,
-                  day: usage.callsToday,
+      {/* Task F: what the budget means today, in plain words, before any raw number. */}
+      <section
+        aria-labelledby="slurp-ai-budget-outlook"
+        aria-live="polite"
+        className="space-y-3 rounded-xl bg-[color-mix(in_srgb,var(--noodle-accent)_9%,var(--slurp-surface-raised))] p-4 ring-1 ring-inset ring-[var(--noodle-accent)]/18 sm:p-5"
+      >
+        <h3 id="slurp-ai-budget-outlook" className="text-sm font-bold">
+          {budget.mode === "off"
+            ? t("ui.slurp.settings.aiBudget.outlook.off", {
+                defaultValue: "The AI budget is off. Creators still post, but write nothing else on their own.",
+              })
+            : creators === 0
+              ? t("ui.slurp.settings.aiBudget.outlook.none", {
+                  defaultValue: "No Creator posts on their own yet. Each day, the base budget allows about:",
                 })
-              : t("ui.slurp.settings.aiBudget.usageUnavailable", { defaultValue: "Usage is unavailable." })}
-            <button type="button" className="ms-2 underline" onClick={() => void refreshUsage()}>
-              <RefreshCw className="me-1 inline" size={14} aria-hidden="true" />
-              {t("ui.slurp.settings.aiBudget.refresh", { defaultValue: "Refresh" })}
+              : t("ui.slurp.settings.aiBudget.outlook.title", {
+                  count: creators,
+                  defaultValue: "Each day, for your {{count}} Creators, about:",
+                })}
+        </h3>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <BudgetStat
+            value={outlook.posts}
+            label={t("ui.slurp.settings.aiBudget.outlook.posts", { defaultValue: "posts and Stories" })}
+          />
+          <BudgetStat
+            value={outlook.creatorMessages}
+            label={t("ui.slurp.settings.aiBudget.outlook.messages", { defaultValue: "Creator messages on their own" })}
+          />
+          <BudgetStat
+            value={outlook.threads}
+            label={t("ui.slurp.settings.aiBudget.outlook.threads", { defaultValue: "comment threads" })}
+          />
+          <BudgetStat
+            value={outlook.fanMessages}
+            label={t("ui.slurp.settings.aiBudget.outlook.fans", { defaultValue: "fan DMs and requests" })}
+          />
+        </div>
+        <p className="text-sm leading-6">
+          {t("ui.slurp.settings.aiBudget.outlook.cost", {
+            defaultValue:
+              "At most about {{calls}} text calls and {{pictures}} pictures a day, roughly {{tokens}} tokens.",
+            calls: outlook.textCalls.toLocaleString(i18n.language),
+            pictures: outlook.pictures.toLocaleString(i18n.language),
+            tokens: compact.format(outlook.tokens),
+          })}
+        </p>
+        <p className="text-sm leading-6 text-[var(--muted-foreground)]">
+          {t("ui.slurp.settings.aiBudget.outlook.worldHow", {
+            defaultValue:
+              "Each Creator you add raises the limits a little. To spend less, lower World calls per day, or turn the world off.",
+          })}
+        </p>
+        {budget.customLimits.length > 0 && (
+          <div className="space-y-3 border-t border-[var(--slurp-outline,var(--border))] pt-3 text-sm">
+            <p>
+              {t("ui.slurp.settings.aiBudget.custom", {
+                count: budget.customLimits.length,
+                defaultValue: "You set {{count}} limits yourself. They stay as they are.",
+              })}
+            </p>
+            <button
+              type="button"
+              className={buttonClass}
+              onClick={() => void saveBudget({ ...budget, customLimits: [] })}
+            >
+              {t("ui.slurp.settings.aiBudget.useRecommended", { defaultValue: "Use recommended limits" })}
             </button>
           </div>
-        </SettingsGroup>
+        )}
+      </section>
 
-        <SettingsGroup title={t("ui.slurp.settings.aiBudget.jobs", { defaultValue: "Text jobs" })}>
-          <div className="space-y-3">
-            {SLURP_MODEL_JOB_KINDS.map((kind) => {
-              const policy = budget.jobs[kind];
-              return (
-                <div key={kind} className="rounded-lg border border-[var(--border)] p-3">
-                  <Toggle
-                    compact
-                    label={t(`ui.slurp.settings.aiBudget.job.${kind}`, { defaultValue: kind.replaceAll("_", " ") })}
-                    value={policy.enabled}
-                    onChange={(enabled) =>
-                      void saveBudget({ ...budget, jobs: { ...budget.jobs, [kind]: { ...policy, enabled } } })
-                    }
-                  />
-                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                    <Field label={t("ui.slurp.settings.aiBudget.priority", { defaultValue: "Priority" })}>
-                      <NumberSetting
-                        value={policy.priority}
-                        min={1}
-                        max={10}
-                        onSave={(priority) =>
-                          saveBudget({ ...budget, jobs: { ...budget.jobs, [kind]: { ...policy, priority } } })
-                        }
-                      />
-                    </Field>
-                    <Field label={t("ui.slurp.settings.aiBudget.jobDaily", { defaultValue: "Daily limit" })}>
-                      <NumberSetting
-                        value={policy.maxPerDay}
-                        min={0}
-                        max={500}
-                        onSave={(maxPerDay) =>
-                          saveBudget({ ...budget, jobs: { ...budget.jobs, [kind]: { ...policy, maxPerDay } } })
-                        }
-                      />
-                    </Field>
-                  </div>
-                </div>
-              );
-            })}
+      {/* 0.3.6: one switch, one slider, one toggle per area. What the player asks for never counts. */}
+      <SettingsGroup title={t("ui.slurp.settings.aiBudget.worldTitle", { defaultValue: "World AI" })}>
+        <Field
+          label={t("ui.slurp.settings.aiBudget.mode", { defaultValue: "When models may run" })}
+          detail={t("ui.slurp.settings.aiBudget.worldModeDetail", {
+            defaultValue:
+              "Off: the world writes nothing on its own. On: Creators and fans write on their own. On + upkeep: also memory notes, reply banks and rewrites while Slurp is closed. While you are away, this runs about four times a day unless Run in the background is on.",
+          })}
+        >
+          <SlpSegment
+            label={t("ui.slurp.settings.aiBudget.mode", { defaultValue: "When models may run" })}
+            value={budget.mode}
+            onChange={(mode) => void saveBudget({ ...budget, mode })}
+            options={[
+              { value: "off", label: t("ui.slurp.settings.aiBudget.worldMode.off", { defaultValue: "Off" }) },
+              { value: "present", label: t("ui.slurp.settings.aiBudget.worldMode.on", { defaultValue: "On" }) },
+              {
+                value: "background",
+                label: t("ui.slurp.settings.aiBudget.worldMode.upkeep", { defaultValue: "On + upkeep" }),
+              },
+            ]}
+          />
+        </Field>
+        <Field
+          label={t("ui.slurp.settings.aiBudget.worldDaily", { defaultValue: "World calls per day" })}
+          detail={limitDetail("callsPerDay")}
+        >
+          <RangeSetting
+            label={t("ui.slurp.settings.aiBudget.worldDaily", { defaultValue: "World calls per day" })}
+            value={shown.callsPerDay}
+            min={0}
+            max={500}
+            disabled={budget.mode === "off"}
+            onSave={(value) => saveLimit("callsPerDay", value)}
+          />
+        </Field>
+        <p className="rounded-lg bg-[var(--accent)]/35 p-3 text-sm" aria-live="polite">
+          {usage
+            ? t("ui.slurp.settings.aiBudget.worldUsage", {
+                defaultValue: "The world used {{day}} of {{cap}} calls today.",
+                day: usage.callsToday,
+                cap: shown.callsPerDay,
+              })
+            : t("ui.slurp.settings.aiBudget.usageUnavailable", { defaultValue: "Usage is unavailable." })}
+          <button type="button" className="ms-2 min-h-11 underline" onClick={refreshUsage}>
+            <RefreshCw className="me-1 inline" size={14} aria-hidden="true" />
+            {t("ui.slurp.settings.aiBudget.refresh", { defaultValue: "Refresh" })}
+          </button>
+        </p>
+        {usage && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-[var(--accent)]/35 p-3 text-sm">
+            <div className="min-w-0" aria-live="polite">
+              <p className="font-semibold">
+                {rewriting
+                  ? t("ui.slurp.settings.aiBudget.rewriting", {
+                      defaultValue: "Rewriting. Waiting now: {{count}}",
+                      count: usage.pendingRewrites ?? 0,
+                    })
+                  : t("ui.slurp.settings.aiBudget.pendingRewrites", {
+                      defaultValue: "Fan messages and requests waiting for a rewrite: {{count}}",
+                      count: usage.pendingRewrites ?? 0,
+                    })}
+              </p>
+              <p className="mt-0.5 text-xs leading-5 text-[var(--muted-foreground)]">
+                {t("ui.slurp.settings.aiBudget.rewriteAllDetail", {
+                  defaultValue:
+                    "Until the model rewrites them, they show the built-in lines. Rewrite all now does not wait for the day's pace, but it stops at the daily limit.",
+                })}
+              </p>
+            </div>
+            <button
+              type="button"
+              className={buttonClass}
+              disabled={rewriting || budget.mode === "off" || !usage.pendingRewrites}
+              onClick={() => void rewriteAll()}
+            >
+              <RefreshCw
+                className={rewriting ? "animate-spin motion-reduce:animate-none" : undefined}
+                size={14}
+                aria-hidden="true"
+              />
+              {t("ui.slurp.settings.aiBudget.rewriteAll", { defaultValue: "Rewrite all now" })}
+            </button>
           </div>
-        </SettingsGroup>
-      </div>
+        )}
+      </SettingsGroup>
+
+      <SettingsGroup title={t("ui.slurp.settings.aiBudget.areas", { defaultValue: "What the world may write" })}>
+        {SLURP_WORLD_JOB_KINDS.map((kind) => {
+          const policy = budget.jobs[kind];
+          return (
+            <Toggle
+              key={kind}
+              compact
+              label={t(`ui.slurp.settings.aiBudget.job.${kind}`, { defaultValue: kind.replaceAll("_", " ") })}
+              value={policy.enabled}
+              onChange={(enabled) =>
+                void saveBudget({ ...budget, jobs: { ...budget.jobs, [kind]: { ...policy, enabled } } })
+              }
+            />
+          );
+        })}
+      </SettingsGroup>
+
+      <AdvancedGroup
+        title={t("ui.slurp.settings.aiBudget.advanced", { defaultValue: "Advanced limits" })}
+        count={SLURP_WORLD_JOB_KINDS.length + 1}
+      >
+        <Field
+          label={t("ui.slurp.settings.aiBudget.hourly", { defaultValue: "Calls per hour" })}
+          detail={limitDetail("callsPerHour")}
+        >
+          <NumberSetting
+            value={shown.callsPerHour}
+            min={0}
+            max={100}
+            onSave={(value) => saveLimit("callsPerHour", value)}
+          />
+        </Field>
+        {SLURP_WORLD_JOB_KINDS.map((kind) => (
+          <Field
+            key={kind}
+            label={t("ui.slurp.settings.aiBudget.jobDailyOf", {
+              defaultValue: "{{job}}: daily limit",
+              job: t(`ui.slurp.settings.aiBudget.job.${kind}`, { defaultValue: kind.replaceAll("_", " ") }),
+            })}
+            detail={limitDetail(kind)}
+          >
+            <NumberSetting
+              value={shown.jobs[kind].maxPerDay}
+              min={0}
+              max={500}
+              onSave={(value) => saveLimit(kind, value)}
+            />
+          </Field>
+        ))}
+      </AdvancedGroup>
 
       <SettingsGroup title={t("ui.slurp.settings.prompts.audienceTitle", { defaultValue: "Audience prompts" })}>
         <Field

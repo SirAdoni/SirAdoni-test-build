@@ -346,7 +346,7 @@ function renderSlpMentionText(text: string, context: SlpMarkdownContext, keyPref
           key={`${keyPrefix}:${mention.start}:${mention.handle}`}
           type="button"
           onClick={() => context.onOpenProfile(account)}
-          className="inline font-semibold text-[var(--noodle-accent)] hover:underline focus-visible:rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--noodle-accent)]/70"
+          className="inline font-semibold text-[var(--noodle-accent-foreground)] hover:underline focus-visible:rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--noodle-accent)]/70"
           aria-label={context.mentionLabel(account.handle)}
         >
           {label}

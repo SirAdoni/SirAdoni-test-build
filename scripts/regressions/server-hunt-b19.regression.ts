@@ -192,10 +192,9 @@ try {
       new URL("../../packages/server/src/routes/generate/retry-agents-route.ts", import.meta.url),
       "utf8",
     );
-    assert.ok(
-      retrySource.includes(
-        "backfillCursor: { agentConfigId: backfillTarget.agentConfigId, messageId: backfillTarget.messageId }",
-      ),
+    assert.match(
+      retrySource,
+      /backfillCursor:\s*\{\s*agentConfigId:\s*backfillTarget\.agentConfigId,\s*messageId:\s*backfillTarget\.messageId,?\s*\}/,
       "pending backfill proposals must carry their cursor in the approval payload",
     );
     // Logging pass: a failed cursor advance is a suppressed best-effort failure, not a bare logger.warn.

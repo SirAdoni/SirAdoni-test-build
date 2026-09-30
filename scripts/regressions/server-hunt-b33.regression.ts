@@ -169,40 +169,47 @@ try {
   assert.equal(originalSchedules["char-1"].days[today]![0]!.status, "online", "the pre-updater snapshot is not mutated");
   assert.equal(updates.length, 1);
 
-  // ── 4. Selfie command honours the generation abort signal ──
+  // ── 4. Selfie command honours both sources of the joined generation signal ──
   const { handleConversationSelfieCommand } = await import(
     "../../packages/server/src/services/generation/conversation-selfie-command-runtime.js"
   );
-  const aborted = new AbortController();
-  aborted.abort();
-  const selfieEvents: Array<Record<string, unknown>> = [];
-  const selfieHandled = await handleConversationSelfieCommand({
-    command: { type: "selfie" } as never,
-    characterId: "char-1",
-    chatId: "hunt-b33-selfie",
-    chatMeta: { imageGenConnectionId: "img-conn" },
-    charInfo: [],
-    persona: null,
-    promptConnection: {} as never,
-    promptConnectionId: "prompt-conn",
-    serviceTier: null,
-    db: {} as never,
-    chars: { getById: async () => ({ data: JSON.stringify({ name: "Mira" }) }) } as never,
-    chats: {} as never,
-    connections: {
-      getWithKey: async () => {
-        throw new Error("request aborted");
-      },
-    } as never,
-    sendEvent: (payload) => selfieEvents.push(payload),
-    signal: aborted.signal,
-  });
-  assert.equal(selfieHandled, true);
-  assert.equal(
-    selfieEvents.some((event) => event.type === "selfie_error"),
-    false,
-    "a cancelled selfie must not report selfie_error",
-  );
+  for (const cancellationSource of ["local Stop", "external room cancellation"] as const) {
+    const stopController = new AbortController();
+    const roomController = new AbortController();
+    const generationSignal = AbortSignal.any([stopController.signal, roomController.signal]);
+    if (cancellationSource === "local Stop") stopController.abort();
+    else roomController.abort();
+
+    const selfieEvents: Array<Record<string, unknown>> = [];
+    const selfieHandled = await handleConversationSelfieCommand({
+      command: { type: "selfie" } as never,
+      characterId: "char-1",
+      chatId: `hunt-b33-selfie-${cancellationSource}`,
+      chatMeta: { imageGenConnectionId: "img-conn" },
+      charInfo: [],
+      persona: null,
+      promptConnection: {} as never,
+      promptConnectionId: "prompt-conn",
+      serviceTier: null,
+      db: {} as never,
+      chars: { getById: async () => ({ data: JSON.stringify({ name: "Mira" }) }) } as never,
+      chats: {} as never,
+      connections: {
+        getWithKey: async () => {
+          throw new Error("request aborted");
+        },
+      } as never,
+      sendEvent: (payload) => selfieEvents.push(payload),
+      signal: generationSignal,
+    });
+    assert.equal(selfieHandled, true);
+    assert.equal(generationSignal.aborted, true, `${cancellationSource} must abort the joined signal`);
+    assert.equal(
+      selfieEvents.some((event) => event.type === "selfie_error"),
+      false,
+      `${cancellationSource} must not report selfie_error`,
+    );
+  }
 
   const selfieSource = readSource("packages/server/src/services/generation/conversation-selfie-command-runtime.ts");
   assert.match(selfieSource, /anthropicExtendedCacheTtl: promptRuntime\.anthropicExtendedCacheTtl,\n\s*signal: args\.signal,/u);
@@ -214,13 +221,18 @@ try {
   const routeSource = readSource("packages/server/src/routes/generate.routes.ts");
   assert.match(
     routeSource,
-    /of collectedCommands\) \{\n[^\n]*\n\s*if \(abortController\.signal\.aborted\) break;/u,
-    "the command loop stops after a Stop press",
+    /const generationSignal = roomSignal\s*\? AbortSignal\.any\(\[abortController\.signal, roomSignal\]\)\s*: abortController\.signal;/u,
+    "the generation signal joins local Stop with external room cancellation",
   );
   assert.match(
     routeSource,
-    /handleConversationSelfieCommand\(\{[\s\S]{0,1600}signal: abortController\.signal,\n\s*\}\);/u,
-    "the route passes the abort signal to the selfie command",
+    /for \(const \{ command, characterId, messageId, swipeIndex \} of collectedCommands\) \{\n\s*\/\/ A Stop pressed while an earlier command ran skips the rest\.\n\s*if \(generationSignal\.aborted\) break;/u,
+    "the command loop stops after either source cancels generation",
+  );
+  assert.match(
+    routeSource,
+    /handleConversationSelfieCommand\(\{[\s\S]{0,1600}signal: generationSignal,\n\s*\}\);/u,
+    "the route passes the joined generation signal to the selfie command",
   );
 
   console.log("server-hunt-b33 regression passed");

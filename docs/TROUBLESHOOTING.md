@@ -11,6 +11,18 @@ Many problems clear up with two quick steps.
 
 If you are asking the team for help, turn on **Debug mode** first so the server logs the prompt and response. See Getting more help at the end of this guide.
 
+## Multiplayer connection or turn problems
+
+- **Controls unavailable:** confirm `MULTIPLAYER_ENABLED=true` is in the correct Engine's `.env`, restart that Engine, then enable Settings separately. A saved toggle cannot override a missing/invalid environment flag. The Android native wrapper deliberately cannot join.
+- **Host unavailable:** use a separate reachable HTTPS room port, a valid certificate chain/hostname and the matching invitation fingerprint. Do not disable TLS validation, add `null` to trusted origins, expose the normal Engine API or open a host-supplied client to work around an error.
+- **Awaiting approval:** the host must approve the request in Players. No transcript is available before approval. Ask for a fresh invitation if it expired or was revoked.
+- **Disconnected:** keep the guest's own Engine running. The client reconnects to the same pinned host while the explicit session is alive; unsent drafts stay in the current view. Restart ends credentials and needs a fresh join. Stop/Leave remain available when the network fails.
+- **Game waiting:** inspect Players. Disconnected participants are not automatically passed. The host can explicitly Pass/Kick or Pause. Submitting one of two required actions must not run the GM.
+- **Interrupted generation:** do not repeatedly resubmit the round. The host should inspect committed narration/state and explicitly resume forward, or stop the room. Multiplayer does not silently replay an ambiguous model request or apply its world effects twice.
+- **Restricted command or missing media:** the initial room protocol intentionally carries only text. Use the [compatibility matrix](development/multiplayer.md#command-and-feature-compatibility); do not install a peer-provided file or extension as a workaround.
+
+When reporting a connection error, include mode, platform, the visible error and whether approval succeeded. Do not post invitations, room passwords, session tokens, private transcripts or provider credentials.
+
 ## Install and launch problems
 
 ### Termux: JavaScript heap out of memory while building the client
@@ -18,6 +30,12 @@ If you are asking the team for help, turn on **Debug mode** first so the server 
 If Vite stops with `Reached heap limit` or `JavaScript heap out of memory`, the client build ran out of Node.js heap. This is different from a missing native Rollup binary. Update and rerun `start-termux.sh`: client builds now temporarily raise a smaller automatic heap toward 1536 MiB, capped at half of known device RAM with a 1024 MiB floor. The RAM cap is rounded down in 128 MiB steps. If half of device RAM is below 1024 MiB, the 1024 MiB floor takes precedence. The running server keeps its smaller profile-based limit. An explicit heap limit in `NODE_OPTIONS` takes precedence for both processes, so check for a previously configured 1024 MiB override.
 
 Close other apps before retrying. Low-memory devices can still run out of memory or be stopped by Android; keep the complete launcher output when reporting that case. Do not delete your chats or profile to repair a build failure.
+
+### Termux: missing multiplayer guest asset or incompatible Sharp
+
+If startup still reports a missing `packages/client/dist/multiplayer/guest.js` after rebuilding, update Engine and rerun `./start-termux.sh`. The launcher now runs the complete low-memory client build, including the guest assets checked at startup. You do not need to enable multiplayer to repair this build error.
+
+If image processing reports that Sharp cannot load on Android, update Engine and let the launcher reinstall dependencies. The matching `@img/sharp-wasm32` fallback is included as a regular dependency so frozen installs and updates retain it. Avoid replacing it with an unrelated Sharp version. Keep the complete error output if the problem persists.
 
 ### Blank page or JavaScript served as HTML after an update
 

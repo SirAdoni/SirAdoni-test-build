@@ -198,7 +198,7 @@
   --marinara-conversation-gradient-from: #0a0a0e;
   --marinara-conversation-gradient-to: #1c2133;
   --muted: #1a1a2e;
-  --muted-foreground: #d4adfc;
+  --muted-foreground: #a1a1aa;
   --accent: #2a1a3e;
   --accent-foreground: #f0e8ff;
   --destructive: var(--primary);
@@ -460,7 +460,7 @@
   --marinara-conversation-gradient-from: #f2eff7;
   --marinara-conversation-gradient-to: #eae6f0;
   --muted: #f0eaf7;
-  --muted-foreground: #7a64a0;
+  --muted-foreground: #65656f;
   --accent: #ede4f7;
   --accent-foreground: #1a1025;
   --destructive: var(--primary);

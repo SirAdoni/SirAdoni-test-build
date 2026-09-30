@@ -44,23 +44,24 @@ assert.match(
 assert.match(workflow, /\+\{\(avatarTotal/u, "a compact avatar stack must expose the remaining Creator count");
 assert.match(
   creators,
-  /setSelectedCreatorId\(creator\.id\);[\s\S]*setTab\("profile"\);/u,
-  "selecting a Creator must return to the safe Profile tab",
+  /openSlpCreatorSettings\(creator\.id\)/u,
+  "selecting a Creator opens its settings, which start on the Overview status page",
+);
+assert.match(
+  creators,
+  /tab: "overview",\s*\n?\s*settingKey/u,
+  "the settings store opens on the Overview status page unless the caller asks for another tab",
 );
 
-// The Profile rail shortcuts must reach the composer itself, not only the panel around it.
+// The Profile rail shortcuts must reach the composer itself. Step 7: the composer is one sheet, so a
+// shortcut opens the sheet and clears its request; the Creator tools card no longer holds it.
 assert.match(
   home,
-  /const \[creatorToolsOpen, setCreatorToolsOpen\] = useState\(\s*viewerAccounts\.some/u,
-  "creator tools start open on a Creator this persona operates",
+  /if \(composerOpenSignal <= 0\) return;\s*setComposerOpen\(true\);\s*props\.onComposerOpened\?\.\(\)/u,
+  "a rail shortcut opens the composer sheet",
 );
-assert.match(home, /const \[expanded, setExpanded\] = useState\(true\)/u, "the post composer starts expanded");
-assert.match(home, /openSignal=\{composerOpenSignal\}/u, "the rail shortcuts reach the composer");
-assert.match(
-  home,
-  /if \(openSignal > 0\) setExpanded\(true\)/u,
-  "a collapsed composer must reopen when a shortcut asks for it",
-);
+assert.match(home, /<NoodlerPostComposer[\s\S]*?open=\{model\.composerOpen\}/u, "the composer is the sheet");
+assert.match(home, /onComposerOpened=\{\(\) => setComposerOpenSignal\(0\)\}/u, "the request is cleared once opened");
 assert.match(
   home,
   /postType: "story", poll: null, title: "" \}\);\s*\n\s*setComposerOpenSignal/u,

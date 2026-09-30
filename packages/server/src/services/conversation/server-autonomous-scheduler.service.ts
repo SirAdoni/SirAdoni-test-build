@@ -13,6 +13,7 @@ import {
 import { isIntentOnCooldown, resolveIntent, type MessageIntent } from "./intent.service.js";
 import { getBusyDelay, getEffectiveCurrentStatus, type WeekSchedule } from "./schedule.service.js";
 import { resolveConversationTimeZone, toZonedWallClockDate } from "./timezone.js";
+import type { MultiplayerAutonomy } from "../multiplayer/autonomy.js";
 
 const SERVER_AUTONOMOUS_INITIAL_DELAY_MS = 20_000;
 const SERVER_AUTONOMOUS_POLL_MS = 60_000;
@@ -81,6 +82,7 @@ function shouldConsiderChat(chat: RawChat): boolean {
   if (chat.mode !== "conversation") return false;
   const meta = parseMetadata(chat.metadata);
   if (meta.internalAssistant === "professor-mari") return false;
+  if (meta.multiplayerSetup === true && !meta.multiplayer) return false;
   return meta.autonomousMessages === true && meta.sceneStatus !== "active";
 }
 
@@ -213,7 +215,7 @@ export function getDelayedAutonomousAbortReason(args: {
   return null;
 }
 
-export function startServerAutonomousScheduler(app: FastifyInstance) {
+export function startServerAutonomousScheduler(app: FastifyInstance, multiplayer?: MultiplayerAutonomy) {
   const chats = createChatsStorage(app.db);
   const runningChats = new Set<string>();
   // Chats waiting on a busy-delay timer. Kept apart from runningChats so a
@@ -303,6 +305,29 @@ export function startServerAutonomousScheduler(app: FastifyInstance) {
     if (onCooldown || disabled) {
       clearGenerationInProgress(chatId, claimedAt);
       return false;
+    }
+    if (chatMeta.multiplayer) {
+      try {
+        if (!multiplayer || !(await multiplayer.canGenerate(chatId))) return false;
+        const generated = await multiplayer.generate({
+          chatId,
+          characterId,
+          autonomousIntentKey: intent ?? "",
+          userTimeZone: promptTimeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
+        });
+        if (generated) {
+          clearFailureBackoff(chatId);
+          await chats.markAutonomousUnread(chatId, { characterId });
+        }
+        return generated;
+      } catch (error) {
+        // Both direct and delayed dispatch use this branch. A declined claim is
+        // normal, but a thrown storage/coordinator failure must not retry each poll.
+        recordFailureBackoff(chatId, error instanceof Error ? error.message : String(error), { err: error });
+        return false;
+      } finally {
+        clearGenerationInProgress(chatId, claimedAt);
+      }
     }
     const response = await app.inject({
       method: "POST",
@@ -441,6 +466,9 @@ export function startServerAutonomousScheduler(app: FastifyInstance) {
     runningChats.add(chat.id);
     let generationStartedAt: number | undefined;
     try {
+      if (parseMetadata(chat.metadata).multiplayer && (!multiplayer || !(await multiplayer.canGenerate(chat.id)))) {
+        return;
+      }
       const checkResponse = await app.inject({
         method: "POST",
         url: "/api/conversation/autonomous/check",

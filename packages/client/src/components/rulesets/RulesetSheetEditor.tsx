@@ -24,6 +24,7 @@ import {
   type RulesetListColumn,
   type RulesetSheetBuild,
   type RulesetSheetEnvelope,
+  type RulesetSheetItem,
 } from "@marinara-engine/shared";
 import { RulesetCatalogPicker } from "./RulesetCatalogPicker";
 import { RulesetCatalogRefreshModal } from "./RulesetCatalogRefreshModal";
@@ -303,6 +304,7 @@ export function RulesetSheetEditor({
   envelope,
   onChange,
   live,
+  items,
 }: {
   definition: RulesetDefinition;
   /** The pinned game's layer choices, which the catalog picker leaves hidden entries out by. The
@@ -314,11 +316,17 @@ export function RulesetSheetEditor({
   /** The game's live state for this sheet, so a value that reads a track or a pool shows where it
    *  stands. The character and persona editors have none, and show it where play starts. */
   live?: unknown;
+  /** What the character holds in the game, so a value that reads their items shows it. The
+   *  character and persona editors have none, and show it as with nothing held. */
+  items?: ReadonlyArray<RulesetSheetItem>;
 }) {
   const { t } = useUiTranslation();
   const { sheet, resolution } = definition;
   const build = useMemo(() => readBuild(definition, envelope), [definition, envelope]);
-  const evaluated = useMemo(() => evaluateRulesetSheetLive(definition, build, live), [definition, build, live]);
+  const evaluated = useMemo(
+    () => evaluateRulesetSheetLive(definition, build, live, items),
+    [definition, build, live, items],
+  );
   // Which catalog's picker is open. A ruleset that ships none, and a listing that carries none
   // (an older Engine, a stubbed response), simply never offers the button.
   const [pickerId, setPickerId] = useState<string | null>(null);

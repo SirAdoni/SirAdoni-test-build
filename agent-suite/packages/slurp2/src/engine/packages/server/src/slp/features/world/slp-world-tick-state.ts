@@ -24,6 +24,24 @@ const WORLD_CLAIM_STALE_MS = 30 * 60_000;
  */
 export const PULSE_KEY = "slurp2.world.pulse";
 
+/**
+ * The player counts as here for this long after the last badge poll (every 30 s while Slurp is open
+ * and visible; a hidden tab stops polling). While they are here the world clock runs every tick
+ * length, whatever the background timer says (user, fix phase 1b: free work runs regularly).
+ */
+export const SLURP_PLAYER_PRESENT_MS = 3 * 60_000;
+// ponytail: one process-wide mark; per-persona presence if several players share an Engine.
+let playerSeenAt = Number.NEGATIVE_INFINITY;
+
+/** Called by the cheap badge poll: one timestamp, no I/O. */
+export function markSlurpPlayerPresent(at = Date.now()): void {
+  playerSeenAt = at;
+}
+
+export function slurpPlayerPresent(at = Date.now()): boolean {
+  return at - playerSeenAt < SLURP_PLAYER_PRESENT_MS;
+}
+
 export async function readLastTick(db: DB): Promise<Date | null> {
   const raw = await createAppSettingsStorage(db).get(TICK_KEY);
   if (!raw) return null;

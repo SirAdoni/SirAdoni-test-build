@@ -510,6 +510,9 @@ export function buildInitPrompt(
   tacticalBattlefield?: TacticalBattlefieldSetup,
   /** Present only for a game whose ruleset resolves its own fights. */
   ruleset?: EncounterRulesetBrief | null,
+  /** False when the game's ruleset turns Game Mode's own items off: the model is not asked what the
+   *  inventory's items do, since they do nothing in a fight until the ruleset says what they do. */
+  itemsInFights = true,
 ): ChatMessage[] {
   const msgs: ChatMessage[] = [];
 
@@ -597,9 +600,11 @@ export function buildInitPrompt(
     inst += `      "features": [{"terrain":"plains|forest|mountain|ruin|water|wall","placement":"center|north|south|east|west","shape":"patch|barrier"}]`;
   }
   inst += `\n    }\n  },\n`;
-  inst += `  "itemEffects": [\n`;
-  inst += `    {"name":"Inventory item name","target":"self|ally|enemy|any","type":"heal|damage|buff|debuff|status|utility","description":"what this item does in this fight","power":0.3,"element":"optional","status":{"name":"Wet","emoji":"💧","duration":2,"modifier":-2,"stat":"defense"},"consumes":true}\n`;
-  inst += `  ],\n`;
+  if (itemsInFights) {
+    inst += `  "itemEffects": [\n`;
+    inst += `    {"name":"Inventory item name","target":"self|ally|enemy|any","type":"heal|damage|buff|debuff|status|utility","description":"what this item does in this fight","power":0.3,"element":"optional","status":{"name":"Wet","emoji":"💧","duration":2,"modifier":-2,"stat":"defense"},"consumes":true}\n`;
+    inst += `  ],\n`;
+  }
   inst += `  "mechanics": [\n`;
   inst += `    {"name":"Boss mechanic name","description":"clear rule and stakes","ownerName":"Boss name","trigger":"round_interval|hp_threshold|on_hit|on_attack|passive","interval":5,"hpThreshold":50,"counterplay":"how the player can respond","effectType":"damage_all|damage_one|buff_self|debuff_party|status_party|status_enemy","power":0.45,"element":"optional","status":{"name":"Stunned","emoji":"⚡","duration":1,"modifier":-3,"stat":"speed"}}\n`;
   inst += `  ],\n`;
@@ -619,7 +624,9 @@ export function buildInitPrompt(
   inst += `- attacks: each has "name" and "type" (single-target, AoE, or both). Add cooldown/status/element only when useful.\n`;
   inst += `- allies: include ${personaName} and any party members or nearby NPCs clearly fighting on ${personaName}'s side. Give allies battle-specific attacks inspired by their cards/context.\n`;
   inst += `- enemies: weak enemies can have one simple attack; bosses and elites should have multiple attacks and one memorable mechanic.\n`;
-  inst += `- items: DO NOT invent inventory. itemEffects must only describe how existing inventory items from context work in this encounter. Examples: potion heals, bottle of alcohol can wet/prime a target for fire.\n`;
+  inst += itemsInFights
+    ? `- items: DO NOT invent inventory. itemEffects must only describe how existing inventory items from context work in this encounter. Examples: potion heals, bottle of alcohol can wet/prime a target for fire.\n`
+    : `- items: this game's ruleset keeps its items out of fights for now, so give no itemEffects.\n`;
   inst += `- mechanics: use sparingly. Boss charge attacks should include interval, counterplay, effectType, and a matching dialogueCue with trigger "charge".\n`;
   inst += `- dialogueCues: optional, short, and only for named allies, named enemies, bosses, or important NPCs. Generic unnamed enemies should not get voiced lines.\n`;
   inst += `- visuals: set isBossFight true only for bosses/story-significant enemies. backgroundPrompt/illustrationPrompt are optional and only for important fights.\n`;
@@ -887,10 +894,13 @@ export async function encounterRoutes(app: FastifyInstance) {
       // A game with no ruleset, or one whose ruleset does not resolve its own fights, is asked for
       // exactly the blueprint it was asked for before any of this existed.
       let rulesetBrief: EncounterRulesetBrief | null = null;
+      let itemsInFights = true;
       if (chatMeta?.gameRuleset != null) {
         const resolved = resolveGameRuleset(chatMeta, await loadRulesetRegistry());
-        if (resolved.status === "ok")
+        if (resolved.status === "ok") {
           rulesetBrief = await encounterRulesetBrief(resolved.definition, resolved.packageId);
+          itemsInFights = resolved.definition.items?.native !== false;
+        }
       }
       const prompt = buildInitPrompt(
         personaName,
@@ -902,6 +912,7 @@ export async function encounterRoutes(app: FastifyInstance) {
         combatStyle === "tactical",
         tacticalBattlefieldResult?.success ? tacticalBattlefieldResult.data : undefined,
         rulesetBrief,
+        itemsInFights,
       );
       debugLog(
         "[debug/game/combat:init] request chatId=%s model=%s historyMessages=%d settings=%s",
@@ -953,6 +964,8 @@ export async function encounterRoutes(app: FastifyInstance) {
         }
         combatState = tacticalResult.blueprint as Record<string, unknown>;
       }
+      // Whatever the model guessed anyway, items the ruleset keeps out of fights do nothing in one.
+      if (!itemsInFights) combatState = { ...combatState, itemEffects: [] };
       debugLog("[debug/game/combat:init] parsed response:\n%s", JSON.stringify(combatState, null, 2));
 
       await chats.patchMetadata(chatId, { encounterActive: true }, { touchUpdatedAt: false });

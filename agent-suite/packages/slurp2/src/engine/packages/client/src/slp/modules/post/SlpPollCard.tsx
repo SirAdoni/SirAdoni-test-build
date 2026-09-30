@@ -3,6 +3,7 @@ import { useState } from "react";
 import type { SlpAccount, SlpInteraction, SlpPoll } from "../../../../../shared/src/slp/slp-social.types.js";
 import { cn } from "../../../lib/utils";
 import { Avatar } from "../../base/chrome/SlpChrome";
+import { formatSlpPercent } from "../../base/ui/slp-number-format";
 import { useTranslation as useUiTranslation } from "react-i18next";
 
 export function SlpPollCard({
@@ -24,7 +25,7 @@ export function SlpPollCard({
   onVote: (optionId: string) => void;
   onOpenProfile: (account: SlpAccount) => void;
 }) {
-  const { t: localizeUi } = useUiTranslation();
+  const { t: localizeUi, i18n } = useUiTranslation();
   const totalVotes = votes.length;
   const [showVoters, setShowVoters] = useState(false);
   return (
@@ -72,9 +73,11 @@ export function SlpPollCard({
                   style={{ transform: `scaleX(${percentage / 100})` }}
                 />
                 <span className="relative flex min-w-0 flex-1 items-center gap-2">
-                  {selected && <Check size={14} className="shrink-0 text-[var(--noodle-accent)]" />}
+                  {selected && <Check size={14} className="shrink-0 text-[var(--noodle-accent-foreground)]" />}
                   <span className="min-w-0 flex-1 break-words">{option.label}</span>
-                  <span className="shrink-0 text-[var(--muted-foreground)]">{percentage}%</span>
+                  <span className="shrink-0 tabular-nums text-[var(--muted-foreground)]">
+                    {formatSlpPercent(percentage / 100, i18n.language)}
+                  </span>
                 </span>
               </button>
               {showVoters && optionVotes > 0 && (
@@ -93,7 +96,7 @@ export function SlpPollCard({
                           if (voterAccount) onOpenProfile(voterAccount);
                         }}
                         disabled={!voterAccount}
-                        className="inline-flex min-h-9 max-w-full items-center gap-1.5 rounded-full bg-[var(--noodle-accent)]/8 pr-2 text-[0.6875rem] font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--noodle-accent)]/15 hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--noodle-accent)]/70 disabled:cursor-default"
+                        className="inline-flex min-h-9 max-w-full items-center gap-1.5 rounded-full bg-[var(--noodle-accent)]/8 pr-2 text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--noodle-accent)]/15 hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--noodle-accent)]/70 disabled:cursor-default"
                       >
                         <Avatar account={voter} size="sm" />
                         <span className="max-w-32 truncate">@{voter.handle}</span>
@@ -110,7 +113,7 @@ export function SlpPollCard({
         type="button"
         onClick={() => setShowVoters((visible) => !visible)}
         aria-expanded={showVoters}
-        className="mt-2 rounded-lg text-[0.68rem] text-[var(--muted-foreground)] transition-colors hover:text-[var(--noodle-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--noodle-accent)]/70"
+        className="mt-2 rounded-lg text-xs text-[var(--muted-foreground)] transition-colors hover:text-[var(--noodle-accent-foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--noodle-accent)]/70"
       >
         {totalVotes}{" "}
         {totalVotes === 1 ? localizeUi("ui.noodle.noodlepollcard.vote") : localizeUi("ui.noodle.noodlepollcard.votes")}

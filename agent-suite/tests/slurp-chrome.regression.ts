@@ -29,8 +29,9 @@ for (const field of ["editor.onNameChange", "editor.onHandleChange", "editor.onB
 }
 // The avatar overlaps the banner rather than sitting flush under it. The hero owns the single
 // negative margin; the avatar row only stacks above the banner fade.
-assert.match(surface, /hasBanner \? "-mt-8 @min-\[680px\]:-mt-10 @min-\[1040px\]:-mt-11" : "mt-5"/u);
-assert.match(surface, /hasBanner \? "relative z-10 pt-0" : "pt-5"/u);
+// Step 3 redesign: the hero avatar rides half over the banner's pink fade.
+assert.match(surface, /banner \? "-mt-16" : "pt-5"/u);
+assert.match(surface, /"relative z-10 px-4 /u);
 
 // A persona that runs a Creator is known to the feed by the Creator's name and face, so the
 // switcher card leads with that and keeps the persona as a small circle beside it.

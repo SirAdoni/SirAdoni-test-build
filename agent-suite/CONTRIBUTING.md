@@ -44,6 +44,8 @@ Developer/
 
 Set `MARINARA_ENGINE_ROOT` when the Engine checkout is elsewhere.
 
+Run `node scripts/validate-vendored-engine.mjs --baseline-ref origin/staging` with `MARINARA_ENGINE_ROOT` pointing to an Engine `staging` checkout to inspect every file in `sources/engine/`. A file also tracked by Engine is current or drifted; a vendored-only file is orphaned. Untracked output in the host checkout cannot make an orphan look current. The tracked compiled snapshot under `sources/engine/packages/shared/dist/` remains in scope because `sources/package-shared.ts` imports it as a package build input. Package-owned overlays outside `sources/engine/` are not traversed. The check skips with a notice when no Engine path is supplied. CI runs it in the Noodle browser job that already checks out Engine. `scripts/vendored-engine-baseline.json` records the existing divergent copies by status and both source/host hashes; later PRs may only remove entries. New drift, changes to either side of a stale copy, and a newly missing host file fail the gate. When a copy matches Engine or is removed, remove its baseline entry too. A file absent from Engine may still be package-owned runtime code: trace its package imports before deleting it. Host-service migration is tracked in Marinara-Engine#6385.
+
 After a fresh checkout, and whenever `package.json` or `package-lock.json` changes, install this repository's pinned build dependencies:
 
 ```bash
@@ -92,6 +94,10 @@ A ruleset may also carry an optional `battle` block, which lends a fight the she
 A ruleset may also carry an optional `combat` block, which says how a fight is **resolved** by its own rules rather than what a fight may borrow from the sheet: what is rolled and against what, the budgets a turn holds, which sheet lists are weapons and which are abilities, what its conditions do, concentration, what happens to a character at zero, its damage types and the threat scale an opponent is picked from. It ships inside `ruleset.json` like `battle`, so `validate-catalog.mjs` checks that every pool, field, derived value, column, budget, condition, save, track and tier it names exists beside it, and that a ruleset carrying one declares Capability API 1.26 or newer.
 
 A catalog may finally declare `"holds": "creatures"` and carry a **bestiary**: opponents instead of sheet rows, each written in the names the combat block already declares. A bestiary feeds no sheet list and the sheet editor's picker never offers it. `validate-catalog.mjs` checks that every creature names a declared threat tier, budget, save, ability, condition and damage type, that a sequence names another action of the same block and never itself or another sequence, and that a ruleset carrying one declares Capability API 1.27 or newer.
+
+A creature in a bestiary may instead carry a **sheet** in the ruleset's own terms (ability scores, skills, saves, bonuses, fields and list rows), which a fight builds exactly as it builds a party member, so a spellcaster casts from its own slots. The sheet then says the creature's health, defense, initiative, speed, abilities and saves, so none of those may also be given beside it. It needs no actions of its own, and may still carry printed ones, up to the usual 12. `validate-catalog.mjs` checks every id and value on it against the ruleset's own sheet, that a picked row names a catalog that feeds its list and an entry that catalog really holds, and that a ruleset carrying one declares Capability API 1.34 or newer. A catalog entry's `mechanics.reaction` may likewise name the moment it waits for (`{ "on": "aimed" | "hit" | "harmed" | "used", "at": "source" | "chosen", "cancels": true, "against": { "catalogs": [...] } }`, with `cancels` only on an aimed or used one), which needs Capability API 1.33 or newer, 1.44 for `used` or `against`, and 1.46 for `hit`.
+
+The combat block may also declare **contests** and the `checks` they read (Capability API 1.43, with a plain creature's own `checks` beside them), conditions that change numbers through `modifiers`, the `own-checks-*` effects and `levels` of a plain track (1.45), and an applied condition may end after one use (`endsAfter`) or count down as turns begin (`duration.at`, also 1.45). A creature's own action may be a `reaction` and land on itself with `self: true` (1.46). `validate-catalog.mjs` restates the Engine's rules for each of these and refuses a package that uses one under an older declaration.
 
 A catalog entry's row may finally carry an optional `scaled` map: up to four of that row's own number columns whose value the ruleset keeps up to date rather than the player, each one a value reference into the sheet with an optional step table. It can ride inline or inside a `catalogs/<id>.json` asset, so `validate-catalog.mjs` reads both and checks that every scaled column is a number column of the row's own list, that `values` still holds a starting number for it, that the row is its entry's only one for that list, and that a ruleset carrying one declares Capability API 1.23 or newer.
 
@@ -151,6 +157,11 @@ Use `INCOMPLETE_PACKAGE_IDS` while a package is still being built and is not rea
 This is fail-hidden, never fail-leak: an Engine that predates preview-overlay support simply never sees a staging-only package, and no Engine can reveal one to stable users by being out of date.
 
 When a package is ready to ship to everyone: delete its id from both sets, rebuild its package (which re-adds the catalog entry to the published lanes and removes the overlay), update the package-count assertion in `validate-catalog.mjs` and the README catalog tables, and land all of it in one PR.
+
+Quartermaster and Relationship Tracker are scheduled to graduate with the **next Marinara Engine
+main release after v2.4.6**, not an earlier standalone Agent promotion. Follow the
+[coordinated release checklist](https://github.com/Pasta-Devs/Marinara-Agents/issues/1091) when preparing
+that release; merging this repository's preview catalog into `main` does not itself publish them.
 
 `validate-catalog.mjs` enforces that each tier lands in exactly one place: an incomplete id in no catalog at all, a staging-only id in the overlay and never in the published lanes, no orphaned overlay entry or empty overlay directory. Activation guidance and README coverage may exist ahead of a listing.
 

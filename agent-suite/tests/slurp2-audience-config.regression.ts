@@ -30,7 +30,8 @@ const component = slurp2Source(
     "packages/slurp2/src/engine/packages/client/src/components/slurp/SlurpAudienceConfigSettings.tsx",
   ),
 );
-assert.match(component, /SLURP_MODEL_JOB_KINDS\.map/u, "each model job has editable policy controls");
+// 0.3.6: only the world's jobs have rows; manual-only jobs never touch the budget.
+assert.match(component, /SLURP_WORLD_JOB_KINDS\.map/u, "each world job has editable policy controls");
 assert.match(component, /slurp-audience-config\.json/u, "the portable format has a stable filename");
 assert.match(component, /slurpSimulationTuningSchema\.parse\(raw\.tuning\)/u, "imports validate tuning");
 assert.match(component, /slurpFanTypesSchema\.parse\(raw\.fanTypes\)/u, "imports validate fan types");

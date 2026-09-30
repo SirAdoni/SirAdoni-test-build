@@ -84,13 +84,10 @@ const nextSource = replaceContributors(source, renderContributors(contributors))
 
 if (nextSource === source) {
   console.log(`Credits are up to date (${contributors.length} contributors).`);
-  process.exit(0);
-}
-
-if (checkOnly) {
+} else if (checkOnly) {
   console.error(`Credits are stale. Run pnpm credits:sync to refresh ${contributors.length} contributors.`);
-  process.exit(1);
+  process.exitCode = 1;
+} else {
+  await writeFile(CREDITS_MODAL_PATH, nextSource);
+  console.log(`Updated Credits modal with ${contributors.length} GitHub contributors.`);
 }
-
-await writeFile(CREDITS_MODAL_PATH, nextSource);
-console.log(`Updated Credits modal with ${contributors.length} GitHub contributors.`);

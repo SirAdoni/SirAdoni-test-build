@@ -13,12 +13,17 @@ import {
   slurpAudienceOpener,
   slurpAudienceQuestion,
   slurpAudienceReactionFrom,
+  slurpRivalryBodies,
+  slurpCoupleReactionBodies,
   SLURP_SHIPPED_TYPE_REACTIONS,
   slurpCommissionBrief,
 } from "../../modules/world/slp-world-copy.js";
 import { slurpReactionBodiesForType, type SlurpReactionBanks } from "../../modules/world/slp-reaction-bank.js";
 import { enqueueSlurpPendingText } from "./slp-pending-text-service.js";
+import { readSlurpTieStamp } from "../../modules/projects/slp-tie-stamp.js";
+import { hash } from "../../modules/projects/slp-project.js";
 import { type SlurpWorldAction } from "../../../../../shared/src/slp/slp-world.js";
+import type { SlurpSettings } from "../../modules/settings/slp-settings.js";
 import { slurpPulseTieAdvance, type SlurpPulseAction } from "../../../../../shared/src/slp/slp-world-pulse.js";
 
 /** The local day, so a per-pair roll is made once a day rather than on every page load. */
@@ -80,9 +85,10 @@ export async function applyAction(
   action: SlurpWorldAction,
   at: Date,
   noodle: ReturnType<typeof createSlurpStorage>,
-  fanTypes: readonly SlurpFanType[],
+  settings: Pick<SlurpSettings, "fanTypes" | "messagesFanOpeners" | "messagesCommissionOpeners">,
   characterFanPinnedTypeIds: ReadonlyMap<string, string | null>,
 ): Promise<boolean> {
+  const { fanTypes } = settings;
   const actor = await resolveActor(db, action.actorAccountId, characterFanPinnedTypeIds, fanTypes);
   if (!actor) return false;
 
@@ -137,7 +143,8 @@ export async function applyAction(
       return false;
     }
     const operationId = `audience-unlock:${action.postId}:${actor.id}`;
-    await noodle.creditCreatorIncome(action.creatorAccountId, action.amount, "unlock", operationId);
+    // A collab post pays both pages.
+    await noodle.creditPostIncome(action.postId, action.creatorAccountId, action.amount, "unlock", operationId);
     await population
       .advanceTie(actor.id, action.creatorAccountId, {
         stage: "liker",
@@ -151,11 +158,14 @@ export async function applyAction(
   }
 
   if (action.kind === "message") {
-    const messages = createSlurpMessagesStorage(db);
+    const messages = createSlurpMessagesStorage(db, () => noodle);
     const sent = await messages.sendViewerMessage(
       action.actorAccountId,
       action.creatorAccountId,
-      slurpAudienceOpener(`${action.creatorAccountId}:${action.actorAccountId}:${at.toISOString()}`),
+      slurpAudienceOpener(
+        `${action.creatorAccountId}:${action.actorAccountId}:${at.toISOString()}`,
+        settings.messagesFanOpeners,
+      ),
     );
     if (sent.status !== "sent") return false;
     await enqueueSlurpPendingText(db, {
@@ -173,8 +183,11 @@ export async function applyAction(
   }
 
   if (action.kind === "commission") {
-    const messages = createSlurpMessagesStorage(db);
-    const brief = slurpCommissionBrief(`${action.creatorAccountId}:${action.actorAccountId}:${at.toISOString()}`);
+    const messages = createSlurpMessagesStorage(db, () => noodle);
+    const brief = slurpCommissionBrief(
+      `${action.creatorAccountId}:${action.actorAccountId}:${at.toISOString()}`,
+      settings.messagesCommissionOpeners,
+    );
     const commission = await messages.createCommission(action.actorAccountId, action.creatorAccountId, brief);
     // `"open_request"` means this fan already has one waiting. Piling on a second is exactly what
     // the cap exists to stop, so the tick spends its action elsewhere.
@@ -256,15 +269,21 @@ export async function applyPulse(
     : actor.fanTypeId || actor.archetype
       ? slurpResolveFanType(fanTypes, actor).id
       : slurpPickFanType(fanTypes, actor.id).id;
+  const sides = isComment ? await rivalrySides(noodle, action.postId) : null;
   const result = await noodle.createNoodlerWorldInteraction(action.postId, {
     creatorAccountId: action.creatorAccountId,
     actorId: actor.id,
     type: isComment ? "reply" : "like",
     // Tier 1 copy, so this stays free: the pulse runs unattended and must never call the model.
+    // Under a rivalry post about half the crowd picks a side (7b-c); under a couple post they ship or mourn.
     content: isComment
       ? slurpAudienceReactionFrom(
           `${action.postId}:${actor.id}`,
-          slurpReactionBodiesForType(banks, fanTypeId, SLURP_SHIPPED_TYPE_REACTIONS[fanTypeId ?? ""] ?? []),
+          sides && hash(`${action.postId}:${actor.id}:side`) % 2 === 0
+            ? sides.moment !== undefined
+              ? slurpCoupleReactionBodies(sides.self, sides.rival, sides.moment)
+              : slurpRivalryBodies(sides.self, sides.rival)
+            : slurpReactionBodiesForType(banks, fanTypeId, SLURP_SHIPPED_TYPE_REACTIONS[fanTypeId ?? ""] ?? []),
         )
       : null,
   });
@@ -280,4 +299,26 @@ export async function applyPulse(
   if (!result.created && (!before || !after || after.stage === before.stage)) return false;
   await population.touch(actor.id).catch(() => undefined);
   return true;
+}
+
+/** What fans say under a rivalry or a couple post, or null for any other post. */
+async function rivalrySides(
+  noodle: ReturnType<typeof createSlurpStorage>,
+  postId: string,
+): Promise<{ self: string; rival: string; moment?: string } | null> {
+  const post = await noodle.getNoodlerPostById(postId).catch(() => null);
+  const stamp = post ? readSlurpTieStamp(post.metadata) : null;
+  if (!post || (stamp?.kind !== "rival" && stamp?.kind !== "couple") || !stamp.partnerId) return null;
+  // On a shared page the post's author is the page; the fans talk about the one who wrote it.
+  const [self, rival] = await Promise.all([
+    noodle.getNoodlerAccountById(stamp.hostId ?? post.authorAccountId),
+    noodle.getNoodlerAccountById(stamp.partnerId),
+  ]);
+  if (!self || !rival) return null;
+  // A couple post: `rival` is the partner, and the fans' mood follows the moment.
+  return {
+    self: self.displayName,
+    rival: rival.displayName,
+    ...(stamp.kind === "couple" ? { moment: stamp.moment ?? "" } : {}),
+  };
 }

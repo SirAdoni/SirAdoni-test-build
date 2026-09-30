@@ -9,6 +9,7 @@
 import {
   RULESET_POOL_MAX_DICE,
   rulesetSheetEnvelopeSchema,
+  type RulesetCatalogItem,
   type RulesetDefinition,
   type RulesetDifficultyLadderStep,
   type RulesetHideWhen,
@@ -107,6 +108,87 @@ export interface RulesetSheetLiveValues {
   pools: ReadonlyArray<{ key: string; value: number }>;
   tracks: ReadonlyArray<{ id: string; min: number; max: number; value: number; wound?: { penalty: number } }>;
   states?: ReadonlyArray<{ id: string; value: string }>;
+  /** The items the character holds, which an `itemStat` reads. None outside a game. */
+  items?: ReadonlyArray<RulesetSheetItem>;
+}
+
+/** One stack of the ruleset's items a character holds, as the sheet reads it: what the item is, how
+ *  many, and whether it is worn (on, and bound where it must be). */
+export interface RulesetSheetItem {
+  item: RulesetCatalogItem;
+  quantity: number;
+  worn: boolean;
+  /** What the stack is called, for a record of what an item did. */
+  name?: string;
+  /** Which inventory stack this is, so what a fight shoots or loads can be written back to it. */
+  stack?: { id: string; ref: string; holder?: string };
+  /** What a weapon with a clip has loaded, as the stack keeps it. Absent reads as full. */
+  loaded?: number;
+  /** The charges an item holds, as the stack keeps them. Absent reads as full. */
+  charges?: number;
+}
+
+/** Whether the sheet can read the items a character holds, so a caller can skip reading the
+ *  inventory and the item catalogs when it cannot: only a ruleset with items has any, and then an
+ *  `itemStat`, an item's abilities or a level off a derived value may read them. */
+export function rulesetReadsItems(definition: RulesetDefinition): boolean {
+  return definition.items !== undefined;
+}
+
+/** What a character's items do to their abilities: each ability's highest `set` and the sum of its
+ *  `add`s, from each worn item's `worn` effect and each other item's `carried` one, one item once. */
+function itemAbilityChanges(
+  items: ReadonlyArray<RulesetSheetItem> | undefined,
+): Map<string, { set?: number; add: number }> {
+  const changes = new Map<string, { set?: number; add: number }>();
+  const seen = new Set<unknown>();
+  for (const held of items ?? []) {
+    const effect = held.worn ? held.item.worn : held.item.carried;
+    if (!effect?.abilities || seen.has(effect)) continue;
+    seen.add(effect);
+    for (const [id, change] of Object.entries(effect.abilities)) {
+      const current = changes.get(id) ?? { add: 0 };
+      if ("set" in change) current.set = Math.max(current.set ?? change.set, change.set);
+      else current.add += change.add;
+      changes.set(id, current);
+    }
+  }
+  return changes;
+}
+
+/** A stat over the items a character holds (`itemStat`). The items are picked by where they are and
+ *  by slot, category and tag; `sum` adds each one's value times how many, `max` and `min` read one
+ *  value, and `count` counts the items (only the ones that give the stat, when one is named). An item
+ *  that does not give the stat is left out, and none at all reads the default. */
+function readItemStat(
+  items: ReadonlyArray<RulesetSheetItem> | undefined,
+  spec: NonNullable<RulesetValueRef["itemStat"]>,
+): number {
+  const held = (items ?? []).filter(
+    (each) =>
+      (spec.from === "all" || (spec.from === "worn") === each.worn) &&
+      (spec.slot === undefined || (each.item.slots?.[spec.slot] ?? 0) > 0) &&
+      (spec.category === undefined || each.item.category === spec.category) &&
+      (spec.tag === undefined || (each.item.tags ?? []).includes(spec.tag)),
+  );
+  const given = (each: RulesetSheetItem) => (spec.stat === undefined ? undefined : each.item.stats?.[spec.stat]);
+  if (spec.pick === "count") {
+    const counted =
+      spec.stat === undefined
+        ? held
+        : held.filter((each) => {
+            const value = given(each);
+            return value !== undefined && value !== false && value !== "";
+          });
+    return counted.length > 0 ? counted.reduce((total, each) => total + each.quantity, 0) : (spec.default ?? 0);
+  }
+  const numbers = held.flatMap((each) => {
+    const value = given(each);
+    return typeof value === "number" && Number.isFinite(value) ? [{ value, quantity: each.quantity }] : [];
+  });
+  if (numbers.length === 0) return spec.default ?? 0;
+  if (spec.pick === "sum") return numbers.reduce((total, each) => total + each.value * each.quantity, 0);
+  return (spec.pick === "max" ? Math.max : Math.min)(...numbers.map((each) => each.value));
 }
 
 export function rulesetAbilityModifier(definition: RulesetDefinition, score: number): number {
@@ -193,6 +275,7 @@ function resolveValueRef(
   if (ref.liveTrack !== undefined) return readLiveTrack(tables.live, ref.liveTrack, ref.read ?? "value");
   if (ref.livePool !== undefined) return tables.live?.pools.find((pool) => pool.key === ref.livePool)?.value ?? 0;
   if (ref.listSum !== undefined) return sumListColumn(definition, build, ref.listSum);
+  if (ref.itemStat !== undefined) return readItemStat(tables.live?.items, ref.itemStat);
   return 0;
 }
 
@@ -241,8 +324,15 @@ export function evaluateRulesetSheet(
   const { sheet, resolution } = definition;
   const abilityScores: Record<string, number> = {};
   const abilityMods: Record<string, number> = {};
+  // What the character's items do to their abilities comes first, so everything reads the changed one:
+  // a `set` is a floor a higher score keeps, the `add`s go on top, and the ability's own range holds.
+  const fromItems = itemAbilityChanges(live?.items);
   for (const ability of sheet.abilities) {
-    const score = finite(build.abilities?.[ability.id]) ?? ability.default;
+    const base = finite(build.abilities?.[ability.id]) ?? ability.default;
+    const change = fromItems.get(ability.id);
+    const score = change
+      ? Math.min(ability.max, Math.max(ability.min, Math.max(base + change.add, change.set ?? -Infinity)))
+      : base;
     abilityScores[ability.id] = score;
     abilityMods[ability.id] = rulesetAbilityModifier(definition, score);
   }

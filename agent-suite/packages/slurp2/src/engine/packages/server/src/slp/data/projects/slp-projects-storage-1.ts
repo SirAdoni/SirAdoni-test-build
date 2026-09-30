@@ -92,6 +92,14 @@ export function createProjectsStorage1(context: SlurpStorageContext) {
       await settingsStore.set(slurpGoalKey(creatorAccountId), JSON.stringify(goal));
       return goal;
     },
+    /**
+     * Put a goal back exactly as it was (a Stir Undo, 0.3.1), progress included: `setGoal` would
+     * start its count again from today's earnings.
+     */
+    async restoreGoal(creatorAccountId: string, goal: SlurpGoal | null): Promise<void> {
+      if (goal) await settingsStore.set(slurpGoalKey(creatorAccountId), JSON.stringify(goal));
+      else await settingsStore.remove(slurpGoalKey(creatorAccountId));
+    },
     /** This Creator's stored arc overrides. Missing fields use the global settings. */
     async getArcConfig(creatorAccountId: string): Promise<SlurpCreatorArcConfig> {
       return readSlurpCreatorArcConfig(await settingsStore.get(slurpArcConfigKey(creatorAccountId)));
@@ -199,6 +207,7 @@ export function createProjectsStorage1(context: SlurpStorageContext) {
       await writeProjects(creatorAccountId, [project, ...rest]);
       for (const id of project.creatorIds.slice(1))
         await writeProjects(id, [slurpCrossoverView(project, id), ...(await loadProjects(id))]);
+      await this.recordArcChange(creatorAccountId, { ...project, status: "suggested" }, project);
       return slurpCrossoverView(project, creatorAccountId);
     },
     /**
@@ -359,13 +368,22 @@ export function createProjectsStorage1(context: SlurpStorageContext) {
       await this.recordArcChange(creatorAccountId, current, next);
       return next;
     },
-    /** The running arcs' multiplier for one stat, under `arcStatEffects`. */
+    /**
+     * The running arcs' multiplier for one stat, under `arcStatEffects`, times the platform events
+     * aimed at this Creator on the same stat (R1-112: growth, loyalty and earnings were never read).
+     */
     async arcEffectMultiplier(creatorAccountId: string, stat: SlurpArcEffectStat): Promise<number> {
-      return slurpArcEffectMultiplier(
+      const arcs = slurpArcEffectMultiplier(
         await this.listProjects(creatorAccountId),
         stat,
         (await this.getSettings()).arcStatEffects,
       );
+      const target = {
+        growth: "audience.growth",
+        earnings: "economy.creator-earnings",
+        loyalty: "audience.loyalty",
+      } as const;
+      return arcs * (await this.platformInfluenceMultiplier(target[stat], creatorAccountId));
     },
     /**
      * Apply or reject an arc's pending profile change. Apply writes through the ordinary profile
@@ -403,8 +421,11 @@ export function createProjectsStorage1(context: SlurpStorageContext) {
       const pollNote = poll ? `, fans chose: ${poll.winner}` : "";
       const label = `${after.chapters.length ? `${after.title} (${slurpProjectChapter(after)})` : after.title}${pollNote}`;
       // A chapter's mood arrives through the ordinary modifier list, so it expires like any other feeling.
+      // A new chapter, or a storyline that just started (created active or accepted): the first
+      // chapter's mood applied to nobody before (R1-071).
+      const started = after.status === "active" && before.status !== "active";
       const mood =
-        after.chapter !== before.chapter && after.status !== "complete"
+        (after.chapter !== before.chapter || started) && after.status !== "complete"
           ? slurpArcChapterMood(after, (await this.getSettings()).arcAffectsMood)
           : null;
       // A crossover moves every participant: mood and events reach each of them.

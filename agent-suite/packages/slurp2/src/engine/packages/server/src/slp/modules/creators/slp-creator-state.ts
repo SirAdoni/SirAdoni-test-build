@@ -295,8 +295,16 @@ export const SLURP_CREATOR_STATE_DEFAULT: Omit<SlurpCreatorState, "updatedAt"> =
   modifiers: [],
 };
 
+/**
+ * Where a conversation starts: strangers.
+ *
+ * `friendly` was the shipped default, so the first message a Creator ever received from somebody
+ * they had never spoken to was already answered as a friend. `open` is the posture of somebody
+ * willing to talk to a stranger, which is what a creator page actually is. Warmth is earned from
+ * here by rapport, familiarity, and what the fan does.
+ */
 export const SLURP_THREAD_STATE_DEFAULT: Omit<SlurpThreadState, "updatedAt"> = {
-  posture: "friendly",
+  posture: "open",
   familiarity: 0,
   sexualComfort: 0,
   emotionalTrust: 0,
@@ -482,11 +490,23 @@ function parseSlurpStateJson(raw: string): unknown {
   }
 }
 
-export function slurpCreatorStateCanUseMedia(creator: SlurpCreatorState, thread: SlurpThreadState): boolean {
-  if (creator.energy < 25 || thread.posture === "rejecting") return false;
+/** Why the Creator's state holds a picture back in this thread, or null when it does not. */
+export function slurpCreatorStateMediaBlock(
+  creator: SlurpCreatorState,
+  thread: SlurpThreadState,
+): "energy" | "posture" | "comfort" | "respect" | null {
+  if (creator.energy < 25) return "energy";
+  if (thread.posture === "rejecting") return "posture";
   const adultStateActive = creator.arousal >= 36 || thread.adultLevel !== "ordinary";
-  if (!adultStateActive) return true;
-  return thread.sexualComfort >= 36 && thread.respect >= 36 && thread.posture !== "defensive";
+  if (!adultStateActive) return null;
+  if (thread.posture === "defensive") return "posture";
+  if (thread.sexualComfort < 36) return "comfort";
+  if (thread.respect < 36) return "respect";
+  return null;
+}
+
+export function slurpCreatorStateCanUseMedia(creator: SlurpCreatorState, thread: SlurpThreadState): boolean {
+  return slurpCreatorStateMediaBlock(creator, thread) === null;
 }
 
 /** Apply one bounded delta. The server, not the model, owns the limits. */
@@ -550,6 +570,29 @@ export function lowerSlurpAdultLevel(a: SlurpAdultLevel, b: SlurpAdultLevel): Sl
  * and it is why the fall is checked first: a level the thread no longer holds goes immediately,
  * whatever earned it.
  */
+/**
+ * What holds the next step back, read off the same rule `nextSlurpAdultLevel` applies, so the
+ * Details panel says what the server decides instead of guessing (R1-012). `falling`: the thread no
+ * longer holds its own level; `top`: there is no next step.
+ */
+export function slurpAdultRiseBlock(
+  state: SlurpThreadState,
+): "falling" | "respect" | "resentment" | "posture" | "comfort" | "desire" | "top" | null {
+  const index = slurpAdultLevelIndex(state.adultLevel);
+  const current = ADULT_LEVEL_REQUIREMENT[state.adultLevel];
+  if (index > 0 && (state.sexualComfort < current.sexualComfort || state.threadDesire < current.threadDesire))
+    return "falling";
+  if (state.respect < ADULT_RESPECT_FLOOR) return "respect";
+  if (state.resentment > ADULT_RESENTMENT_CEILING) return "resentment";
+  if (state.posture === "defensive" || state.posture === "rejecting") return "posture";
+  const next = SLURP_ADULT_LEVELS[index + 1];
+  if (!next) return "top";
+  const need = ADULT_LEVEL_REQUIREMENT[next];
+  if (state.sexualComfort < need.sexualComfort) return "comfort";
+  if (state.threadDesire < need.threadDesire) return "desire";
+  return null;
+}
+
 export function nextSlurpAdultLevel(state: SlurpThreadState): SlurpAdultLevel {
   const index = slurpAdultLevelIndex(state.adultLevel);
   const holds = (level: SlurpAdultLevel): boolean => {

@@ -1,5 +1,6 @@
 import { normalizeAvatarCrop } from "@marinara-engine/shared";
 import { createSlpPoll, readSlpPollFromMetadata } from "../../../../../shared/src/slp/slp-polls.js";
+import { readSlpPostImageCrop } from "../../../../../shared/src/slp/slp-post-images.js";
 import { SlpPollInput } from "../../../../../shared/src/slp/slp-social-generation.schema.js";
 import {
   SlpAccount,
@@ -66,6 +67,9 @@ export function mapViewer(
     convoDisplayName?: string | null;
     avatarPath?: string | null;
     avatarCrop?: unknown;
+    /** The persona's public profile: DM replies read it as the fan's "about" (Plane 326, R1-001). */
+    aboutMe?: string | null;
+    description?: string | null;
     createdAt?: string;
     updatedAt?: string;
   },
@@ -76,7 +80,7 @@ export function mapViewer(
     entityId: personaId,
     handle: normalizeHandle(persona.convoDisplayName || persona.name, personaId),
     displayName: persona.convoDisplayName || persona.name || "User",
-    bio: "",
+    bio: persona.aboutMe || persona.description || "",
     avatarUrl: persona.avatarPath ?? null,
     avatarCrop: normalizeAvatarCrop(persona.avatarCrop),
     invited: true,
@@ -135,17 +139,54 @@ export function snapshotForAccount(account: SlpAccount): SlpAuthorSnapshot {
 }
 
 export function mapPost(row: PostRow): SlpPost {
+  const metadata = parseRecord(row.metadata);
+  const secondary = Array.isArray(metadata.postMedia)
+    ? metadata.postMedia.flatMap((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+        const media = item as Record<string, unknown>;
+        return typeof media.id === "string" && typeof media.position === "number" && typeof media.imageUrl === "string"
+          ? [
+              {
+                id: media.id,
+                position: media.position,
+                imageUrl: media.imageUrl,
+                imagePrompt: typeof media.imagePrompt === "string" ? media.imagePrompt : null,
+                ...(typeof media.width === "number" && typeof media.height === "number"
+                  ? { width: media.width, height: media.height }
+                  : {}),
+                crop: readSlpPostImageCrop({ imageCrop: media.crop }),
+              },
+            ]
+          : [];
+      })
+    : [];
+  const images = row.imageUrl
+    ? [
+        {
+          id: `${row.id}:primary`,
+          position: 0,
+          imageUrl: row.imageUrl,
+          // The prompt this picture was drawn from; `row.imagePrompt` stays the post's draft.
+          imagePrompt:
+            (typeof metadata.imageProviderPrompt === "string" && metadata.imageProviderPrompt) ||
+            (row.imagePrompt ?? null),
+          crop: readSlpPostImageCrop(metadata),
+        },
+        ...secondary,
+      ]
+    : secondary;
   return {
     id: row.id,
     authorAccountId: row.authorAccountId,
     content: row.content ?? "",
     imageUrl: row.imageUrl ?? null,
     imagePrompt: row.imagePrompt ?? null,
+    images: images.sort((left, right) => left.position - right.position),
     parentPostId: row.parentPostId ?? null,
     quotePostId: row.quotePostId ?? null,
     source: row.source === "generated" ? "generated" : "manual",
     access: row.access === "public" ? "public" : "locked",
-    metadata: parseRecord(row.metadata),
+    metadata,
     authorSnapshot: parseAuthorSnapshot(row.authorSnapshot),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,

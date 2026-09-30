@@ -1,4 +1,9 @@
-import type { FastifyInstance, FastifyPluginAsync, InjectOptions } from "fastify";
+import type {
+  FastifyInstance,
+  FastifyPluginAsync,
+  InjectOptions,
+  LightMyRequestResponse as InjectResponse,
+} from "fastify";
 import { noodleRoutes } from "../../routes/noodle.routes.js";
 import { buildRecentSocialMediaActivityBlock } from "./noodle-context.js";
 import { startNoodleRefreshScheduler } from "./noodle-refresh-scheduler.service.js";
@@ -16,7 +21,7 @@ export async function activate({
       routes: FastifyPluginAsync,
       options: { prefix: string },
     ): Promise<() => void | Promise<void>>;
-    runInternalRoute?: (options: InjectOptions | string) => ReturnType<FastifyInstance["inject"]>;
+    runInternalRoute?: (options: InjectOptions | string) => Promise<InjectResponse>;
   };
 }) {
   // Capability routes are registered through the host's revocable privileged route slots.

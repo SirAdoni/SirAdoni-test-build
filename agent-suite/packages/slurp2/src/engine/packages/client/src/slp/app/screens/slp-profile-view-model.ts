@@ -3,20 +3,18 @@ import type { SlpAccount } from "../../../../../shared/src/slp/slp-social.types.
 import type { SlurpManagedStageProfile, SlurpStageProfileInput } from "../../base/state/slp-state-types";
 import { useCreatorFollowers, useCreatorSubscribers } from "../../features/audience/slp-audience-hooks";
 import { useUpdateCreatorFanActivity } from "../../features/audience/slp-fan-activity-hooks";
-import {
-  useGenerateCreatorArtwork,
-  useUploadCreatorAvatar,
-  useUploadCreatorBanner,
-} from "../../features/creators/slp-creator-profile-hooks";
-import { useTipSlurpCreator } from "../../features/economy/slp-economy-hooks";
+import { useUploadCreatorAvatar, useUploadCreatorBanner } from "../../features/creators/slp-creator-profile-hooks";
+import { slpProfileSubscriptionState } from "../../features/economy/slp-economy-subscription-state";
+import { useSlurpWallet, useTipSlurpCreator } from "../../features/economy/slp-economy-hooks";
 import type { SlurpProfilePost } from "../../features/feed/slp-feed-contract";
 import { useUpdateCreatorAutoPosting } from "../../features/feed/slp-feed-schedule-hooks";
 import { useCreatorViewer } from "../../features/feed/slp-feed-viewer-hooks";
 import { useSlurpCompose } from "../../features/messages/slp-messages-hooks";
 import { useSlurpArcs } from "../../features/projects/slp-projects-hooks";
 import { useSlurpSettings } from "../../features/settings/slp-settings-hooks";
-import { type SlpPostCardCtx } from "../../modules/post/SlpPostCard";
+import { type SlpPostCardCtx } from "../../modules/post/SlpPostTypes";
 import { useSlurpMediaSrc } from "../../base/media/slp-media-src";
+import { slpPrefersReducedMotion } from "../../base/chrome/slp-motion";
 import { slurpCreatorStatus } from "../../modules/creator/slp-creator-status";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { profileAccent } from "../../features/creators/SlpStageProfileForm";
@@ -33,6 +31,8 @@ import type { SlpCreatorProfileTab, SlurpProfileImagePost } from "./SlpScreenPro
 
 export interface StageProfileViewProps {
   profile: SlurpManagedStageProfile;
+  /** Open the own page's Dashboard on arrival (W). */
+  openDashboard?: boolean;
   profileDraft: SlurpStageProfileInput | null;
   onProfileChange: (patch: Partial<SlurpStageProfileInput>) => void;
   onCancelEdit: () => void;
@@ -45,7 +45,8 @@ export interface StageProfileViewProps {
   slurpSettings: ReturnType<typeof useSlurpSettings>["data"] | null;
   postCardCtx: SlpPostCardCtx;
   viewerAccounts: SlpAccount[];
-  connectionCounts: Record<string, { fans: number; followers: number }>;
+  /** Null while the counts load, so the header shows a dash instead of a false 0. */
+  connectionCounts: Record<string, { fans: number; followers: number }> | null;
   viewerIsLoading: boolean;
   viewerIsError: boolean;
   onRetryViewer: () => void;
@@ -59,9 +60,7 @@ export interface StageProfileViewProps {
   onEdit: () => void;
   onBack: () => void;
   onManualPost: (input: SlpCreatorPostSubmission) => Promise<void>;
-  onGuidedPost: (input: SlpCreatorPostSubmission) => Promise<void>;
   manualPending: boolean;
-  guidePending: boolean;
   onRunNow: (accountId: string) => void;
   runNowPending: boolean;
   onUnlock: (postId: string) => void;
@@ -72,10 +71,10 @@ export interface StageProfileViewProps {
   subscriptionPending: boolean;
   /** Opens Messages in this Creator's chat. No thread is created until something is sent. */
   onOpenMessages: (creatorAccountId: string) => void;
-  accessPending: boolean;
-  onAccessChange: (access: SlurpManagedStageProfile["access"]) => void;
-  /** Increments each time the profile rail asks the composer to open. */
+  /** Above 0 while the rail or the hub's "Add Story" asks for the composer; the profile opens it and calls `onComposerOpened`. */
   composerOpenSignal: number;
+  /** Clears the request, so coming back to the profile later does not open the composer again. */
+  onComposerOpened?: () => void;
 }
 
 /**
@@ -100,15 +99,17 @@ export function useStageProfileViewModel(props: StageProfileViewProps) {
   } = props;
   const { t: localizeUi, i18n } = useUiTranslation();
   const bannerSrc = useSlurpMediaSrc(profile.bannerUrl, { width: 1280 });
-  const [accessSettingsOpen, setAccessSettingsOpen] = useState(false);
   const [automationOpen, setAutomationOpen] = useState(false);
-  // Open on a Creator this persona operates, where posting is the reason for the visit. On a
-  // world-run Creator the tools are still reachable, but they are not what you came to read.
-  const [creatorToolsOpen, setCreatorToolsOpen] = useState(
-    viewerAccounts.some((account) => account.id === profile.sourceAccountId),
-  );
+  // Closed by default: posting moved to the composer sheet (design step 7), so what is left here
+  // (identity, storyline effects, automation) is operator detail, quieter than the page itself.
+  const [creatorToolsOpen, setCreatorToolsOpen] = useState(false);
+  // The composer is one full-screen sheet (design step 7), opened from "New post", the rail's
+  // "Create post" / "Add story" and the hub's "Add Story".
+  const [composerOpen, setComposerOpen] = useState(false);
   useEffect(() => {
-    if (composerOpenSignal > 0) setCreatorToolsOpen(true);
+    if (composerOpenSignal <= 0) return;
+    setComposerOpen(true);
+    props.onComposerOpened?.();
   }, [composerOpenSignal]);
   const updateAutoPosting = useUpdateCreatorAutoPosting();
   const updateFanActivity = useUpdateCreatorFanActivity();
@@ -117,6 +118,17 @@ export function useStageProfileViewModel(props: StageProfileViewProps) {
   // The compose query is the viewer-facing source for action prices and messaging policy.
   const offerMessaging = useSlurpCompose(profile.id, viewerAccount?.entityId ?? null).data?.messaging ?? null;
   const [customTip, setCustomTip] = useState("");
+  const walletQuery = useSlurpWallet(viewerAccount?.entityId ?? null);
+  const subscriptionState = slpProfileSubscriptionState({
+    creatorId: profile.id,
+    subscribed: viewerCreator?.subscribed ?? false,
+    wallet: walletQuery.data,
+  });
+  const openComposer = (postType?: "post" | "story") => {
+    if (postType === "story") props.onDraftChange({ postType, poll: null, title: "" });
+    else if (postType === "post") props.onDraftChange({ postType, linkedPostId: null });
+    setComposerOpen(true);
+  };
   const [locationDraft, setLocationDraft] = useState(
     () => (profile as SlurpManagedStageProfile & { location?: string }).location ?? "",
   );
@@ -128,12 +140,10 @@ export function useStageProfileViewModel(props: StageProfileViewProps) {
   }, [profile.id, profile]);
   const uploadProfileAvatar = useUploadCreatorAvatar();
   const uploadProfileBanner = useUploadCreatorBanner();
-  const generateProfileArtwork = useGenerateCreatorArtwork();
   const profileAvatarFileRef = useRef<HTMLInputElement | null>(null);
   const profileBannerFileRef = useRef<HTMLInputElement | null>(null);
   const [artworkKind, setArtworkKind] = useState<"avatar" | "banner" | null>(null);
   const [openImagePostId, setOpenImagePostId] = useState<string | null>(null);
-  const [artworkGuidance, setArtworkGuidance] = useState("");
   // Global fan controls require a Creator settings route. Keep per-Creator controls available.
   const globalSettings = slurpSettings
     ? {
@@ -148,9 +158,26 @@ export function useStageProfileViewModel(props: StageProfileViewProps) {
   const followersQuery = useCreatorFollowers(profile.id);
   const subscribers = subscribersQuery.data?.pages.flatMap((page) => page.items) ?? [];
   const subscriberTotal = subscribersQuery.data?.pages[0]?.total ?? subscribers.length;
-  const followerTotal = connectionCounts[profile.id]?.followers ?? 0;
-  const profileLikeTotal = posts.reduce((total, post) => total + (post.likeCount ?? 0), 0);
-  const latestActivityAt = posts.reduce((latest, post) => Math.max(latest, Date.parse(post.createdAt)), 0);
+  const followerTotal = connectionCounts ? (connectionCounts[profile.id]?.followers ?? 0) : null;
+  // The posts response wraps each post as `{ viewerPost }` or `{ managed, viewerPost }`. Header counts,
+  // likes and last activity read the post inside the wrapper, never the wrapper itself.
+  const wrappedPosts = posts.flatMap((entry) => {
+    const post = ("managed" in entry ? entry.managed : null) ?? entry.viewerPost;
+    return post ? [post] : [];
+  });
+  const postTabCounts = {
+    posts: wrappedPosts.filter((post) => !isSlurpStory(post)).length,
+    media: wrappedPosts.filter((post) => Boolean(post.imageUrl)).length,
+    stories: wrappedPosts.filter(isSlurpStory).length,
+  };
+  // Null while the posts load: the header shows a dash, never a false 0.
+  const profileLikeTotal = props.isLoading
+    ? null
+    : posts.reduce((total, entry) => total + (entry.viewerPost?.likeCount ?? 0), 0);
+  const latestActivityAt = wrappedPosts.reduce((latest, post) => {
+    const at = Date.parse(post.createdAt);
+    return Number.isNaN(at) ? latest : Math.max(latest, at);
+  }, 0);
   const viewingOwnCreator = profile.sourceAccountId === viewerAccount?.entityId;
   const creatorStatus = viewingOwnCreator
     ? "online"
@@ -162,7 +189,6 @@ export function useStageProfileViewModel(props: StageProfileViewProps) {
   const profileBioBody = profile.bio.trim();
   const accent = profileAccent(profile.id);
   const personaBackedCreator = viewerAccounts.some((account) => account.id === profile.sourceAccountId);
-  const accessViewerAccounts = viewerAccounts.filter((account) => account.id !== profile.sourceAccountId);
   // Every Slurp Creator profile is operator-managed, so post controls and artwork editing stay
   // available regardless of which viewer persona is looking at the profile.
   const managedCreator = true;
@@ -176,6 +202,9 @@ export function useStageProfileViewModel(props: StageProfileViewProps) {
     handle: profile.handle,
     bio: profile.bio,
     stagePersonality: profile.stagePersonality,
+    appearance: profile.appearance,
+    wardrobe: profile.wardrobe,
+    locations: profile.locations,
     disclosureMode: profile.disclosureMode ?? "hinted",
     gender: profile.gender,
     tags: profile.tags,
@@ -224,7 +253,38 @@ export function useStageProfileViewModel(props: StageProfileViewProps) {
       ? [{ ...item.model, imageUrl: item.model.imageUrl }]
       : [];
   });
-  const featuredPost = imagePosts[0] ?? null;
+  // What a subscription opens, for the paywall card and the locked tiles on Media: locked posts
+  // (not Stories) and the blurred teasers the server sends for the ones with a picture.
+  const lockedPosts = projectedPosts.flatMap((item) =>
+    item.kind === "locked" && !isSlurpStory(item.post) ? [item.post] : [],
+  );
+  const lockedTeasers = lockedPosts.flatMap((post) =>
+    typeof post.imageUrl === "string"
+      ? [{ id: post.id, imageUrl: post.imageUrl, unlockPrice: slpUnlockPriceOf(post) }]
+      : [],
+  );
+  // The Stories tab plays them in the Story viewer, so it needs them as moments (Creator + post).
+  const storyMoments = viewerCreator
+    ? posts.flatMap((entry) =>
+        entry.viewerPost && isSlurpStory(entry.viewerPost) ? [{ creator: viewerCreator, post: entry.viewerPost }] : [],
+      )
+    : [];
+  // Open a post of this profile: a picture post in the post dialog, anything else by switching to
+  // Posts and scrolling it into view (storyline links, locked tiles on Media).
+  const showProfilePost = (postId: string) => {
+    if (imagePosts.some((post) => post.id === postId)) {
+      setOpenImagePostId(postId);
+      return;
+    }
+    setActiveTab("posts");
+    window.requestAnimationFrame(() =>
+      window.requestAnimationFrame(() =>
+        document
+          .querySelector(`[data-noodle-post-id="${CSS.escape(postId)}"]`)
+          ?.scrollIntoView({ block: "center", behavior: slpPrefersReducedMotion() ? "auto" : "smooth" }),
+      ),
+    );
+  };
   const openImagePost = openImagePostId ? (imagePosts.find((post) => post.id === openImagePostId) ?? null) : null;
   const emptyTabTitle =
     activeTab === "media"
@@ -237,8 +297,6 @@ export function useStageProfileViewModel(props: StageProfileViewProps) {
     localizeUi,
     i18n,
     bannerSrc,
-    accessSettingsOpen,
-    setAccessSettingsOpen,
     automationOpen,
     setAutomationOpen,
     creatorToolsOpen,
@@ -251,20 +309,24 @@ export function useStageProfileViewModel(props: StageProfileViewProps) {
     offerMessaging,
     customTip,
     setCustomTip,
+    subscriptionState,
+    openComposer,
+    composerOpen,
+    setComposerOpen,
+    lockedPosts,
+    lockedTeasers,
+    storyMoments,
     locationDraft,
     setLocationDraft,
     locationProfileId,
     uploadProfileAvatar,
     uploadProfileBanner,
-    generateProfileArtwork,
     profileAvatarFileRef,
     profileBannerFileRef,
     artworkKind,
     setArtworkKind,
     openImagePostId,
     setOpenImagePostId,
-    artworkGuidance,
-    setArtworkGuidance,
     globalSettings,
     autoPosting,
     activeTab,
@@ -277,6 +339,7 @@ export function useStageProfileViewModel(props: StageProfileViewProps) {
     subscriberTotal,
     followerTotal,
     profileLikeTotal,
+    postTabCounts,
     latestActivityAt,
     viewingOwnCreator,
     creatorStatus,
@@ -284,7 +347,6 @@ export function useStageProfileViewModel(props: StageProfileViewProps) {
     profileBioBody,
     accent,
     personaBackedCreator,
-    accessViewerAccounts,
     managedCreator,
     goalForViewer,
     arcsQuery,
@@ -294,10 +356,16 @@ export function useStageProfileViewModel(props: StageProfileViewProps) {
     projectedPosts,
     visiblePosts,
     imagePosts,
-    featuredPost,
     openImagePost,
+    showProfilePost,
     emptyTabTitle,
   };
 }
 
 export type StageProfileViewModel = ReturnType<typeof useStageProfileViewModel>;
+
+/** The server sends the unlock price beside the shared view types, which have no price field. */
+function slpUnlockPriceOf(post: unknown): number | null {
+  const price = (post as { unlockPrice?: unknown } | null)?.unlockPrice;
+  return typeof price === "number" && price >= 0 ? price : null;
+}

@@ -1,6 +1,11 @@
 import { z } from "zod";
 import type { GarnishAdEvent, GarnishAdsStorage } from "./garnish-ads.storage.js";
-import { GARNISH_CONTENT_RATINGS, type GarnishAd, type GarnishPlatform } from "./garnish-ads.types.js";
+import {
+  GARNISH_CONTENT_RATINGS,
+  type GarnishAd,
+  type GarnishBrand,
+  type GarnishPlatform,
+} from "./garnish-ads.types.js";
 
 export const GARNISH_EXPORT_VERSION = 1;
 
@@ -9,18 +14,35 @@ const adSchema = z.object({
   platform: z.enum(["slurp", "noodle"]),
   kind: z.enum(["creator", "inline"]),
   brand: z.string().trim().min(1).max(80),
+  brandId: z.string().trim().min(1).max(120).optional(),
   product: z.string().trim().min(1).max(120),
   copy: z.string().trim().min(1).max(600),
+  priceFeel: z.enum(["budget", "everyday", "premium"]).optional(),
+  look: z.string().trim().max(400).optional(),
   categories: z.array(z.string().trim().min(1).max(32)).max(12).default([]),
   contextTags: z.array(z.string().trim().min(1).max(32)).max(12).default([]),
   creatorAccountId: z.string().trim().min(1).max(120).optional(),
   creatorHandle: z.string().trim().min(1).max(120).optional(),
   imageUrl: z.string().trim().max(2048).nullable().optional(),
+  wideImageUrl: z.string().trim().max(2048).nullable().optional(),
   actionLabel: z.string().trim().min(1).max(40).optional(),
   contentRating: z.enum(["tame", "suggestive", "explicit"]),
   origin: z.enum(["builtin", "user", "generated"]),
   createdAt: z.string().trim().max(40).optional(),
   retiredAt: z.string().trim().max(40).nullable().optional(),
+});
+
+const brandSchema = z.object({
+  id: z.string().trim().min(1).max(120),
+  platform: z.enum(["slurp", "noodle"]),
+  name: z.string().trim().min(1).max(80),
+  category: z.string().trim().max(40).default(""),
+  tone: z.string().trim().max(300).default(""),
+  logoPrompt: z.string().trim().max(400).default(""),
+  logoUrl: z.string().trim().max(2048).nullable().optional(),
+  origin: z.enum(["builtin", "user", "generated"]),
+  createdAt: z.string().trim().max(40).optional(),
+  disabledAt: z.string().trim().max(40).nullable().optional(),
 });
 
 const eventSchema = z.object({
@@ -35,6 +57,8 @@ export const garnishExportSchema = z.object({
   platform: z.enum(["slurp", "noodle"]).nullable().default(null),
   exportedAt: z.string().trim().max(40).optional(),
   ads: z.array(adSchema).max(5000),
+  // Brands came later: an older file has none, and its ads find their brand by name.
+  brands: z.array(brandSchema).max(1000).default([]),
   // Events are optional: a shared brand pack carries ads only, while a backup
   // carries the ratings too.
   events: z.array(eventSchema).max(20000).default([]),
@@ -51,6 +75,7 @@ export async function exportGarnishAds(pool: GarnishAdsStorage, platform?: Garni
     platform: platform ?? null,
     exportedAt: new Date().toISOString(),
     ads,
+    brands: await pool.listBrands(platform),
     events,
   };
 }
@@ -72,6 +97,7 @@ export async function importGarnishAds(
 ): Promise<{ imported: number; events: number }> {
   const parsed = garnishExportSchema.parse(payload);
   const incoming = parsed.ads as GarnishAd[];
+  for (const brand of parsed.brands as GarnishBrand[]) await pool.saveBrand(brand);
 
   if (mode === "replace") {
     await pool.replaceAll(incoming);

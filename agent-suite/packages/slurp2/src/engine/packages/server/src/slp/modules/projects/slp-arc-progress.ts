@@ -1,3 +1,5 @@
+import { createSlpPoll } from "../../../../../shared/src/slp/slp-polls.js";
+import type { SlpPoll } from "../../../../../shared/src/slp/slp-social.types.js";
 import { type SlurpModifierKind } from "../creators/slp-creator-state.js";
 import {
   SLURP_PROJECT_CHAPTER_MAX_LENGTH,
@@ -87,9 +89,22 @@ export const SLURP_ARC_DIRECTOR_ACTIONS = [
   "twist",
   "end",
   "choose",
+  "hold",
+  "release",
+  "insert",
 ] as const;
 
 export type SlurpArcDirectorAction = (typeof SLURP_ARC_DIRECTOR_ACTIONS)[number];
+
+/** Chapter control: open without Director mode, because steering the storyline is the player's. */
+export const SLURP_ARC_CHAPTER_ACTIONS: readonly SlurpArcDirectorAction[] = [
+  "skip",
+  "back",
+  "label",
+  "hold",
+  "release",
+  "insert",
+];
 
 /**
  * One Director mode action, or null when it does not apply: a suggestion or a finished arc, skip
@@ -124,9 +139,37 @@ export function slurpProjectDirect(
     case "resume":
       next = project.status === "paused" ? { ...project, status: "active" } : null;
       break;
-    case "skip":
-      next = moveTo(project.chapter + 1);
+    case "skip": {
+      // "Move on" also lets go of a held chapter.
+      const moved = moveTo(project.chapter + 1);
+      next = moved ? { ...moved, held: false } : null;
       break;
+    }
+    case "hold":
+      next = project.chapters.length && !project.held ? { ...project, held: true } : null;
+      break;
+    case "release":
+      next = project.held ? { ...project, held: false } : null;
+      break;
+    case "insert": {
+      // A new chapter right after this one, so the player can say what happens next. Chapter-aligned
+      // lists get an empty slot at the same place, so nothing shifts onto the wrong chapter.
+      const label = clampText(value, SLURP_PROJECT_CHAPTER_MAX_LENGTH);
+      const index = project.chapter + 1;
+      const insert = <T>(list: readonly T[], empty: T) =>
+        list.length >= index ? [...list.slice(0, index), empty, ...list.slice(index)] : [...list];
+      next =
+        label && project.chapters.length && project.chapters.length < SLURP_PROJECT_MAX_CHAPTERS
+          ? {
+              ...project,
+              chapters: insert(project.chapters, label),
+              phaseDays: insert(project.phaseDays, null),
+              choices: insert(project.choices, null),
+              reach: insert(project.reach, null),
+            }
+          : null;
+      break;
+    }
     case "back":
       next = moveTo(project.chapter - 1);
       break;
@@ -284,7 +327,7 @@ export function slurpProjectAdvance(
   poll?: { postId: string; hours: number },
 ): SlurpProject {
   const posted = { ...project, posts: project.posts + 1, updatedAt: at.toISOString() };
-  if (project.chapters.length === 0) return posted;
+  if (project.chapters.length === 0 || project.held) return posted;
   // A chapter with an open choice waits for its poll to be settled, however many posts go by.
   if (project.choices[project.chapter])
     return project.pollPostId || !poll
@@ -319,7 +362,7 @@ export function slurpProjectTick(
       : project;
   }
   // Settled by `slurpProjectChoose` once `slurpProjectPollDue` says so, never by the clock alone.
-  if (project.choices[project.chapter]) return project;
+  if (project.choices[project.chapter] || project.held) return project;
   const days = project.phaseDays[project.chapter];
   if (!days || daysInChapter(project, at) < days.max * PACE_MULTIPLIER[pace]) return project;
   return nextChapter(project, at);
@@ -410,4 +453,31 @@ export function slurpProjectChoose(
     history: project.history.map((entry, index, list) => (index === list.length - 1 ? { ...entry, poll } : entry)),
   };
   return slurpProjectRecord(settled, nextChapter(settled, at), at);
+}
+
+/** A storyline's vote on this post has closed, so later votes do not land (R1-035). */
+export function slurpArcVoteClosed(
+  projects: readonly Pick<SlurpProject, "pollPostId" | "pollClosesAt">[],
+  postId: string,
+  now = Date.now(),
+): boolean {
+  const arc = projects.find((project) => project.pollPostId === postId);
+  return Boolean(arc?.pollClosesAt && Date.parse(arc.pollClosesAt) <= now);
+}
+
+/**
+ * An open arc choice, posted as a real poll on the arc's next post (attached, never parsed from the
+ * text). `protect` keeps the Creator's source identity out of the question and the options.
+ */
+export function slurpArcPoll(
+  project: SlurpProject | null,
+  protect: (value: string, maxLength: number) => string | null,
+): SlpPoll | null {
+  const choice = project && !project.pollPostId ? (project.choices[project.chapter] ?? null) : null;
+  return choice
+    ? createSlpPoll({
+        question: protect(choice.question, 240),
+        options: choice.options.map((option) => protect(option.label, 120)),
+      })
+    : null;
 }

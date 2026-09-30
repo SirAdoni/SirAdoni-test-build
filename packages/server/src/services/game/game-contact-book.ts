@@ -3,6 +3,7 @@ import { eq } from "../../db/file-query.js";
 import { campaignMemoryEntities, campaignMemoryRelationships, chats } from "../../db/schema/index.js";
 import { readSceneTimeline } from "./scene-timeline.service.js";
 import { createCharactersStorage } from "../storage/characters.storage.js";
+import { readCharacterAvatarState } from "./npc-avatar-state.js";
 import { normalizeAvatarCrop, type AvatarCrop } from "@marinara-engine/shared";
 
 export interface GameContact {
@@ -68,10 +69,16 @@ export async function buildGameContactBook(db: DB, chatId: string): Promise<Game
   const library = libraryRows.map((row) => {
     const data = object(row.data);
     const extensions = object(data.extensions);
+    const avatarState = readCharacterAvatarState(data);
     return {
       ...data,
       id: row.id,
-      avatarUrl: row.avatarPath ?? data.avatarUrl ?? data.avatar ?? null,
+      avatarUrl: avatarState
+        ? avatarState.removed
+          ? null
+          : row.avatarPath
+        : (row.avatarPath ?? data.avatarUrl ?? data.avatar ?? null),
+      avatarState,
       avatarCrop: normalizeAvatarCrop(extensions.avatarCrop),
     };
   });
@@ -242,11 +249,17 @@ export async function buildGameContactBook(db: DB, chatId: string): Promise<Game
         const entry = Object.assign({}, ...matchingEntries);
         // Keep crop metadata paired with the portrait source that won. A library
         // avatar must not inherit a stale NPC crop, and vice versa.
-        const portraitEntry =
-          matchingEntries.find(
-            (candidate: any) => typeof candidate.avatarUrl === "string" && candidate.avatarUrl.trim(),
-          ) ??
-          matchingEntries.find((candidate: any) => typeof candidate.avatar === "string" && candidate.avatar.trim());
+        // Explicit card intent outranks every older roster/timeline fallback;
+        // unmarked cards retain legacy snapshot portrait behavior.
+        const canonicalPortrait = library.find((candidate) => candidate.id === id && candidate.avatarState);
+        const portraitEntry = canonicalPortrait
+          ? canonicalPortrait.avatarUrl
+            ? canonicalPortrait
+            : undefined
+          : (matchingEntries.find(
+              (candidate: any) => typeof candidate.avatarUrl === "string" && candidate.avatarUrl.trim(),
+            ) ??
+            matchingEntries.find((candidate: any) => typeof candidate.avatar === "string" && candidate.avatar.trim()));
         const existing = contacts.get(id);
         const relationshipRecord = relationshipFor([
           ...new Set([id, ...matchingEntries.map((candidate: any) => String(candidate.id ?? "")).filter(Boolean)]),
@@ -269,14 +282,14 @@ export async function buildGameContactBook(db: DB, chatId: string): Promise<Game
           name: String(entry?.name ?? existing?.name ?? name),
           ...(portraitEntry
             ? { avatar: String(portraitEntry.avatarUrl || portraitEntry.avatar) }
-            : existing?.avatar
+            : !canonicalPortrait && existing?.avatar
               ? { avatar: existing.avatar }
               : {}),
           ...(portraitEntry
             ? normalizeAvatarCrop(portraitEntry.avatarCrop)
               ? { avatarCrop: normalizeAvatarCrop(portraitEntry.avatarCrop) }
               : {}
-            : existing?.avatarCrop
+            : !canonicalPortrait && existing?.avatarCrop
               ? { avatarCrop: existing.avatarCrop }
               : {}),
           ...(recordedOpinion

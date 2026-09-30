@@ -346,6 +346,7 @@ export function GenerationParametersFields({
               )}
               value={value.temperature}
               onChange={(nextValue) => set("temperature", nextValue)}
+              effective={effectiveHint("temperature")}
               sendEnabled={isSendEnabled("temperature")}
               onSendChange={(enabled) => setSend("temperature", enabled)}
               min={0}
@@ -359,6 +360,7 @@ export function GenerationParametersFields({
               help={localizeUi("ui.ui.generationparametersfields.theMaximumNumberOfTokensTheModelCanGenerate")}
               value={value.maxTokens}
               onChange={(nextValue) => set("maxTokens", nextValue)}
+              effective={effectiveHint("maxTokens")}
               sendEnabled={isSendEnabled("maxTokens")}
               onSendChange={(enabled) => setSend("maxTokens", enabled)}
               min={1}
@@ -373,6 +375,7 @@ export function GenerationParametersFields({
               )}
               value={value.topP}
               onChange={(nextValue) => set("topP", nextValue)}
+              effective={effectiveHint("topP")}
               sendEnabled={isSendEnabled("topP")}
               onSendChange={(enabled) => setSend("topP", enabled)}
               min={0}
@@ -386,6 +389,7 @@ export function GenerationParametersFields({
               help={localizeUi("ui.ui.generationparametersfields.limitsTheModelToOnlyConsiderTheTopK")}
               value={value.topK}
               onChange={(nextValue) => set("topK", nextValue)}
+              effective={effectiveHint("topK")}
               sendEnabled={isSendEnabled("topK")}
               onSendChange={(enabled) => setSend("topK", enabled)}
               min={0}
@@ -403,6 +407,7 @@ export function GenerationParametersFields({
               help={localizeUi("ui.ui.generationparametersfields.penalizesTokensBasedOnHowOftenTheyVeAlready")}
               value={value.frequencyPenalty}
               onChange={(nextValue) => set("frequencyPenalty", nextValue)}
+              effective={effectiveHint("frequencyPenalty")}
               sendEnabled={isSendEnabled("frequencyPenalty")}
               onSendChange={(enabled) => setSend("frequencyPenalty", enabled)}
               min={-2}
@@ -416,6 +421,7 @@ export function GenerationParametersFields({
               help={localizeUi("ui.ui.generationparametersfields.penalizesTokensThatHaveAppearedAtAllRegardlessOf")}
               value={value.presencePenalty}
               onChange={(nextValue) => set("presencePenalty", nextValue)}
+              effective={effectiveHint("presencePenalty")}
               sendEnabled={isSendEnabled("presencePenalty")}
               onSendChange={(enabled) => setSend("presencePenalty", enabled)}
               min={-2}
@@ -499,6 +505,7 @@ export function GenerationParametersFields({
                 value2: ">",
               }).trimStart()}
             />
+            {effectiveLine("assistantPrefill")}
           </div>
         )}
         {show("assistantReasoningPrefill") && (
@@ -516,7 +523,9 @@ export function GenerationParametersFields({
               rows={3}
               title={localizeUi("ui.ui.generationparametersfields.assistantReasoningPrefill")}
               className={PARAM_TEXTAREA_CLASS}
+              placeholder={localizeUi("generationParameters.assistantReasoningPrefill.placeholder")}
             />
+            {effectiveLine("assistantReasoningPrefill")}
           </div>
         )}
         {show("customThinkingTags") && (
@@ -525,12 +534,14 @@ export function GenerationParametersFields({
             onChange={(nextValue) => set("customThinkingTags", nextValue)}
           />
         )}
+        {show("customThinkingTags") && effectiveLine("customThinkingTags")}
         {show("customParameters") && (
           <CustomParametersInput
             value={value.customParameters}
             onChange={(nextValue) => set("customParameters", nextValue)}
           />
         )}
+        {show("customParameters") && effectiveLine("customParameters")}
         {showCustomHeaders && (
           <CustomParametersInput
             headers
@@ -556,7 +567,7 @@ export function GenerationParametersFields({
                     value.serviceTier === tier ? PARAM_CHOICE_ACTIVE_CLASS : PARAM_CHOICE_IDLE_CLASS,
                   )}
                 >
-                  {tier ?? localizeUi("ui.noodle.noodlehome.default")}
+                  {tier ? tier.charAt(0).toUpperCase() + tier.slice(1) : localizeUi("ui.noodle.noodlehome.default")}
                 </button>
               ))}
             </div>
@@ -568,6 +579,7 @@ export function GenerationParametersFields({
             <ParameterHeader
               label={localizeUi("ui.ui.generationparametersfields.reasoningEffort")}
               help={localizeUi("ui.ui.generationparametersfields.howMuchReasoningWorkTheProviderShouldSpendBefore")}
+              effective={effectiveHint("reasoningEffort")}
               sendEnabled={isSendEnabled("reasoningEffort")}
               onSendChange={(enabled) => setSend("reasoningEffort", enabled)}
             />
@@ -601,6 +613,7 @@ export function GenerationParametersFields({
             <ParameterHeader
               label={localizeUi("ui.ui.generationparametersfields.verbosity")}
               help={localizeUi("ui.ui.generationparametersfields.controlsHowLongAndDetailedResponsesShouldBeLow")}
+              effective={effectiveHint("verbosity")}
               sendEnabled={isSendEnabled("verbosity")}
               onSendChange={(enabled) => setSend("verbosity", enabled)}
             />
@@ -1030,7 +1043,11 @@ function ParameterHeader({
         />
       </div>
       {effective && (
-        <p className="mt-1 break-words text-[0.625rem] text-[var(--muted-foreground)]" data-effective-parameter={label}>
+        <p
+          className="mt-1 truncate text-[0.625rem] text-[var(--muted-foreground)]"
+          title={effective}
+          data-effective-parameter={label}
+        >
           {effective}
         </p>
       )}

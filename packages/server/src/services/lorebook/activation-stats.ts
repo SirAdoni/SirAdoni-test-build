@@ -172,7 +172,7 @@ export async function listLorebookActivationStats(
   db: DB,
   entryIds: readonly string[],
 ): Promise<LorebookEntryActivationStat[]> {
-  if (entryIds.length === 0) return [];
+  if (!isFeatureEnabled("usageAndActivationStats") || entryIds.length === 0) return [];
   const rows = await db
     .select()
     .from(lorebookEntryActivationStats)

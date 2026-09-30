@@ -165,7 +165,7 @@ assert.match(storage, /await writeWallet\(viewerAccountId, \{ \.\.\.wallet, subs
 assert.match(storage, /walletEnabled: true/u, "the economy is on by default");
 assert.match(
   storage,
-  /const renewal = renewSubscriptions\(stored, at\)/u,
+  /const renewal = renewSubscriptions\(stored, at, gone, viewerAccountId\)/u,
   "wallet reads must still renew subscriptions",
 );
 assert.match(

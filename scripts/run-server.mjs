@@ -22,7 +22,7 @@ for (const signal of stopSignals) {
   });
 }
 
-do {
+while (true) {
   child = spawn(process.execPath, [...process.execArgv, ...process.argv.slice(2)], {
     stdio: "inherit",
     env: { ...process.env, MARINARA_RESTART_SUPERVISOR: String(process.pid) },
@@ -39,4 +39,4 @@ do {
     process.exitCode ??= code;
     break;
   }
-} while (!stopping);
+}

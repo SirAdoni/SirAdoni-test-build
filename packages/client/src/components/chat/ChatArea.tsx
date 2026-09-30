@@ -36,6 +36,7 @@ import {
 
 import { getCurrentInputSnapshot, useChatStore } from "../../stores/chat.store";
 import { hasActiveTextSelection } from "../../lib/text-selection";
+import { readChatMetadata } from "../../lib/chat-wizard-defaults";
 import { useGenerate } from "../../hooks/use-generate";
 import { useGenerationRecovery } from "../../hooks/use-generation-recovery";
 import { useGenerateGallerySelfie } from "../../hooks/use-gallery";
@@ -478,7 +479,99 @@ type TTSGenerationSnapshot = {
   failed: boolean;
 };
 
+function ChatOpeningState({
+  error: chatError,
+  onRetry,
+  onBack,
+}: {
+  error: unknown;
+  onRetry: () => unknown;
+  onBack: () => void;
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  const chatOpenTimedOut = isRequestTimeoutError(chatError);
+  const errorMessage = chatOpenTimedOut
+    ? localizeUi("ui.chat.chatarea.serverUnreachableHint")
+    : chatError instanceof ApiError
+      ? chatError.message
+      : chatError instanceof Error
+        ? chatError.message
+        : localizeUi("ui.chat.chatarea.openingChat");
+  const hasOpenError = !!chatError;
+
+  return (
+    <div
+      data-component="ChatArea.RestoringChat"
+      className="mari-app-background-paint flex flex-1 items-center justify-center overflow-hidden p-6"
+    >
+      <div className="flex flex-col items-center gap-3 text-center">
+        {!hasOpenError && (
+          <div className="h-7 w-7 animate-spin rounded-full border-2 border-[var(--border)] border-t-[var(--primary)]" />
+        )}
+        <div className="space-y-1">
+          <p className="text-sm font-medium text-[var(--foreground)]">
+            {hasOpenError
+              ? chatOpenTimedOut
+                ? localizeUi("ui.chat.chatarea.serverUnreachable")
+                : localizeUi("ui.chat.chatarea.couldNotOpenThisChat")
+              : localizeUi("ui.chat.chatarea.openingChat")}
+          </p>
+          {hasOpenError && (
+            <p className="mari-chrome-accent-text-muted mari-accent-animated max-w-sm text-xs">{errorMessage}</p>
+          )}
+        </div>
+        {hasOpenError && (
+          <div className="flex items-center gap-2">
+            {/* The unreachable hint tells the user to try again after
+                  foregrounding Termux; with focus-refetch globally off and
+                  timeout retries disabled, this button is the recovery path. */}
+            {chatOpenTimedOut && (
+              <button
+                type="button"
+                onClick={() => void onRetry()}
+                className="mari-chrome-control mari-chrome-control--small text-xs"
+              >
+                {localizeUi("ui.chat.chatarea.tryAgain")}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => onBack()}
+              className="mari-chrome-control mari-chrome-control--small text-xs"
+            >
+              {localizeUi("ui.chat.chatarea.backToChats")}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const MultiplayerChat = lazy(() =>
+  import("../../features/multiplayer/MultiplayerChat").then((module) => ({ default: module.MultiplayerChat })),
+);
+
 export const ChatArea = memo(function ChatArea() {
+  const activeChatId = useChatStore((state) => state.activeChatId);
+  const { data: chat, error, refetch } = useChat(activeChatId);
+  useEffect(() => {
+    if (activeChatId && error instanceof ApiError && error.status === 404) {
+      useChatStore.getState().setActiveChatId(null);
+    }
+  }, [activeChatId, error]);
+  if (activeChatId && !chat)
+    return (
+      <ChatOpeningState error={error} onRetry={refetch} onBack={() => useChatStore.getState().setActiveChatId(null)} />
+    );
+  const metadata = chat ? readChatMetadata(chat) : {};
+  if (chat && (metadata.multiplayerSetup === true || metadata.multiplayer)) {
+    return (
+      <Suspense fallback={null}>
+        <MultiplayerChat key={chat.id} chat={chat} />
+      </Suspense>
+    );
+  }
   return (
     <CharacterReferencesProvider>
       <ChatAreaContent />
@@ -823,11 +916,6 @@ const ChatAreaContent = memo(function ChatAreaContent() {
   const agentProcessing = useAgentStore((s) =>
     activeChatId ? s.processingChatIds.includes(activeChatId) : s.isProcessing,
   );
-
-  useEffect(() => {
-    if (!activeChatId || !(chatError instanceof ApiError) || chatError.status !== 404) return;
-    setActiveChatId(null);
-  }, [activeChatId, chatError, setActiveChatId]);
 
   useEffect(() => {
     if (!activeChatId || !allChats) return;
@@ -2126,12 +2214,29 @@ const ChatAreaContent = memo(function ChatAreaContent() {
       ) {
         return;
       }
+      // The confirmation can outlive this chat. Never consume another chat's draft.
+      if (useChatStore.getState().activeChatId !== activeChatId) return;
+      const composer = document.querySelector<HTMLTextAreaElement>("textarea[data-chat-composer]");
+      const currentInput = composer?.dataset.chatId === activeChatId ? composer.value : getCurrentInputSnapshot();
+      const isGuided = guideGenerations && currentInput.trim().length > 0;
+      const replaceGuidanceDraft = (expected: string, text: string) => {
+        const state = useChatStore.getState();
+        const input = document.querySelector<HTMLTextAreaElement>("textarea[data-chat-composer]");
+        if (state.activeChatId === activeChatId && input?.dataset.chatId === activeChatId) {
+          if (input.value !== expected) return;
+          input.value = text;
+          // Reuse each uncontrolled composer's draft debounce, sizing and input-state handling.
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        } else if ((state.inputDrafts.get(activeChatId) ?? "") !== expected) {
+          return;
+        }
+        state.setInputDraft(activeChatId, text);
+      };
+      if (isGuided) replaceGuidanceDraft(currentInput, "");
       try {
         // Regenerate as a new swipe on the existing message
-        const currentInput = getCurrentInputSnapshot();
-        const hasInput = currentInput ? currentInput.trim().length > 0 : false;
-        await generate(
-          guideGenerations && hasInput
+        const consumed = await generate(
+          isGuided
             ? {
                 chatId: activeChatId,
                 connectionId: null,
@@ -2141,7 +2246,9 @@ const ChatAreaContent = memo(function ChatAreaContent() {
               }
             : { chatId: activeChatId, connectionId: null, regenerateMessageId: messageId },
         );
+        if (isGuided && !consumed) replaceGuidanceDraft("", currentInput);
       } catch {
+        if (isGuided) replaceGuidanceDraft("", currentInput);
         // Error toast is shown by the generate hook
       }
     },
@@ -2973,9 +3080,9 @@ const ChatAreaContent = memo(function ChatAreaContent() {
   // ── /goto command: paginate older pages until target message is loaded, then scroll to it
   useEffect(() => {
     if (!gotoRequest || gotoRequest.chatId !== activeChatId) return;
-    if (isGameChat) {
-      // The Game surface shows one narration beat at a time and has no
-      // per-message anchors, so the jump opens the campaign log at that turn.
+    // Wait for the selected chat before routing a jump away from the transcript.
+    if (!chatDetailFetched || !chat || chat.id !== activeChatId) return;
+    if (chat.mode === "game") {
       openGameLog({ chatId: gotoRequest.chatId, messageNumber: gotoRequest.messageNumber });
       useChatStore.getState().clearGotoRequest();
       return;
@@ -3038,70 +3145,15 @@ const ChatAreaContent = memo(function ChatAreaContent() {
     isFetchingNextPage,
     fetchNextPage,
     localizeUi,
-    isGameChat,
+    chat,
+    chatDetailFetched,
   ]);
 
   // ═══════════════════════════════════════════════
   // Restoring persisted active chat
   // ═══════════════════════════════════════════════
   if (activeChatId && !chat) {
-    const chatOpenTimedOut = isRequestTimeoutError(chatError);
-    const errorMessage = chatOpenTimedOut
-      ? localizeUi("ui.chat.chatarea.serverUnreachableHint")
-      : chatError instanceof ApiError
-        ? chatError.message
-        : chatError instanceof Error
-          ? chatError.message
-          : "Opening chat...";
-    const hasOpenError = !!chatError;
-
-    return (
-      <div
-        data-component="ChatArea.RestoringChat"
-        className="mari-app-background-paint flex flex-1 items-center justify-center overflow-hidden p-6"
-      >
-        <div className="flex flex-col items-center gap-3 text-center">
-          {!hasOpenError && (
-            <div className="h-7 w-7 animate-spin rounded-full border-2 border-[var(--border)] border-t-[var(--primary)]" />
-          )}
-          <div className="space-y-1">
-            <p className="text-sm font-medium text-[var(--foreground)]">
-              {hasOpenError
-                ? chatOpenTimedOut
-                  ? localizeUi("ui.chat.chatarea.serverUnreachable")
-                  : localizeUi("ui.chat.chatarea.couldNotOpenThisChat")
-                : localizeUi("ui.chat.chatarea.openingChat")}
-            </p>
-            {hasOpenError && (
-              <p className="mari-chrome-accent-text-muted mari-accent-animated max-w-sm text-xs">{errorMessage}</p>
-            )}
-          </div>
-          {hasOpenError && (
-            <div className="flex items-center gap-2">
-              {/* The unreachable hint tells the user to try again after
-                  foregrounding Termux; with focus-refetch globally off and
-                  timeout retries disabled, this button is the recovery path. */}
-              {chatOpenTimedOut && (
-                <button
-                  type="button"
-                  onClick={() => void refetchChatDetail()}
-                  className="mari-chrome-control mari-chrome-control--small text-xs"
-                >
-                  {localizeUi("ui.chat.chatarea.tryAgain")}
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => setActiveChatId(null)}
-                className="mari-chrome-control mari-chrome-control--small text-xs"
-              >
-                {localizeUi("ui.chat.chatarea.backToChats")}
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-    );
+    return <ChatOpeningState error={chatError} onRetry={refetchChatDetail} onBack={() => setActiveChatId(null)} />;
   }
 
   // ═══════════════════════════════════════════════

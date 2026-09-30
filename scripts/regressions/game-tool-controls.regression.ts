@@ -161,8 +161,12 @@ async function* narrator(messages: ChatMessage[], options: ChatOptions): AsyncGe
     assert.equal(messages.filter((message) => message.content.includes("Try the gate.")).length, 1);
   }
   if (continueTurn) {
-    assert.doesNotMatch(messages.at(-1)?.content ?? "", /separate tool-planning pass/);
-    assert.match(messages.at(-1)?.content ?? "", /continu/i);
+    const continuation = messages.find(
+      (message) => message.role === "user" && message.content.includes("Your last message got cut off"),
+    );
+    assert.ok(continuation, "the narrator receives the continuation instruction");
+    assert.doesNotMatch(continuation.content, /separate tool-planning pass/);
+    assert.match(continuation.content, /continu/i);
   }
   if (expectPlan && !emptyPlan) {
     const context = messages.map((message) => message.content).join("\n");

@@ -1,7 +1,7 @@
 // ──────────────────────────────────────────────
 // ModalRenderer: Maps store modal types → components
 // ──────────────────────────────────────────────
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect, useRef } from "react";
 import { useUIStore } from "../../stores/ui.store";
 import { openEditorFromPalette } from "../command-palette/palette-navigation";
 import {
@@ -114,9 +114,22 @@ const GameLogModal = lazy(() => import("../modals/GameLogModal").then((module) =
 export function ModalRenderer() {
   const modal = useUIStore((s) => s.modal);
   const closeModal = useUIStore((s) => s.closeModal);
+  const setCharacterDuplicatesOpen = useUIStore((s) => s.setCharacterDuplicatesOpen);
+  const characterDuplicatesRestoreFocusRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (modal?.type !== "character-duplicates") return;
+    const active = document.activeElement;
+    const trigger = document.querySelector<HTMLElement>("[data-character-duplicates-trigger]");
+    characterDuplicatesRestoreFocusRef.current = active instanceof HTMLElement ? active : trigger;
+  }, [modal?.type]);
+  const openDuplicateCharacter = (id: string) => {
+    closeModal();
+    setCharacterDuplicatesOpen(false);
+    void openEditorFromPalette(() => useUIStore.getState().openCharacterDetail(id));
+  };
 
   const type = modal?.type ?? null;
-  if (!type) return null;
 
   let content = null;
   switch (type) {
@@ -261,11 +274,8 @@ export function ModalRenderer() {
         <CharacterDuplicatesModal
           open
           onClose={closeModal}
-          onOpenCharacter={(id) => {
-            closeModal();
-            // Opened from the palette over any screen, so an unsaved editor gets the usual prompt.
-            void openEditorFromPalette(() => useUIStore.getState().openCharacterDetail(id));
-          }}
+          onOpenCharacter={openDuplicateCharacter}
+          restoreFocusRef={characterDuplicatesRestoreFocusRef}
         />
       );
       break;

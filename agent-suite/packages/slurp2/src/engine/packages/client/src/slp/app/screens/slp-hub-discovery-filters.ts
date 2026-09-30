@@ -2,6 +2,9 @@ import { useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import type { SlpCreatorConnectionCounts } from "../../features/audience/slp-audience-contract";
 import {
   filterAndSortSlurpCreators,
+  pickSlurpFeaturedCreators,
+  slurpDiscoverRowTags,
+  slurpDiscoverSheetFilterCount,
   SLURP_DISCOVERY_TAGS,
   type SlurpDiscoverSort,
 } from "../../features/discovery/slp-discovery";
@@ -53,6 +56,39 @@ export function useSlurpHubDiscoveryFilters({
       ),
     [connectionCounts, genders, maximumPrice, minimumPrice, notSubscribed, sort, tags, discoveredCreators, search],
   );
+  // Search answers with every matching Creator: the filters narrow the directory, not the search.
+  const searchCreators = useMemo(
+    () =>
+      searchTerm
+        ? filterAndSortSlurpCreators(
+            discoveredCreators,
+            {
+              search,
+              notSubscribed: false,
+              genders: new Set(),
+              tags: new Set(),
+              minimumPrice: null,
+              maximumPrice: null,
+              sort: "recommended",
+            },
+            connectionCounts,
+          )
+        : [],
+    [connectionCounts, discoveredCreators, search, searchTerm],
+  );
+  const rowTags = useMemo(() => slurpDiscoverRowTags(discoveredCreators), [discoveredCreators]);
+  const featured = useMemo(() => pickSlurpFeaturedCreators(discoveredCreators), [discoveredCreators]);
+  const sheetFilterCount = slurpDiscoverSheetFilterCount(
+    {
+      notSubscribed,
+      genders,
+      tags,
+      minimumPrice: parsePrice(minimumPrice),
+      maximumPrice: parsePrice(maximumPrice),
+      sort,
+    },
+    rowTags,
+  );
   const active = Boolean(searchTerm || notSubscribed || genders.size || tags.size || minimumPrice || maximumPrice);
   const discoveryTagSettings = useSlurpSettings().data?.discoveryTags;
   const customTags = useMemo(() => {
@@ -70,6 +106,7 @@ export function useSlurpHubDiscoveryFilters({
     });
   const clear = () => {
     onSearchChange("");
+    setSort("recommended");
     setNotSubscribed(false);
     setGenders(new Set());
     setTags(new Set());
@@ -91,6 +128,10 @@ export function useSlurpHubDiscoveryFilters({
     sort,
     setSort,
     filtered,
+    searchCreators,
+    rowTags,
+    featured,
+    sheetFilterCount,
     active,
     customTags,
     toggle,

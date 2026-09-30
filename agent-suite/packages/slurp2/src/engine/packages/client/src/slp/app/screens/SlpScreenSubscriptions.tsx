@@ -3,6 +3,7 @@ import { useTranslation as useUiTranslation } from "react-i18next";
 import { cn } from "../../../lib/utils";
 import { useCreatorViewer } from "../../features/feed/slp-feed-viewer-hooks";
 import { SlurpCreatorProfileCard } from "../../modules/creator/SlpCreatorProfileCard";
+import { SLP_EYEBROW_CLASS, SLP_RAIL_GROUP_CLASS } from "../../base/chrome/SlpChrome";
 
 export function SubscriptionSections({
   creators,
@@ -18,6 +19,7 @@ export function SubscriptionSections({
   embedded?: boolean;
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
+  /** Creators with a live Story (their avatar gets the ring). */
 }) {
   const { t: localizeUi } = useUiTranslation();
   if (compact) {
@@ -69,26 +71,24 @@ export function SubscriptionSections({
     );
   }
   return (
-    <section
-      className={cn(
-        "overflow-hidden",
-        !embedded &&
-          "rounded-xl bg-[var(--slurp-surface)] shadow-[var(--slurp-shadow-floating)] ring-1 ring-inset ring-[var(--noodle-divider)]",
-      )}
-    >
-      <div className="px-4 pb-2 pt-4">
-        <h3 id="slurp-rail-discover-heading" className="text-base font-black tracking-tight">
-          {localizeUi("ui.noodle.subscriptionsections.discoverCreators")}
-        </h3>
-      </div>
+    <section className={cn("space-y-2.5", !embedded && "rounded-2xl p-3")}>
+      <h3 id="slurp-rail-discover-heading" className={cn(SLP_EYEBROW_CLASS, "px-1")}>
+        {localizeUi("ui.noodle.subscriptionsections.discoverCreators")}
+      </h3>
       {creators.length > 0 ? (
-        <div className="max-h-[36rem] space-y-3 overflow-y-auto p-2 pt-1">
+        // Compact rows in one raised group, like the profile rail's "More creators".
+        <div className={cn(SLP_RAIL_GROUP_CLASS, "max-h-[36rem] overflow-y-auto")}>
           {creators.map((creator) => (
-            <SlurpCreatorProfileCard key={creator.profile.id} creator={creator} onOpenProfile={onOpenProfile} />
+            <SlurpCreatorProfileCard
+              key={creator.profile.id}
+              creator={creator}
+              layout="row"
+              onOpenProfile={onOpenProfile}
+            />
           ))}
         </div>
       ) : (
-        <p className="px-4 py-5 text-sm text-[var(--muted-foreground)]">
+        <p className="px-1 text-sm text-[var(--slurp-muted)]">
           {localizeUi("ui.noodle.subscriptionsections.noCreatorsAreVisibleToThisPersonaYet")}
         </p>
       )}

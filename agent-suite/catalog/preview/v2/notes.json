@@ -1,8 +1,200 @@
 {
   "schemaVersion": 1,
   "packages": {
+    "modern-life-sim": {
+      "versions": [
+        {
+          "version": "0.2.5",
+          "date": "2026-09-29",
+          "notes": "- Contacts no longer freezes: opening it doesn't load your whole life again, and each part of someone's sheet is drawn on its own, so one that can't be shown is just missing and the rest is there.\n- If a whole screen can't be shown, it says so, with a button to go back to the map, instead of leaving the game stuck.",
+          "highlight": false
+        },
+        {
+          "version": "0.2.4",
+          "date": "2026-09-28",
+          "notes": "- You can use your own pictures for what people wear each season or at work, and for you in any of your outfits: pick one and frame it yourself. Yours stays until you ask for a drawn one again.\n- You can rename someone in Settings, and updating from their card brings a new name from the card too.\n- When a model puts quotes in the wrong place or leaves part of a line out, the game still reads its reply, so turns in scenes aren't lost.\n- The names on the clothes store's rack are sharp again. The phone's shop opens on its own inside a store, and going back returns you to the store with your cart.\n- A fix in the optional Adult Module.",
+          "highlight": false
+        },
+        {
+          "version": "0.2.3",
+          "date": "2026-09-27",
+          "notes": "- People look like themselves in their pictures: their name, and whether they're a woman or a man, now go with every picture of them, so a character from a series looks like the one you know.\n- You can choose how big pictures of one person are drawn, in Settings, right below the size of the other pictures.\n- This season's new clothes are for who you play. A character who got dresses they'd never wear gets the season's clothes picked again.\n- In the shops, only the things for sale move when you scroll. Eating from your backpack shows up on top of it. The clothes store shows the store behind the clothes again.\n- The game finds Marinara however you run it, even from another device or on a secure connection.",
+          "highlight": false
+        },
+        {
+          "version": "0.2.1",
+          "date": "2026-09-27",
+          "notes": "- Models that think before they answer, like GLM or DeepSeek, no longer get cut off halfway: every call leaves them room to think, and one that still runs out gets a second try with more room.\n- Reasoning has a new option, none, for models that can answer without thinking first.\n- Pictures no longer flicker or load again while others are being painted, in Settings and on every other screen.\n- Text on the phone, in the Guide and in What's New is sharp again.",
+          "highlight": false
+        },
+        {
+          "version": "0.2.0",
+          "date": "2026-09-27",
+          "notes": "- It looks more like a game: a new title screen, a welcome, a first-day card, the GUIDE (a searchable how-it-works app on your phone), a relationship chart in Contacts, and a redone profile.\n- Everyone gets their own personality, read from their card, instead of twelve fixed types.\n- Relationships go all the way: dating, moving in, engagement and weddings (with more than one partner if all agree), jealousy, open relationships and breakups, each in a scene.\n- The town talks: people notice what you do, NEWS every Monday, and friends have opinions.\n- Outings are one long scene; plans go on a calendar; birthdays.\n- You start without a job: find one in JOBS, interview, get promoted.\n- Money: BILLS, debt and eviction; HOMES to move. Five districts, and a motorbike or a car.\n- Pictures of key moments, outfits by season, and manual or automatic pictures per life.\n- Modules: optional extras you switch on for each life.",
+          "highlight": true
+        },
+        {
+          "version": "0.1.0",
+          "date": "2026-09-23",
+          "notes": "- First release, staging only: a modern life sim in its own Home tab.\n- A town on a clock with places, opening hours, day and night, and four seasons of thirty days.\n- A job, rent, needs and skills; a home with furniture, cooking and a closet; shops, a mall and online orders.\n- A cast from your character cards: their weeks, archetypes and gift tastes read by the model, three bonds each, tier events, relationship steps and memories.\n- Scenes told by a visual-novel narrator; sleep, knocking on doors and things to do together.\n- Alpha: a save from before a change it depends on warns when opened.",
+          "highlight": false
+        }
+      ]
+    },
+    "quartermaster": {
+      "versions": [
+        {
+          "version": "0.1.22",
+          "date": "2026-09-27",
+          "notes": "- Image uploads and outfit saves report their own result when other edits finish at the same time.\n- A completed upload cannot close a newer dialog or show its error in another chat.\n- Late inventory refreshes no longer undo a completed edit or replace a newer refresh.",
+          "highlight": false
+        },
+        {
+          "version": "0.1.21",
+          "date": "2026-09-26",
+          "notes": "- Detached tracker elements wait until mounted before starting subscriptions or changing the active chat.\n- Late image-connection checks and failed mutations no longer overwrite another dialog or chat's state.\n- Failed image deletions preserve the image even when another request finishes at the same time.\n- Closing the active chat clears its old error from the tracker panel.",
+          "highlight": false
+        },
+        {
+          "version": "0.1.20",
+          "date": "2026-09-26",
+          "notes": "- Rebuilding the dock now closes its dialogs and clears their pending sessions.\n- A late wardrobe confirmation cannot replace a newly opened dialog or another chat's view.",
+          "highlight": false
+        },
+        {
+          "version": "0.1.19",
+          "date": "2026-09-26",
+          "notes": "- Available from the official staging Download Agents catalog with Professor Mari's armored\n  Quartermaster cover and installation guidance.\n- Closing the dock also closes its dialogs; an old image-prompt preview cannot replace a later\n  dialog or another chat's preview. Failed inventory exports now report their error.\n- A failed outfit save cannot overwrite an existing outfit's portrait.",
+          "highlight": false
+        },
+        {
+          "version": "0.1.18",
+          "date": "2026-09-19",
+          "notes": "- Fixed the Settings avatar-swap toggle showing a stale value from the previous chat after a\n  failed reload.\n- Fixed a failed image delete permanently hiding an item's picture instead of just the delete.\n- Fixed the Build Wardrobe and Generate Image modals letting a stale, still-running generation\n  overwrite what a later session in the same modal was showing.\n- Fixed the tracker panel briefly reappearing over the toolbar button in a rare mount-reuse case.\n- Corrected the README's stated minimum Engine version to 2.4.6, matching the manifest.",
+          "highlight": false
+        },
+        {
+          "version": "0.1.17",
+          "date": "2026-09-18",
+          "notes": "- Raised the minimum required Engine version to 2.4.6, matching what this has actually been\n  tested against recently.",
+          "highlight": false
+        },
+        {
+          "version": "0.1.16",
+          "date": "2026-09-16",
+          "notes": "- Brief toast notifications now appear when the tracker agent adds, updates, equips, or removes\n  an item -- visible even with the dock closed.\n- Items can now be favorited with a star, which sorts them to the top of the Bag.",
+          "highlight": false
+        },
+        {
+          "version": "0.1.15",
+          "date": "2026-09-15",
+          "notes": "- Fixed the Recent Agent Update box leak for real this time — 0.1.13 and 0.1.14 were both\n  attempted fixes that didn't fully resolve it.\n- Widened the info tooltip box so long macro tokens read on one line.",
+          "highlight": false
+        },
+        {
+          "version": "0.1.14",
+          "date": "2026-09-15",
+          "notes": "- Attempted fix for the Recent Agent Update collapsed-box leak (0.1.13's attempt didn't fully\n  resolve it either).\n- Fixed tooltip text overflowing outside its own box.",
+          "highlight": false
+        },
+        {
+          "version": "0.1.13",
+          "date": "2026-09-14",
+          "notes": "- Attempted fix for Recent Agent Update's collapsed box showing a sliver of Restore Inventory\n  underneath.\n- Info tooltips and card overflow menus no longer clip against the dock's edge.\n- Shrank the item card's quantity field to match the \"⋯\" button beside it.\n- \"+ Add Item\" is now green, matching Save Current Outfit.",
+          "highlight": false
+        },
+        {
+          "version": "0.1.12",
+          "date": "2026-09-14",
+          "notes": "- Settings moved to its own tab instead of an accordion pushing inventory below the fold.\n- Settings regrouped into Appearance/Display/Image Generation/Data, with hover-and-tap tooltips\n  replacing permanent explanation text.\n- Recent Automatic Update (renamed Recent Agent Update) moved next to Restore Inventory, with a\n  colored +N/↑N/−N count summary and visible reasoning even on quiet turns.\n- Item and outfit cards collapse Edit/Update/Delete into a \"⋯\" menu, giving descriptions more\n  room.\n- Delete confirmations now also cover the item-image and outfit-portrait remove buttons.\n- Add Item is now a modal instead of an always-open form.",
+          "highlight": true
+        },
+        {
+          "version": "0.1.11",
+          "date": "2026-09-13",
+          "notes": "- The tracking agent now targets specific changes instead of re-listing the whole inventory every\n  turn, so nothing gets dropped or cut off.\n- Added a \"Recent Automatic Update\" view showing what the last turn changed, with a per-item\n  Revert button.",
+          "highlight": true
+        },
+        {
+          "version": "0.1.10",
+          "date": "2026-09-13",
+          "notes": "- Rewrote the README's Features section for readability and documented several\n  previously-undocumented features.\n- Updated the in-app description to mention saved outfits, AI-generated art, and the tracker\n  agent.",
+          "highlight": false
+        },
+        {
+          "version": "0.1.9",
+          "date": "2026-09-11",
+          "notes": "- Fixed equip-slot quick-fill only searching the Wearables tab, missing stashed wearable items.",
+          "highlight": false
+        },
+        {
+          "version": "0.1.8",
+          "date": "2026-09-11",
+          "notes": "- Confirmed fix: Generate Image no longer shows a person in item images.\n- Bag column now splits into Items, Wearables, and Stored tabs.",
+          "highlight": false
+        },
+        {
+          "version": "0.1.7",
+          "date": "2026-09-09",
+          "notes": "- Attempted fix for Generate Image sending the persona's appearance into item/outfit image\n  requests instead of a clean product shot.\n- Build script now refuses to silently overwrite an already-released version's artifact.",
+          "highlight": false
+        },
+        {
+          "version": "0.1.6",
+          "date": "2026-09-08",
+          "notes": "- Added Generate Image: an AI-generated alternative to uploading, for both item images and\n  outfit portraits.\n- New Settings section to pick the image connection and edit the two prompt templates.\n- Fixed the portrait prompt leaking a raw appearance-macro token into the image request.\n- Export/import now carry the two prompt templates.",
+          "highlight": true
+        },
+        {
+          "version": "0.1.5",
+          "date": "2026-09-08",
+          "notes": "- Fixed Build Wardrobe producing no debug-log output.\n- Replaced the dock's 5-second inventory poll with an event-driven refresh.",
+          "highlight": false
+        },
+        {
+          "version": "0.1.4",
+          "date": "2026-09-08",
+          "notes": "- Added Build Wardrobe: describe a style and get a proposed set of items and outfits to review\n  before adding.\n- Outfits it builds can reuse existing wearable items instead of always creating new ones.\n- Fixed non-wearable items sometimes turning up in a generated outfit.",
+          "highlight": true
+        },
+        {
+          "version": "0.1.3",
+          "date": "2026-09-07",
+          "notes": "- Fixed inventory silently wiping every turn due to a misconfigured result type.\n- Outfits now stay equipped when extra items are added alongside them.\n- Added a \"Restore Inventory\" safety net and a \"Refresh Images\" button.\n- Fixed a rendering bug hiding an equip slot's labels behind its fallback icon.",
+          "highlight": true
+        }
+      ]
+    },
+    "relationship-tracker": {
+      "versions": [
+        {
+          "version": "0.6.0",
+          "date": "2026-09-26",
+          "notes": "- First staging release, with Professor Mari and Crimson Orc sharing pasta as its catalogue cover. Tracks character-card relationships and each character's one-way perception of the active persona in Roleplay group chats, drawn as a fixed-circle relationship web in the Tracker Panel.\n- Conservative automatic tracking after each completed reply, a bounded Update from History (1-100 messages), manual editing, optional per-line locks, and Resume Automatic.\n- Two prompt-injection modes: All relationships, or Scene-only relationships. Presence lookback (default 15 messages) decides Scene-only eligibility; the automatic tracker's Context Size (default 5) is separate.\n- Touch and pen: press a relationship line to reveal its label and press elsewhere to dismiss it; desktop keeps hover and keyboard-focus labels.\n- Read-only API for other packages: GET /api/relationship-tracker/v1/chats/:chatId/relationships.",
+          "highlight": false
+        }
+      ]
+    },
     "ruleset-5e-2014": {
       "versions": [
+        {
+          "version": "0.9.0",
+          "date": "2026-09-26",
+          "notes": "- Shield, Uncanny Dodge and Counterspell work. When a blow hits you, the fight asks whether you cast Shield (the same roll is checked again against your new Armor Class) or take Uncanny Dodge (its damage is halved). When somebody casts a spell, it asks whether you counter it.\n- Six SRD monsters Parry, and spellcasting monsters such as the Mage can cast Shield and Counterspell back.\n- You can grapple and shove, and break free of a grapple.\n- Bless, Bane, Shield of Faith, Haste, Slow, Blur, Faerie Fire, Guiding Bolt, Vicious Mockery, Longstrider and Ray of Frost change the numbers they print.\n- Exhaustion levels 1, 2, 3 and 5 count in a fight. A poisoned fighter, or a frightened one while it can see what frightens it, rolls its side of a grapple or shove at disadvantage.\n- Needs an Engine with Capability API 1.46.",
+          "highlight": true
+        },
+        {
+          "version": "0.8.0",
+          "date": "2026-09-25",
+          "notes": "- Eleven SRD spellcasters now cast in a fight, off their own sheet and spell slots, at the numbers their stat block prints: the Acolyte, Priest, Cult Fanatic, Druid, Mage, Archmage, Lich, Mummy Lord, both nagas and the Androsphinx. The Gynosphinx prepares nothing a fight can use, so it still fights with its claws.\n- Hellish Rebuke works: when something damages you, the fight asks whether you cast it back at them.\n- Sacred Flame, Acid Splash, Poison Spray, Vicious Mockery and Spiritual Weapon now deal damage. Before, a fight never offered them.\n- Two new sheet fields, Spell attack: other bonus and Spell save DC: other bonus.\n- Counterspell, Shield and Feather Fall still stay off the menu, and the README says why.\n- Needs an Engine with Capability API 1.34.",
+          "highlight": true
+        },
+        {
+          "version": "0.7.0",
+          "date": "2026-09-20",
+          "notes": "- Extra Attack works. Set Attacks per Attack action on your sheet and one Attack buys that many strikes: the first spends the action and the rest are free. A crossbow still fires once, because it loads.\n- Sneak Attack is a rider your rogue simply has: hit with a finesse or ranged weapon while you have advantage, or while another enemy stands beside your target. It grows with the Rogue table, 1d6 to 10d6.\n- Action Surge hands you a second action and costs nothing. Cunning Action puts Dash, Disengage and Hide on your menu for a bonus action.\n- Dodge now also gives advantage on Dexterity saves. Charmed stops you turning on the charmer and lifts if they go down, frightened stops you walking closer, restrained hampers Dexterity saves, and petrified halves all damage.\n- A monster's blow carries its second damage clause, so a dragon's bite burns again.\n- Weapon rows you already picked know none of the new columns. Pick them again, or tick the boxes.\n- Needs an Engine with Capability API 1.32.",
+          "highlight": true
+        },
         {
           "version": "0.6.0",
           "date": "2026-09-19",

@@ -1,4 +1,5 @@
 import type { DB } from "../../../db/connection.js";
+import type { ChatMessage } from "../../../services/llm/base-provider.js";
 import { logger } from "../../../lib/logger.js";
 import { resolveBaseUrl } from "../../../services/generation/connection-base-url.js";
 import { resolveIllustratorPromptRuntime } from "../../../services/generation/illustrator-prompt-runtime.js";
@@ -6,6 +7,10 @@ import { createConnectionsStorage } from "../../../services/storage/connections.
 import { createPromptOverridesStorage } from "../../../services/storage/prompt-overrides.storage.js";
 import { loadPrompt, NOODLE_IMAGE_INTERPRET } from "../../../services/prompt-overrides/index.js";
 import { composeSlurpPromptBlocks, type SlurpPromptBlockOverrides } from "../prompting/slp-prompt-blocks.js";
+import type { SlurpVisualBrief } from "./slp-visual-brief.js";
+import { slurpVisualBriefPolicyText, slurpVisualBriefText } from "./slp-visual-brief.js";
+import { resolveSlurpTextConnection } from "../identity/slp-connection.js";
+import { claimSlurpModelBudget, type SlurpModelBudget } from "../model/slp-model-worker.js";
 
 const MAX_REWRITTEN_PROMPT_LENGTH = 12_000;
 const MAX_INSTRUCTIONS_LENGTH = 5_000;
@@ -34,17 +39,49 @@ function parseRecord(value: unknown): Record<string, unknown> {
 export async function rewriteSlpImagePrompt(input: {
   db: DB;
   prompt: string;
+  postContent?: string;
+  visualBrief?: SlurpVisualBrief;
   interpretationInstruction?: string;
   instructions?: string;
   characterContext?: string;
   styleGuidance?: string;
   promptBlocks?: SlurpPromptBlockOverrides;
+  /**
+   * Slurp's own generation connection. Without it the rewrite ran on the Engine's agent default,
+   * which could be a reasoning model that spent the whole token budget thinking and returned
+   * nothing — every picture fell back, while the connection the player chose for Slurp sat unused.
+   */
+  connectionId?: string | null;
+  /**
+   * Slurp's viewpoint phrase for this picture ("selfie, arm extended toward the viewer …"). Kept word
+   * for word: the rewrite used to write "facing the camera, static shot from a tripod", and weak image
+   * models draw the camera and the tripod.
+   */
+  viewpoint?: string | null;
+  /**
+   * Slurp's AI budget: the rewrite is one call under "Image prompt enhancing". Over its daily limit,
+   * or with the budget mode "Off", the picture goes out with the unenhanced draft. Absent (tests),
+   * nothing is counted.
+   */
+  budget?: SlurpModelBudget;
+  /** Receives the connection, model, and chat actually sent, for the Creator-private Deep details. */
+  onRequest?: (request: {
+    connectionId: string;
+    connectionName: string | null;
+    model: string;
+    messages: { role: string; content: string }[];
+  }) => void;
 }): Promise<string | null> {
   const instructions = input.instructions?.trim().replace(/\s+/g, " ").slice(0, MAX_INSTRUCTIONS_LENGTH) || "";
   const prompt = input.prompt.trim().slice(0, MAX_REWRITTEN_PROMPT_LENGTH);
   if ((!instructions && !input.characterContext?.trim() && !input.styleGuidance?.trim()) || !prompt) return null;
   const characterContext =
     input.characterContext?.trim().slice(0, 8_000) || "No additional character context was provided.";
+  const postContext = input.postContent?.trim().slice(0, 4_000) || "No post caption was provided.";
+  const visualBrief = input.visualBrief
+    ? slurpVisualBriefText(input.visualBrief)
+    : "No typed visual brief was provided.";
+  const visualPolicy = input.visualBrief ? slurpVisualBriefPolicyText(input.visualBrief) : "";
   const styleGuidance = input.styleGuidance?.trim().slice(0, 5_000) || "";
 
   try {
@@ -52,8 +89,12 @@ export async function rewriteSlpImagePrompt(input: {
     const interpretationInstruction =
       input.interpretationInstruction?.trim() ||
       (await loadPrompt(createPromptOverridesStorage(input.db), NOODLE_IMAGE_INTERPRET, {}));
-    const textConnection = (await connections.getDefaultForAgents()) ?? (await connections.getFallbackForAgents());
+    const textConnection = await resolveSlurpTextConnection(connections, input.connectionId);
     if (!textConnection) return null;
+    if (input.budget && !(await claimSlurpModelBudget(input.db, input.budget, "image_prompt"))) {
+      logger.info("[slurp] Image prompt enhancing is off or over its daily limit; sending the unenhanced draft");
+      return null;
+    }
 
     const runtime = await resolveIllustratorPromptRuntime({
       chatMetadata: {},
@@ -62,69 +103,91 @@ export async function rewriteSlpImagePrompt(input: {
       connections,
       resolveBaseUrl,
     });
-    const result = await runtime.provider.chatComplete(
-      [
-        {
-          role: "system",
-          content: composeSlurpPromptBlocks(
-            "imageInterpretation",
-            [
-              { id: "task", kind: "editable", text: "You are an image prompt editor." },
-              { id: "style", kind: "editable", text: interpretationInstruction },
-              {
-                id: "safety",
-                kind: "required",
-                text: "Preserve the original subject, identity, action, setting, and visual facts unless the instructions explicitly change them. Use the character context to preserve appearance and personality, but do not add characters who are not in the original prompt.",
-              },
-              {
-                id: "output",
-                kind: "required",
-                text: [
-                  "Order the result: first any leading quality or style tag block from the original prompt, verbatim and in the same order; then the character's appearance, copied word for word from the character context and written only once; then the scene: outfit, pose, expression, action, setting, lighting, camera, and mood.",
-                  "Never add, remove, reword, or reorder quality, score, safety, resolution, or artist tags.",
-                  'Never copy labels or field names such as "Appearance:", "Personality:", or "Style:" into the image prompt.',
-                  "When the original prompt is comma-separated tags, write the whole result as comma-separated tags.",
-                  styleGuidance
-                    ? "Apply the supplied art-style guidance when the original prompt does not specify a style. Preserve an explicitly requested style in the original prompt or user instructions."
-                    : "",
-                  "Treat the user's instructions as guidance, not text to copy into the image prompt.",
-                  'Return valid JSON only: {"prompt":"provider-ready image prompt"}.',
-                ]
-                  .filter(Boolean)
-                  .join("\n"),
-              },
-              { id: "draft", kind: "context", text: "" },
-            ],
-            input.promptBlocks,
-          ),
-        },
-        {
-          role: "user",
-          content: [
-            "<original_image_prompt>",
-            prompt,
-            "</original_image_prompt>",
-            "<character_context>",
-            characterContext,
-            "</character_context>",
-            ...(instructions
-              ? ["<image_prompting_instructions>", instructions, "</image_prompting_instructions>"]
-              : []),
-            ...(styleGuidance ? ["<art_style_guidance>", styleGuidance, "</art_style_guidance>"] : []),
-          ].join("\n"),
-        },
-      ],
+    const messages: ChatMessage[] = [
       {
-        model: runtime.model,
-        ...(runtime.suppressModelParameters ? {} : { temperature: 0.3, maxTokens: 2_048 }),
-        suppressModelParameters: runtime.suppressModelParameters,
-        enableCaching: runtime.enableCaching,
-        anthropicExtendedCacheTtl: runtime.anthropicExtendedCacheTtl,
+        role: "system",
+        content: composeSlurpPromptBlocks(
+          "imageInterpretation",
+          [
+            { id: "task", kind: "editable", text: "You are an image prompt editor." },
+            { id: "style", kind: "editable", text: interpretationInstruction },
+            {
+              id: "safety",
+              kind: "required",
+              text: "Preserve the original subject, identity, action, setting, and visual facts unless the instructions explicitly change them. Use the character context to preserve appearance and personality, but do not add characters who are not in the original prompt.",
+            },
+            {
+              id: "output",
+              kind: "required",
+              text: [
+                "Order the result: first any leading quality or style tag block from the original prompt, verbatim and in the same order; then the character's appearance, copied word for word from the character context and written only once; then the scene: outfit, pose, expression, action, setting, lighting, viewpoint, and mood.",
+                input.viewpoint?.trim()
+                  ? `Keep this viewpoint phrase word for word, once: "${input.viewpoint.trim()}".`
+                  : "",
+                `${input.viewpoint?.trim() ? "Outside that phrase, never" : "Never"} name a camera, phone, lens, tripod, timer, or photographer: image models draw every object they read. Write where the viewer is ("seen from slightly above", "looking at the viewer") instead.`,
+                "Never add, remove, reword, or reorder quality, score, safety, resolution, or artist tags.",
+                'Never copy labels or field names such as "Appearance:", "Personality:", or "Style:" into the image prompt.',
+                "When the original prompt is comma-separated tags, write the whole result as comma-separated tags.",
+                styleGuidance
+                  ? "Apply the supplied art-style guidance when the original prompt does not specify a style. Preserve an explicitly requested style in the original prompt or user instructions."
+                  : "",
+                "Treat the user's instructions as guidance, not text to copy into the image prompt.",
+                "The post context describes the same moment. Preserve its action and setting when they are present in the draft. A caption can be a hook, so do not copy its wording or force every caption detail into the image.",
+                "Do not increase the sexual intensity. Keep an ordinary or non-sexual post ordinary and non-sexual. Add nudity, explicit anatomy, or sexual activity only when the original prompt or an explicit trusted instruction already requires it.",
+                visualPolicy,
+                'Return valid JSON only: {"prompt":"provider-ready image prompt"}.',
+              ]
+                .filter(Boolean)
+                .join("\n"),
+            },
+            { id: "draft", kind: "context", text: "" },
+          ],
+          input.promptBlocks,
+        ),
       },
-    );
+      {
+        role: "user",
+        content: [
+          "<original_image_prompt>",
+          prompt,
+          "</original_image_prompt>",
+          "<post_context>",
+          postContext,
+          "</post_context>",
+          "<visual_brief>",
+          visualBrief,
+          "</visual_brief>",
+          "<character_context>",
+          characterContext,
+          "</character_context>",
+          ...(instructions ? ["<image_prompting_instructions>", instructions, "</image_prompting_instructions>"] : []),
+          ...(styleGuidance ? ["<art_style_guidance>", styleGuidance, "</art_style_guidance>"] : []),
+        ].join("\n"),
+      },
+    ];
+    input.onRequest?.({
+      connectionId: runtime.connectionId,
+      connectionName: runtime.connectionId === textConnection.id ? (textConnection.name ?? null) : null,
+      model: String(runtime.model ?? ""),
+      messages: messages.map((message) => ({ role: message.role, content: String(message.content) })),
+    });
+    const result = await runtime.provider.chatComplete(messages, {
+      model: runtime.model,
+      // Headroom for reasoning connections: 2048 was spent entirely on thinking, with no answer.
+      ...(runtime.suppressModelParameters ? {} : { temperature: 0.3, maxTokens: 4_096 }),
+      suppressModelParameters: runtime.suppressModelParameters,
+      enableCaching: runtime.enableCaching,
+      anthropicExtendedCacheTtl: runtime.anthropicExtendedCacheTtl,
+    });
     const parsed = parseRecord(result.content);
-    const rewritten =
-      typeof parsed.prompt === "string" ? parsed.prompt.trim().slice(0, MAX_REWRITTEN_PROMPT_LENGTH) : "";
+    // The default interpretation instruction says "return only the prompt", so a model that obeys it
+    // answers in plain text. That is a usable prompt, not a failure.
+    const plain = typeof result.content === "string" && !result.content.includes("{") ? result.content.trim() : "";
+    const rewritten = (typeof parsed.prompt === "string" ? parsed.prompt.trim() : plain).slice(
+      0,
+      MAX_REWRITTEN_PROMPT_LENGTH,
+    );
+    if (!rewritten) logger.warn("[slurp] Image prompt rewrite returned no prompt (empty or truncated answer)");
     return rewritten || null;
   } catch (error) {
     logger.warn(error, "[slurp] Image prompt instruction rewrite failed; using the original prompt");

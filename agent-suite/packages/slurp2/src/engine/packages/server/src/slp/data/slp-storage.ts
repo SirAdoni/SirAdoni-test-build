@@ -4,6 +4,7 @@ import { createCreatorsStorage1 } from "./creators/slp-creators-storage-1.js";
 import { createCreatorsStorage2 } from "./creators/slp-creators-storage-2.js";
 import { createCreatorsStorage3 } from "./creators/slp-creators-storage-3.js";
 import { createCreatorsStorage4 } from "./creators/slp-creators-storage-4.js";
+import { createWardrobeStorage } from "./creators/slp-wardrobe-storage.js";
 import { createReserveStorage1 } from "./feed/reserve/slp-reserve-storage-1.js";
 import { createReserveStorage2 } from "./feed/reserve/slp-reserve-storage-2.js";
 import { createAudienceStorage1 } from "./audience/slp-audience-storage.js";
@@ -22,6 +23,7 @@ import { createProjectsStorage1 } from "./projects/slp-projects-storage-1.js";
 import { createProjectsStorage2 } from "./projects/slp-projects-storage-2.js";
 import { createEconomyTailStorage1 } from "./economy/slp-economy-tail-storage.js";
 import { createSlurpMessagesStorageFacet } from "./messages/slp-messages-storage-facet.js";
+import { createStoryEngineStorage } from "./world/slp-story-engine-storage.js";
 export type { SlurpMessage, SlurpCommission } from "./messages/slp-messages-storage-types.js";
 export type { SlurpBootstrap } from "../modules/settings/slp-settings.js";
 
@@ -33,6 +35,7 @@ export function createSlurpStorage(db: DB) {
     createCreatorsStorage2(context),
     createCreatorsStorage3(context),
     createCreatorsStorage4(context),
+    createWardrobeStorage(context),
     createReserveStorage1(context),
     createReserveStorage2(context),
     createAudienceStorage1(context),
@@ -50,9 +53,14 @@ export function createSlurpStorage(db: DB) {
     createProjectsStorage1(context),
     createProjectsStorage2(context),
     createEconomyTailStorage1(context),
+    createStoryEngineStorage(context),
   );
 }
 
-export function createSlurpMessagesStorage(db: DB) {
-  return createSlurpMessagesStorageFacet(db, createSlurpStorage);
+/** `core` lets a caller hand in its own storage, so the world tick keeps its event cap (R1-119). */
+export function createSlurpMessagesStorage(
+  db: DB,
+  core: (db: DB) => ReturnType<typeof createSlurpStorage> = createSlurpStorage,
+) {
+  return createSlurpMessagesStorageFacet(db, core);
 }

@@ -44,3 +44,18 @@ export { useDeleteCreatorStageProfile } from "./slp-creator-profile-hooks.js";
 export { useBulkCreateCreatorStageProfiles } from "./slp-creator-profile-hooks.js";
 export { useRefreshTargetedCreatorsNow } from "./slp-creator-refresh-hooks.js";
 export { useCreatorEligibleAccounts } from "./slp-creators-hooks.js";
+
+// Settings previews a prompt block against a real Creator, so it needs the roster to choose from.
+export { useCreatorAccounts } from "./slp-creators-hooks.js";
+
+// The role-play sign-up drafts, creates and registers one Creator, and a Creator can help.
+export {
+  useCreateCreatorStageProfile,
+  useGenerateCreatorArtwork,
+  useGenerateCreatorStageProfileDraft,
+  useUpdateCreatorStageProfile,
+} from "./slp-creator-profile-hooks.js";
+export { useSlpViewerPersonaId, useUpdateCreatorStrategy } from "./slp-creators-hooks.js";
+// W: the steering card lives in the Stir ✦ sheet now.
+export { SlpCreatorSteeringCard } from "./SlpCreatorSteeringCard";
+export { openSlpCreatorSettings } from "./settings/slp-creator-settings-store";

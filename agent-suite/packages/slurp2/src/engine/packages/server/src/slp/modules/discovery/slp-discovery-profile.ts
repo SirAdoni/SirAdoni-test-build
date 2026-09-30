@@ -14,8 +14,15 @@ export const SLURP_DISCOVERY_TAG_SEED: ReadonlyArray<{ tag: string; group: strin
     tag,
     group: "vibe",
   })),
+  // What kind of body and art a Creator is (anime, furry, dragon …); the simulation's non-human
+  // Creators had nothing to be found by.
+  ...["anime", "anthro", "furry", "scalie", "dragon", "monster"].map((tag) => ({ tag, group: "look" })),
   ...["bdsm", "exhibitionism", "feet", "lingerie", "roleplay", "toys"].map((tag) => ({ tag, group: "adult" })),
 ];
+
+/** The seed before the "look" group: an install still holding exactly this never edited its tags. */
+export const LEGACY_SLURP_DISCOVERY_TAG_SEED: ReadonlyArray<{ tag: string; group: string }> =
+  SLURP_DISCOVERY_TAG_SEED.filter((entry) => entry.group !== "look");
 
 export const SLURP_DISCOVERY_MIN_TAGS = 3;
 

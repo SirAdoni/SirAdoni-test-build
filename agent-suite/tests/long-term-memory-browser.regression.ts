@@ -810,7 +810,7 @@ async function main() {
               scope: {},
               tags: [],
               keywords: [],
-              links: [],
+              links: [{ target: "world_outside_current_chat", relation: "involves" }],
               sections: {
                 facts: {
                   text: "Second mobile review memory text.",
@@ -942,7 +942,9 @@ async function main() {
               ? notes.filter((note) => note.id === "world_second_mobile")
               : url.searchParams.get("scopeChatIds") === "desktop-chat"
                 ? notes.filter((note) => note.id !== "world_outside_current_chat")
-                : notes,
+                : url.searchParams.get("scopePersonaId") === "persona-b"
+                  ? []
+                  : notes,
           );
         }
         if (request.method === "GET" && url.pathname.endsWith("/notes/world_second_mobile"))
@@ -955,7 +957,7 @@ async function main() {
             scope: {},
             tags: [],
             keywords: [],
-            links: [],
+            links: [{ target: "world_outside_current_chat", relation: "involves" }],
             sections: {
               facts: {
                 text: "Second mobile review memory text.",
@@ -1187,9 +1189,9 @@ async function main() {
                   candidate: {
                     index: 1,
                     reason: "unsupported_bucket",
-                    validatorCode: "event_shaped_character_fact",
-                    message: "Character facts cannot capture ordinary scene actions.",
-                    snippet: "Rowan entered the observatory.",
+                    validatorCode: "scene_only_tone_or_anchor",
+                    message: "Tone and anchor candidates must describe durable atmosphere, motifs, or callbacks.",
+                    snippet: "The observatory felt tense tonight.",
                   },
                   createdAt: "2026-07-30T00:00:00.000Z",
                   lastSeenAt: "2026-07-30T00:00:00.000Z",
@@ -1733,6 +1735,77 @@ async function main() {
       await page.locator('[data-ltm-memory-group="world"] > summary').click();
       await page.getByText("Memory outside current chat").waitFor();
       assert.ok(noteQueries.some((query) => !query.includes("scopeChatIds")));
+      const secondaryScope = page.locator("[data-ltm-memory-scope-secondary]");
+      // Repair proof: a secondary place must stay literal. Inheriting the primary
+      // place's character turns "A AND (B OR A)" back into A, so memories the second
+      // place does not hold would still reach the list and bulk selection.
+      await memoryScope.locator('[data-ltm-vault-scope-tab="character"]').click();
+      await memoryScope.locator('[data-ltm-vault-scope-target="character:character-a"]').click();
+      await memoryScope.locator('[data-ltm-vault-scope-target="character:character-a"][aria-checked="true"]').waitFor();
+      const secondaryPlaceRequestPromise = page.waitForRequest(
+        (request) => request.method() === "GET" && request.url().includes("scopeGroupId=conversation-a"),
+      );
+      await secondaryScope.locator(":scope > summary").click();
+      await secondaryScope.locator('[data-ltm-vault-scope-tab="chat"]').click();
+      await secondaryScope.locator('[data-ltm-vault-scope-target="group:conversation-a"]').click();
+      await secondaryScope
+        .locator('[data-ltm-vault-scope-target="group:conversation-a"][aria-checked="true"]')
+        .waitFor();
+      const secondaryPlaceRequest = await secondaryPlaceRequestPromise;
+      assert.doesNotMatch(
+        secondaryPlaceRequest.url(),
+        /scopeCharacterIds/u,
+        `the second place must not inherit the primary character: ${secondaryPlaceRequest.url()}`,
+      );
+      await secondaryScope.locator('[data-ltm-vault-scope-target="all"]').click();
+      await secondaryScope.locator(":scope > summary").click();
+      await memoryScope.locator('[data-ltm-vault-scope-tab="all"]').click();
+      await memoryScope.locator('[data-ltm-vault-scope-target="all"]').click();
+      const worldGroupSummary = page.locator('[data-ltm-memory-group="world"] > summary');
+      if (!(await page.locator('[data-ltm-memory-group="world"][open]').count())) await worldGroupSummary.click();
+      await page.getByText("Memory outside current chat").waitFor();
+      const secondaryCharacterRequestPromise = page.waitForRequest(
+        (request) => request.method() === "GET" && request.url().includes("scopeCharacterIds=character-a"),
+      );
+      await secondaryScope.locator(":scope > summary").click();
+      await secondaryScope.locator('[data-ltm-vault-scope-tab="character"]').click();
+      await secondaryScope.locator('[data-ltm-vault-scope-target="character:character-a"]').click();
+      await secondaryScope
+        .locator('[data-ltm-vault-scope-target="character:character-a"][aria-checked="true"]')
+        .waitFor();
+      const secondaryCharacterRequest = await secondaryCharacterRequestPromise;
+      assert.match(
+        secondaryCharacterRequest.url(),
+        /scopeCharacterIds=character-a/u,
+        "the second place must issue its own scope query",
+      );
+      if (!(await page.locator('[data-ltm-memory-group="world"][open]').count())) await worldGroupSummary.click();
+      await page.getByText("Second mobile review memory", { exact: true }).waitFor();
+      assert.equal(
+        await page.getByText("Memory outside current chat").count(),
+        0,
+        "AND intersection must drop memories unavailable in the second place",
+      );
+      // Repair proof: the AND view keeps the primary place's notes as link context,
+      // so a memory linked to a note outside the intersection still resolves by its
+      // title instead of dropping out of linked-title search.
+      const secondaryContextSearch = page.getByLabel("Search memories");
+      await secondaryContextSearch.fill("Memory outside current chat");
+      await page.getByText("Second mobile review memory", { exact: true }).waitFor();
+      await secondaryContextSearch.fill("");
+      // Repair proof: an empty AND intersection still names the combined scope
+      // instead of falling back to the generic "no memories" copy.
+      if (!(await page.locator("[data-ltm-memory-scope-secondary][open]").count())) {
+        await secondaryScope.locator(":scope > summary").click();
+      }
+      await secondaryScope.locator('[data-ltm-vault-scope-tab="persona"]').click();
+      await secondaryScope.locator('[data-ltm-vault-scope-presence="no-memories"] > summary').click();
+      await secondaryScope.locator('[data-ltm-vault-scope-target="persona:persona-b"]').click();
+      await secondaryScope.locator('[data-ltm-vault-scope-target="persona:persona-b"][aria-checked="true"]').waitFor();
+      await page.getByText(/No memories are available in .*AND/u).waitFor();
+      await secondaryScope.locator('[data-ltm-vault-scope-target="all"]').click();
+      assert.match((await secondaryScope.locator(":scope > summary").textContent()) ?? "", /No second place/u);
+      await secondaryScope.locator(":scope > summary").click();
       const setupGuide = page.getByRole("button", { name: "Show setup guide" });
       await setupGuide.click();
       const onboardingTitle = page.locator("#ltm-onboarding-title");
@@ -3125,6 +3198,12 @@ async function main() {
       await page.locator("[data-ltm-bulk-availability]").click();
       const bulkAvailability = page.locator("[data-ltm-bulk-availability-workbench]");
       await bulkAvailability.waitFor();
+      assert.equal(await bulkAvailability.locator("h3").filter({ hasText: "Available in" }).count(), 1);
+      assert.equal(
+        await bulkAvailability.getByText("Chat mode eligibility is set separately", { exact: false }).count(),
+        1,
+      );
+      await bulkAvailability.locator("[data-ltm-availability-picker] > summary").click();
       const bulkRail = bulkAvailability.locator("[data-ltm-availability-tabs]");
       await bulkRail.waitFor();
       assert.deepEqual(
@@ -3329,6 +3408,10 @@ async function main() {
       assert.match((await sourceScopeTrigger.innerText()).trim(), /All/u);
       await sourceScopeTrigger.click();
       assert.equal(await sourceScopePicker.locator('[role="listbox"] input').count(), 0);
+      for (const kind of ["all", "chat", "branch", "character", "persona"]) {
+        assert.equal(await sourceScopePicker.locator(`[data-ltm-scope-tab="${kind}"]`).count(), 1);
+      }
+      assert.equal(await sourceScopePicker.locator('[data-ltm-scope-tab="all"][data-active="true"]').count(), 1);
       assert.deepEqual(
         await sourceScopePicker.locator('[role="option"]').evaluateAll((options) =>
           options.slice(0, 2).map((option) => {
@@ -3346,9 +3429,45 @@ async function main() {
       );
       assert.equal(await sourceScopePicker.locator('[data-ltm-scope-option="chat:desktop-chat"]').count(), 1);
       assert.equal(await sourceScopePicker.locator('[data-ltm-scope-option="all"]').count(), 1);
+      assert.equal(await sourceScopePicker.locator('[data-ltm-scope-option="group:conversation-a"]').count(), 1);
+      await sourceScopePicker.locator('[data-ltm-scope-tab="chat"]').click();
+      assert.equal(await sourceScopePicker.locator('[data-ltm-scope-tab="chat"][data-active="true"]').count(), 1);
+      assert.equal(await sourceScopePicker.locator('[data-ltm-scope-tabpanel="chat"][role="tabpanel"]').count(), 1);
+      assert.equal(
+        await sourceScopePicker.locator('[role="tabpanel"]').getAttribute("aria-labelledby"),
+        await sourceScopePicker.locator('[data-ltm-scope-tab="chat"]').getAttribute("id"),
+      );
+      assert.equal(
+        await sourceScopePicker.locator('[data-ltm-scope-tab="chat"]').getAttribute("aria-controls"),
+        await sourceScopePicker.locator('[role="tabpanel"]').getAttribute("id"),
+      );
+      assert.equal(await sourceScopePicker.locator('[role="tabpanel"] [role="listbox"]').count(), 1);
+      assert.equal(await sourceScopePicker.locator('[data-ltm-scope-option="chat:desktop-chat"]').count(), 1);
+      assert.equal(await sourceScopePicker.locator('[data-ltm-scope-option="group:conversation-a"]').count(), 0);
+      assert.equal(await sourceScopePicker.locator('[data-ltm-scope-option="all"]').count(), 1);
+      await sourceScopePicker.locator('[data-ltm-scope-tab="branch"]').click();
+      assert.equal(await sourceScopePicker.locator('[data-ltm-scope-option="group:conversation-a"]').count(), 1);
+      assert.equal(await sourceScopePicker.locator('[data-ltm-scope-option="chat:desktop-chat"]').count(), 0);
+      assert.equal(
+        await sourceScopePicker
+          .locator('[data-ltm-scope-tab="branch"]')
+          .evaluate((tab) => document.activeElement === tab),
+        true,
+        "mouse-activated tab receives focus so roving keyboard navigation can continue",
+      );
+      await page.keyboard.press("ArrowRight");
+      assert.equal(await sourceScopePicker.locator('[data-ltm-scope-tab="character"][data-active="true"]').count(), 1);
+      assert.equal(
+        await sourceScopePicker
+          .locator('[data-ltm-scope-tab="character"]')
+          .evaluate((tab) => document.activeElement === tab),
+        true,
+      );
+      await sourceScopePicker.locator('[data-ltm-scope-tab="all"]').click();
       await sourceScopePicker.locator("[data-ltm-scope-picker-popup] input").fill("does-not-match");
       assert.equal(await sourceScopePicker.locator('[data-ltm-scope-option="chat:desktop-chat"]').count(), 1);
       assert.equal(await sourceScopePicker.locator('[data-ltm-scope-option="all"]').count(), 1);
+      assert.equal(await sourceScopePicker.locator('[data-ltm-scope-option="group:conversation-a"]').count(), 0);
       await sourceScopePicker.locator("[data-ltm-scope-picker-popup] input").fill("Member Final Branch");
       assert.equal(
         await sourceScopePicker.locator('[data-ltm-scope-option="group:conversation-a"]').count(),
@@ -3382,6 +3501,7 @@ async function main() {
           body.source === "chats" && JSON.stringify(body.sourceScope) === JSON.stringify(expectedInitialChatSourceScope)
         );
       });
+      await sourceScopePicker.locator('[data-ltm-scope-tab="chat"]').click();
       await sourceScopePicker.locator('[role="option"][data-ltm-scope-option="chat:desktop-chat"]').click();
       const scopedChatPreviewRequest = (await scopedChatPreviewRequestPromise).postDataJSON() as {
         sourceScope?: unknown;
@@ -3391,6 +3511,23 @@ async function main() {
       // Unified destination panel replaces the split combobox + "Add more locations".
       const destinationPanel = page.locator("#ltm-destination-scope-control");
       await destinationPanel.waitFor();
+      const destinationScope = destinationPanel.locator("[data-ltm-destination-scope]");
+      assert.equal(await destinationScope.getAttribute("open"), null, "destination scope starts collapsed");
+      assert.match(
+        await destinationScope.locator("[data-ltm-destination-scope-summary]").innerText(),
+        /Choose a destination/u,
+      );
+      assert.equal(
+        await destinationScope.locator('[data-ltm-availability-tab="all"]').isVisible(),
+        false,
+        "destination tab rail stays inside the collapsed disclosure",
+      );
+      await destinationScope.locator("summary").click();
+      assert.notEqual(
+        await destinationScope.getAttribute("open"),
+        null,
+        "destination scope expands when the summary is clicked",
+      );
       assert.equal(await page.locator('[data-ltm-scope-picker="destination"]').count(), 0);
       assert.equal(await page.locator("[data-ltm-add-destination]").count(), 0);
       assert.equal(await destinationPanel.getByText("Make memories available in", { exact: true }).count(), 1);
@@ -3504,6 +3641,11 @@ async function main() {
       assert.equal(
         await destinationPanel.locator('button[aria-label^="Remove Persona A (current and future chats)"]').count(),
         1,
+      );
+      // The collapsed summary tracks the current destination selection.
+      assert.doesNotMatch(
+        await destinationScope.locator("[data-ltm-destination-scope-summary]").innerText(),
+        /^Choose a destination$/u,
       );
 
       // Capacity: the per-kind 100-ID limit blocks the 100th additional chat.
@@ -3658,6 +3800,71 @@ async function main() {
           path: join(visualOutputDir, "long-term-memory-source-pagination-desktop.png"),
           fullPage: true,
         });
+      // Keep the import pending so row feedback can be checked independently of response timing.
+      const importRoute = "**/api/long-term-memory/import/source-notes";
+      let releaseImport!: () => void;
+      const importPending = new Promise<void>((resolve) => {
+        releaseImport = resolve;
+      });
+      await page.route(importRoute, async (route) => {
+        await importPending;
+        await route.continue();
+      });
+      const importingButton = page.locator(
+        '[data-ltm-source-action="import"][data-ltm-source-id="character-outside-current-chat"]',
+      );
+      const idleButton = page.locator('[data-ltm-source-action="import"][data-ltm-source-id="character-next-page"]');
+      const idleIcon = await idleButton.locator("svg").getAttribute("class");
+      await importingButton.click();
+      try {
+        await page.locator('[data-ltm-import-status="pending"]').waitFor();
+        const visibleSourceCountOwners = page.locator(
+          '[data-ltm-surface="sources"] [data-ltm-source-task-count]:visible',
+        );
+        assert.equal(
+          await visibleSourceCountOwners.count(),
+          1,
+          "an active source task exposes exactly one visible source count",
+        );
+        assert.match(await visibleSourceCountOwners.innerText(), /Importing 1/u);
+        assert.equal(await importingButton.isDisabled(), true);
+        assert.equal(await idleButton.isDisabled(), true);
+        assert.equal(
+          await idleButton.locator("svg").getAttribute("class"),
+          idleIcon,
+          "unrelated sources retain their import icon",
+        );
+        assert.equal(
+          await importingButton.locator("svg").getAttribute("class"),
+          idleIcon,
+          "the active row keeps its default icon while the task surface owns activity",
+        );
+        await page.waitForFunction(() => {
+          const button = document.querySelector(
+            '[data-ltm-source-action="import"][data-ltm-source-id="character-next-page"]',
+          );
+          return button && Number(getComputedStyle(button).opacity) < 1;
+        });
+        await page.waitForFunction(() => {
+          const icon = document.querySelector('[data-ltm-surface="sources"] [data-ltm-source-task-count] svg');
+          return Boolean(icon?.getAnimations().some((animation) => animation.playState === "running"));
+        });
+        const animatedIndicators = await page
+          .locator('[data-ltm-surface="sources"] svg')
+          .evaluateAll(
+            (icons) =>
+              icons.filter((icon) => icon.getAnimations().some((animation) => animation.playState === "running"))
+                .length,
+          );
+        assert.equal(animatedIndicators, 1, "a running source task animates exactly one indicator");
+      } finally {
+        releaseImport();
+      }
+      await page.locator('[data-ltm-import-status="idle"]').waitFor();
+      await page.unroute(importRoute);
+      assert.equal(await importingButton.isEnabled(), true);
+      assert.equal(await importingButton.locator("svg").getAttribute("class"), idleIcon);
+      await selectedCharacter.check();
       const searchRestart = page.waitForRequest(
         (request) =>
           request.method() === "POST" &&
@@ -3717,7 +3924,8 @@ async function main() {
       assert.equal(await desktopReextract.isDisabled(), true);
       await page.locator("[data-ltm-source-task-progress]").waitFor();
       const desktopSourcesNavigation = page.locator('[data-ltm-navigation="desktop"] [data-ltm-destination="sources"]');
-      assert.match(await desktopSourcesNavigation.innerText(), /Re-extracting 1/u);
+      assert.match(await desktopSourcesNavigation.innerText(), /Re-extracting\.\.\./u);
+      assert.match(await page.locator("[data-ltm-source-task-progress]").innerText(), /Re-extracting 1/u);
       await page.locator('[data-ltm-navigation="desktop"] [data-ltm-destination="vault"]').click();
       await reextractionStarted;
       releaseReextraction?.();
@@ -3753,6 +3961,9 @@ async function main() {
         ),
         3,
       );
+      if ((await destinationScope.getAttribute("open")) === null) {
+        await destinationScope.locator("summary").click();
+      }
       await destinationPanel.locator('[data-ltm-availability-tab="branch"]').click();
       await destinationPanel.locator('[data-ltm-availability-target="branch:conversation-a"] input').check();
       await page.locator('[data-ltm-lorebook-id="lorebook_mobile_fixture"]').click();

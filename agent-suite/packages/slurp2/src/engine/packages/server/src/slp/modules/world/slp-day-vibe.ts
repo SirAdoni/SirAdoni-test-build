@@ -20,7 +20,7 @@ export const SLURP_DAY_VIBES = ["good", "ordinary", "quiet", "flat"] as const;
 export type SlurpDayVibe = (typeof SLURP_DAY_VIBES)[number];
 
 export type SlurpDayVibeFacts = {
-  /** Coins earned since the start of the creator's day. */
+  /** Coins earned in the last 24 hours. */
   earnedToday: number;
   /** Mean coins per day over the recent ledger, for comparison. */
   averageDaily: number;
@@ -61,16 +61,17 @@ export function slurpDayVibeDescription(vibe: SlurpDayVibe): string | null {
   }
 }
 
-/** Day boundaries are UTC, matching every other dated key in Slurp. */
-const dayKey = (at: Date) => at.toISOString().slice(0, 10);
-
+/**
+ * "Today" is the last 24 hours, not the calendar day. The vibe is scored once and cached until the
+ * next UTC day, so a calendar window scored it just after midnight with nothing earned yet, and the
+ * creator spent the whole day saying nothing came in.
+ */
 export function slurpDayVibeFacts(earnings: SlurpEarnings, lastPostAt: string | null, at: Date): SlurpDayVibeFacts {
-  const today = dayKey(at);
+  const since = at.getTime() - 86_400_000;
   const dated = earnings.ledger.filter((entry) => entry.amount > 0 && typeof entry.at === "string");
-  const earnedToday = dated
-    .filter((entry) => entry.at.slice(0, 10) === today)
-    .reduce((sum, entry) => sum + entry.amount, 0);
-  const earlier = dated.filter((entry) => entry.at.slice(0, 10) !== today);
+  const isRecent = (entry: { at: string }) => Date.parse(entry.at) > since;
+  const earnedToday = dated.filter(isRecent).reduce((sum, entry) => sum + entry.amount, 0);
+  const earlier = dated.filter((entry) => !isRecent(entry));
   const days = new Set(earlier.map((entry) => entry.at.slice(0, 10)));
   const averageDaily = days.size > 0 ? earlier.reduce((sum, entry) => sum + entry.amount, 0) / days.size : 0;
   const daysSinceLastPost = lastPostAt

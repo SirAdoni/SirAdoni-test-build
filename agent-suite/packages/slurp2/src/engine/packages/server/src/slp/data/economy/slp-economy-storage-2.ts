@@ -2,6 +2,9 @@ import { and, eq, or } from "../../../db/file-query.js";
 import { SlpPostUnlock } from "../../../../../shared/src/slp/slp-social.types.js";
 import { isSlurpFileUniqueConstraintError } from "../../base/host/slp-file-errors.js";
 import { slpCreatorUnlockPriceFromMetadata } from "../../modules/economy/slp-prices.js";
+import { createSlpActiveModifierProvider } from "../../base/modifiers/slp-active-modifier-provider.js";
+import { slurpSubscriptionCharge } from "../../modules/economy/slp-creator-pricing.js";
+import { slurpPlatformEventModifierSource } from "../../../../../shared/src/slp/slp-platform-events.js";
 import {
   applyStipend,
   credit,
@@ -17,7 +20,8 @@ import {
 } from "../../modules/economy/slp-wallet.js";
 import { reverse as reverseEarnings, slurpEarningsKey } from "../../modules/economy/slp-earnings.js";
 import { logger } from "../../../lib/logger.js";
-import { isCreatorHiddenFromViewer } from "../../base/identity/slp-access.js";
+import { slurpPostIncomeParts } from "../../modules/projects/slp-creator-ties.js";
+import { parseRecord } from "../../modules/creators/slp-public-support.js";
 import { slpAccounts, slpPosts, slpPostUnlocks } from "../../../db/schema/slurp.js";
 import { newId, now } from "../../../utils/id-generator.js";
 import { slurpViewerSettingsKey } from "../host/slp-storage-constants.js";
@@ -62,7 +66,12 @@ export function createEconomyStorage2(context: SlurpStorageContext) {
      * survives a refresh.
      *
      */
-    async unlockPost(viewerAccountId: string, postId: string): Promise<SlpPostUnlock | null> {
+    async unlockPost(
+      viewerAccountId: string,
+      postId: string,
+      requestedPrice?: number,
+      freeOnUnaffordable = false,
+    ): Promise<{ unlock: SlpPostUnlock; chargedAmount: number; created: boolean } | null> {
       return enqueueFinancial(async () => {
         const viewer = await this.getViewer(viewerAccountId);
         if (!viewer) return null;
@@ -71,7 +80,7 @@ export function createEconomyStorage2(context: SlurpStorageContext) {
         if (settings.walletEnabled) {
           const target = (await db.select().from(slpPosts).where(eq(slpPosts.id, postId)))[0];
           if (!target) return null;
-          price = slpCreatorUnlockPriceFromMetadata(mapPost(target).metadata);
+          price = requestedPrice ?? slpCreatorUnlockPriceFromMetadata(mapPost(target).metadata);
         }
         let created = false;
         const unlock = await db.transaction(async (tx) => {
@@ -85,11 +94,7 @@ export function createEconomyStorage2(context: SlurpStorageContext) {
             .from(slpAccounts)
             .where(and(eq(slpAccounts.id, postRow.authorAccountId), eq(slpAccounts.platform, "slurp")));
           const author = authorRows[0] ? mapAccount(authorRows[0]) : null;
-          if (
-            !author ||
-            (author.sourceKind === "persona" && author.sourceEntityId === viewerAccountId) ||
-            isCreatorHiddenFromViewer(author, viewerAccountId)
-          ) {
+          if (!author || (author.sourceKind === "persona" && author.sourceEntityId === viewerAccountId)) {
             return null;
           }
           const existing = await tx
@@ -117,34 +122,52 @@ export function createEconomyStorage2(context: SlurpStorageContext) {
             .where(and(eq(slpPostUnlocks.viewerAccountId, viewerAccountId), eq(slpPostUnlocks.postId, postId)));
           return rows[0] ? mapPostUnlock(rows[0]) : null;
         });
-        if (unlock && created && settings.walletEnabled) {
+        if (!unlock) return null;
+        let chargedAmount = 0;
+        if (!created && settings.walletEnabled) {
+          const wallet = await getWalletNow(viewerAccountId);
+          chargedAmount = Math.abs(wallet.receipts[postId]?.amount ?? 0);
+        }
+        if (created && settings.walletEnabled) {
           const walletKey = slurpWalletKey(viewerAccountId);
           const viewerSettingsKey = slurpViewerSettingsKey(viewerAccountId);
           const previousWalletValue = await settingsStore.get(walletKey);
           const previousViewerSettingsValue = await settingsStore.get(viewerSettingsKey);
           const wallet = readSlurpWallet(previousWalletValue);
-          let earningsKey: string | null = null;
-          let earningsValue: string | null = null;
+          const earningsBefore = new Map<string, string | null>();
           let paymentCompleted = false;
           try {
-            const charged = spend(wallet, "unlock", price, new Date(), postId);
+            // Only the gamble passes `freeOnUnaffordable`; its note says so, so the wallet ledger can
+            // show the outcome ("Gamble unlock · Free" / "−75") after the toast is gone.
+            const note = freeOnUnaffordable ? `gamble: ${postId}` : postId;
+            const charged =
+              spend(wallet, "unlock", price, new Date(), note) ??
+              (freeOnUnaffordable ? spend(wallet, "unlock", 0, new Date(), note) : null);
             if (!charged) return null;
+            // The spend carries no receipt id, so `receipts[postId]` was always empty and every unlock
+            // reported 0: no Creator share, no income note, and a paid gamble told the fan "free".
+            chargedAmount = wallet.coins - charged.coins;
             const post = (await db.select().from(slpPosts).where(eq(slpPosts.id, postId)))[0];
-            if (post) {
-              earningsKey = slurpEarningsKey(post.authorAccountId);
-              earningsValue = await settingsStore.get(earningsKey);
-            }
+            // A collab post pays both pages (7b-c); every other post pays its author.
+            const parts = post
+              ? slurpPostIncomeParts(
+                  { authorAccountId: post.authorAccountId, metadata: parseRecord(post.metadata) },
+                  Math.floor((chargedAmount * settings.walletCreatorRevenueSharePercent) / 100),
+                )
+              : [];
+            for (const part of parts)
+              earningsBefore.set(part.creatorId, await settingsStore.get(slurpEarningsKey(part.creatorId)));
             await writeWallet(viewerAccountId, charged);
             if (post) {
-              const share = Math.floor((price * settings.walletCreatorRevenueSharePercent) / 100);
-              if (share > 0) {
-                await creditEarningsNow(post.authorAccountId, "unlock", share, `unlock: ${post.authorAccountId}`);
-              }
-              await this.notifyCreatorIncome(post.authorAccountId, "unlock", price, viewerAccountId, post.id);
+              for (const part of parts)
+                if (part.amount > 0)
+                  await creditEarningsNow(part.creatorId, "unlock", part.amount, `unlock: ${post.authorAccountId}`);
+              if (chargedAmount > 0)
+                await this.notifyCreatorIncome(post.authorAccountId, "unlock", chargedAmount, viewerAccountId, post.id);
               await this.advanceAudienceTie(viewerAccountId, post.authorAccountId, {
                 stage: "liker",
-                spent: price,
-                unlocked: price,
+                spent: chargedAmount,
+                unlocked: chargedAmount,
               });
             }
             paymentCompleted = true;
@@ -153,7 +176,11 @@ export function createEconomyStorage2(context: SlurpStorageContext) {
               error,
               [
                 () => restoreWallet(viewerAccountId, previousWalletValue, previousViewerSettingsValue),
-                ...(earningsKey ? [() => restoreSetting(earningsKey, earningsValue)] : []),
+                ...[...earningsBefore].map(
+                  ([creatorId, value]) =>
+                    () =>
+                      restoreSetting(slurpEarningsKey(creatorId), value),
+                ),
               ],
               "unlock",
             );
@@ -169,7 +196,7 @@ export function createEconomyStorage2(context: SlurpStorageContext) {
             }
           }
         }
-        return unlock;
+        return { unlock, chargedAmount: created && settings.walletEnabled ? chargedAmount : 0, created };
       });
     },
     /**
@@ -196,7 +223,11 @@ export function createEconomyStorage2(context: SlurpStorageContext) {
         const previousWalletValue = await settingsStore.get(slurpWalletKey(viewerAccountId));
         const previousViewerSettingsValue = await settingsStore.get(slurpViewerSettingsKey(viewerAccountId));
         const at = new Date();
-        const renewal = renewSubscriptions(stored, at);
+        const gone = new Set<string>();
+        for (const creatorAccountId of Object.keys(stored.subscriptions))
+          if (!(await this.getNoodlerAccountById(creatorAccountId, { includeHidden: true })))
+            gone.add(creatorAccountId);
+        const renewal = renewSubscriptions(stored, at, gone, viewerAccountId);
         if (renewal.wallet === stored) return stored;
         const walletAfterRenewal = renewal.lapsed.reduce(
           (wallet, creatorAccountId) => recordWalletActivity(wallet, "renew", 0, at, creatorAccountId),
@@ -260,6 +291,28 @@ export function createEconomyStorage2(context: SlurpStorageContext) {
     async getCreatorSubscriptionPrice(creatorAccountId: string): Promise<number> {
       const [prices, settings] = await Promise.all([readCreatorPrices(), this.getSettings()]);
       return prices[creatorAccountId] ?? settings.walletSubscriptionCost;
+    },
+    /**
+     * What a new subscription costs right now: the weekly price moved by any running platform event,
+     * exactly as `subscribe` charges it. Buttons, the 402 check and the price filter read this (R1-066).
+     */
+    async getCreatorSubscriptionCharge(creatorAccountId: string, at: Date = new Date()): Promise<number> {
+      const [base, settings] = await Promise.all([
+        this.getCreatorSubscriptionPrice(creatorAccountId),
+        this.getSettings(),
+      ]);
+      // SlurpCoins off: everything is on the house, and the buttons say no price (R1-077).
+      if (!settings.walletEnabled) return 0;
+      return slurpSubscriptionCharge(
+        base,
+        createSlpActiveModifierProvider([
+          slurpPlatformEventModifierSource(
+            settings.platformEvents,
+            await this.platformInfluenceStory(creatorAccountId),
+          ),
+        ]),
+        at,
+      );
     },
     /** Set a creator's own weekly price, or clear it back to the Slurp-wide default with `null`. */
     async setCreatorSubscriptionPrice(creatorAccountId: string, price: number | null): Promise<void> {
@@ -381,6 +434,24 @@ export function createEconomyStorage2(context: SlurpStorageContext) {
       return receipt && receipt.kind !== "payout" && receipt.kind !== "reversal" && receipt.amount > 0
         ? receipt.amount
         : null;
+    },
+    /** A brand's fee for a sponsored post, paid once per deal (the receipt id). No platform share. */
+    async creditSponsorFee(creatorAccountId: string, fee: number, brand: string, receiptId: string) {
+      await enqueueFinancial(() => creditEarningsNow(creatorAccountId, "sponsor", fee, `sponsor: ${brand}`, receiptId));
+    },
+    /** A fan paid for a post: a collab post's income is split with the partner (7b-c). */
+    async creditPostIncome(
+      postId: string,
+      creatorAccountId: string,
+      price: number,
+      reason: "unlock" | "tip",
+      operationId?: string,
+    ) {
+      const post = (await db.select().from(slpPosts).where(eq(slpPosts.id, postId)))[0];
+      const parts = post
+        ? slurpPostIncomeParts({ authorAccountId: post.authorAccountId, metadata: parseRecord(post.metadata) }, price)
+        : [{ creatorId: creatorAccountId, amount: price }];
+      for (const part of parts) await this.creditCreatorIncome(part.creatorId, part.amount, reason, operationId);
     },
     /**
      * Pay a creator's owner when a fan pays that creator. Only a creator backed by one of this

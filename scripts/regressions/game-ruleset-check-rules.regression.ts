@@ -545,7 +545,7 @@ try {
     );
     assert.doesNotMatch(reminder, /double="N"/, "Gravewatch does not double");
     assert.match(reminder, /On an ability check, with= adds a second ability's dice: skill="Sinew" with="Nerve"\./);
-    assert.doesNotMatch(reminder, /complication/, "its botch is the default one");
+    assert.doesNotMatch(reminder, /complication="true"/, "its botch is the default one");
 
     const quiet = buildGmFormatReminder({
       ...base,

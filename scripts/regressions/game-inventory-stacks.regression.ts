@@ -11,6 +11,11 @@
  *     the same array.
  *   - A new session keeps every stack and id (the old carry-over kept only the first of a name).
  *   - The amount field: a count, or +N / -N, bounded like a stack.
+ *   - Wearing and carrying (#6801): equipping takes free slots and binding stays under the bearer's
+ *     maximum, one item of a larger stack at a time; a worn or bound stack stays one item (never
+ *     topped up, merged or split, and unworn when handed over); a bound cursed item stays with its
+ *     bearer for the player; an addition into the shared view goes to whoever can carry it, split by
+ *     room, then least over, never past a limit, and what nobody can carry is left behind.
  *   - Ruleset items (#6795): a stack that is one is that item whatever it is called, a name that is one
  *     adds it (over a plain item only called that), a stack of one holds up to its `stack` (adding,
  *     setting, merging and giving past it start new stacks, never too many), only the ruleset's items
@@ -24,6 +29,10 @@ import {
   addToGameInventory,
   addToGameInventoryNamed,
   applyGameInventoryOps,
+  gameInventoryBearerStatus,
+  gameInventoryLoad,
+  placeGameInventoryAddition,
+  wearGameInventoryStack,
   carryGameInventory,
   GAME_INVENTORY_MAX_NEW_STACKS,
   GAME_INVENTORY_MAX_QUANTITY,
@@ -41,6 +50,7 @@ import {
   splitGameInventoryStack,
   giveGameInventoryStack,
   takeFromGameInventory,
+  type GameInventoryBearer,
   type GameInventoryItemRules,
   type GameInventoryRulesetItem,
   type GameInventoryStack,
@@ -675,6 +685,352 @@ const apples = (): GameInventoryStack[] => [
       ["Hand axe", "outfitter/hand-axe", 1, null],
     ],
   );
+}
+
+// ── Wearing and carrying ──
+{
+  const known: GameInventoryRulesetItem[] = [
+    { item: "gear/coat", name: "Coat", weight: 3, slots: { body: 1 } },
+    { item: "gear/bow", name: "Bow", weight: 2, slots: { hands: 2 } },
+    { item: "gear/axe", name: "Axe", weight: 1, slots: { hands: 1 } },
+    { item: "gear/ring", name: "Ring", slots: { finger: 1 }, binds: { cursed: true } },
+    { item: "gear/bell", name: "Bell", binds: {} },
+    { item: "gear/arrow", name: "Arrow", weight: 1, stack: 20 },
+    { item: "gear/dart", name: "Dart", weight: 0.25 },
+    { item: "gear/feather", name: "Feather" },
+  ];
+  // The player carries 6 without strain and 12 at most; Bram 9 and 12. Each binds one item.
+  const bearers: Record<string, GameInventoryBearer> = {
+    "": { encumberedAbove: 6, limit: 12, bindingMax: 1 },
+    bram: { encumberedAbove: 9, limit: 12, bindingMax: 1 },
+  };
+  const rules = (actor: "player" | "game-master" = "player"): GameInventoryItemRules => ({
+    itemNamed: (name) => known.find((each) => each.name.toLowerCase() === name.trim().toLowerCase()),
+    itemOf: (item) => known.find((each) => each.item === item),
+    offers: (item) => known.some((each) => each.item === item),
+    slots: [
+      { id: "body", label: "Body", count: 1 },
+      { id: "hands", label: "Hands", count: 2 },
+      { id: "finger", label: "Finger", count: 1 },
+    ],
+    bearer: (holder) => bearers[holder ? holder.toLowerCase() : ""] ?? {},
+    actor,
+  });
+  let n = 0;
+  const next = () => `w${++n}`;
+  const of = (name: string, quantity = 1, extra: Partial<GameInventoryStack> = {}): GameInventoryStack => ({
+    id: extra.id ?? `s-${name.toLowerCase()}-${quantity}`,
+    name,
+    item: known.find((each) => each.name === name)!.item,
+    quantity,
+    ...extra,
+  });
+  const worn = (stacks: GameInventoryStack[]) =>
+    stacks.map(
+      (stack) =>
+        `${stack.name} ${stack.quantity} ${stack.holder ?? "player"}${stack.equipped ? " worn" : ""}${stack.bound ? " bound" : ""}`,
+    );
+
+  // Saved worn and bound marks are read on one item only.
+  assert.deepEqual(
+    worn(
+      normalizeGameInventoryStacks([
+        { id: "a", name: "Bow", item: "gear/bow", quantity: 1, equipped: true, bound: true },
+        { id: "b", name: "Bow", item: "gear/bow", quantity: 2, equipped: true },
+        { id: "c", name: "Bow", item: "gear/bow", quantity: 1, equipped: "yes" },
+      ]),
+    ),
+    ["Bow 1 player worn bound", "Bow 2 player", "Bow 1 player"],
+  );
+
+  // Equipping one bow of two takes it into its own stack, right after, which is the one returned; it
+  // takes both hands, so the other finds none free.
+  const bows = [of("Bow", 2, { id: "bows" })];
+  const onBow = wearGameInventoryStack(bows, "bows", "equip", next, rules());
+  assert.ok(onBow && !("refused" in onBow));
+  assert.deepEqual(worn(onBow.stacks), ["Bow 1 player", "Bow 1 player worn"]);
+  assert.equal(onBow.id, onBow.stacks[1]!.id);
+  assert.deepEqual(wearGameInventoryStack(onBow.stacks, "bows", "equip", next, rules()), { refused: "no-slot" });
+  // The coat takes the body, beside the bow; the bell takes no slot, so it cannot be worn.
+  const coat = [...onBow.stacks, of("Coat", 1, { id: "coat" }), of("Bell", 1, { id: "bell" })];
+  const onCoat = wearGameInventoryStack(coat, "coat", "equip", next, rules());
+  assert.ok(onCoat && !("refused" in onCoat));
+  assert.deepEqual(wearGameInventoryStack(coat, "bell", "equip", next, rules()), { refused: "not-wearable" });
+  // Slots are per bearer: Bram's hands are his own.
+  const bramsBow = [...onBow.stacks, of("Bow", 1, { id: "bram-bow", holder: "Bram" })];
+  const onBram = wearGameInventoryStack(bramsBow, "bram-bow", "equip", next, rules());
+  assert.ok(onBram && !("refused" in onBram));
+  // Taking it off frees the hands; taking off what is not worn changes nothing.
+  const off = wearGameInventoryStack(onBow.stacks, onBow.id, "unequip", next, rules());
+  assert.ok(off && !("refused" in off));
+  assert.deepEqual(worn(off.stacks), ["Bow 1 player", "Bow 1 player"]);
+  assert.equal(
+    (wearGameInventoryStack(off.stacks, onBow.id, "unequip", next, rules()) as { stacks: unknown }).stacks,
+    off.stacks,
+  );
+  assert.equal(wearGameInventoryStack(off.stacks, "missing", "equip", next, rules()), null);
+
+  // Binding: one item each, only an item that binds, and a bound cursed ring stays bound for the
+  // player (who cannot take it off either), while the Game Master can end the curse.
+  const trinkets = [of("Ring", 1, { id: "ring" }), of("Bell", 1, { id: "bell" }), of("Axe", 1, { id: "axe" })];
+  const ring = wearGameInventoryStack(trinkets, "ring", "bind", next, rules());
+  assert.ok(ring && !("refused" in ring));
+  assert.deepEqual(wearGameInventoryStack(ring.stacks, "bell", "bind", next, rules()), { refused: "binding-full" });
+  assert.deepEqual(wearGameInventoryStack(trinkets, "axe", "bind", next, rules()), { refused: "not-bindable" });
+  assert.deepEqual(wearGameInventoryStack(ring.stacks, "ring", "unbind", next, rules()), { refused: "cursed" });
+  const ringOn = wearGameInventoryStack(ring.stacks, "ring", "equip", next, rules());
+  assert.ok(ringOn && !("refused" in ringOn));
+  assert.deepEqual(wearGameInventoryStack(ringOn.stacks, "ring", "unequip", next, rules()), { refused: "cursed" });
+  const lifted = wearGameInventoryStack(ring.stacks, "ring", "unbind", next, rules("game-master"));
+  assert.ok(lifted && !("refused" in lifted));
+  assert.deepEqual(worn(lifted.stacks), ["Ring 1 player", "Bell 1 player", "Axe 1 player"]);
+  // A bound item of Bram's is his: the player's binding limit counts only their own.
+  const bramsRing = [
+    ...trinkets,
+    { id: "bram-ring", name: "Ring", item: "gear/ring", quantity: 1, holder: "Bram", bound: true as const },
+  ];
+  const mineToo = wearGameInventoryStack(bramsRing, "ring", "bind", next, rules());
+  assert.ok(mineToo && !("refused" in mineToo));
+  // Nor use it up by name (a classic fight's Use takes by name), though the Game Master can.
+  assert.deepEqual(takeFromGameInventory(ring.stacks, "ring", 1, undefined, rules()).taken, 0);
+  assert.equal(takeFromGameInventory(ring.stacks, "ring", 1, undefined, rules("game-master")).taken, 1);
+  assert.deepEqual(
+    applyGameInventoryOps(ring.stacks, [{ op: "take", name: "Ring", count: 1 }], next, rules()).results,
+    [{ ok: false, reason: "cursed" }],
+  );
+  // Nor can the player give it away or throw it out, though the Game Master can.
+  assert.equal(giveGameInventoryStack(ring.stacks, "ring", "Bram", undefined, next, rules()), null);
+  assert.equal(setGameInventoryStackQuantity(ring.stacks, "ring", 0, next, rules()), ring.stacks);
+  assert.ok(giveGameInventoryStack(ring.stacks, "ring", "Bram", undefined, next, rules("game-master")));
+
+  // A worn or bound stack stays one item: never topped up or merged, and anything set past one goes
+  // beside it unworn. Handed to somebody else, it is neither worn nor bound.
+  const quiver = [of("Axe", 1, { id: "worn-axe", equipped: true }), of("Axe", 2, { id: "axes" })];
+  assert.deepEqual(worn(addToGameInventoryNamed(quiver, "Axe", 1, next, undefined, rules())!.stacks), [
+    "Axe 1 player worn",
+    "Axe 3 player",
+  ]);
+  assert.deepEqual(worn(addToGameInventoryNamed([quiver[0]!], "Axe", 1, next, undefined, rules())!.stacks), [
+    "Axe 1 player worn",
+    "Axe 1 player",
+  ]);
+  assert.equal(mergeGameInventoryStacks(quiver, "axes", "worn-axe", rules()), quiver);
+  assert.equal(mergeGameInventoryStacks(quiver, "worn-axe", "axes", rules()), quiver);
+  assert.deepEqual(worn(setGameInventoryStackQuantity(quiver, "worn-axe", 3, next, rules())), [
+    "Axe 1 player worn",
+    "Axe 2 player",
+    "Axe 2 player",
+  ]);
+  assert.deepEqual(worn(giveGameInventoryStack(quiver, "worn-axe", "Bram", undefined, next, rules())!.stacks), [
+    "Axe 1 Bram",
+    "Axe 2 player",
+  ]);
+  // Nobody is handed more than they can carry at all.
+  const loaded = [of("Arrow", 11, { id: "full", holder: "Bram" }), of("Coat", 1, { id: "spare-coat" })];
+  assert.equal(giveGameInventoryStack(loaded, "spare-coat", "Bram", undefined, next, rules()), null);
+  assert.ok(giveGameInventoryStack(loaded, "spare-coat", "Bram", undefined, next, { ...rules(), bearer: undefined }));
+  // Pouring a stack into somebody else's hands it over, so it is held to their limit like a give: the
+  // player's two arrows would take Bram's eleven to 13 of 12. Within one bag nothing changes hands,
+  // so a player at their limit still pours their own stacks together.
+  const poured = [of("Arrow", 11, { id: "bram-arrows", holder: "Bram" }), of("Arrow", 2, { id: "my-arrows" })];
+  assert.equal(mergeGameInventoryStacks(poured, "my-arrows", "bram-arrows", rules()), poured);
+  assert.deepEqual(
+    applyGameInventoryOps(poured, [{ op: "merge", from: "my-arrows", into: "bram-arrows" }], next, rules()).results,
+    [{ ok: false, reason: "too-heavy" }],
+  );
+  assert.deepEqual(
+    worn(mergeGameInventoryStacks(poured, "my-arrows", "bram-arrows", { ...rules(), bearer: undefined })),
+    ["Arrow 13 Bram"],
+  );
+  const full = [of("Arrow", 10, { id: "ten" }), of("Arrow", 2, { id: "two" })];
+  assert.deepEqual(worn(mergeGameInventoryStacks(full, "two", "ten", rules())), ["Arrow 12 player"]);
+  // Only what moves is weighed: with five arrows to a stack, one of the player's five goes into Bram's
+  // four, which takes him from 11 to 12.
+  const fives: GameInventoryItemRules = {
+    ...rules(),
+    itemOf: (item) => {
+      const found = rules().itemOf(item);
+      return found?.item === "gear/arrow" ? { ...found, stack: 5 } : found;
+    },
+  };
+  const topped = [
+    of("Arrow", 4, { id: "bram-four", holder: "Bram" }),
+    of("Coat", 1, { id: "bram-coat", holder: "Bram" }),
+    of("Axe", 4, { id: "bram-axes", holder: "Bram" }),
+    of("Arrow", 5, { id: "my-five" }),
+  ];
+  assert.deepEqual(worn(mergeGameInventoryStacks(topped, "my-five", "bram-four", fives)), [
+    "Arrow 5 Bram",
+    "Coat 1 Bram",
+    "Axe 4 Bram",
+    "Arrow 4 player",
+  ]);
+  // Taking by name takes what nobody wears first.
+  assert.deepEqual(worn(takeFromGameInventory(quiver, "axe", 2).stacks), ["Axe 1 player worn"]);
+
+  // Loads: an item's weight times how many, fractions included.
+  const packed = [of("Coat"), of("Arrow", 5, { holder: "Bram" }), of("Dart", 8), of("Feather", 3)];
+  assert.equal(gameInventoryLoad(packed, undefined, rules()), 5);
+  assert.equal(gameInventoryLoad(packed, "Bram", rules()), 5);
+  assert.equal(gameInventoryLoad(packed, undefined, undefined), 0, "without rules nothing weighs anything");
+  assert.deepEqual(gameInventoryBearerStatus(packed, undefined, rules()), {
+    load: 5,
+    encumberedAbove: 6,
+    limit: 12,
+    encumbered: false,
+    bound: 0,
+    bindingMax: 1,
+    slots: [
+      { id: "body", label: "Body", count: 1, used: 0 },
+      { id: "hands", label: "Hands", count: 2, used: 0 },
+      { id: "finger", label: "Finger", count: 1, used: 0 },
+    ],
+  });
+  assert.equal(gameInventoryBearerStatus([...packed, of("Axe", 2)], undefined, rules()).encumbered, true);
+
+  // Placing an addition into the shared view.
+  const shared = { among: [undefined, "Bram"] };
+  const place = (
+    stacks: GameInventoryStack[],
+    name: string,
+    count: number,
+    into: Parameters<typeof placeGameInventoryAddition>[3] = shared,
+  ) =>
+    placeGameInventoryAddition(
+      stacks,
+      { name, item: known.find((each) => each.name === name)!.item },
+      count,
+      into,
+      rules(),
+    );
+  // All of it to the first who can carry it without strain: the player, then Bram.
+  assert.deepEqual(place([], "Coat", 1), { shares: [{ holder: undefined, count: 1 }], left: 0 });
+  const strained = [of("Coat"), of("Arrow", 5, { holder: "Bram" })];
+  assert.deepEqual(place(strained, "Arrow", 4), { shares: [{ holder: "Bram", count: 4 }], left: 0 });
+  // Nobody has room for all five, but there is room between them: the most room first, so Bram's 4,
+  // then 1 for the player.
+  assert.deepEqual(place(strained, "Arrow", 5), {
+    shares: [
+      { holder: undefined, count: 1 },
+      { holder: "Bram", count: 4 },
+    ],
+    left: 0,
+  });
+  // Nobody has room for all ten: split by the room left (Bram 4, the player 3), then one at a time to
+  // whoever is then least over.
+  assert.deepEqual(place(strained, "Arrow", 10), {
+    shares: [
+      { holder: undefined, count: 5 },
+      { holder: "Bram", count: 5 },
+    ],
+    left: 0,
+  });
+  // A bag named twice is asked once: Bram (room 7 to his limit) is never counted twice.
+  assert.deepEqual(place(strained, "Arrow", 20, { among: ["Bram", "bram", "BRAM"] }), {
+    shares: [{ holder: "Bram", count: 7 }],
+    left: 13,
+  });
+  // Past everyone's limit, the rest is left behind.
+  const heavy = [of("Coat"), of("Arrow", 5), of("Arrow", 10, { holder: "Bram" })];
+  assert.deepEqual(place(heavy, "Bow", 4), {
+    shares: [
+      { holder: undefined, count: 2 },
+      { holder: "Bram", count: 1 },
+    ],
+    left: 1,
+  });
+  // What weighs nothing, and anything in a game that does not say what anyone carries, goes to the first.
+  assert.deepEqual(place(heavy, "Feather", 50), { shares: [{ holder: undefined, count: 50 }], left: 0 });
+  assert.deepEqual(
+    placeGameInventoryAddition(heavy, { name: "Bow", item: "gear/bow" }, 4, shared, { ...rules(), bearer: undefined }),
+    { shares: [{ holder: undefined, count: 4 }], left: 0 },
+  );
+  // Into one bag: up to its bearer's limit, never past it; nothing when nothing fits.
+  assert.deepEqual(place(heavy, "Arrow", 6, {}), { shares: [{ holder: undefined, count: 4 }], left: 2 });
+  assert.deepEqual(place(heavy, "Bow", 1, { holder: "Bram" }), { shares: [{ holder: "Bram", count: 1 }], left: 0 });
+  assert.deepEqual(place([...heavy, of("Axe", 2, { holder: "Bram" })], "Bow", 1, { holder: "Bram" }), {
+    shares: [],
+    left: 1,
+  });
+  // A quarter-pound dart fits exactly, with no rounding error.
+  assert.deepEqual(place([of("Coat"), of("Axe", 8)], "Dart", 4, {}), {
+    shares: [{ holder: undefined, count: 4 }],
+    left: 0,
+  });
+
+  // The operations: an add into the shared view says where each part went and what was left; an add
+  // nobody can carry is refused; a give past the receiver's limit and a cursed item's refusals say so;
+  // equipping answers with the stack it ended in.
+  const ops = applyGameInventoryOps(
+    heavy,
+    [
+      { op: "add", name: "Bow", count: 4, among: ["", "Bram"], log: true },
+      { op: "add", name: "Bow", count: 1, among: ["", "Bram"] },
+      { op: "add", name: "Feather", count: 2, holder: "Bram" },
+    ],
+    next,
+    rules(),
+  );
+  assert.deepEqual(ops.results, [
+    {
+      ok: true,
+      id: ops.stacks.find((stack) => stack.name === "Bow" && !stack.holder)!.id,
+      count: 3,
+      now: 2,
+      placed: [
+        { count: 2, now: 2 },
+        { holder: "Bram", count: 1, now: 1 },
+      ],
+      left: 1,
+    },
+    { ok: false, reason: "too-heavy" },
+    { ok: true, id: ops.stacks.find((stack) => stack.name === "Feather")!.id, count: 2, now: 2 },
+  ]);
+  assert.deepEqual(ops.journal, [{ item: "Bow", action: "acquired", quantity: 3 }]);
+  const wearOps = applyGameInventoryOps(
+    [...trinkets, of("Bow", 1, { id: "bow" }), of("Axe", 1, { id: "bram-axe", holder: "Bram" })],
+    [
+      { op: "bind", id: "ring" },
+      { op: "unbind", id: "ring" },
+      { op: "give", id: "ring", to: "Bram" },
+      { op: "set", id: "ring", quantity: 0 },
+      { op: "equip", id: "bell" },
+      // The player carries 3 (an axe and a bow): five more bows (10) would pass 12, four (8) would not.
+      { op: "set", id: "bow", quantity: 6 },
+      { op: "set", id: "bow", quantity: 5 },
+      { op: "set", id: "bow", quantity: 1 },
+      { op: "give", id: "bow", to: "Bram", count: 1 },
+      { op: "equip", id: "missing" },
+    ],
+    next,
+    rules(),
+  );
+  assert.deepEqual(
+    wearOps.results.map((result) => (result.ok ? `ok ${result.id ?? ""}` : result.reason)),
+    [
+      "ok ring",
+      "cursed",
+      "cursed",
+      "cursed",
+      "not-wearable",
+      "too-heavy",
+      "ok bow",
+      "ok bow",
+      "ok bow",
+      "missing-stack",
+    ],
+  );
+
+  // Worn and bound counts are part of an item's line, and of whether two inventories are the same.
+  assert.deepEqual(
+    gameInventoryTotals([of("Axe", 1, { equipped: true }), of("Axe", 2), of("Ring", 1, { bound: true })]),
+    [
+      { name: "Axe", quantity: 3, item: "gear/axe", equipped: 1 },
+      { name: "Ring", quantity: 1, item: "gear/ring", bound: 1 },
+    ],
+  );
+  assert.equal(sameGameInventory([of("Axe", 1, { equipped: true })], [of("Axe", 1)]), false);
+  assert.equal(sameGameInventory([of("Ring", 1, { bound: true })], [of("Ring", 1)]), false);
 }
 
 // ── The amount field ──

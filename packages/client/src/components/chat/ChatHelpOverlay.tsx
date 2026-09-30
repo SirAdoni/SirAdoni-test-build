@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import type { ChatMode } from "@marinara-engine/shared";
 import {
   BookOpen,
+  Bookmark,
   Brain,
   ChevronsLeftRight,
   CircleHelp,
@@ -300,6 +301,7 @@ const ACTIONS_BY_MODE: Record<ChatMode, HelpActionDefinition[]> = {
   conversation: [
     { icon: Headphones, labelKey: "ui.chat.chatmessage.voiceControls" },
     { icon: Copy, labelKey: "chat.help.actions.copy" },
+    { icon: Bookmark, labelKey: "chat.help.actions.bookmark" },
     { icon: Reply, labelKey: "chat.help.actions.reply" },
     { icon: SmilePlus, labelKey: "chat.help.actions.react" },
     { icon: Languages, labelKey: "chat.help.actions.translate" },
@@ -315,6 +317,7 @@ const ACTIONS_BY_MODE: Record<ChatMode, HelpActionDefinition[]> = {
   ],
   roleplay: [
     { icon: Copy, labelKey: "chat.help.actions.copy" },
+    { icon: Bookmark, labelKey: "chat.help.actions.bookmark" },
     { icon: Languages, labelKey: "chat.help.actions.translate" },
     { icon: Pencil, labelKey: "chat.help.actions.edit" },
     { icon: Shield, labelKey: "chat.help.actions.rewrite" },

@@ -89,6 +89,9 @@ function escapeMarkdownInline(value: string): string {
   return value.replace(/([\\`*_[\]#<>|])/gu, "\\$1");
 }
 
+function escapeMarkdownText(value: string): string {
+  return value.replace(/&/gu, "&amp;").replace(/</gu, "&lt;").replace(/>/gu, "&gt;");
+}
 export function renderTranscriptMarkdown(input: TranscriptDocumentInput): string {
   const range = describeTranscriptDateRange(input.entries);
   const lines: string[] = [`# ${escapeMarkdownInline(input.title.trim() || "Chat")}`, ""];
@@ -103,10 +106,9 @@ export function renderTranscriptMarkdown(input: TranscriptDocumentInput): string
         lines.push(`_${escapeMarkdownInline(chapter.summary.trim().replace(/\s+/gu, " "))}_`, "");
     }
     lines.push(`### ${escapeMarkdownInline(entry.speaker)}`, "");
-    lines.push(entry.content.trim(), "");
+    lines.push(escapeMarkdownText(entry.content.trim()), "");
     if (entry.thinking?.trim()) {
-      // A literal closing tag inside the reasoning would end the block early and spill the rest into the story.
-      const thinking = entry.thinking.trim().replace(/<\/(details|summary)\s*>/giu, "&lt;/$1&gt;");
+      const thinking = escapeMarkdownText(entry.thinking.trim());
       lines.push("<details><summary>Thinking</summary>", "", thinking, "", "</details>", "");
     }
   });
@@ -167,7 +169,7 @@ h1{font-size:2rem;line-height:1.2;margin:0 0 .35rem;font-weight:600}
 .turn{display:flex;gap:.9rem;padding:1rem 0;border-bottom:1px solid var(--line);break-inside:avoid;page-break-inside:avoid}
 .turn:last-child{border-bottom:0}
 .turn.user .text{background:var(--user);border-radius:.6rem;padding:.6rem .85rem}
-.avatar{flex:0 0 2.5rem;width:2.5rem;height:2.5rem;border-radius:50%;object-fit:cover;display:flex;align-items:center;justify-content:center;font:600 1rem/1 system-ui,sans-serif;color:#fff}
+.avatar{flex:0 0 2.5rem;width:2.5rem;height:2.5rem;border-radius:50%;background-size:cover;background-position:center;display:flex;align-items:center;justify-content:center;font:600 1rem/1 system-ui,sans-serif;color:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 .body{min-width:0;flex:1}
 .meta{display:flex;flex-wrap:wrap;align-items:baseline;gap:.5rem;font:13px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;margin-bottom:.3rem}
 .name{font-weight:650;color:var(--accent)}
@@ -176,7 +178,8 @@ h1{font-size:2rem;line-height:1.2;margin:0 0 .35rem;font-weight:600}
 .text p:last-child{margin-bottom:0}
 .turn.narrator .text{font-style:italic}
 code{font:.9em ui-monospace,Consolas,monospace;background:var(--user);padding:0 .25em;border-radius:.25em}
-details{margin-top:.5rem;color:var(--muted);font-size:.9em}
+details,.thinking-print{margin-top:.5rem;color:var(--muted);font-size:.9em}
+.thinking-print{display:none}
 .toc{margin:0 0 2rem;padding:1rem 1.25rem;border:1px solid var(--line);border-radius:.6rem;background:var(--paper);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
 .toc h2{margin:0 0 .5rem;font-size:.8rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
 .toc ol{margin:0;padding-left:1.4rem}
@@ -189,7 +192,7 @@ details{margin-top:.5rem;color:var(--muted);font-size:.9em}
 .chapter-summary{margin:0 0 .5rem;color:var(--muted);font-style:italic}
 footer{margin-top:2.5rem;color:var(--muted);font:12px/1.4 system-ui,sans-serif;text-align:center}
 @media (max-width:480px){body{font-size:16px}main{padding:2rem 1rem 3rem}.avatar{flex-basis:2rem;width:2rem;height:2rem}}
-@media print{:root{--bg:#fff;--paper:#fff;--ink:#000;--muted:#555;--line:#ccc;--user:#f3f3f3;--accent:#333}body{font-size:12pt}main{max-width:none;padding:0}details{display:none}.chapter{break-after:avoid;page-break-after:avoid}}
+@media print{:root{--bg:#fff;--paper:#fff;--ink:#000;--muted:#555;--line:#ccc;--user:#f3f3f3;--accent:#333}body{font-size:12pt}main{max-width:none;padding:0}details{display:none}.thinking-print{display:block}.chapter{break-after:avoid;page-break-after:avoid}}
 `;
 
 export function renderTranscriptHtml(input: TranscriptDocumentInput): string {
@@ -207,6 +210,17 @@ export function renderTranscriptHtml(input: TranscriptDocumentInput): string {
           )
           .join("")}</ol></nav>\n`
       : "";
+  // Embed each avatar once; repeating data URIs can dwarf a long transcript.
+  const avatarClasses = new Map<string, string>();
+  for (const entry of input.entries) {
+    const avatar = input.avatars?.get(entry.speakerKey);
+    if (avatar && !avatarClasses.has(avatar) && SAFE_AVATAR_URI.test(avatar)) {
+      avatarClasses.set(avatar, `avatar-${avatarClasses.size}`);
+    }
+  }
+  const avatarCss = [...avatarClasses]
+    .map(([avatar, className]) => `.${className}{background-image:url("${avatar}")}`)
+    .join("\n");
   const turns = input.entries
     .map((entry, index) => {
       const chapterItem = chapterAt.get(index);
@@ -214,15 +228,17 @@ export function renderTranscriptHtml(input: TranscriptDocumentInput): string {
         ? `<h2 class="chapter${index === 0 ? " lead" : ""}" id="${chapterItem.id}">${escapeHtml(chapterItem.chapter.title)}</h2>${chapterItem.chapter.summary?.trim() ? `<p class="chapter-summary">${escapeHtml(chapterItem.chapter.summary.trim())}</p>` : ""}\n`
         : "";
       const avatar = input.avatars?.get(entry.speakerKey);
-      const avatarHtml =
-        avatar && SAFE_AVATAR_URI.test(avatar)
-          ? `<img class="avatar" src="${avatar}" alt="">`
-          : `<div class="avatar" aria-hidden="true" style="background:hsl(${speakerHue(entry.speakerKey)} 45% 45%)">${escapeHtml(initialOf(entry.speaker))}</div>`;
+      const avatarClass = avatar ? avatarClasses.get(avatar) : undefined;
+      const avatarHtml = avatarClass
+        ? `<div class="avatar ${avatarClass}" aria-hidden="true"></div>`
+        : `<div class="avatar" aria-hidden="true" style="background:hsl(${speakerHue(entry.speakerKey)} 45% 45%)">${escapeHtml(initialOf(entry.speaker))}</div>`;
       const time = entry.createdAt
         ? `<time class="time" datetime="${escapeHtml(entry.createdAt)}">${escapeHtml(formatDate(entry.createdAt))}</time>`
         : "";
-      const thinking = entry.thinking?.trim()
-        ? `<details><summary>Thinking</summary>${renderStoryBody(entry.thinking)}</details>`
+      const thinkingBody = entry.thinking?.trim() ? renderStoryBody(entry.thinking) : "";
+      // ponytail: Duplicate included reasoning only for print compatibility; remove after ::details-content support.
+      const thinking = thinkingBody
+        ? `<details><summary>Thinking</summary>${thinkingBody}</details><div class="thinking-print"><div>Thinking</div>${thinkingBody}</div>`
         : "";
       const roleClass = ["user", "assistant", "narrator"].includes(entry.role) ? entry.role : "assistant";
       return `${chapterHtml}<article class="turn ${roleClass}">${avatarHtml}<div class="body"><div class="meta"><span class="name">${escapeHtml(entry.speaker)}</span>${time}</div><div class="text">${renderStoryBody(entry.content)}</div>${thinking}</div></article>`;
@@ -236,7 +252,7 @@ export function renderTranscriptHtml(input: TranscriptDocumentInput): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="generator" content="Marinara Engine">
 <title>${escapeHtml(title)}</title>
-<style>${STORY_CSS}</style>
+<style>${STORY_CSS}${avatarCss}</style>
 </head>
 <body>
 <main>

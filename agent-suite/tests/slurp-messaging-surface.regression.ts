@@ -25,10 +25,12 @@ assert.match(
   /role="meter"\n\s+aria-label=\{localizeUi\("ui\.slurp\.messages\.relationshipLevel"/u,
   "the relationship symbol must open a relationship meter labelled by its translation key",
 );
+// Step 4: the ⋮ menu is the shared SlpSheet menu (frosted sheet over a scrim on phones), not a
+// hand-made transparent-looking box.
 assert.match(
   messages,
-  /role="menu"[^>]*bg-\[var\(--slurp-canvas,var\(--background\)\)\]/u,
-  "the mobile menu must be opaque",
+  /<SlpSheet\s+open=\{headerMenuOpen\}[\s\S]*?kind="menu"/u,
+  "the mobile menu must be the shared (readable) sheet menu",
 );
 assert.match(messages, /defaultValue: "Get reply now"/u);
 assert.doesNotMatch(

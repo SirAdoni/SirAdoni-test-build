@@ -4163,7 +4163,7 @@ export function SpatialMapWorkspace({
                 {!templateMode && onOpenTemplates && (
                   <button
                     type="button"
-                    onClick={onOpenTemplates}
+                    onClick={() => onOpenTemplates()}
                     className="mari-chrome-control min-h-11 justify-center px-5 text-sm"
                   >
                     <MapIcon size="0.875rem" /> Use template or shared world

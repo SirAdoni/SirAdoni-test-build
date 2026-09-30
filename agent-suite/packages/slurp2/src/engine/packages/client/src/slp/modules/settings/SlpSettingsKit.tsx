@@ -12,22 +12,30 @@ export type SlpSettingScope = "all-slurp" | "this-viewer" | "new-creators" | "cr
 
 import { focusRing } from "../../base/chrome/slp-focus";
 
+/**
+ * The lead of a page: what it is for, plus page actions. The page title itself is the frame's
+ * `h1`, so the panel does not repeat it. A scope badge shows only when the page is not Slurp-wide.
+ */
 export function BackstagePageHeader({
-  title,
   detail,
   scope,
+  actions,
 }: {
-  title: string;
   detail: string;
-  scope?: SlpSettingScope;
+  scope?: Exclude<SlpSettingScope, "all-slurp">;
+  actions?: ReactNode;
 }) {
   return (
     <header className="flex flex-wrap items-start justify-between gap-3">
-      <div className="min-w-0">
-        <h1 className="text-2xl font-black tracking-tight text-balance">{title}</h1>
-        <p className="mt-1 max-w-2xl text-sm leading-6 text-[var(--slurp-muted)] text-pretty">{detail}</p>
-      </div>
-      {scope && <SlpSettingScopeBadge scope={scope} />}
+      <p className="min-w-0 max-w-2xl flex-1 basis-64 text-sm leading-6 text-[var(--slurp-muted)] text-pretty">
+        {detail}
+      </p>
+      {(scope || actions) && (
+        <div className="flex flex-wrap items-start gap-2">
+          {scope && <SlpSettingScopeBadge scope={scope} />}
+          {actions}
+        </div>
+      )}
     </header>
   );
 }
@@ -64,7 +72,7 @@ export function SummaryRow({
   return (
     <div className="flex flex-wrap items-center gap-3 rounded-xl bg-[var(--slurp-surface-raised)] p-3 ring-1 ring-inset ring-[var(--slurp-outline)] sm:flex-nowrap sm:p-4">
       <span
-        className="grid h-11 w-11 shrink-0 place-items-center rounded-lg bg-[var(--slurp-canvas)] text-[var(--noodle-accent)]"
+        className="grid h-11 w-11 shrink-0 place-items-center rounded-lg bg-[var(--slurp-canvas)] text-[var(--noodle-accent-foreground)]"
         aria-hidden="true"
       >
         {icon}
@@ -88,7 +96,7 @@ export function SummaryRow({
           type="button"
           onClick={onAction}
           className={cn(
-            "inline-flex min-h-11 items-center rounded-lg bg-[var(--noodle-accent)] px-4 text-sm font-bold text-zinc-950 [&_svg]:!text-zinc-950 hover:brightness-105",
+            "inline-flex min-h-11 items-center rounded-lg bg-[var(--noodle-accent)] px-4 text-sm font-bold text-[var(--slurp-on-accent)] [&_svg]:!text-[var(--slurp-on-accent)] hover:brightness-105",
             focusRing,
           )}
         >
@@ -110,43 +118,6 @@ export function SummaryRow({
   );
 }
 
-export function FineTune({
-  summary,
-  count,
-  icon,
-  children,
-}: {
-  summary: string;
-  count?: number;
-  icon?: ReactNode;
-  children: ReactNode;
-}) {
-  return (
-    <details className="group rounded-xl bg-[var(--slurp-surface-raised)] ring-1 ring-inset ring-[var(--slurp-outline)]">
-      <summary
-        className={cn(
-          "flex min-h-11 cursor-pointer list-none items-center gap-3 px-4 py-2 text-sm font-bold focus-visible:ring-inset [&::-webkit-details-marker]:hidden",
-          focusRing,
-        )}
-      >
-        {icon}
-        <span className="min-w-0 flex-1">{summary}</span>
-        {count !== undefined && (
-          <span className="rounded-full bg-[var(--slurp-canvas)] px-2 text-xs font-semibold text-[var(--slurp-muted)] tabular-nums">
-            {count}
-          </span>
-        )}
-        <ChevronRight
-          size={17}
-          className="transition-transform group-open:rotate-90 rtl:rotate-180 motion-reduce:transition-none"
-          aria-hidden="true"
-        />
-      </summary>
-      <div className="space-y-5 border-t border-[var(--slurp-outline)] p-4 sm:p-5">{children}</div>
-    </details>
-  );
-}
-
 /** Marks where a setting renders, so Backstage search can scroll to it and focus it. */
 export function SettingAnchor({ settingKey, children }: { settingKey: SlpSettingKey; children: ReactNode }) {
   return (
@@ -156,10 +127,27 @@ export function SettingAnchor({ settingKey, children }: { settingKey: SlpSetting
   );
 }
 
-/** Opens closed disclosures around a setting, scrolls to it, and focuses its first control. */
-export function focusSettingAnchor(settingKey: string): boolean {
+/**
+ * Opens closed disclosures around a setting, scrolls to it, and focuses its first control. A lazy fold
+ * (`SlpLazyFold`) draws its settings only once open, so it names them in `data-setting-keys`: open it,
+ * and try again once it has drawn.
+ */
+export function focusSettingAnchor(settingKey: string, retry = true): boolean {
   const anchor = document.querySelector<HTMLElement>(`[data-setting-key="${CSS.escape(settingKey)}"]`);
-  if (!anchor) return false;
+  if (!anchor) {
+    const fold = document.querySelector<HTMLDetailsElement>(`details[data-setting-keys~="${CSS.escape(settingKey)}"]`);
+    if (!fold || fold.open || !retry) return false;
+    fold.open = true;
+    // Tried each frame until the fold has drawn, for a second at most: a setting that is not shown in
+    // this state stays unfocused.
+    const deadline = window.performance.now() + 1000;
+    const retryUntilDrawn = () => {
+      if (focusSettingAnchor(settingKey, false)) return;
+      if (window.performance.now() < deadline) window.requestAnimationFrame(retryUntilDrawn);
+    };
+    window.requestAnimationFrame(retryUntilDrawn);
+    return true;
+  }
   for (let node = anchor.parentElement; node; node = node.parentElement) {
     if (node instanceof HTMLDetailsElement) node.open = true;
   }
@@ -219,7 +207,9 @@ export function BackstageWizard<P extends string, S extends object>({
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <p className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--noodle-accent)]">{title}</p>
+          <p className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--noodle-accent-foreground)]">
+            {title}
+          </p>
           <h2 className="text-lg font-bold">{heading}</h2>
         </div>
         <span className="rounded-full bg-[var(--slurp-canvas)] px-3 py-1 text-xs font-semibold ring-1 ring-inset ring-[var(--slurp-outline)]">
@@ -247,7 +237,7 @@ export function BackstageWizard<P extends string, S extends object>({
                 {changed.map((key) => (
                   <div key={key} className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 py-1.5">
                     <dt className="truncate text-[var(--slurp-muted)]">{key}</dt>
-                    <dd className="max-w-52 truncate font-semibold text-[var(--noodle-accent)]">
+                    <dd className="max-w-52 truncate font-semibold text-[var(--noodle-accent-foreground)]">
                       {typeof proposed[key] === "object"
                         ? t("ui.slurp.settings.backstage.preview.updated", { defaultValue: "Updated" })
                         : `${String(current[key])} → ${String(proposed[key])}`}
@@ -295,7 +285,7 @@ export function BackstageWizard<P extends string, S extends object>({
             disabled={pending || changed.length === 0}
             onClick={() => onApply(patch)}
             className={cn(
-              "inline-flex min-h-11 items-center gap-2 rounded-lg bg-[var(--noodle-accent)] px-4 text-sm font-black text-zinc-950 [&_svg]:!text-zinc-950 disabled:opacity-50",
+              "inline-flex min-h-11 items-center gap-2 rounded-lg bg-[var(--noodle-accent)] px-4 text-sm font-black text-[var(--slurp-on-accent)] [&_svg]:!text-[var(--slurp-on-accent)] disabled:opacity-50",
               focusRing,
             )}
           >

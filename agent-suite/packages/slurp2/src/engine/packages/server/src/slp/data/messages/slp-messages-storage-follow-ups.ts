@@ -21,6 +21,7 @@ import {
 } from "../../../db/schema/slurp.js";
 import { isSlurpFileUniqueConstraintError } from "../../base/host/slp-file-errors.js";
 import { applySlurpMood, type SlurpMoodShift } from "../../modules/world/slp-mood.js";
+import { slurpFailedFollowUpPatch, slurpFollowUpExpires } from "../../modules/messages/slp-follow-up.js";
 import {
   applySlurpThreadNotes,
   readStoredNotes,
@@ -58,6 +59,7 @@ import {
   type SlurpRapportFacts,
 } from "../../modules/messages/slp-rapport.js";
 import { createSlurpReplyQueueStorage } from "./slp-reply-queue-storage.js";
+import { unlinkCreatorMedia } from "../../base/media/slp-media.js";
 import { SLURP_COMMISSION_MAX_HAGGLE_ROUNDS, slurpCreatorHaggle } from "../../modules/economy/slp-creator-pricing.js";
 import { DAY, int, json, mapCommission, mapMessage, mapThread, now } from "./slp-messages-storage-helpers.js";
 import type {
@@ -112,17 +114,33 @@ export function createMessagesStorageFollowUps(context: SlurpMessagesContext) {
         recurringPattern?: string;
       }>,
     ): Promise<void> {
-      const thread = await db.select().from(slurpThreads).where(eq(slurpThreads.id, threadId)).get();
+      const [thread] = await db.select().from(slurpThreads).where(eq(slurpThreads.id, threadId)).limit(1);
       if (!thread) return;
       const timestamp = now();
-      for (const followUp of followUps) {
+      // One pending follow-up of each kind per thread. Each reply that said "tonight" used to add
+      // another, and after downtime they all went out together.
+      const pendingTypes = new Set(
+        (
+          await db
+            .select({ type: slurpFollowUps.type })
+            .from(slurpFollowUps)
+            .where(and(eq(slurpFollowUps.threadId, threadId), inArray(slurpFollowUps.status, ["pending", "claimed"])))
+        ).map((row) => row.type),
+      );
+      const pendingCount = [...pendingTypes].length;
+      const retained = followUps
+        .filter((followUp) => !pendingTypes.has(followUp.type))
+        .slice(0, Math.max(0, 3 - pendingCount));
+      for (const followUp of retained) {
+        if (pendingTypes.has(followUp.type)) continue;
         await db.insert(slurpFollowUps).values({
           ...followUp,
           threadId,
           viewerAccountId: String(thread.viewerAccountId),
           creatorAccountId: String(thread.creatorAccountId),
           sequenceNumber: followUp.sequenceNumber == null ? null : String(followUp.sequenceNumber),
-          totalInSequence: followUp.totalInSequence == null ? null : String(followUp.totalInSequence),
+          totalInSequence: followUp.totalInSequence == null ? null : String(retained.length),
+          firstDueAt: followUp.scheduledAt,
           status: "pending",
           claimedAt: null,
           sentAt: null,
@@ -209,12 +227,31 @@ export function createMessagesStorageFollowUps(context: SlurpMessagesContext) {
           ),
         );
     },
-    /** Put a claimed follow-up back in the queue at a later time: cool-off, night quiet, offline. */
+    /**
+     * Put a claimed follow-up back in the queue at a later time: cool-off, night quiet, offline.
+     * A promise always waits (task E: it is delivered late, with a sorry); only an opener nobody
+     * asked for ends two days after it was planned (7c M-007).
+     */
     async postponeScheduledFollowUp(threadId: string, followUpId: string, scheduledAt: string): Promise<void> {
+      const row = (await db.select().from(slurpFollowUps).where(eq(slurpFollowUps.id, followUpId)))[0];
+      const overdue = Boolean(
+        row && slurpFollowUpExpires({ type: String(row.type), createdAt: String(row.createdAt) }),
+      );
       const timestamp = now();
       await db
         .update(slurpFollowUps)
-        .set({ status: "pending", claimedAt: null, scheduledAt, updatedAt: timestamp })
+        .set(
+          overdue
+            ? { status: "cancelled", claimedAt: null, cancelledAt: timestamp, updatedAt: timestamp }
+            : {
+                status: "pending",
+                claimedAt: null,
+                scheduledAt,
+                // A row from before 0.3.0 has no first due time; keep it before scheduledAt moves.
+                firstDueAt: row?.firstDueAt ?? row?.scheduledAt ?? scheduledAt,
+                updatedAt: timestamp,
+              },
+        )
         .where(
           and(
             eq(slurpFollowUps.id, followUpId),
@@ -225,9 +262,18 @@ export function createMessagesStorageFollowUps(context: SlurpMessagesContext) {
     },
     async failScheduledFollowUp(threadId: string, followUpId: string): Promise<void> {
       const timestamp = now();
+      // A promise is never given up for a failed call (task E). It goes back to the queue later
+      // and later (15 minutes up to 12 hours, by how late it is already), so a dead connection
+      // neither drops it nor holds the queue's first slot; an opener nobody asked for fails for good.
+      const row = (await db.select().from(slurpFollowUps).where(eq(slurpFollowUps.id, followUpId)))[0];
       await db
         .update(slurpFollowUps)
-        .set({ status: "pending", claimedAt: null, failedAt: timestamp, updatedAt: timestamp })
+        .set({
+          ...slurpFailedFollowUpPatch(row, new Date(timestamp)),
+          claimedAt: null,
+          failedAt: timestamp,
+          updatedAt: timestamp,
+        })
         .where(
           and(
             eq(slurpFollowUps.id, followUpId),
@@ -254,6 +300,7 @@ export function createMessagesStorageFollowUps(context: SlurpMessagesContext) {
           sequenceNumber?: number;
           totalInSequence?: number;
           recurringPattern?: string;
+          firstDueAt?: string;
         };
       }>
     > {
@@ -271,6 +318,7 @@ export function createMessagesStorageFollowUps(context: SlurpMessagesContext) {
           sequenceNumber: slurpFollowUps.sequenceNumber,
           totalInSequence: slurpFollowUps.totalInSequence,
           recurringPattern: slurpFollowUps.recurringPattern,
+          firstDueAt: slurpFollowUps.firstDueAt,
         })
         .from(slurpFollowUps)
         .where(
@@ -285,7 +333,13 @@ export function createMessagesStorageFollowUps(context: SlurpMessagesContext) {
             ),
           ),
         );
-      return rows.map((row) => ({
+      // One follow-up per thread per tick, the earliest first. The rest wait for the next tick, so a
+      // backlog after downtime arrives spaced out instead of as a burst.
+      const earliest = new Map<string, (typeof rows)[number]>();
+      for (const row of rows.sort((left, right) => left.scheduledAt.localeCompare(right.scheduledAt))) {
+        if (!earliest.has(row.threadId)) earliest.set(row.threadId, row);
+      }
+      return [...earliest.values()].map((row) => ({
         id: row.threadId,
         viewerAccountId: row.viewerAccountId,
         creatorAccountId: row.creatorAccountId,
@@ -299,6 +353,7 @@ export function createMessagesStorageFollowUps(context: SlurpMessagesContext) {
           sequenceNumber: row.sequenceNumber == null ? undefined : Number(row.sequenceNumber),
           totalInSequence: row.totalInSequence == null ? undefined : Number(row.totalInSequence),
           recurringPattern: row.recurringPattern ?? undefined,
+          firstDueAt: row.firstDueAt ?? row.scheduledAt,
         },
       }));
     },
@@ -406,9 +461,21 @@ export function createMessagesStorageFollowUps(context: SlurpMessagesContext) {
      */
     async resetThread(threadId: string): Promise<void> {
       const timestamp = now();
+      // Pictures that only lived in these messages. Deleting the rows left the files on disk with
+      // no owner. A commission keeps its picture, because the commissions panel still shows it.
+      const orphanedMedia: string[] = [];
       await db.transaction(async (tx) => {
         const [thread] = await tx.select().from(slurpThreads).where(eq(slurpThreads.id, threadId)).limit(1);
         if (!thread) return;
+        const commissionMedia = new Set(
+          (await tx.select().from(slurpCommissions).where(eq(slurpCommissions.threadId, threadId)))
+            .map((row) => row.mediaPath)
+            .filter(Boolean),
+        );
+        for (const row of await tx.select().from(slurpMessages).where(eq(slurpMessages.threadId, threadId))) {
+          const path = json(row.metadata as string)?.noodlerMediaPath;
+          if (typeof path === "string" && path && !commissionMedia.has(path)) orphanedMedia.push(path);
+        }
         await tx.delete(slurpReplyBubbles).where(eq(slurpReplyBubbles.threadId, threadId));
         await tx.delete(slurpMessageClaims).where(eq(slurpMessageClaims.threadId, threadId));
         await tx.delete(slurpMessages).where(eq(slurpMessages.threadId, threadId));
@@ -441,6 +508,7 @@ export function createMessagesStorageFollowUps(context: SlurpMessagesContext) {
           })
           .where(eq(slurpThreads.id, threadId));
       });
+      for (const path of orphanedMedia) unlinkCreatorMedia(path);
     },
     /**
      * Replace what the creator remembers about this fan.
@@ -456,6 +524,30 @@ export function createMessagesStorageFollowUps(context: SlurpMessagesContext) {
         .set({ notes: JSON.stringify(next), updatedAt: now() })
         .where(eq(slurpThreads.id, threadId));
       return next;
+    },
+    async mergeThreadNotes(
+      threadId: string,
+      notes: unknown,
+      baseNoteIds: readonly string[] | undefined,
+    ): Promise<SlurpThreadNote[]> {
+      return db.transaction(async (tx) => {
+        const [row] = await tx
+          .select({ notes: slurpThreads.notes })
+          .from(slurpThreads)
+          .where(eq(slurpThreads.id, threadId));
+        if (!row) return [];
+        const incoming = readStoredNotes(notes);
+        const base = new Set(baseNoteIds ?? readStoredNotes(row.notes).map((note) => note.id));
+        const current = readStoredNotes(row.notes);
+        const editedIds = new Set(incoming.map((note) => note.id));
+        const writtenSince = current.filter((note) => !base.has(note.id) && !editedIds.has(note.id));
+        const merged = readStoredNotes([...incoming, ...writtenSince]);
+        await tx
+          .update(slurpThreads)
+          .set({ notes: JSON.stringify(merged), updatedAt: now() })
+          .where(eq(slurpThreads.id, threadId));
+        return merged;
+      });
     },
     /** Clear one side's unread count and stamp the messages the other side sent. */
     async markRead(threadId: string, side: "viewer" | "creator"): Promise<void> {

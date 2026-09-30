@@ -8,14 +8,16 @@ import type {
   SlpCreatorViewerScope,
   SlpInteraction,
 } from "../../../../../shared/src/slp/slp-social.types.js";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef } from "react";
+import { type QueryClient, useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../../../lib/api-client.js";
 import { useSlurpUIStore } from "../../base/state/slp-package-store.js";
 import type { SlurpPageCursor } from "../../base/state/slp-page-cursor.js";
 import { cursorQuery } from "../../base/state/slp-page-cursor.js";
 import { slpKeys } from "../../base/state/slp-query-keys.js";
 import type { SlurpViewerScope } from "../../base/state/slp-state-types.js";
+import { mergeSlpFeedFirstPage } from "./slp-feed-refresh.js";
+import { markSlpProfilePostsStale } from "./slp-feed-post-hooks.js";
 
 function mergeSlurpViewerShell(
   current: SlpCreatorViewerScope | undefined,
@@ -31,13 +33,33 @@ function mergeSlurpViewerShell(
     })),
   };
 }
+/** Personas whose next feed fetch reloads every loaded page, not only page one. */
+const slpFeedDeepReload = new Set<string>();
+
+/**
+ * After an action on a post (unlock, like, vote, reply, edit, delete) the post can sit on a page the
+ * reader loaded with "Load more", which a page-one refetch keeps as it was (R1-023). This marks the
+ * feed so the refetch it triggers reloads all loaded pages once; the 30 s poll stays page one only.
+ * Profile pages read their own query, so it is refreshed too (R1-022).
+ */
+export function refreshSlpPostViews(qc: QueryClient, personaId: string) {
+  slpFeedDeepReload.add(personaId);
+  markSlpProfilePostsStale();
+  void qc.invalidateQueries({ queryKey: slpKeys.viewer(personaId) });
+  void qc.invalidateQueries({ queryKey: [...slpKeys.noodlerRoot(), "posts"] });
+  // A reply or a poll vote on someone else's post can pay coins (R1-093).
+  void qc.invalidateQueries({ queryKey: [...slpKeys.noodlerRoot(), "wallet", personaId] });
+  void qc.invalidateQueries({ queryKey: [...slpKeys.noodlerRoot(), "viewer-wallets"] });
+}
+
 export function useCreatorViewer(personaId: string | null, enabled = true) {
-  return useQuery({
+  const qc = useQueryClient();
+  const query = useQuery({
     queryKey: slpKeys.viewer(personaId ?? "none"),
     queryFn: async ({ signal }) => {
       const encodedPersonaId = encodeURIComponent(personaId!);
       type ViewerPost = SlurpViewerScope["creators"][number]["posts"][number] & { story?: boolean };
-      type FeedPage = {
+      type FeedResponse = SlurpViewerScope & {
         items: Array<{
           creatorAccountId: string;
           post: ViewerPost;
@@ -45,49 +67,117 @@ export function useCreatorViewer(personaId: string | null, enabled = true) {
         total: number;
         nextCursor: SlurpPageCursor | null;
       };
-      const feedItems: FeedPage["items"] = [];
-      let cursor: SlurpPageCursor | null = null;
-      do {
-        const page: FeedPage = await api.get<{
-          items: Array<{
-            creatorAccountId: string;
-            post: SlurpViewerScope["creators"][number]["posts"][number];
-          }>;
-          total: number;
-          nextCursor: SlurpPageCursor | null;
-        }>(`/slurp2/slurp/viewer/feed?personaId=${encodedPersonaId}&tab=all&limit=20${cursorQuery(cursor)}`, {
-          signal,
-        });
-        feedItems.push(...page.items);
-        cursor = page.nextCursor;
-      } while (cursor);
-      // Read the shell after the feed. A newly-created Creator account and its first post can
-      // otherwise be observed from different file-store snapshots when these requests start
-      // together, leaving the client with a post whose Creator is absent from the shell.
-      const scope = await api.get<SlurpViewerScope>(`/slurp2/slurp/viewer?personaId=${encodedPersonaId}`, {
-        signal,
-      });
+      const cached = qc.getQueryData<SlurpViewerScope & { nextCursor?: SlurpPageCursor | null }>(
+        slpKeys.viewer(personaId ?? "none"),
+      );
+      const deep = slpFeedDeepReload.delete(personaId!);
+      const loaded = deep && cached ? cached.creators.reduce((sum, creator) => sum + creator.posts.length, 0) : 0;
+      const page = await api.get<FeedResponse>(
+        `/slurp2/slurp/viewer/feed?personaId=${encodedPersonaId}&tab=all&limit=20`,
+        { signal },
+      );
+      // A deep reload walks the pages the reader had loaded, so every post comes back fresh.
+      for (let next = page.nextCursor; next && page.items.length < loaded;) {
+        const more = await api.get<FeedResponse>(
+          `/slurp2/slurp/viewer/feed?personaId=${encodedPersonaId}&tab=all&limit=20${cursorQuery(next)}`,
+          { signal },
+        );
+        page.items.push(...more.items.filter((item) => !page.items.some((known) => known.post.id === item.post.id)));
+        next = page.nextCursor = more.nextCursor;
+      }
       const postsByCreator = new Map<string, SlurpViewerScope["creators"][number]["posts"]>();
-      for (const item of feedItems) {
+      for (const item of page.items) {
         const posts = postsByCreator.get(item.creatorAccountId) ?? [];
         posts.push(item.post);
         postsByCreator.set(item.creatorAccountId, posts);
       }
-      return {
-        ...scope,
-        creators: scope.creators.map((creator) => ({
+      const fresh = {
+        ...page,
+        creators: page.creators.map((creator) => ({
           ...creator,
           posts: postsByCreator.get(creator.profile.id) ?? [],
         })),
       };
+      // A poll refetches page one only; the pages loaded with "Load more" stay.
+      return deep ? fresh : mergeSlpFeedFirstPage(cached as typeof fresh | undefined, fresh);
     },
     enabled: enabled && Boolean(personaId),
     staleTime: 30_000,
     gcTime: 10 * 60_000,
-    refetchInterval: enabled && personaId ? 30_000 : false,
+    // The feed keeps itself fresh (there is no refresh button): on focus (the Slurp query client's
+    // default), and whenever the cheap unseen-count poll sees new posts (`useCreatorUnseenCount`), with
+    // a slow poll behind that. New posts wait behind the Hub's "New posts" pill, so a refresh never
+    // moves what the reader is looking at. The full feed every 30 s was the Hub's heaviest cost (0.3.6).
+    refetchInterval: enabled && personaId ? 180_000 : false,
     refetchIntervalInBackground: false,
   });
+  const loadMore = async () => {
+    const current = qc.getQueryData<SlurpViewerScope & { nextCursor?: SlurpPageCursor | null }>(
+      slpKeys.viewer(personaId ?? "none"),
+    );
+    if (!personaId || !current?.nextCursor) return false;
+    type FeedResponse = SlurpViewerScope & {
+      items: Array<{ creatorAccountId: string; post: SlurpViewerScope["creators"][number]["posts"][number] }>;
+      nextCursor: SlurpPageCursor | null;
+    };
+    const page = await api.get<FeedResponse>(
+      `/slurp2/slurp/viewer/feed?personaId=${encodeURIComponent(personaId)}&tab=all&limit=20${cursorQuery(current.nextCursor)}`,
+    );
+    qc.setQueryData(slpKeys.viewer(personaId), (value: typeof current | undefined) => {
+      if (!value) return value;
+      return {
+        ...value,
+        nextCursor: page.nextCursor,
+        creators: value.creators.map((creator) => ({
+          ...creator,
+          posts: [
+            ...creator.posts,
+            ...page.items
+              .filter((item) => item.creatorAccountId === creator.profile.id)
+              .map((item) => item.post)
+              .filter((post) => !creator.posts.some((existing) => existing.id === post.id)),
+          ],
+        })),
+      };
+    });
+    return true;
+  };
+  return { ...query, loadMore };
 }
+type SlurpViewerFeedPage = SlurpViewerScope & {
+  items: Array<{ creatorAccountId: string; post: SlurpViewerScope["creators"][number]["posts"][number] }>;
+  total: number;
+  nextCursor: SlurpPageCursor | null;
+};
+
+/**
+ * Search and the Following tab, paged by the server (R1-084). The main feed holds only the pages the
+ * reader loaded, so filtering it on the client missed every older post ("No posts mention …" while
+ * some did, and an empty Following feed for a persona that follows Creators). Idle when neither is on.
+ */
+export function useSlurpViewerFeedSlice(personaId: string | null, tab: "following" | "all", search: string) {
+  const [term, setTerm] = useState(search.trim());
+  useEffect(() => {
+    const timer = setTimeout(() => setTerm(search.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+  const active = Boolean(personaId) && (tab === "following" || term.length > 0);
+  return useInfiniteQuery({
+    queryKey: [...slpKeys.viewer(personaId ?? "none"), "slice", tab, term],
+    queryFn: ({ pageParam, signal }) =>
+      api.get<SlurpViewerFeedPage>(
+        `/slurp2/slurp/viewer/feed?personaId=${encodeURIComponent(personaId!)}&tab=${tab}&limit=20${
+          term ? `&search=${encodeURIComponent(term)}` : ""
+        }${pageParam ? cursorQuery(pageParam) : ""}`,
+        { signal },
+      ),
+    initialPageParam: null as SlurpPageCursor | null,
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+    enabled: active,
+    staleTime: 30_000,
+  });
+}
+
 /**
  * Unseen-post count for the public Noodle entry point. Reads the bootstrap query both Noodle
  * surfaces already hold, so the badge is the same number whether it is rendered from Noodle or
@@ -103,6 +193,8 @@ export function useCreatorUnseenCount(personaId: string | null, enabled = true) 
       api.get<{ count: number }>(`/slurp2/slurp/viewer/unseen-count?personaId=${encodeURIComponent(personaId!)}`),
     enabled: enabled && Boolean(personaId),
     staleTime: 10_000,
+    // The one fast poll on the Hub: a count, cached by the accounts write generation on the server.
+    // A higher count refreshes the feed and the Creators below.
     refetchInterval: enabled && personaId ? 30_000 : false,
     refetchIntervalInBackground: false,
   });
@@ -119,7 +211,10 @@ export function useCreatorUnseenCount(personaId: string | null, enabled = true) 
       previousCount.current = count;
       return;
     }
-    if (count > previousCount.current) void qc.invalidateQueries({ queryKey: slpKeys.viewer(personaId) });
+    if (count > previousCount.current) {
+      void qc.invalidateQueries({ queryKey: slpKeys.viewer(personaId) });
+      void qc.invalidateQueries({ queryKey: slpKeys.noodlerAccounts() });
+    }
     previousCount.current = count;
   }, [count, enabled, personaId, qc]);
   return count;
@@ -128,11 +223,12 @@ export function useMarkCreatorFeedSeen() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (personaId: string) => api.post<SlpAccount>("/slurp2/slurp/viewer/mark-seen", { personaId }),
-    onSuccess: (_viewer, personaId) =>
-      Promise.all([
-        qc.invalidateQueries({ queryKey: slpKeys.viewer(personaId) }),
-        qc.invalidateQueries({ queryKey: slpKeys.noodlerUnseenCount(personaId) }),
-      ]),
+    onSuccess: (viewer, personaId) => {
+      qc.setQueryData<SlpCreatorViewerScope | undefined>(slpKeys.viewer(personaId), (current) =>
+        current ? { ...current, viewer: { ...current.viewer, ...viewer } } : current,
+      );
+      qc.setQueryData(slpKeys.noodlerUnseenCount(personaId), { count: 0 });
+    },
   });
 }
 export function useToggleCreatorSubscription() {
@@ -161,15 +257,11 @@ export function useToggleCreatorSubscription() {
       qc.setQueryData<SlpCreatorViewerScope | undefined>(slpKeys.viewer(input.personaId), (current) =>
         mergeSlurpViewerShell(current, scope),
       );
-      return Promise.all([
-        qc.refetchQueries({ queryKey: slpKeys.viewer(input.personaId), type: "active" }),
-        qc.invalidateQueries({ queryKey: slpKeys.noodlerPosts(input.creatorAccountId) }),
-        qc.invalidateQueries({
-          queryKey: slpKeys.noodlerSubscribers(input.creatorAccountId),
-        }),
-        qc.invalidateQueries({ queryKey: [...slpKeys.noodlerRoot(), "wallet", input.personaId] }),
-        qc.invalidateQueries({ queryKey: [...slpKeys.noodlerRoot(), "viewer-wallets"] }),
-      ]);
+      void qc.invalidateQueries({ queryKey: slpKeys.viewer(input.personaId) });
+      void qc.invalidateQueries({ queryKey: slpKeys.noodlerPosts(input.creatorAccountId) });
+      void qc.invalidateQueries({ queryKey: slpKeys.noodlerSubscribers(input.creatorAccountId) });
+      void qc.invalidateQueries({ queryKey: [...slpKeys.noodlerRoot(), "wallet", input.personaId] });
+      void qc.invalidateQueries({ queryKey: [...slpKeys.noodlerRoot(), "viewer-wallets"] });
     },
   });
 }
@@ -194,7 +286,10 @@ export function useToggleCreatorFollow() {
       qc.setQueryData<SlpCreatorViewerScope | undefined>(slpKeys.viewer(input.personaId), (current) =>
         mergeSlurpViewerShell(current, scope),
       );
-      await qc.invalidateQueries({ queryKey: slpKeys.viewer(input.personaId) });
+      void qc.invalidateQueries({ queryKey: slpKeys.viewer(input.personaId) });
+      // The profile's follower count and Followers tab (R1-072).
+      void qc.invalidateQueries({ queryKey: slpKeys.noodlerConnectionCounts() });
+      void qc.invalidateQueries({ queryKey: slpKeys.noodlerFollowers(input.creatorAccountId) });
     },
   });
 }
@@ -209,11 +304,29 @@ export function useUnlockCreatorPost() {
       qc.setQueryData<SlpCreatorViewerScope | undefined>(slpKeys.viewer(input.personaId), (current) =>
         mergeSlurpViewerShell(current, scope),
       );
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: slpKeys.viewer(input.personaId) }),
-        qc.invalidateQueries({ queryKey: [...slpKeys.noodlerRoot(), "wallet", input.personaId] }),
-        qc.invalidateQueries({ queryKey: [...slpKeys.noodlerRoot(), "viewer-wallets"] }),
-      ]);
+      refreshSlpPostViews(qc, input.personaId);
+      void qc.invalidateQueries({ queryKey: [...slpKeys.noodlerRoot(), "wallet", input.personaId] });
+      void qc.invalidateQueries({ queryKey: [...slpKeys.noodlerRoot(), "viewer-wallets"] });
+    },
+  });
+}
+export function useGambleUnlockCreatorPost() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ postId, personaId }: { postId: string; personaId: string }) =>
+      api.post<{
+        scope: SlpCreatorViewerScope;
+        outcome: "free" | "triple-price" | "already-unlocked";
+        amount: number;
+      }>(`/slurp2/slurp/posts/${encodeURIComponent(postId)}/gamble-unlock`, { personaId }),
+    onSuccess: async (result, input) => {
+      await qc.cancelQueries({ queryKey: slpKeys.viewer(input.personaId) });
+      qc.setQueryData<SlpCreatorViewerScope | undefined>(slpKeys.viewer(input.personaId), (current) =>
+        mergeSlurpViewerShell(current, result.scope),
+      );
+      refreshSlpPostViews(qc, input.personaId);
+      void qc.invalidateQueries({ queryKey: [...slpKeys.noodlerRoot(), "wallet", input.personaId] });
+      void qc.invalidateQueries({ queryKey: [...slpKeys.noodlerRoot(), "viewer-wallets"] });
     },
   });
 }
@@ -250,7 +363,12 @@ export function useCreateCreatorInteraction() {
                 createdAt: new Date().toISOString(),
               };
               if (post.interactions.some((item) => item.id === interaction.id)) return post;
-              return { ...post, interactions: [...post.interactions, interaction] };
+              // Cards show `likeCount` (real likes + crowd), so a post like moves it with the heart.
+              return {
+                ...post,
+                interactions: [...post.interactions, interaction],
+                likeCount: input.parentInteractionId ? post.likeCount : post.likeCount + 1,
+              };
             }),
           })),
         };
@@ -260,7 +378,7 @@ export function useCreateCreatorInteraction() {
     onError: (_error, input, context) => {
       if (context?.previous) qc.setQueryData(slpKeys.viewer(input.personaId), context.previous);
     },
-    onSettled: (_result, _error, input) => qc.invalidateQueries({ queryKey: slpKeys.viewer(input.personaId) }),
+    onSettled: (_result, _error, input) => refreshSlpPostViews(qc, input.personaId),
   });
 }
 export function useTriggerCreatorReply() {
@@ -271,7 +389,7 @@ export function useTriggerCreatorReply() {
         `/slurp2/slurp/posts/${encodeURIComponent(postId)}/interactions/${encodeURIComponent(interactionId)}/creator-reply`,
         { personaId, debugMode: useSlurpUIStore.getState().debugMode },
       ),
-    onSettled: (_result, _error, input) => qc.invalidateQueries({ queryKey: slpKeys.viewer(input.personaId) }),
+    onSettled: (_result, _error, input) => refreshSlpPostViews(qc, input.personaId),
   });
 }
 export function useRemoveCreatorInteraction() {
@@ -299,21 +417,23 @@ export function useRemoveCreatorInteraction() {
           ...current,
           creators: current.creators.map((creator) => ({
             ...creator,
-            posts: creator.posts.map((post) =>
-              post.id !== input.postId
-                ? post
-                : {
-                    ...post,
-                    interactions: post.interactions.filter(
-                      (interaction) =>
-                        !(
-                          interaction.actorAccountId === (input.actorAccountId ?? input.personaId) &&
-                          interaction.type === input.type &&
-                          (interaction.parentInteractionId ?? null) === (input.parentInteractionId ?? null)
-                        ),
-                    ),
-                  },
-            ),
+            posts: creator.posts.map((post) => {
+              if (post.id !== input.postId) return post;
+              const interactions = post.interactions.filter(
+                (interaction) =>
+                  !(
+                    interaction.actorAccountId === (input.actorAccountId ?? input.personaId) &&
+                    interaction.type === input.type &&
+                    (interaction.parentInteractionId ?? null) === (input.parentInteractionId ?? null)
+                  ),
+              );
+              const removed = post.interactions.length - interactions.length;
+              return {
+                ...post,
+                interactions,
+                likeCount: input.parentInteractionId ? post.likeCount : Math.max(0, post.likeCount - removed),
+              };
+            }),
           })),
         };
       });
@@ -322,7 +442,7 @@ export function useRemoveCreatorInteraction() {
     onError: (_error, input, context) => {
       if (context?.previous) qc.setQueryData(slpKeys.viewer(input.personaId), context.previous);
     },
-    onSettled: (_result, _error, input) => qc.invalidateQueries({ queryKey: slpKeys.viewer(input.personaId) }),
+    onSettled: (_result, _error, input) => refreshSlpPostViews(qc, input.personaId),
   });
 }
 export function useUpdateCreatorInteraction() {
@@ -344,7 +464,7 @@ export function useUpdateCreatorInteraction() {
         `/slurp2/slurp/posts/${encodeURIComponent(postId)}/interactions/${encodeURIComponent(interactionId)}`,
         { personaId, ...input },
       ),
-    onSuccess: (_interaction, input) => qc.invalidateQueries({ queryKey: slpKeys.viewer(input.personaId) }),
+    onSuccess: (_interaction, input) => refreshSlpPostViews(qc, input.personaId),
   });
 }
 export function useDeleteCreatorInteraction() {
@@ -354,6 +474,6 @@ export function useDeleteCreatorInteraction() {
       api.delete<SlpInteraction[]>(
         `/slurp2/slurp/posts/${encodeURIComponent(postId)}/interactions/${encodeURIComponent(interactionId)}?personaId=${encodeURIComponent(personaId)}`,
       ),
-    onSuccess: (_deleted, input) => qc.invalidateQueries({ queryKey: slpKeys.viewer(input.personaId) }),
+    onSuccess: (_deleted, input) => refreshSlpPostViews(qc, input.personaId),
   });
 }

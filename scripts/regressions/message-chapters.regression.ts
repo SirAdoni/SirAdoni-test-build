@@ -289,7 +289,9 @@ try {
   );
 
   // Trash and restore move the chapter with the message.
-  assert.equal((await app.inject({ method: "DELETE", url: `/api/chats/chat-ch/messages/${ids[1]}` })).statusCode, 204);
+  const deletion = await app.inject({ method: "DELETE", url: `/api/chats/chat-ch/messages/${ids[1]}` });
+  assert.equal(deletion.statusCode, 200, deletion.body);
+  assert.deepEqual(deletion.json(), { trashed: true, trashedCount: 1 }, "deleting a message reports its move to trash");
   assert.deepEqual(
     (await app.inject({ method: "GET", url: "/api/chats/chat-ch/chapters" }))
       .json()
@@ -297,13 +299,18 @@ try {
     ["Second"],
     "a trashed message's chapter leaves the list",
   );
-  const trash = (await app.inject({ method: "GET", url: "/api/chats/chat-ch/trash" })).json() as Array<{ id: string }>;
+  const trash = (await app.inject({ method: "GET", url: "/api/chats/chat-ch/trash" })).json() as Array<{
+    id: string;
+    messageId: string;
+  }>;
+  assert.deepEqual(trash.map((entry) => entry.messageId), [ids[1]], "the deleted message is the entry in trash");
   const restored = await app.inject({
     method: "POST",
     url: "/api/chats/chat-ch/trash/restore",
     payload: { entryIds: trash.map((entry) => entry.id) },
   });
   assert.equal(restored.statusCode, 200, restored.body);
+  assert.deepEqual(restored.json(), { restoredMessageIds: [ids[1]], conflictEntryIds: [] });
   assert.deepEqual(
     (await app.inject({ method: "GET", url: "/api/chats/chat-ch/chapters" }))
       .json()

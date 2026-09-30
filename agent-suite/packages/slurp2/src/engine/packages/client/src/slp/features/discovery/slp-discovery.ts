@@ -8,6 +8,7 @@ export const SLURP_DISCOVERY_TAG_GROUPS = [
     id: "vibe",
     tags: ["dominant", "flirty", "mysterious", "playful", "romantic", "submissive", "wholesome"],
   },
+  { id: "look", tags: ["anime", "anthro", "furry", "scalie", "dragon", "monster"] },
   { id: "adult", tags: ["bdsm", "exhibitionism", "feet", "lingerie", "roleplay", "toys"] },
 ] as const;
 
@@ -125,4 +126,50 @@ export function filterAndSortSlurpCreators<T extends SlurpDiscoverCreator>(
     }
     return difference || stable(left, right);
   });
+}
+
+/** Price bands for the Filters sheet ("Any" is no band). Bounds are inclusive, like the filter. */
+export const SLURP_DISCOVER_PRICE_BANDS = [
+  { id: "low", minimum: null, maximum: 25 },
+  { id: "mid", minimum: 26, maximum: 40 },
+  { id: "high", minimum: 41, maximum: null },
+] as const;
+export type SlurpDiscoverPriceBand = (typeof SLURP_DISCOVER_PRICE_BANDS)[number]["id"];
+
+/** The tags worth a chip in Discover's row: the ones most Creators carry, most common first. */
+export function slurpDiscoverRowTags(creators: readonly SlurpDiscoverCreator[], limit = 8): string[] {
+  const counts = new Map<string, number>();
+  for (const creator of creators)
+    for (const tag of creator.profile.tags ?? []) counts.set(tag, (counts.get(tag) ?? 0) + 1);
+  return [...counts]
+    .sort(([leftTag, left], [rightTag, right]) => right - left || leftTag.localeCompare(rightTag))
+    .slice(0, limit)
+    .map(([tag]) => tag);
+}
+
+/**
+ * The count on the "Filters" chip: what is set inside the sheet and cannot be seen in the chip row
+ * (a tag that has a chip of its own already shows as selected there).
+ */
+export function slurpDiscoverSheetFilterCount(
+  filters: Pick<SlurpDiscoverFilters, "notSubscribed" | "genders" | "tags" | "minimumPrice" | "maximumPrice" | "sort">,
+  rowTags: readonly string[],
+): number {
+  return (
+    (filters.notSubscribed ? 1 : 0) +
+    filters.genders.size +
+    (filters.minimumPrice !== null || filters.maximumPrice !== null ? 1 : 0) +
+    [...filters.tags].filter((tag) => !rowTags.includes(tag)).length +
+    (filters.sort === "subscribed" ? 1 : 0)
+  );
+}
+
+/** The Featured carousel: the most liked Creators, at most `limit`. */
+export function pickSlurpFeaturedCreators<T extends SlurpDiscoverCreator>(creators: readonly T[], limit = 5): T[] {
+  const likes = (creator: T) => creator.posts.reduce((total, post) => total + (post.likeCount ?? 0), 0);
+  return creators
+    .map((creator, index) => ({ creator, index, likes: likes(creator) }))
+    .sort((left, right) => right.likes - left.likes || left.index - right.index)
+    .slice(0, limit)
+    .map(({ creator }) => creator);
 }

@@ -13,7 +13,8 @@ test("creator discovery cards expose profile and discovery-only subscription act
   assert.match(cardSource, /showDiscoveryActions/);
   assert.match(cardSource, /onToggleSubscription/);
   assert.match(cardSource, /subscriptionPrice/);
-  assert.match(cardSource, /Cancel subscription\?/);
+  // Step 6.5: cancelling is one tap + an Undo toast (was a "Cancel subscription?" confirm).
+  assert.match(cardSource, /showSlpSubscriptionCancelledToast/);
   assert.doesNotMatch(cardSource, /onToggleFollow|showFollow/);
 });
 

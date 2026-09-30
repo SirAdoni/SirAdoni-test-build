@@ -202,7 +202,7 @@ function MessageActionsMenu({ revealed, children }: { revealed: boolean; childre
                 // The chrome panel colour can be translucent; layer it over the opaque app background.
                 "marinara-chat-message-actions-menu fixed z-[71] flex flex-col overflow-hidden border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--background)] bg-[image:linear-gradient(var(--marinara-chat-chrome-panel-bg),var(--marinara-chat-chrome-panel-bg))] text-[var(--foreground)] shadow-2xl",
                 asSheet
-                  ? "inset-x-0 bottom-0 max-h-[75dvh] rounded-t-2xl pb-[env(safe-area-inset-bottom)]"
+                  ? "inset-x-0 bottom-0 max-h-[75dvh] rounded-t-2xl pb-[var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom))]"
                   : "w-72 max-h-[min(32rem,70vh)] rounded-xl",
               )}
             >

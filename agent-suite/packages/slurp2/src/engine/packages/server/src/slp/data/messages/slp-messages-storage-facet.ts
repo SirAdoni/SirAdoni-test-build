@@ -6,6 +6,7 @@ import { createMessagesStorageConversation } from "./slp-messages-storage-conver
 import { createMessagesStorageCommissions } from "./slp-messages-storage-commissions.js";
 import { createMessagesStorageActions } from "./slp-messages-storage-actions.js";
 import { createMessagesStorageFollowUps } from "./slp-messages-storage-follow-ups.js";
+import { createMessagesStorageRefunds } from "./slp-messages-storage-refunds.js";
 export function createSlurpMessagesStorageFacet(db: DB, createCore: SlurpMessagesCoreFactory) {
   const context = createSlurpMessagesContext(db, createCore);
   const storage = Object.assign(
@@ -15,6 +16,7 @@ export function createSlurpMessagesStorageFacet(db: DB, createCore: SlurpMessage
     createMessagesStorageCommissions(context),
     createMessagesStorageActions(context),
     createMessagesStorageFollowUps(context),
+    createMessagesStorageRefunds(context),
   );
   context.storage = storage;
   return tolerateMissingTables(storage, {
@@ -25,6 +27,7 @@ export function createSlurpMessagesStorageFacet(db: DB, createCore: SlurpMessage
     listMessages: () => [],
     listThreadsForCreators: () => [],
     listThreadsForViewer: () => [],
+    countUnread: () => ({ unread: 0, inboundUnread: 0 }),
     listCommissionsForThread: () => [],
     listOpenCommissionsForCreator: () => [],
     listAutomatedBriefCommissions: () => [],

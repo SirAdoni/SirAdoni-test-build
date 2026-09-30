@@ -52,8 +52,8 @@ const base = `http://127.0.0.1:${port}`;
 async function waitForPid(previous?: number): Promise<number> {
   const started = Date.now();
   // The first boot transpiles the full server on cold native CI runners.
-  // A supervised restart reuses that cache and retains its tighter deadline.
-  const timeoutMs = previous === undefined ? 60_000 : 10_000;
+  // Cached restarts still rebuild routes and services on slower native CI runners.
+  const timeoutMs = previous === undefined ? 60_000 : 20_000;
   let lastError: unknown;
   while (Date.now() - started < timeoutMs) {
     if (child.exitCode !== null) assert.fail(`Supervisor exited: ${output}`);

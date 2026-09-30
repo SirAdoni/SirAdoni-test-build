@@ -260,6 +260,7 @@ function FolderNode(props: FolderNodeProps) {
               onKeyDown={(event) => {
                 if (event.key === "Enter") event.currentTarget.blur();
                 if (event.key === "Escape") {
+                  event.preventDefault();
                   setEditing(false);
                   setEditName("");
                 }

@@ -22,6 +22,7 @@ import {
   useUIStore,
 } from "../../stores/ui.store";
 import { useChatStore } from "../../stores/chat.store";
+import { useDialogStore } from "../../stores/dialog.store";
 import { useBackgroundAutonomousPolling } from "../../hooks/use-background-autonomous";
 import { useClearAutonomousUnread, useUpdateChatMetadata } from "../../hooks/use-chats";
 import { lorebookKeys } from "../../hooks/use-lorebooks";
@@ -37,6 +38,7 @@ import { showConfirmDialog } from "../../lib/app-dialogs";
 import { isIosWebKitBrowser } from "../../lib/generation-stream-policy";
 import { cn } from "../../lib/utils";
 import { parseChatMetadata } from "../../lib/chat-display";
+import { openGlobalSearch } from "../../lib/chat-insights";
 import { requestChatSummaryOpen } from "../../lib/chat-floating-ui-events";
 import { resolveTrackerPanelContentScale, resolveTrackerPanelDesktopWidth } from "../../lib/tracker-panel-layout";
 import {
@@ -71,6 +73,9 @@ import { GenerationJobsRecoveryHost } from "../generation-jobs/GenerationJobsRec
 const ChatArea = lazy(() => import("../chat/ChatArea").then((module) => ({ default: module.ChatArea })));
 const CharacterEditor = lazy(() =>
   import("../characters/CharacterEditor").then((module) => ({ default: module.CharacterEditor })),
+);
+const CharacterDuplicatesModal = lazy(() =>
+  import("../characters/CharacterDuplicatesModal").then((module) => ({ default: module.CharacterDuplicatesModal })),
 );
 const CharacterLibraryView = lazy(() =>
   import("../characters/CharacterLibraryView").then((module) => ({ default: module.CharacterLibraryView })),
@@ -247,12 +252,47 @@ export function AppShell() {
   useIdleDetection();
 
   useEffect(() => {
+    const handleGlobalSearchShortcut = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.repeat ||
+        !event.shiftKey ||
+        event.altKey ||
+        !(event.ctrlKey || event.metaKey) ||
+        event.key.toLowerCase() !== "f"
+      ) {
+        return;
+      }
+
+      const target = event.target;
+      if (target instanceof HTMLElement && target.isContentEditable) return;
+      if (target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
+      if (
+        target instanceof HTMLInputElement &&
+        !["button", "checkbox", "color", "file", "hidden", "radio", "range", "reset", "submit"].includes(target.type)
+      ) {
+        return;
+      }
+      if (useUIStore.getState().modal || useDialogStore.getState().dialog) return;
+
+      event.preventDefault();
+      openGlobalSearch();
+    };
+
+    document.addEventListener("keydown", handleGlobalSearchShortcut);
+    return () => document.removeEventListener("keydown", handleGlobalSearchShortcut);
+  }, []);
+
+  useEffect(() => {
     if (typeof window === "undefined" || typeof document === "undefined") return;
     const root = document.documentElement;
     let frame = 0;
     let focusTimers: number[] = [];
     let orientationTimers: number[] = [];
-    let largestViewportHeight = window.visualViewport?.height ?? window.innerHeight;
+    let largestViewportHeight = 0;
+    let viewportWidth = window.innerWidth;
+    let previousLayoutHeight = root.clientHeight || window.innerHeight;
     const supportsVirtualKeyboard = navigator.maxTouchPoints > 0 || window.matchMedia("(any-pointer: coarse)").matches;
     const isIosWebKit = isIosWebKitBrowser(navigator.userAgent, navigator.platform, navigator.maxTouchPoints);
     root.toggleAttribute("data-mari-ios-webkit", isIosWebKit);
@@ -261,21 +301,38 @@ export function AppShell() {
       frame = requestAnimationFrame(() => {
         frame = 0;
         const viewport = window.visualViewport;
-        // Pinch zoom changes the visible area, not the keyboard or layout size.
-        // Keep the unzoomed geometry so scene media magnifies with the page.
-        if (viewport && Math.abs(viewport.scale - 1) > 0.01) return;
-        const heightCandidates = [viewport?.height, window.innerHeight, root.clientHeight].filter(
-          (value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0,
-        );
-        const height = heightCandidates.length > 0 ? Math.min(...heightCandidates) : window.innerHeight;
-        largestViewportHeight = Math.max(largestViewportHeight, height);
+        const scale = viewport && Number.isFinite(viewport.scale) && viewport.scale > 0 ? viewport.scale : 1;
+        // Compare heights at the same zoom level so pinch zoom alone does not
+        // look like a keyboard. Keyboard changes must still update a zoomed chat.
+        const heightCandidates = [
+          viewport ? viewport.height * scale : undefined,
+          window.innerHeight,
+          root.clientHeight,
+        ].filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0);
+        const unzoomedHeight = heightCandidates.length > 0 ? Math.min(...heightCandidates) : window.innerHeight;
+        const currentLayoutHeight = root.clientHeight || window.innerHeight;
+        // Account for split-view resizing without losing an already-open
+        // keyboard's height. Height-only keyboard changes retain the baseline.
+        // ponytail: with resizes-content, a keyboard change in the same sample
+        // as a width change shifts the baseline too; the page has no signal to
+        // split them. Upgrade path: keyboard geometry from the VirtualKeyboard API.
+        if (window.innerWidth !== viewportWidth) {
+          viewportWidth = window.innerWidth;
+          largestViewportHeight += currentLayoutHeight - previousLayoutHeight;
+        }
+        previousLayoutHeight = currentLayoutHeight;
+        largestViewportHeight = Math.max(largestViewportHeight, unzoomedHeight);
+        const keyboardOpen = supportsVirtualKeyboard && largestViewportHeight - unzoomedHeight >= 80;
+        // Preserve normal pinch magnification, but fit the visible area while
+        // the keyboard is open. Closing it restores the layout even while zoomed.
+        const height =
+          keyboardOpen && viewport && viewport.height > 0 ? Math.min(unzoomedHeight, viewport.height) : unzoomedHeight;
         const layoutViewportHeight = isIosWebKit ? largestViewportHeight : window.innerHeight;
         const maxOffsetTop = Math.max(0, layoutViewportHeight - height);
         const visualViewportTop = Math.max(0, viewport?.offsetTop ?? 0, viewport?.pageTop ?? 0);
         const offsetTop = Math.min(maxOffsetTop, visualViewportTop);
         root.style.setProperty("--mari-visual-viewport-height", `${Math.max(0, Math.round(height))}px`);
         root.style.setProperty("--mari-visual-viewport-offset-top", `${Math.round(offsetTop)}px`);
-        const keyboardOpen = supportsVirtualKeyboard && largestViewportHeight - height >= 80;
         root.toggleAttribute("data-mari-software-keyboard-open", keyboardOpen);
         dispatchChatVisualViewportChange({
           height,
@@ -542,8 +599,58 @@ export function AppShell() {
   }, [debouncedCheckOverflow]);
 
   const characterDetailId = useUIStore((s) => s.characterDetailId);
+  const characterDuplicatesOpen = useUIStore((s) => s.characterDuplicatesOpen);
+  const setCharacterDuplicatesOpen = useUIStore((s) => s.setCharacterDuplicatesOpen);
+  const openCharacterDetail = useUIStore((s) => s.openCharacterDetail);
+  const activeRightPanel = useUIStore((s) => s.rightPanel);
   const characterLibraryOpen = useUIStore((s) => s.characterLibraryOpen);
   const cardLibraryKind = useUIStore((s) => s.cardLibraryKind);
+  const detailReturnRightPanel = useUIStore((s) => s.detailReturnRightPanel);
+  const characterDuplicatesTriggerRef = useRef<HTMLElement | null>(null);
+  const rememberCharacterDuplicatesFocusTarget = useCallback(() => {
+    for (const selector of [
+      "[data-character-duplicates-trigger]",
+      '[data-tour="panel-characters"]',
+      "[data-topbar-more]",
+    ]) {
+      const candidate = Array.from(document.querySelectorAll<HTMLElement>(selector)).find(
+        (element) => element.isConnected && !element.hasAttribute("disabled") && element.getClientRects().length > 0,
+      );
+      if (candidate) {
+        characterDuplicatesTriggerRef.current = candidate;
+        return;
+      }
+    }
+    characterDuplicatesTriggerRef.current = null;
+  }, []);
+  const inCharacterContext =
+    (activeRightPanel === "characters" &&
+      (rightPanelOpen || (Boolean(characterDetailId) && detailReturnRightPanel === "characters"))) ||
+    (characterLibraryOpen && cardLibraryKind === "characters");
+  useLayoutEffect(() => {
+    if (characterDetailId) {
+      characterDuplicatesTriggerRef.current = document.querySelector<HTMLElement>(
+        '[data-component="MobileDetailSheet"], [data-component="DetailEditor"]',
+      );
+    } else if (characterDuplicatesOpen && inCharacterContext) {
+      rememberCharacterDuplicatesFocusTarget();
+    }
+  }, [characterDetailId, characterDuplicatesOpen, inCharacterContext, rememberCharacterDuplicatesFocusTarget]);
+  useLayoutEffect(() => {
+    if (!characterDuplicatesOpen || inCharacterContext) return;
+    const activeElement = document.activeElement;
+    if (
+      activeElement instanceof HTMLElement &&
+      activeElement !== document.body &&
+      activeElement.isConnected &&
+      !activeElement.closest('[data-component="Modal"]')
+    ) {
+      characterDuplicatesTriggerRef.current = activeElement;
+    } else {
+      rememberCharacterDuplicatesFocusTarget();
+    }
+    setCharacterDuplicatesOpen(false);
+  }, [characterDuplicatesOpen, inCharacterContext, rememberCharacterDuplicatesFocusTarget, setCharacterDuplicatesOpen]);
   const agentCatalogOpen = useUIStore((s) => s.agentCatalogOpen);
   const lorebookDetailId = useUIStore((s) => s.lorebookDetailId);
   const presetDetailId = useUIStore((s) => s.presetDetailId);
@@ -1368,6 +1475,7 @@ export function AppShell() {
                 transition={{ type: "spring", damping: 30, stiffness: 360 }}
                 data-component={shellOverlayMode ? "MobileDetailSheet" : "DetailEditor"}
                 aria-label={localizeUi("ui.layout.appshell.detailEditor")}
+                tabIndex={-1}
                 className={cn(
                   "mari-app-background-paint flex min-h-0 flex-1 flex-col overflow-hidden",
                   shellOverlayMode &&
@@ -1382,6 +1490,17 @@ export function AppShell() {
               </motion.aside>
             )}
           </AnimatePresence>
+          <MountOnceWhenOpened open={characterDuplicatesOpen}>
+            <CharacterDuplicatesModal
+              open={characterDuplicatesOpen && !characterDetailId && inCharacterContext}
+              onClose={() => {
+                rememberCharacterDuplicatesFocusTarget();
+                setCharacterDuplicatesOpen(false);
+              }}
+              onOpenCharacter={(id) => openCharacterDetail(id, { preserveCharacterLibrary: true })}
+              restoreFocusRef={characterDuplicatesTriggerRef}
+            />
+          </MountOnceWhenOpened>
         </div>
         {/* Floating avatar notification bubbles (right edge) */}
         <Suspense fallback={null}>

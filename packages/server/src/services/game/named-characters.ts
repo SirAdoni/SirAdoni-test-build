@@ -1,7 +1,8 @@
 import { normalizeTextForMatch } from "@marinara-engine/shared";
 import type { DB } from "../../db/connection.js";
-import { eq } from "../../db/file-query.js";
+import { eq, inArray } from "../../db/file-query.js";
 import { characters, chats, messages } from "../../db/schema/index.js";
+import { currentRoomGeneration } from "../multiplayer/generation-policy.js";
 
 /**
  * Library characters a Game session has named. The GM receives their cards, and campaign memory registers them as
@@ -174,7 +175,12 @@ function parseData(value: unknown): Record<string, unknown> {
 }
 
 export async function readNamedCharacterLibrary(db: DB): Promise<NamedCharacterLibraryEntry[]> {
-  const rows = await db.select().from(characters);
+  const approvedCharacterIds = currentRoomGeneration()?.characterIds;
+  if (approvedCharacterIds && approvedCharacterIds.length === 0) return [];
+  const query = db.select().from(characters);
+  const rows = approvedCharacterIds
+    ? await query.where(inArray(characters.id, [...approvedCharacterIds]))
+    : await query;
   const library: NamedCharacterLibraryEntry[] = [];
   for (const row of rows) {
     const data = parseData(row.data);
@@ -185,15 +191,18 @@ export async function readNamedCharacterLibrary(db: DB): Promise<NamedCharacterL
 }
 
 const MEMO_TTL_MS = 10_000;
-const memo = new Map<string, { at: number; ids: string[] }>();
+const memo = new Map<string, { at: number; scope: string; ids: string[] }>();
 
 /**
  * Library characters named anywhere in a chat's messages. Owner validation asks for this once per entity, so the
  * answer is remembered briefly per chat instead of rescanning the whole transcript each time.
  */
 export async function readNamedCharacterIds(db: DB, chatId: string): Promise<string[]> {
+  const room = currentRoomGeneration();
+  const approvedCharacterIds = room ? [...room.characterIds].sort() : [];
+  const scope = room ? JSON.stringify([room.roomId, room.epoch, approvedCharacterIds]) : "private";
   const cached = memo.get(chatId);
-  if (cached && Date.now() - cached.at < MEMO_TTL_MS) return cached.ids;
+  if (cached && cached.scope === scope && Date.now() - cached.at < MEMO_TTL_MS) return cached.ids;
   const chatRows = await db.select({ id: chats.id }).from(chats).where(eq(chats.id, chatId)).limit(1);
   if (!chatRows[0]) return [];
   const rows = await db.select({ content: messages.content }).from(messages).where(eq(messages.chatId, chatId));
@@ -201,7 +210,7 @@ export async function readNamedCharacterIds(db: DB, chatId: string): Promise<str
     library: await readNamedCharacterLibrary(db),
     texts: rows.map((row) => (typeof row.content === "string" ? row.content : "")),
   });
-  memo.set(chatId, { at: Date.now(), ids });
+  memo.set(chatId, { at: Date.now(), scope, ids });
   return ids;
 }
 

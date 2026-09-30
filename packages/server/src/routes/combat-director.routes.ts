@@ -3,13 +3,20 @@ import {
   normalizeGameDifficulty,
   combatWeatherSchema,
   applyGameInventoryOps,
+  applyRulesetFightItemChanges,
   gameInventoryCountItems,
   gameInventoryFightEffects,
   gameInventoryFightLines,
   gameInventoryItemsOwnNamed,
+  gameInventoryKeptByCurse,
   normalizeGameInventoryStacks,
+  rulesetFightItemChanges,
 } from "@marinara-engine/shared";
-import { applyGameInventoryChangeHeld } from "../services/game/game-inventory.service.js";
+import {
+  applyGameInventoryChangeHeld,
+  gameRulesetTurnsNativeItemsOff,
+  loadGameInventoryItemBook,
+} from "../services/game/game-inventory.service.js";
 import { resolveCombatWeather } from "../services/game/weather.service.js";
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
@@ -23,6 +30,8 @@ import {
   combatAiHintsSchema,
   normalizeCharacterLookupName,
   rulesetBestiarySheetCatalogIds,
+  rulesetCardItems,
+  rulesetReadsItems,
   rulesetCatalogIdsForBuild,
   rulesetCellBlocked,
   rulesetSheetBuildsByName,
@@ -185,6 +194,8 @@ const command = z.discriminatedUnion("type", [
     targetIds: z.array(key).max(20),
     payWith: key.optional(),
     style: key.optional(),
+    /** The weapon's mode, checked against the menu by the resolver. */
+    mode: key.optional(),
     /** Where the `move` option walks to, and the cell a shape is aimed at. Both are checked against
      *  the menu by the resolver; this only bounds them to a board's own size. */
     to: coord.optional(),
@@ -554,6 +565,10 @@ export async function combatDirectorRoutes(
     s.revision++;
     combatDirectorView(s);
     let live: RulesetLiveStates | undefined;
+    // The ruleset's items as the player uses them, read before the chat's queue is held and only once
+    // the fight has spent something: a bound cursed item is one the player cannot use up.
+    const rules =
+      Object.keys(s.itemSpends).length > 0 ? await loadGameInventoryItemBook(app.db, { chatId }, "player") : undefined;
     await withChatMetadataPatchQueue(chatId, () =>
       app.db.transaction(async () => {
         const previous = await load(chatId, s.anchor);
@@ -573,14 +588,35 @@ export async function combatDirectorRoutes(
           await applyGameInventoryChangeHeld(app.db, chatId, (stacks) => {
             for (const d of deltas) {
               // Counted as the items of that own name, so another item's nickname can never make up the count.
-              if (gameInventoryCountItems(stacks, gameInventoryItemsOwnNamed(stacks, d.name)) < d.count)
+              const items = gameInventoryItemsOwnNamed(stacks, d.name);
+              if (gameInventoryCountItems(stacks, items) < d.count)
                 throw new Error("Inventory changed. Reload the battle.");
+              const free = stacks.filter((stack) => !gameInventoryKeptByCurse(stack, rules));
+              if (gameInventoryCountItems(free, items) < d.count)
+                throw new Error(`${d.name} is cursed and stays with whoever it is bound to, so it cannot be used.`);
             }
             const outcome = applyGameInventoryOps(
               stacks,
               deltas.map((d) => ({ op: "take" as const, name: d.name, count: d.count, as: "used" as const })),
+              undefined,
+              rules,
             );
+            // The step counted on every item it spends: one taken short throws, and the whole step with it.
+            if (outcome.results.some((result, i) => !result.ok || result.count !== deltas[i]!.count))
+              throw new Error("Inventory changed. Reload the battle.");
             return { stacks: outcome.stacks, journal: outcome.journal, value: null };
+          });
+        // What a ruleset fight shot, loaded and won back since the last step, onto those very stacks,
+        // with the party's sheets: a step either changes both or changes neither.
+        const fightItems =
+          s.style === "ruleset" && s.rulesetFight
+            ? rulesetFightItemChanges(previous.state.rulesetFight?.encounter, s.rulesetFight.encounter)
+            : [];
+        if (fightItems.length > 0)
+          await applyGameInventoryChangeHeld(app.db, chatId, (stacks) => {
+            const applied = applyRulesetFightItemChanges(stacks, fightItems);
+            if (!applied) throw new Error("Inventory changed. Reload the battle.");
+            return { stacks: applied.stacks, journal: applied.journal, value: null };
           });
         if (s.style === "ruleset" && s.rulesetFight) live = await writeRulesetLive(chatId, s.anchor, s.rulesetFight);
         await store.updateStateById(rowId, JSON.stringify(s), true, chatId);
@@ -688,7 +724,10 @@ export async function combatDirectorRoutes(
         // One line per item: a fight neither knows nor cares how the player split their stacks. Each is
         // shown under a name no other line has, and spent by the item's own name; its effect is found
         // under that line's name, or the name it was shown by, or its own name.
-        const fightLines = gameInventoryFightLines(normalizeGameInventoryStacks(meta.gameInventory));
+        // A ruleset that turns Game Mode's own items off keeps them out of the fight: none is offered, so
+        // nothing a model guessed can be used, until the ruleset says what they do.
+        const itemsOff = await gameRulesetTurnsNativeItemsOff(app.db, meta);
+        const fightLines = itemsOff ? [] : gameInventoryFightLines(normalizeGameInventoryStacks(meta.gameInventory));
         const state = createCombatDirector({
           ...input,
           inventory: fightLines.map(({ name, quantity, ownName }) => ({
@@ -696,7 +735,8 @@ export async function combatDirectorRoutes(
             quantity,
             ...(ownName ? { ownName } : {}),
           })),
-          itemEffects: gameInventoryFightEffects(fightLines, input.itemEffects),
+          // Nor is what a model guessed for them kept: the ruleset says they do nothing here.
+          itemEffects: itemsOff ? [] : gameInventoryFightEffects(fightLines, input.itemEffects),
           party: input.party as Combatant[],
           // What the fight is RESOLVED by is read below and never stored on the Engine's own units.
           enemies: input.enemies.map(({ creature: _c, tier: _t, proposed: _p, ...unit }) => unit) as Combatant[],
@@ -720,6 +760,19 @@ export async function combatDirectorRoutes(
           const persona = personaId ? await createCharactersStorage(app.db).getPersona(personaId) : null;
           const cards = meta.gameCharacterCards;
           const builds = rulesetSheetBuildsByName(cards, persona?.name ?? null);
+          const itemBook = rulesetReadsItems(definition)
+            ? await loadGameInventoryItemBook(app.db, { metadata: meta, resolved }, "player")
+            : undefined;
+          const fightItems = itemBook
+            ? rulesetCardItems(
+                itemBook,
+                normalizeGameInventoryStacks(meta.gameInventory),
+                (Array.isArray(cards) ? (cards as Array<Record<string, unknown>>) : []).flatMap((card) =>
+                  typeof card?.name === "string" && card.name.trim() ? [card.name.trim()] : [],
+                ),
+                persona?.name ?? null,
+              )
+            : undefined;
           const partyLists = new Set(
             input.party.flatMap((member) => {
               const build = builds.get(normalizeCharacterLookupName(member.name));
@@ -746,6 +799,8 @@ export async function combatDirectorRoutes(
             cards,
             playerName: persona?.name ?? null,
             live: parseStoredRulesetLive((await visibleLiveRow(input.chatId)).row?.rulesetLive),
+            // What each member holds as the fight starts, when the ruleset's sheet reads items.
+            ...(fightItems ? { items: fightItems } : {}),
             partyCatalogs: await loadFightCatalogs(resolved.packageId, definition, (c) => partyLists.has(c.id)),
             bestiary: await loadBestiary(resolved.packageId, definition, proposedSheetLists(definition, input.enemies)),
           });

@@ -176,6 +176,7 @@ import {
   parseSnapshotPlayerStats,
   preserveTrackerCharacterUiFields,
   resolveActiveCharacterIds,
+  resolveGroupGenerationMode,
   resolveBaseUrl,
   resolveRoleplayChatSummaryForPrompt,
   resolveVisibleGameStateAnchor,
@@ -1381,8 +1382,13 @@ async function buildRetryAgentContext(args: {
       ) {
         expressionTargetIds.add(personaContext.identityId);
       }
+      const mergedRoleplayResponse =
+        lastAssistant?.role === "assistant" &&
+        chatMode === "roleplay" &&
+        allCharacterIds.length > 1 &&
+        resolveGroupGenerationMode(chatMode, chatMeta.groupChatMode) === "merged";
       const targetedSprites =
-        expressionTargetIds.size > 0
+        expressionTargetIds.size > 0 && !mergedRoleplayResponse
           ? perChar.filter((sprite) => expressionTargetIds.has(sprite.characterId))
           : perChar;
       if (targetedSprites.length > 0 || expressionTargetIds.size > 0) {
@@ -1570,6 +1576,7 @@ function resolveRetryAgentConnectionRequest(args: {
 
 async function resolveRetryAgents(args: {
   agentTypes: string[];
+  manualIllustration?: boolean;
   chat: any;
   conns: ReturnType<typeof createConnectionsStorage>;
   agentsStore: ReturnType<typeof createAgentsStorage>;
@@ -1586,6 +1593,14 @@ async function resolveRetryAgents(args: {
     ...normalizeAgentPromptTemplateSelectionMap(agentPromptTemplateIds),
   };
   const activeAgentTypeSet = resolveActiveRetryAgentTypes(chatMode, chatMeta);
+  // A one-shot Gallery/slash request does not opt the chat into automatic agent runs.
+  if (
+    args.manualIllustration &&
+    chatMode === "roleplay" &&
+    BUILT_IN_AGENTS.some((agent) => agent.id === "illustrator")
+  ) {
+    activeAgentTypeSet.add("illustrator");
+  }
   const normalizedAgentTypes = agentTypes.map(normalizeRetryAgentTypeId);
   const agentTypeSet = new Set(
     filterGameInternalAgentIds(chatMode, normalizedAgentTypes)
@@ -4577,8 +4592,14 @@ export async function registerRetryAgentsRoute(
             swipeIndex: preGenerationLastAssistant.activeSwipeIndex ?? 0,
           };
         }
-        let retryMessageId = lastAssistant?.id ?? "";
-        let retrySwipeIndex = lastAssistant?.activeSwipeIndex ?? 0;
+        if (Array.isArray(illustratorMessageRange) && recentMessages.length === 0) {
+          throw new Error("Choose an Illustrator range containing at least one visible message");
+        }
+        // Historical illustrations belong to the last visible selected message, including user-only ranges.
+        const rangeTarget = Array.isArray(illustratorMessageRange) ? recentMessages.at(-1) : null;
+        const retryTarget = rangeTarget ?? lastAssistant;
+        let retryMessageId = retryTarget?.id ?? "";
+        let retrySwipeIndex = retryTarget?.activeSwipeIndex ?? 0;
         activeAgentRun.messageId = retryMessageId || null;
         activeAgentRun.swipeIndex = retryMessageId ? retrySwipeIndex : null;
 
@@ -4596,6 +4617,8 @@ export async function registerRetryAgentsRoute(
           () =>
             resolveRetryAgents({
               agentTypes,
+              manualIllustration:
+                isManualIllustratorImageRequest && agentTypes.length === 1 && agentTypes[0] === "illustrator",
               chat,
               conns,
               agentsStore,
@@ -4605,6 +4628,16 @@ export async function registerRetryAgentsRoute(
               onFallback,
             }),
         );
+        if (Array.isArray(illustratorMessageRange)) {
+          // Explicit selection overrides the automatic history window for this run only.
+          for (const entry of resolvedAgents) {
+            entry.resolved = {
+              ...entry.resolved,
+              settings: { ...entry.resolved.settings, contextSize: Math.max(1, recentMessages.length) },
+            };
+          }
+        }
+
         let customLorebookBackfillTarget: { agentConfigId: string; messageId: string; swipeIndex: number } | null =
           null;
         if (customLorebookBackfill) {
@@ -4859,7 +4892,7 @@ export async function registerRetryAgentsRoute(
           requestBody: request.body as unknown as Record<string, unknown>,
           agentContext,
           preGenerationAgentContext,
-          selectedTargetMessage: lastAssistant,
+          selectedTargetMessage: rangeTarget ?? lastAssistant,
         });
         const attachAgentTools = async (entries: ResolvedRetryAgent[], toolInputs: RetryAgentPhaseToolInputs) => {
           assertRetrySetupActive();

@@ -7,7 +7,7 @@ import {
 } from "../../../services/generation/image-captioning-runtime.js";
 import { createLLMProvider } from "../../../services/llm/provider-registry.js";
 import { createConnectionsStorage } from "../../../services/storage/connections.storage.js";
-import { normalizeSlpImagePrompt } from "./slp-image-prompt.js";
+import { normalizeSlpImagePrompt, slurpIsLegacyImageBrief } from "./slp-image-prompt.js";
 import { slpCreatorPostMediaUrl, slurpMessageMediaUrl } from "./slp-media.js";
 import {
   isUnsupportedSlpVisionInputError,
@@ -15,6 +15,7 @@ import {
   rememberSlurpVisionRejection,
   slurpModelLacksVision,
 } from "./slp-vision.js";
+import { slpWithProviderRetry } from "../../base/model/slp-provider-retry.js";
 
 type GenerationConnection = NonNullable<Awaited<ReturnType<ReturnType<typeof createConnectionsStorage>["getWithKey"]>>>;
 
@@ -35,16 +36,18 @@ export async function slurpImageCaptioning(
 ): Promise<ImageCaptioningRuntime> {
   const connection =
     (connectionId ? await createConnectionsStorage(db).getWithKey(connectionId) : null) ?? textConnection;
-  const provider = createLLMProvider(
-    connection.provider,
-    resolveBaseUrl(connection),
-    connection.apiKey,
-    connection.maxContext,
-    connection.openrouterProvider,
-    connection.maxTokensOverride,
-    connection.claudeFastMode === "true",
-    connection.treatAsLocalEndpoint === "true",
-    connection.defaultParameters,
+  const provider = slpWithProviderRetry(
+    createLLMProvider(
+      connection.provider,
+      resolveBaseUrl(connection),
+      connection.apiKey,
+      connection.maxContext,
+      connection.openrouterProvider,
+      connection.maxTokensOverride,
+      connection.claudeFastMode === "true",
+      connection.treatAsLocalEndpoint === "true",
+      connection.defaultParameters,
+    ),
   );
   // The Engine's caption helper swallows provider errors, so a refusal is only visible here.
   const guardedProvider = Object.assign(Object.create(provider) as typeof provider, {
@@ -87,7 +90,8 @@ export async function prepareSlurpPostImageContexts(input: {
   const visionPosts: SlurpImageContextPost[] = [];
   for (const post of input.posts) {
     if ((!input.allowLocked && post.access === "locked") || !post.imageUrl) continue;
-    const prompt = normalizeSlpImagePrompt(post.imagePrompt);
+    // Legacy drafts are rule prose, not a description of the picture.
+    const prompt = slurpIsLegacyImageBrief(post.imagePrompt) ? null : normalizeSlpImagePrompt(post.imagePrompt);
     const saved =
       post.metadata.imageDescriptionSource === imageSource(post) && typeof post.metadata.imageDescription === "string"
         ? post.metadata.imageDescription.trim()

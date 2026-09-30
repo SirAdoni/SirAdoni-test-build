@@ -1,11 +1,20 @@
 import { and, desc, eq, inArray, or } from "../../../db/file-query.js";
+import { deleteSlurpCreatorPlanningRows } from "../continuity/slp-continuity-storage.js";
+import { slurpCreatorStrategy } from "../../modules/creators/slp-creator-strategy.js";
 import { SlpAccountSettingsPatchInput } from "../../../../../shared/src/slp/slp-social-generation.schema.js";
 import {
   SlpAccount,
   SlpAccountSettings,
+  SlpAppearanceProfile,
   SlpCreatorSourceSnapshot,
 } from "../../../../../shared/src/slp/slp-social.types.js";
 import { SlurpStageProfileInput } from "../../modules/discovery/slp-discovery-profile.js";
+import { slurpStageFacts } from "../../modules/creators/slp-stage-profile-repair.js";
+import {
+  appearanceEvidenceFromSource,
+  appearanceSourceFingerprint,
+  resolveSlpAppearanceProfile,
+} from "../../modules/creators/slp-appearance-profile.js";
 import { resolveSlurpCreatorScheduleStatus } from "../../modules/creators/slp-creator-schedule-context.js";
 import {
   slpAccounts,
@@ -13,6 +22,7 @@ import {
   slpActivityDigests,
   slpInteractions,
   slpPosts,
+  slpPostMedia,
   slpPostUnlocks,
   slpCreatorCreatorReplyClaims,
   slpCreatorPreparedPosts,
@@ -28,6 +38,9 @@ import {
   slurpImprovementProposals,
 } from "../../../db/schema/slurp.js";
 import { readCreatorAccountMediaPath, readCreatorAvatarMediaPath } from "../../base/identity/slp-avatar.js";
+import { NOODLER_MEDIA_PREFIX, unlinkCreatorMedia } from "../../base/media/slp-media.js";
+import { slurpUploadedMessageMediaPaths } from "../../modules/messages/slp-messaging.js";
+import { parseRecord } from "../../modules/records/slp-storage-model.js";
 import { newId, now } from "../../../utils/id-generator.js";
 import {
   compareMinimizedCreatorSourceSnapshot,
@@ -35,6 +48,7 @@ import {
 } from "../../base/identity/slp-source.js";
 import { resolveCreatorSourceSnapshot } from "./slp-source-resolve.js";
 import { withoutHiddenAmbientAccounts } from "../audience/slp-ambient-profiles.js";
+import { isSlurpCharacterFanAccount } from "../../../../../shared/src/slp/slp-audience-characters.js";
 import { slurpViewerSettingsKey } from "../host/slp-storage-constants.js";
 import {
   emptySlpAccountSettings,
@@ -51,6 +65,11 @@ import type {
 import { isSlurpViewerActorAccount } from "../../modules/settings/slp-settings.js";
 import { mapAccount } from "../host/slp-storage-mappers.js";
 import type { SlurpStorageContext } from "../host/slp-storage-context.js";
+
+const stageProfilesCache = new WeakMap<
+  object,
+  { key: string; at: number; value: Promise<SlurpManagedStageProfile[]> }
+>();
 
 export function createCreatorsStorage3(context: SlurpStorageContext) {
   const {
@@ -158,6 +177,9 @@ export function createCreatorsStorage3(context: SlurpStorageContext) {
           ? await db.select().from(slpInteractions).where(inArray(slpInteractions.postId, postIds))
           : [];
       const interactionIds = interactionRows.map((interaction) => interaction.id);
+      // The player's chat uploads live in the shared messages folder, not the Creator's, so the
+      // folder removal after this delete does not reach them (R1-061).
+      const uploadedMessageMedia: string[] = [];
       await db.transaction(async (tx) => {
         if (postIds.length > 0) {
           await tx.delete(slpActivityDigests).where(inArray(slpActivityDigests.sourcePostId, postIds));
@@ -187,6 +209,8 @@ export function createCreatorsStorage3(context: SlurpStorageContext) {
             ),
           );
         await tx.delete(slpCreatorPreparedPosts).where(eq(slpCreatorPreparedPosts.creatorAccountId, id));
+        if (postIds.length > 0) await tx.delete(slpPostMedia).where(inArray(slpPostMedia.postId, postIds));
+        await deleteSlurpCreatorPlanningRows(tx, id);
         // Threads on either side of the deleted account, and their messages. Left behind, the
         // inbox would keep listing a creator that no longer exists.
         const threadRows = await tx
@@ -195,6 +219,13 @@ export function createCreatorsStorage3(context: SlurpStorageContext) {
           .where(or(eq(slurpThreads.viewerAccountId, id), eq(slurpThreads.creatorAccountId, id)));
         const threadIds = threadRows.map((row) => row.id);
         if (threadIds.length > 0) {
+          const messageRows = await tx.select().from(slurpMessages).where(inArray(slurpMessages.threadId, threadIds));
+          uploadedMessageMedia.push(
+            ...slurpUploadedMessageMediaPaths(
+              messageRows.map((row) => parseRecord(row.metadata)),
+              `${NOODLER_MEDIA_PREFIX}messages/`,
+            ),
+          );
           await tx.delete(slurpMessages).where(inArray(slurpMessages.threadId, threadIds));
           await tx.delete(slurpReplyBubbles).where(inArray(slurpReplyBubbles.threadId, threadIds));
           await tx.delete(slurpMessageClaims).where(inArray(slurpMessageClaims.threadId, threadIds));
@@ -219,15 +250,48 @@ export function createCreatorsStorage3(context: SlurpStorageContext) {
         await tx.delete(slpAccounts).where(and(eq(slpAccounts.id, id), eq(slpAccounts.platform, "slurp")));
         await tx._fileStore.flush();
       });
+      for (const mediaPath of uploadedMessageMedia) unlinkCreatorMedia(mediaPath);
+      await this.clearWardrobe(id);
       return existing;
     },
+    /**
+     * Every Creator's stage profile. It resolves each Creator's source card, so the feed, the Creators
+     * poll and many routes paid for it on every request; it is kept until an account, character or
+     * persona is written, and at most 15 s for the schedule status, which ages with time (0.3.6).
+     */
     async listNoodlerStageProfiles(): Promise<SlurpManagedStageProfile[]> {
-      const accounts = (await this.listNoodlerAccounts()).filter((account) => !isSlurpViewerActorAccount(account));
+      const store = (db as { _fileStore?: { getTableWriteGeneration?: (table: string) => number } })._fileStore;
+      const key = ["slurp2_accounts", "characters", "personas"]
+        .map((table) => store?.getTableWriteGeneration?.(table))
+        .join("|");
+      const cached = store ? stageProfilesCache.get(store) : undefined;
+      if (store?.getTableWriteGeneration && cached?.key === key && Date.now() - cached.at < 15_000) return cached.value;
+      const value = this.buildNoodlerStageProfiles();
+      if (store?.getTableWriteGeneration) {
+        stageProfilesCache.set(store, { key, at: Date.now(), value });
+        value.catch(() => stageProfilesCache.delete(store));
+      }
+      return value;
+    },
+    async buildNoodlerStageProfiles(): Promise<SlurpManagedStageProfile[]> {
+      // A character in the audience has its own fan row with no source; it is not a Creator (0.3.0
+      // report B: it showed as a second Creator with an appearance nobody could extract).
+      const accounts = (await this.listNoodlerAccounts()).filter(
+        (account) => !isSlurpViewerActorAccount(account) && !isSlurpCharacterFanAccount(account),
+      );
       return Promise.all(
         accounts.map(async (account) => {
           const disclosureMode = account.settings.privacy.identityDisclosure ?? null;
           const publicAccount = await this.resolveAccountSource(account);
           const currentSource = publicAccount ? await resolveCreatorSourceSnapshot(db, publicAccount) : null;
+          const appearance = resolveSlpAppearanceProfile({
+            stageAppearance: account.settings.stage?.appearance,
+            profile: account.settings.appearanceProfile,
+            evidence:
+              currentSource && publicAccount
+                ? appearanceEvidenceFromSource(currentSource, publicAccount.entityId)
+                : null,
+          });
           const baseline = account.settings.profile.noodlerSourceSnapshot;
           return {
             id: account.id,
@@ -239,16 +303,44 @@ export function createCreatorsStorage3(context: SlurpStorageContext) {
             avatarUrl: account.avatarUrl,
             avatarCrop: account.avatarCrop,
             bannerUrl: account.settings.profile.bannerUrl ?? null,
+            page: account.settings.profile.page ?? null,
             gender: account.settings.profile.gender,
             tags: account.settings.profile.tags,
             disclosureMode,
             stagePersonality: account.settings.privacy.stagePersonality ?? "",
+            appearance: account.settings.stage?.appearance ?? "",
+            appearanceState: {
+              source: account.settings.stage?.appearance?.trim()
+                ? "override"
+                : currentSource?.appearance?.trim()
+                  ? "linked"
+                  : appearance.profile
+                    ? "derived"
+                    : "missing",
+              text: appearance.text ?? "",
+              needsReview: appearance.needsReview,
+              linkedAppearance: currentSource?.appearance ?? "",
+              profile: appearance.profile,
+            },
+            wardrobe: account.settings.stage?.wardrobe ?? "",
+            locations: account.settings.stage?.locations ?? "",
             access: account.settings.privacy.access,
             autoPosting:
               currentSource && !(account.kind === "persona" && account.sourceKind === "persona")
                 ? (account.settings.scheduler.autoPosting ?? defaultAutoPostingSettings())
                 : { ...(account.settings.scheduler.autoPosting ?? defaultAutoPostingSettings()), enabled: false },
             fanActivity: account.settings.scheduler.fanActivity ?? null,
+            strategy: (() => {
+              const effective = slurpCreatorStrategy(account.id, account.settings.strategy);
+              return {
+                saved: account.settings.strategy ?? null,
+                effective: {
+                  style: effective.production.style,
+                  skipRate: effective.skipRate,
+                  textOnlyRate: effective.textOnlyRate,
+                },
+              };
+            })(),
             // Reported so a stale schedule is visible. Engine schedules expire weekly, and until
             // now one that lapsed simply stopped applying with no signal anywhere.
             scheduleStatus: publicAccount
@@ -301,7 +393,16 @@ export function createCreatorsStorage3(context: SlurpStorageContext) {
           gender: stageProfile.gender,
           tags: stageProfile.tags,
         },
-        scheduler: { autoPosting: defaultAutoPostingSettings() },
+        // "Enable images for new creators" applies to every new Creator, not only the wizard's (R1-123).
+        scheduler: {
+          autoPosting: {
+            ...defaultAutoPostingSettings(),
+            imagesEnabled: (await this.getSettings()).autoPostingImagesEnabled === true,
+          },
+        },
+        ...(slurpStageFacts(stageProfile) && {
+          stage: slurpStageFacts(stageProfile)!,
+        }),
         privacy: {
           identityDisclosure: stageProfile.disclosureMode,
           stagePersonality: stageProfile.stagePersonality,
@@ -370,6 +471,8 @@ export function createCreatorsStorage3(context: SlurpStorageContext) {
                 gender: stageProfile.gender,
                 tags: stageProfile.tags,
               },
+              // An edit that clears a field clears it. The seed only ever applies on create.
+              stage: slurpStageFacts(stageProfile) ?? {},
               privacy: {
                 ...settings.privacy,
                 identityDisclosure: stageProfile.disclosureMode,
@@ -381,6 +484,77 @@ export function createCreatorsStorage3(context: SlurpStorageContext) {
           .where(eq(slpAccounts.id, id));
         const updatedRows = await tx.select().from(slpAccounts).where(eq(slpAccounts.id, id));
         return updatedRows[0] ? mapAccount(updatedRows[0]) : null;
+      });
+    },
+    /** Accept a derived candidate only while its source evidence is still current. */
+    async saveNoodlerAppearanceProfile(
+      id: string,
+      profile: SlpAppearanceProfile,
+      replace = false,
+    ): Promise<SlpAccount | null> {
+      return db.transaction(async (tx) => {
+        const row = (await tx.select().from(slpAccounts).where(eq(slpAccounts.id, id)))[0];
+        if (!row || (row.kind !== "character" && row.kind !== "persona")) return null;
+        const source = await resolveCreatorSourceSnapshot(tx, {
+          kind: row.kind,
+          entityId: row.entityId,
+          displayName: row.displayName,
+          handle: row.handle,
+        });
+        if (
+          !source ||
+          row.entityId !== profile.sourceEntityId ||
+          appearanceSourceFingerprint(row.entityId, source) !== profile.sourceRevisionToken
+        )
+          return null;
+        const settings = normalizeSlpAccountSettings(row.settings);
+        if (settings.stage?.appearance?.trim() || (settings.appearanceProfile && !replace)) return mapAccount(row);
+        await tx
+          .update(slpAccounts)
+          .set({
+            settings: JSON.stringify({ ...settings, appearanceProfile: profile } satisfies SlpAccountSettings),
+            updatedAt: now(),
+          })
+          .where(eq(slpAccounts.id, id));
+        const updated = (await tx.select().from(slpAccounts).where(eq(slpAccounts.id, id)))[0];
+        return updated ? mapAccount(updated) : null;
+      });
+    },
+    async updateNoodlerAppearanceChoice(
+      id: string,
+      action: "accept" | "keep_override" | "clear_override" | "edit_override",
+      text?: string,
+    ): Promise<SlpAccount | null> {
+      return db.transaction(async (tx) => {
+        const row = (
+          await tx
+            .select()
+            .from(slpAccounts)
+            .where(and(eq(slpAccounts.id, id), eq(slpAccounts.platform, "slurp")))
+        )[0];
+        if (!row) return null;
+        const settings = normalizeSlpAccountSettings(row.settings);
+        if ((action === "accept" || action === "keep_override") && !settings.appearanceProfile?.text) return null;
+        if (action === "edit_override" && !text?.trim()) return null;
+        const stage = { ...settings.stage };
+        let profile = settings.appearanceProfile;
+        if (action === "accept" && profile) profile = { ...profile, status: "accepted", acceptedAt: now() };
+        if (action === "keep_override" && profile) stage.appearance = profile.text;
+        if (action === "edit_override") stage.appearance = text!.trim().slice(0, 2000);
+        if (action === "clear_override") delete stage.appearance;
+        await tx
+          .update(slpAccounts)
+          .set({
+            settings: JSON.stringify({
+              ...settings,
+              stage,
+              ...(profile && { appearanceProfile: profile }),
+            } satisfies SlpAccountSettings),
+            updatedAt: now(),
+          })
+          .where(eq(slpAccounts.id, id));
+        const updated = (await tx.select().from(slpAccounts).where(eq(slpAccounts.id, id)))[0];
+        return updated ? mapAccount(updated) : null;
       });
     },
     async updateNoodlerAvatar(id: string, avatarUrl: string | null): Promise<SlpAccount | null> {

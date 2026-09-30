@@ -12,17 +12,21 @@ import {
   slpCreatorPreparedPosts,
 } from "../../../../db/schema/slurp.js";
 import { newId } from "../../../../utils/id-generator.js";
-import { resolveCreatorSourceSnapshot } from "../../creators/slp-source-resolve.js";
-import { slurpCreatorPostingIntervalMs } from "../../../modules/feed/slp-posting-interval.js";
+import { resolveCreatorSourceSnapshot, slpCreatorReserveFingerprintFor } from "../../creators/slp-source-resolve.js";
+import { slurpCreatorPostingIntervalMs, slurpPacedPostsPerDay } from "../../../modules/feed/slp-posting-interval.js";
+import { readSlurpCreatorPaceFactor } from "../../creators/slp-steering-storage.js";
 import {
   ROLLING_DAY_MS,
   elapsedPreparedSlotMs,
   TERMINAL_PREPARED_POST_RETENTION_MS,
 } from "../../host/slp-storage-constants.js";
-import { slpCreatorReservePolicyFingerprint, parseRecord } from "../../../modules/records/slp-storage-model.js";
+import { slpReservePolicyStale, parseRecord } from "../../../modules/records/slp-storage-model.js";
 import type { SlpCreatorPreparedPostPayload, SlurpReserveStatus } from "../../../modules/records/slp-storage-model.js";
 import { mapAccount, snapshotForAccount } from "../../host/slp-storage-mappers.js";
+import { readSlurpTieStamp } from "../../../modules/projects/slp-tie-stamp.js";
 import type { SlurpStorageContext } from "../../host/slp-storage-context.js";
+import { linkSlurpPurposePost } from "../slp-purpose-storage.js";
+import { findSlurpOpportunityBySlot, recordSlurpPromiseKept } from "../slp-opportunity-storage.js";
 
 export function createReserveStorage2(context: SlurpStorageContext) {
   const {
@@ -54,7 +58,8 @@ export function createReserveStorage2(context: SlurpStorageContext) {
   } = context;
   const storage = {
     async publishDueNoodlerPreparedPosts(at = new Date()): Promise<number> {
-      const settings = await this.getSettings();
+      // Posting settings: "feed.posting-rate" events scale posts per day here (R1-112).
+      const settings = await this.getPostingSettings();
       if (!settings.autoPostingScheduleEnabled) return 0;
       const due = (await this.listNoodlerPreparedPosts()).filter(
         (item) => item.state === "prepared" && Date.parse(item.publishAt) <= at.getTime(),
@@ -113,15 +118,33 @@ export function createReserveStorage2(context: SlurpStorageContext) {
           const account = mapAccount(accountRow);
           const source = await this.resolveAccountSource(account);
           const sourceSnapshot = source ? await resolveCreatorSourceSnapshot(db, source) : null;
-          if (
-            !account.settings.scheduler.autoPosting?.enabled ||
-            !source ||
-            !sourceSnapshot ||
-            current.policyFingerprint !== slpCreatorReservePolicyFingerprint(account, settings, source.updatedAt)
-          ) {
+          if (!account.settings.scheduler.autoPosting?.enabled || !source || !sourceSnapshot) {
             await tx
               .update(slpCreatorPreparedPosts)
               .set({ state: "discarded", updatedAt: at.toISOString() })
+              .where(eq(slpCreatorPreparedPosts.id, current.id));
+            return false;
+          }
+          // Written for an older card, schedule, disclosure, or voice: back to a scheduled slot, so the
+          // next poll writes it again for the Creator as they are now. The slot is kept, not lost.
+          const fingerprint = await slpCreatorReserveFingerprintFor(db, account, settings, source);
+          if (slpReservePolicyStale(current.policyFingerprint, fingerprint)) {
+            discardedMediaPaths.push(
+              String(parseRecord(parseRecord(current.payload).metadata).noodlerMediaPath ?? "") || null,
+            );
+            await tx
+              .update(slpCreatorPreparedPosts)
+              .set({
+                generatedAt: at.toISOString(),
+                payload: "{}",
+                policyFingerprint: fingerprint,
+                state: "scheduled",
+                publishedPostId: null,
+                imageState: "none",
+                imageClaimToken: null,
+                imageClaimLeaseUntil: null,
+                updatedAt: at.toISOString(),
+              })
               .where(eq(slpCreatorPreparedPosts.id, current.id));
             return false;
           }
@@ -134,7 +157,11 @@ export function createReserveStorage2(context: SlurpStorageContext) {
           )[0];
           if (
             latestCreatorPost &&
-            Date.parse(latestCreatorPost.createdAt) + slurpCreatorPostingIntervalMs(settings.postsPerDay) > at.getTime()
+            Date.parse(latestCreatorPost.createdAt) +
+              slurpCreatorPostingIntervalMs(
+                slurpPacedPostsPerDay(settings.postsPerDay, await readSlurpCreatorPaceFactor(db, account.id)),
+              ) >
+              at.getTime()
           ) {
             discardedMediaPaths.push(
               String(parseRecord(parseRecord(current.payload).metadata).noodlerMediaPath ?? "") || null,
@@ -165,9 +192,13 @@ export function createReserveStorage2(context: SlurpStorageContext) {
           // A Story is a picture with a line under it. The prepared payload carries the story
           // intent, but a run whose image never attached publishes as an ordinary post.
           if (!hasMedia) delete preparedMetadata.noodlerPostType;
+          // A couple's shared-page post goes up on that page (7b-couples); if the page is gone, on the writer's.
+          const pageId = readSlurpTieStamp(preparedMetadata)?.pageId;
+          const pageRow = pageId ? (await tx.select().from(slpAccounts).where(eq(slpAccounts.id, pageId)))[0] : null;
+          const author = pageRow ? mapAccount(pageRow) : account;
           await tx.insert(slpPosts).values({
             id: postId,
-            authorAccountId: account.id,
+            authorAccountId: author.id,
             title: typeof payload.title === "string" ? payload.title : null,
             content: payload.content,
             imageUrl: hasMedia ? slpCreatorPostMediaUrl(postId) : galleryImageUrl,
@@ -179,7 +210,7 @@ export function createReserveStorage2(context: SlurpStorageContext) {
             projectChapter: typeof payload.projectChapter === "string" ? payload.projectChapter : null,
             access: payload.access === "public" ? "public" : "locked",
             metadata: JSON.stringify({ ...preparedMetadata, noodlerPreparedPostId: current.id }),
-            authorSnapshot: JSON.stringify(snapshotForAccount(account)),
+            authorSnapshot: JSON.stringify(snapshotForAccount(author)),
             // A late publish is stamped with the moment it actually happened. Using publishAt
             // would file the post behind whatever the feed received during the delay.
             createdAt: Date.parse(current.publishAt) < at.getTime() ? at.toISOString() : current.publishAt,
@@ -205,12 +236,24 @@ export function createReserveStorage2(context: SlurpStorageContext) {
         if (typeof item.payload.projectId === "string" && item.payload.projectId) {
           await this.advanceProject(item.creatorAccountId, item.payload.projectId, didPublish);
         }
+        // A promise is kept when the post goes up, not when its slot was prepared: a prepared slot
+        // can still be discarded (R1-034). Best effort, like the steps around it.
+        const opportunity = await findSlurpOpportunityBySlot(db, item.id).catch(() => null);
+        if (opportunity)
+          await recordSlurpPromiseKept(db, opportunity, { postId: didPublish, at }).catch(() => undefined);
+        // A drop links its tease and countdowns to itself; a tease links to a drop already up (3b).
+        await linkSlurpPurposePost(db, {
+          id: didPublish,
+          authorAccountId: item.creatorAccountId,
+          metadata: parseRecord(item.payload.metadata),
+        }).catch(() => undefined);
       }
       for (const path of discardedMediaPaths) unlinkCreatorMedia(path);
       return published;
     },
     async reconcileNoodlerPreparedPosts(at = new Date()): Promise<number> {
-      const settings = await this.getSettings();
+      // Posting settings: "feed.posting-rate" events scale posts per day here (R1-112).
+      const settings = await this.getPostingSettings();
       const repaired = await db.transaction(async (tx) => {
         const [items, posts] = await Promise.all([
           tx.select().from(slpCreatorPreparedPosts),
@@ -289,8 +332,7 @@ export function createReserveStorage2(context: SlurpStorageContext) {
             !account ||
             !source ||
             missingSourceAccountIds.has(item.creatorAccountId) ||
-            !account.settings.scheduler.autoPosting?.enabled ||
-            item.policyFingerprint !== slpCreatorReservePolicyFingerprint(account, settings, source.updatedAt)
+            !account.settings.scheduler.autoPosting?.enabled
           );
         })
         .map((item) => item.id);
@@ -355,7 +397,8 @@ export function createReserveStorage2(context: SlurpStorageContext) {
       return repaired + discarded.length;
     },
     async getNoodlerReserveStatus(at = new Date()): Promise<SlurpReserveStatus> {
-      const settings = await this.getSettings();
+      // Posting settings: "feed.posting-rate" events scale posts per day here (R1-112).
+      const settings = await this.getPostingSettings();
       const state = await this.ensureNoodlerReserveState(at);
       const effectiveMs = Date.parse(state.lastObservedBudgetTime);
       const cutoff = effectiveMs - ROLLING_DAY_MS;

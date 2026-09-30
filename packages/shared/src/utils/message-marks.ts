@@ -184,10 +184,10 @@ export function applyContextMessageLimitWithPins<T extends { content?: unknown; 
   limit: number | null | undefined,
   maxPinned = MAX_PINNED_CONTEXT_MESSAGES,
 ): T[] {
-  if (typeof limit !== "number" || !Number.isFinite(limit) || limit <= 0 || messages.length <= limit) {
-    return [...messages];
-  }
-  const cut = messages.length - Math.floor(limit);
+  if (typeof limit !== "number" || !Number.isFinite(limit)) return [...messages];
+  const normalizedLimit = Math.floor(limit);
+  if (normalizedLimit <= 0 || messages.length <= normalizedLimit) return [...messages];
+  const cut = messages.length - normalizedLimit;
   const kept = messages.slice(cut);
   if (maxPinned <= 0) return kept;
   const pinned = messages

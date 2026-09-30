@@ -9,7 +9,6 @@ import {
   useImportSlurpAds,
   useResetSlurpAds,
   useSlurpAdLorebooks,
-  useSlurpAdPool,
   useSlurpAdState,
   useSyncSlurpAdLorebook,
   useUnhideSlurpAdBrand,
@@ -25,7 +24,6 @@ type AdDraft = { brand: string; product: string; copy: string; contentRating: Sl
  */
 export function useSlpAdsBackstageState(target: SlpBackstageTarget, viewerPersonaId: string | null) {
   const resetAds = useResetSlurpAds();
-  const adPool = useSlurpAdPool();
   const generateAds = useGenerateSlurpAds();
   const importAds = useImportSlurpAds();
   const createAd = useCreateSlurpAd();
@@ -43,7 +41,6 @@ export function useSlpAdsBackstageState(target: SlpBackstageTarget, viewerPerson
   const [adsWorldDraft, setAdsWorldDraft] = useState<string | null>(null);
   return {
     resetAds,
-    adPool,
     generateAds,
     importAds,
     createAd,

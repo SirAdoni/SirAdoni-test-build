@@ -17,6 +17,9 @@ let app: {
   close(): Promise<void>;
   inject(options: Record<string, unknown>): Promise<Response>;
 } | null = null;
+let db: Awaited<
+  ReturnType<typeof import("../../packages/server/src/db/file-backed-store.js").createFileNativeDB>
+> | null = null;
 
 try {
   const fileStorageDir = join(dataDir, "file-storage");
@@ -32,7 +35,7 @@ try {
       import("../../packages/server/src/services/storage/characters.storage.js"),
       import("../../packages/server/src/services/storage/chats.storage.js"),
     ]);
-  const db = await createFileNativeDB();
+  db = await createFileNativeDB();
   const Fastify = createRequire(new URL("../../packages/server/package.json", import.meta.url))("fastify");
   // Same general body limit as the real app, so the route's own cap is what is tested.
   const server = Fastify({ bodyLimit: 256 * 1024 * 1024 });
@@ -154,8 +157,41 @@ try {
   assert.ok(chatIds.includes(filtered.id), "the chat's character tags open the tag gate");
   assert.ok(chatIds.includes(unrelated.id));
   assert.ok(chatResult.scannedMessages >= 1);
+  // Private mandatory lore and upstream image fitting must coexist.
+  const { applyTokenBudget, fitLorebookEntryToBudget } =
+    await import("../../packages/server/src/services/lorebook/prompt-injector.js");
+  const { estimateTextTokens } = await import("../../packages/shared/src/utils/token-estimator.js");
+  const image = { id: "image", path: "/api/lorebooks/entry-images/fixture.png", caption: "Reference" };
+  const candidates: Parameters<typeof applyTokenBudget>[0] = [
+    {
+      entry: { ...city, id: "mandatory", content: "Required lore. ".repeat(100), images: [image], alwaysLoaded: true },
+      matchedKeys: [],
+      activationSources: ["always_loaded"],
+      injectionOrder: 0,
+    },
+    {
+      entry: { ...city, id: "optional", content: "Short lore.", images: [image], alwaysLoaded: false },
+      matchedKeys: [],
+      activationSources: ["keyword"],
+      injectionOrder: 1,
+    },
+  ];
+  const [mandatory, optional] = candidates;
+  const budget = estimateTextTokens(optional.entry.content) + 1;
+  assert.equal(fitLorebookEntryToBudget(mandatory, () => false)?.candidate.entry.images?.length, 1);
+  const fitted = fitLorebookEntryToBudget(optional, (tokens) => tokens <= budget);
+  assert.equal(fitted?.candidate.entry.content, optional.entry.content, "Images never displace fitting text");
+  assert.deepEqual(fitted?.candidate.entry.images, []);
+  const budgeted = applyTokenBudget(candidates, budget);
+  assert.deepEqual(
+    budgeted.map(({ entry }) => entry.id),
+    ["mandatory", "optional"],
+  );
+  assert.equal(budgeted[0]?.entry.images?.length, 1, "Mandatory images remain outside optional budgets");
+  assert.deepEqual(budgeted[1]?.entry.images, []);
 } finally {
   await app?.close();
+  await db?._fileStore.close();
   for (const [key, value] of Object.entries(previous)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;

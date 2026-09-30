@@ -42,6 +42,8 @@ import {
 import { resolveSlurpCharacterFanVoice } from "../../data/creators/slp-source-resolve.js";
 import { NOODLER_UNTRUSTED_CONTENT_INSTRUCTION } from "../feed/slp-feed-contract.js";
 import type { APIProvider } from "@marinara-engine/shared";
+import { resolveSlurpCreatorFlavour } from "../../data/creators/slp-flavour-source.js";
+import { slurpRotationHash } from "../../modules/feed/slp-post-variation.js";
 import {
   claimSlurpModelBudget,
   slurpModelWorkerAllows,
@@ -49,8 +51,10 @@ import {
   type SlurpModelWorkerContext,
 } from "../../base/model/slp-model-worker.js";
 import { composeSlurpPromptBlocks, type SlurpPromptBlockOverrides } from "../../base/prompting/slp-prompt-blocks.js";
+import { slurpPromptContext } from "../../base/prompting/slp-prompt-blocks.js";
+import { slpWithProviderRetry } from "../../base/model/slp-provider-retry.js";
 
-export type SlurpPendingKind = "commission" | "question" | "opener" | "delivery";
+export type SlurpPendingKind = "commission" | "question" | "opener" | "delivery" | "desk";
 
 /** Rewritten per drain. Small: a long absence must not stall the first read behind a queue. */
 const DRAIN_LIMIT = 2;
@@ -58,7 +62,15 @@ const JOB_MAX_ATTEMPTS = 3;
 const JOB_TTL_MS = 7 * 86_400_000;
 
 /** Longest a rewrite may be. These are one-liners; a paragraph would not fit where they render. */
-const MAX_LENGTH: Record<SlurpPendingKind, number> = { commission: 400, question: 180, opener: 240, delivery: 240 };
+const MAX_LENGTH: Record<SlurpPendingKind, number> = {
+  commission: 400,
+  question: 180,
+  opener: 240,
+  delivery: 240,
+  desk: 400,
+};
+/** The kinds the Creator speaks: a delivery note, and a line to Slurp Support (docs/SUPPORT-DESK.md). */
+const creatorSpeaks = (kind: SlurpPendingKind) => kind === "delivery" || kind === "desk";
 
 export async function enqueueSlurpPendingText(
   db: DB,
@@ -105,32 +117,43 @@ function buildMessages(input: {
   speakerMemory?: string;
   placeholder: string;
   post?: { title: string | null; content: string | null } | null;
+  /** A delivery note's flavour brief: how this Creator sounds. See `slp-creator-flavour.ts`. */
+  flavourBrief?: string;
   promptBlocks?: SlurpPromptBlockOverrides;
 }) {
   // A delivery note is the only kind the creator speaks, so it gets the opposite framing. Handing
   // it the fan-voice preamble produced deliveries written as if the fan had drawn the picture.
   const shared =
-    input.kind === "delivery"
+    input.kind === "desk"
       ? [
           NOODLER_UNTRUSTED_CONTENT_INSTRUCTION,
-          "You are rewriting one short note a Slurp creator sends with a finished commission. Write only the creator's words.",
-          "Never write as the fan, and never speak for them.",
+          "You are rewriting one short message a Slurp creator sends to Slurp Support, the staff who run the platform. Write only the creator's words.",
+          "Never write as Slurp Support, and never answer on their behalf.",
           'Return exactly one JSON object with one string field named "content". Return JSON only.',
         ]
-      : [
-          NOODLER_UNTRUSTED_CONTENT_INSTRUCTION,
-          "You are rewriting one short piece of text a fan sent to a Slurp creator. Write only the fan's words.",
-          "Never write as the creator, and never answer on their behalf.",
-          'Return exactly one JSON object with one string field named "content". Return JSON only.',
-        ];
+      : input.kind === "delivery"
+        ? [
+            NOODLER_UNTRUSTED_CONTENT_INSTRUCTION,
+            "You are rewriting one short note a Slurp creator sends with a finished commission. Write only the creator's words.",
+            "Never write as the fan, and never speak for them.",
+            'Return exactly one JSON object with one string field named "content". Return JSON only.',
+          ]
+        : [
+            NOODLER_UNTRUSTED_CONTENT_INSTRUCTION,
+            "You are rewriting one short piece of text a fan sent to a Slurp creator. Write only the fan's words.",
+            "Never write as the creator, and never answer on their behalf.",
+            'Return exactly one JSON object with one string field named "content". Return JSON only.',
+          ];
   const instruction =
     input.kind === "commission"
       ? "Rewrite this commission request so it asks for something specific that suits this particular creator, in the fan's own voice. Keep it to a few sentences and stay polite about price and timing."
       : input.kind === "question"
         ? "Rewrite this question so it is about the actual post below, in the fan's own voice. One sentence, lowercase is fine, no greeting."
-        : input.kind === "delivery"
-          ? "Rewrite this hand-over note so it sounds like this particular creator giving a fan the piece they paid for. One or two sentences, warm, no greeting, and never describe the picture."
-          : "Rewrite this first message so it sounds like this particular person writing to this particular creator for the first time. Keep it short and a little awkward. Do not ask for anything.";
+        : input.kind === "desk"
+          ? "Rewrite this message to Slurp Support so it sounds like this particular creator writing to the platform's staff: the same point, in their own voice and mood. One to three sentences. Keep the message's language."
+          : input.kind === "delivery"
+            ? "Rewrite this hand-over note so it sounds like this particular creator giving a fan the piece they paid for. One or two sentences, warm, no greeting, never describe the picture, and keep the note's language."
+            : "Rewrite this first message so it sounds like this particular person writing to this particular creator for the first time. Keep it short and a little awkward. Do not ask for anything.";
 
   const data = {
     creator: input.creator,
@@ -152,27 +175,77 @@ function buildMessages(input: {
         `pending${input.kind[0].toUpperCase()}${input.kind.slice(1)}` as "pendingCommission",
         [
           { id: "task", kind: "editable", text: instruction },
-          { id: "safety", kind: "required", text: shared.join("\n") },
+          { id: "safety", kind: "required", text: shared.slice(0, -1).join("\n") },
           { id: "output", kind: "required", text: shared.at(-1) ?? "Return JSON only." },
           { id: "source", kind: "context", text: "The supplied Slurp data follows." },
         ],
         input.promptBlocks,
       ),
     },
-    { role: "user" as const, content: `# Untrusted Slurp data\n${JSON.stringify(data, null, 2)}` },
+    {
+      role: "user" as const,
+      content: `# Untrusted Slurp data\n${JSON.stringify(data, null, 2)}${
+        input.flavourBrief?.trim() ? `\n\n# How the creator sounds\n${input.flavourBrief}` : ""
+      }`,
+    },
   ];
+}
+
+/** The line was answered as it stands (an AI fan's opener, task E), so a later rewrite must not change it. */
+export async function dropSlurpPendingText(db: DB, subjectId: string): Promise<void> {
+  await db
+    .delete(slurpPendingText)
+    .where(eq(slurpPendingText.subjectId, subjectId))
+    .catch(() => undefined);
+}
+
+/** Placeholders still waiting for a rewrite, for the count in AI budget settings. */
+export async function countSlurpPendingText(db: DB): Promise<number> {
+  try {
+    return (
+      await db.select({ id: slurpPendingText.id }).from(slurpPendingText).where(eq(slurpPendingText.status, "pending"))
+    ).length;
+  } catch (error) {
+    if (isUnsupportedTableError(error)) return 0;
+    throw error;
+  }
+}
+
+let rewritingAll: Promise<unknown> | null = null;
+
+/** Pending rows a drain in this process is working on. ponytail: one process; a conditional row claim if Slurp ever runs in several. */
+const inFlightPendingText = new Set<string>();
+
+/** Whether a "Rewrite all pending" run is still going. */
+export const slurpRewritingAllPending = () => rewritingAll !== null;
+
+/**
+ * "Rewrite all pending": the player asked for it, so no per-read limit and no day pace. The day's
+ * caps still hold, so the run stops where the budget does. Not awaited by the route: a long queue
+ * is many sequential model calls. Returns false while a run is already going.
+ */
+export function startSlurpRewriteAllPending(db: DB): boolean {
+  if (rewritingAll) return false;
+  rewritingAll = drainSlurpPendingText(db, Number.POSITIVE_INFINITY, "present", false)
+    .catch((error: unknown) => logger.warn(error, "[slurp-pending] Rewrite all failed"))
+    .finally(() => {
+      rewritingAll = null;
+    });
+  return true;
 }
 
 /**
  * Rewrite the newest few placeholders.
  *
  * Called from a read, so the player is present and the spend is against text they are about to
- * see. Returns how many were rewritten.
+ * see, and from the world scheduler with a larger limit. Returns how many were rewritten.
  */
 export async function drainSlurpPendingText(
   db: DB,
   limit = DRAIN_LIMIT,
   context: SlurpModelWorkerContext = "present",
+  /** False only for a player's "Rewrite all pending". */
+  paced = true,
 ): Promise<number> {
   const noodle = createSlurpStorage(db);
   const settings = await noodle.getSettings();
@@ -235,130 +308,155 @@ export async function drainSlurpPendingText(
   // bare, so a primary outage left placeholders unrewritten while the rest of Slurp carried on.
   const connections = createConnectionsStorage(db);
   const fallbackConnection = await connections.getFallbackForMain();
-  const provider = withConnectionFallbackProvider({
-    primary: createLLMProvider(
-      connection.provider,
-      resolveBaseUrl(connection),
-      connection.apiKey,
-      connection.maxContext,
-      connection.openrouterProvider,
-      connection.maxTokensOverride,
-      connection.claudeFastMode === "true",
-      connection.treatAsLocalEndpoint === "true",
-      connection.defaultParameters,
-    ),
-    primaryConnectionId: connection.id,
-    fallbackConnection,
-    fallbackBaseUrl: fallbackConnection ? resolveBaseUrl(fallbackConnection) : "",
-    category: "main",
-  });
+  const provider = slpWithProviderRetry(
+    withConnectionFallbackProvider({
+      primary: createLLMProvider(
+        connection.provider,
+        resolveBaseUrl(connection),
+        connection.apiKey,
+        connection.maxContext,
+        connection.openrouterProvider,
+        connection.maxTokensOverride,
+        connection.claudeFastMode === "true",
+        connection.treatAsLocalEndpoint === "true",
+        connection.defaultParameters,
+      ),
+      primaryConnectionId: connection.id,
+      fallbackConnection,
+      fallbackBaseUrl: fallbackConnection ? resolveBaseUrl(fallbackConnection) : "",
+      category: "main",
+    }),
+  );
   const messages = createSlurpMessagesStorage(db);
   const population = createSlurpPopulationStorage(db);
   let rewritten = 0;
 
-  for (const row of rows) {
-    const id = String(row.id);
-    const expiresAt = row.expiresAt ? Date.parse(String(row.expiresAt)) : Number.POSITIVE_INFINITY;
-    if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
-      await db.delete(slurpPendingText).where(eq(slurpPendingText.id, id));
-      continue;
-    }
-    const jobKind = (row.jobKind === "brief" ? "brief" : "rewrite") as SlurpModelJobKind;
-    // Everything that needs no model is checked first, so a stale row never spends budget.
-    const kind = String(row.kind) as SlurpPendingKind;
-    const creator = await noodle.getNoodlerAccountById(String(row.creatorAccountId));
-    const placeholder = creator ? await readPlaceholder(db, kind, String(row.subjectId)) : null;
-    if (!creator || !placeholder) {
-      await db.delete(slurpPendingText).where(eq(slurpPendingText.id, id));
-      continue;
-    }
-    // Claim the row before the budget, so a concurrent drain that got here first is skipped.
-    // ponytail: read-then-write claim, not atomic across processes; a conditional update if that race shows up.
-    const [current] = await db.select().from(slurpPendingText).where(eq(slurpPendingText.id, id));
-    if (!current || current.status !== "pending") continue;
-    const attempts = Math.max(0, Number.parseInt(String(row.attempts ?? "0"), 10) || 0) + 1;
-    await db
-      .update(slurpPendingText)
-      .set({ status: "running", attempts: String(attempts), claimedAt: now() })
-      .where(eq(slurpPendingText.id, id));
-    if (!(await claimSlurpModelBudget(db, settings.modelBudget, jobKind))) {
+  // Rows this drain claimed. A scheduled drain, a read and "Rewrite all now" can overlap; the stored
+  // claim is read-then-write, so the in-process set is what stops two of them paying for one row.
+  const claimedHere: string[] = [];
+  try {
+    for (const row of rows) {
+      const id = String(row.id);
+      const expiresAt = row.expiresAt ? Date.parse(String(row.expiresAt)) : Number.POSITIVE_INFINITY;
+      if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
+        await db.delete(slurpPendingText).where(eq(slurpPendingText.id, id));
+        continue;
+      }
+      const jobKind = (row.jobKind === "brief" ? "brief" : "rewrite") as SlurpModelJobKind;
+      // Everything that needs no model is checked first, so a stale row never spends budget.
+      const kind = String(row.kind) as SlurpPendingKind;
+      const creator = await noodle.getNoodlerAccountById(String(row.creatorAccountId));
+      const placeholder = creator ? await readPlaceholder(db, kind, String(row.subjectId)) : null;
+      if (!creator || !placeholder) {
+        await db.delete(slurpPendingText).where(eq(slurpPendingText.id, id));
+        continue;
+      }
+      // Claim the row before the budget, so a concurrent drain that got here first is skipped.
+      // ponytail: read-then-write claim, not atomic across processes; a conditional update if that race shows up.
+      const [current] = await db.select().from(slurpPendingText).where(eq(slurpPendingText.id, id));
+      if (!current || current.status !== "pending" || inFlightPendingText.has(id)) continue;
+      inFlightPendingText.add(id);
+      claimedHere.push(id);
+      const attempts = Math.max(0, Number.parseInt(String(row.attempts ?? "0"), 10) || 0) + 1;
       await db
         .update(slurpPendingText)
-        .set({ status: "pending", attempts: String(attempts - 1), claimedAt: null })
+        .set({ status: "running", attempts: String(attempts), claimedAt: now() })
         .where(eq(slurpPendingText.id, id));
-      break;
-    }
-    try {
-      const actorId = row.actorLabel ? String(row.actorLabel) : null;
-      const member = actorId ? await population.get(actorId).catch(() => null) : null;
-      const tie = actorId
-        ? (await population.listTiesForCreator(creator.id).catch(() => [])).find((entry) => entry.memberId === actorId)
-        : undefined;
-      // Read once: the account supplies both the fallback display name and, for an invited
-      // character, the entity id that leads back to its card.
-      const actorAccount = actorId && !member ? await noodle.getNoodlerAccountById(actorId) : null;
-      const speaker = member?.displayName ?? actorAccount?.displayName ?? "a reader";
-      // An invited character speaks in its own words here too, so a rewritten placeholder matches
-      // the voice the same character uses in comments and direct messages.
-      const characterFanVoice = await resolveSlurpCharacterFanVoice(
-        db,
-        actorAccount?.entityId,
-        SLURP_FAN_VOICE_PROMPT_MAX,
-      ).catch(() => undefined);
-      const post = row.postId ? await noodle.getNoodlerPostById(String(row.postId)) : null;
+      if (!(await claimSlurpModelBudget(db, settings.modelBudget, jobKind, undefined, paced ? undefined : false))) {
+        await db
+          .update(slurpPendingText)
+          .set({ status: "pending", attempts: String(attempts - 1), claimedAt: null })
+          .where(eq(slurpPendingText.id, id));
+        break;
+      }
+      try {
+        const actorId = row.actorLabel ? String(row.actorLabel) : null;
+        const member = actorId ? await population.get(actorId).catch(() => null) : null;
+        const tie = actorId
+          ? (await population.listTiesForCreator(creator.id).catch(() => [])).find(
+              (entry) => entry.memberId === actorId,
+            )
+          : undefined;
+        // Read once: the account supplies both the fallback display name and, for an invited
+        // character, the entity id that leads back to its card.
+        const actorAccount = actorId && !member ? await noodle.getNoodlerAccountById(actorId) : null;
+        const speaker = member?.displayName ?? actorAccount?.displayName ?? "a reader";
+        // An invited character speaks in its own words here too, so a rewritten placeholder matches
+        // the voice the same character uses in comments and direct messages.
+        const characterFanVoice = await resolveSlurpCharacterFanVoice(
+          db,
+          actorAccount?.entityId,
+          SLURP_FAN_VOICE_PROMPT_MAX,
+        ).catch(() => undefined);
+        const post = row.postId ? await noodle.getNoodlerPostById(String(row.postId)) : null;
 
-      const response = await provider.chatComplete(
-        buildMessages({
-          kind,
-          creator: { displayName: creator.displayName, handle: creator.handle, bio: creator.bio },
-          speaker,
-          // A placeholder rewritten in the fan's own voice is the whole point of the upgrade.
-          speakerVoice:
-            kind === "delivery"
+        const response = await provider.chatComplete(
+          buildMessages({
+            kind,
+            creator: { displayName: creator.displayName, handle: creator.handle, bio: creator.bio },
+            speaker,
+            // A placeholder rewritten in the fan's own voice is the whole point of the upgrade.
+            speakerVoice: creatorSpeaks(kind)
               ? undefined
               : (characterFanVoice ??
                 slurpFanVoiceForPrompt(slurpResolveFanType(settings.fanTypes, member ?? {}).voice)),
-          speakerMemory:
-            kind === "delivery" || !(member || characterFanVoice) ? undefined : slurpFanMemoryForPrompt(tie),
-          placeholder,
-          post: post ? { title: post.title, content: post.content } : null,
-          promptBlocks: settings.promptBlocks,
-        }),
-        {
-          model: connection.model,
-          ...slpSamplingOptions(
-            resolveStoredChatOptions(connection.defaultParameters, connection.provider, connection.model),
-            { temperature: 0.95, topP: 0.95 },
-          ),
-          maxTokens: clampGenerationMaxOutputTokens({
-            provider: connection.provider as APIProvider,
-            model: connection.model,
-            maxTokens: 320,
-            maxTokensOverride: connection.maxTokensOverride,
+            speakerMemory:
+              creatorSpeaks(kind) || !(member || characterFanVoice) ? undefined : slurpFanMemoryForPrompt(tie),
+            placeholder,
+            post: post ? { title: post.title, content: post.content } : null,
+            // Only the Creator speaks in a delivery note. A concealed Creator's card stays out of this
+            // prompt, which has no identity protection of its own.
+            flavourBrief:
+              creatorSpeaks(kind) && (creator.settings.privacy.identityDisclosure ?? "open") === "open"
+                ? await resolveSlurpCreatorFlavour(db, {
+                    account: creator,
+                    source: await noodle.resolveAccountSource(creator),
+                    disclosureMode: "open",
+                    use: "delivery",
+                    sequence: slurpRotationHash(String(row.subjectId)),
+                  })
+                : undefined,
+            promptBlocks: slurpPromptContext(settings).blocks,
           }),
-          stream: false,
-        },
-      );
-      const parsed = parseGameJsonish(requireModelAnswer(response.content ?? "", "a rewritten fan message"));
-      const unwrapped = Array.isArray(parsed) && parsed.length === 1 ? parsed[0] : parsed;
-      const content = String((unwrapped as { content?: unknown })?.content ?? "")
-        .trim()
-        .slice(0, MAX_LENGTH[kind]);
-      // An empty or unusable rewrite leaves the placeholder alone. It was always meant to stand on
-      // its own, so a failed upgrade costs nothing.
-      if (content) {
-        await writePlaceholder(db, messages, kind, String(row.subjectId), content);
-        rewritten += 1;
+          {
+            model: connection.model,
+            ...slpSamplingOptions(
+              resolveStoredChatOptions(connection.defaultParameters, connection.provider, connection.model),
+              { temperature: 0.95, topP: 0.95 },
+            ),
+            maxTokens: clampGenerationMaxOutputTokens({
+              provider: connection.provider as APIProvider,
+              model: connection.model,
+              // Reasoning headroom: 320 was spent on thinking and the answer came back empty.
+              maxTokens: 2048,
+              maxTokensOverride: connection.maxTokensOverride,
+            }),
+            stream: false,
+          },
+        );
+        const parsed = parseGameJsonish(requireModelAnswer(response.content ?? "", "a rewritten fan message"));
+        const unwrapped = Array.isArray(parsed) && parsed.length === 1 ? parsed[0] : parsed;
+        const content = String((unwrapped as { content?: unknown })?.content ?? "")
+          .trim()
+          .slice(0, MAX_LENGTH[kind]);
+        // An empty or unusable rewrite leaves the placeholder alone. It was always meant to stand on
+        // its own, so a failed upgrade costs nothing.
+        if (content) {
+          await writePlaceholder(db, messages, kind, String(row.subjectId), content);
+          rewritten += 1;
+        }
+        await db.delete(slurpPendingText).where(eq(slurpPendingText.id, id));
+      } catch (error) {
+        logger.warn(error, "[slurp-pending] Could not rewrite %s", id);
+        await db
+          .update(slurpPendingText)
+          .set({ status: attempts >= JOB_MAX_ATTEMPTS ? "failed" : "pending", claimedAt: null })
+          .where(eq(slurpPendingText.id, id))
+          .catch(() => undefined);
       }
-      await db.delete(slurpPendingText).where(eq(slurpPendingText.id, id));
-    } catch (error) {
-      logger.warn(error, "[slurp-pending] Could not rewrite %s", id);
-      await db
-        .update(slurpPendingText)
-        .set({ status: attempts >= JOB_MAX_ATTEMPTS ? "failed" : "pending", claimedAt: null })
-        .where(eq(slurpPendingText.id, id))
-        .catch(() => undefined);
     }
+  } finally {
+    for (const id of claimedHere) inFlightPendingText.delete(id);
   }
   return rewritten;
 }

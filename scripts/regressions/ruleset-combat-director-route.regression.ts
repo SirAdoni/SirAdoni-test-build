@@ -844,6 +844,16 @@ try {
   // ── The blueprint prompt: today's words without a combat block, the ruleset's terms with one ──
   {
     const plain = buildInitPrompt("Ada", "persona", "cards", [], "", "", false, undefined, null);
+    // A ruleset that turns Game Mode's own items off (#6822) is not asked what the inventory does.
+    const noItems = buildInitPrompt("Ada", "persona", "cards", [], "", "", false, undefined, null, false)
+      .map((message) => message.content)
+      .join("\n");
+    assert.doesNotMatch(noItems, /"itemEffects"/);
+    assert.match(
+      noItems,
+      /- items: this game's ruleset keeps its items out of fights for now, so give no itemEffects\./,
+    );
+    assert.match(plain.map((message) => message.content).join("\n"), /"itemEffects": \[/);
     const same = buildInitPrompt("Ada", "persona", "cards", [], "", "", false, undefined, undefined);
     assert.deepEqual(plain, same, "no brief and no ruleset are the same prompt, byte for byte");
 

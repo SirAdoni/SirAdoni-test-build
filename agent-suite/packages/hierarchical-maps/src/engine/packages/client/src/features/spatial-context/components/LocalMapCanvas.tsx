@@ -127,7 +127,7 @@ export function LocalMapCanvas({
   };
 
   return (
-    <MapViewport contentRef={canvasRef} compact={false} className="aspect-[16/9] w-full">
+    <MapViewport contentRef={canvasRef} compact={false} className="aspect-square w-full">
       <div
         tabIndex={backgroundEditing ? 0 : undefined}
         aria-label={backgroundEditing ? "Reposition map background" : undefined}

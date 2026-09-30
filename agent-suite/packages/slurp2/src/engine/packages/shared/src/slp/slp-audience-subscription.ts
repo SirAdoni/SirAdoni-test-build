@@ -83,6 +83,8 @@ export type SlurpAudienceSubscriptionSubject = {
   followedAt?: string | null;
   /** The Fan Type's `funnel.renewChance`. Missing reads as 1: everybody affordable renews. */
   renewChance?: number;
+  /** A closed page (a couple's shared page after the close): nobody new, no renewals (7c M-003). */
+  closed?: boolean;
 };
 
 export type SlurpAudienceSubscriptionDecision = "subscribe" | "renew" | "lapse" | "none";
@@ -114,7 +116,7 @@ export function slurpAudienceSubscriptionDecision(
     if (at.getTime() < paidThrough) return "none";
     // The price went past what this person will pay, or they were priced in and are not any more.
     // Somebody leaving because the Creator raised the price is a readable reason to leave.
-    if (!affordable) return "lapse";
+    if (!affordable || subject.closed) return "lapse";
     // Not everybody renews just because they can. Rolled on the same key as the conversion roll, so
     // the answer is stable inside a bucket rather than flipping between two page loads.
     const renewChance = subject.renewChance ?? 1;
@@ -123,7 +125,7 @@ export function slurpAudienceSubscriptionDecision(
     return roll(`renew:${subject.memberId}:${subject.creatorAccountId}:${renewKey}`) < renewChance ? "renew" : "lapse";
   }
 
-  if (!affordable) return "none";
+  if (!affordable || subject.closed) return "none";
   // Only a follower converts. Somebody who has liked one post is not about to start paying, and a
   // stage is never skipped: the funnel is the thing the player reads.
   const stageIndex = SLURP_FUNNEL_STAGES.indexOf(subject.stage as (typeof SLURP_FUNNEL_STAGES)[number]);

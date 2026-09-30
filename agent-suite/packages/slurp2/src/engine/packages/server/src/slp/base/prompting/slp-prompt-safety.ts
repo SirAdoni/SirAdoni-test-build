@@ -51,29 +51,60 @@ function promptField(primary: unknown, fallback?: unknown): string {
   return typeof fallback === "string" && fallback.trim() ? fallback : "";
 }
 
+/**
+ * Card macros for a Slurp prompt. Cards are written for roleplay chats, so `{{char}}` is the Creator
+ * and `{{user}}` the player; unresolved, the model saw template syntax where the person should be.
+ * An empty name (the concealed brief) keeps the source name out of the prompt.
+ */
+export function slpResolveCardMacros(text: string, name: string): string {
+  return text
+    .replace(/\{\{\s*char\s*\}\}/giu, name.trim() || "the Creator")
+    .replace(/\{\{\s*user\s*\}\}/giu, "the player");
+}
+
 export function noodlerConcealedSourceText(data: unknown): string {
   const source = promptRecord(data);
   const extensions = promptRecord(source.extensions);
+  const field = (value: string) => slpResolveCardMacros(value, "");
   return [
-    `Description: ${promptField(source.description)}`,
-    `Personality: ${promptField(source.personality)}`,
-    `Appearance: ${promptField(source.appearance, extensions.appearance)}`,
+    `Description: ${field(promptField(source.description))}`,
+    `Personality: ${field(promptField(source.personality))}`,
+    `Appearance: ${field(promptField(source.appearance, extensions.appearance))}`,
   ]
     .filter((line) => line.split(": ").slice(1).join(": ").trim())
     .join("\n");
 }
 
 /** Character canon is private behavioral context, separate from linked identity disclosure. */
+/**
+ * A card field as Creator canon: macros resolved and length bounded.
+ *
+ * Cards are written for roleplay chats, so `{{user}}` and `{{char}}` reached every Slurp prompt
+ * unresolved, and a long downloaded card added about 5 KB of backstory and scenario to each post
+ * call. The head of each field carries the identity; the tail was mostly chat instructions.
+ * ponytail: a flat character cap per field; summarise once per Creator if long cards still crowd
+ * the prompt.
+ */
+function canonField(value: string, name: string, max: number): string {
+  const text = slpResolveCardMacros(value, name).replace(/\s+\n/gu, "\n").trim();
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  const end = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("\n"));
+  return `${(end > max * 0.6 ? cut.slice(0, end + 1) : cut).trim()} …`;
+}
+
 export function slpCreatorCharacterCanonText(data: unknown, includeName: boolean): string {
   const source = promptRecord(data);
   const extensions = promptRecord(source.extensions);
+  const name = promptField(source.name).trim();
+  const field = (value: string, max: number) => canonField(value, name, max);
   return [
-    ...(includeName ? [`Name: ${promptField(source.name)}`] : []),
-    `Description: ${promptField(source.description)}`,
-    `Personality: ${promptField(source.personality)}`,
-    `Scenario: ${promptField(source.scenario)}`,
-    `Appearance: ${promptField(source.appearance, extensions.appearance)}`,
-    `Backstory: ${promptField(source.backstory, extensions.backstory)}`,
+    ...(includeName ? [`Name: ${name}`] : []),
+    `Description: ${field(promptField(source.description), 1600)}`,
+    `Personality: ${field(promptField(source.personality), 900)}`,
+    `Scenario: ${field(promptField(source.scenario), 700)}`,
+    `Appearance: ${field(promptField(source.appearance, extensions.appearance), 700)}`,
+    `Backstory: ${field(promptField(source.backstory, extensions.backstory), 900)}`,
   ]
     .filter((line) => line.split(": ").slice(1).join(": ").trim())
     .join("\n");
@@ -83,13 +114,15 @@ export function slpCreatorCharacterCanonText(data: unknown, includeName: boolean
 export function slpCreatorSourceText(data: unknown): string {
   const source = promptRecord(data);
   const extensions = promptRecord(source.extensions);
+  const name = promptField(source.name);
+  const field = (value: string) => slpResolveCardMacros(value, name);
   return [
-    `Name: ${promptField(source.name)}`,
-    `Description: ${promptField(source.description)}`,
-    `Personality: ${promptField(source.personality)}`,
-    `Scenario: ${promptField(source.scenario)}`,
-    `Appearance: ${promptField(source.appearance, extensions.appearance)}`,
-    `Backstory: ${promptField(source.backstory, extensions.backstory)}`,
+    `Name: ${name}`,
+    `Description: ${field(promptField(source.description))}`,
+    `Personality: ${field(promptField(source.personality))}`,
+    `Scenario: ${field(promptField(source.scenario))}`,
+    `Appearance: ${field(promptField(source.appearance, extensions.appearance))}`,
+    `Backstory: ${field(promptField(source.backstory, extensions.backstory))}`,
   ]
     .filter((line) => line.trim().split(": ").slice(1).join(": ").trim())
     .join("\n");

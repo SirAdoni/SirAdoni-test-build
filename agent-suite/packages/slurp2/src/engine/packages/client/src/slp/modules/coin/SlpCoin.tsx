@@ -1,6 +1,9 @@
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useTranslation as useUiTranslation } from "react-i18next";
 import { cn } from "../../../lib/utils";
+import { useSlpCountedValue } from "../../base/chrome/slp-motion";
+import { formatSlpAmount, formatSlpNumber } from "../../base/ui/slp-number-format";
 
 /**
  * The coin, inlined as a data URI rather than fetched from the package asset route.
@@ -50,9 +53,17 @@ export function SlurpCoinAmount({
   /** A live balance to watch. Prices and ledger amounts deliberately omit this. */
   watchAmount?: number;
 }) {
+  const { i18n } = useUiTranslation();
   const reduceMotion = useReducedMotion();
   const previousAmount = useRef(watchAmount);
   const [change, setChange] = useState<{ amount: number; direction: "earn" | "spend"; revision: number } | null>(null);
+  // A live balance counts to its new value instead of jumping. Every amount gets the reader's
+  // separators here, so "1284" and "1,284" can no longer sit on the same screen (B34).
+  const counted = useSlpCountedValue(watchAmount);
+  const shownAmount =
+    watchAmount === undefined || counted === undefined || counted === watchAmount
+      ? formatSlpAmount(amount, i18n.language)
+      : formatSlpNumber(counted, i18n.language);
 
   useEffect(() => {
     const previous = previousAmount.current;
@@ -78,7 +89,7 @@ export function SlurpCoinAmount({
       )}
       data-slurp-coin-balance={watchAmount === undefined ? undefined : "true"}
     >
-      <span>{amount}</span>
+      <span>{shownAmount}</span>
       <motion.span
         className="inline-flex"
         animate={
@@ -110,7 +121,7 @@ export function SlurpCoinAmount({
             aria-hidden="true"
           >
             {change.direction === "earn" ? "+" : "−"}
-            {change.amount}
+            {formatSlpNumber(change.amount, i18n.language)}
             <SlurpCoin size={12} />
           </motion.span>
         )}
@@ -165,3 +176,23 @@ export function SlurpCoinBurst({
     </AnimatePresence>
   );
 }
+
+// One coin rule (design language §7 Money): an amount is the number with the coin glyph right after
+// it, in sentences too. Copy marks the spot with `<coin/>` after the number: "This costs {{amount}} <coin/>."
+const COIN_MARK = /(\S*?)\s*<coin\/>/gu;
+
+/** Renders localized copy with its `<coin/>` marks as number + glyph ("25 ©"), numbers grouped. */
+export function SlpCoinText({ children: text }: { children: string }) {
+  const parts: ReactNode[] = [];
+  let last = 0;
+  for (const match of text.matchAll(COIN_MARK)) {
+    parts.push(text.slice(last, match.index));
+    parts.push(<SlurpCoinAmount key={match.index} amount={match[1] ?? ""} className="align-bottom" />);
+    last = match.index + match[0].length;
+  }
+  parts.push(text.slice(last));
+  return <>{parts}</>;
+}
+
+/** The same copy for places that only take plain text (aria labels, titles, Engine dialogs). */
+export const slpCoinPlainText = (text: string) => text.replace(/\s*<coin\/>/gu, " SlurpCoins");

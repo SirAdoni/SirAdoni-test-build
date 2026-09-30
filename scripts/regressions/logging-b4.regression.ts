@@ -3,6 +3,7 @@
 // times, counters, context fields) and source-level guarantees in
 // generate.routes.ts (no [timing] lines, no content previews, structured abort,
 // pre-gen failure, empty-response and SSE failure paths). No provider, no server.
+import { EventEmitter } from "node:events";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -111,12 +112,28 @@ try {
   assert.match(source, /operation: "generate",\s*operationId: generationId/u, "the route binds a generate context");
 
   const closeStart = source.indexOf("const onClose = () => {");
-  const closeEnd = source.indexOf('reply.raw.on("close", onClose)', closeStart);
+  const closeEnd = source.indexOf("const detachCloseListener = onGenerationOutputClose(reply, onClose)", closeStart);
   assert.ok(closeStart !== -1 && closeEnd > closeStart, "client disconnect handler exists");
   const onClose = source.slice(closeStart, closeEnd);
   assert.match(onClose, /event: "generation\.abort",\s*reason: "client_disconnect"/u);
   assert.match(onClose, /generation\.backend_abort_failed/u);
   assert.doesNotMatch(onClose, /\.catch\(\(\) => \{\}\)/u, "the backend abort failure is logged");
+
+  // The adapter still observes HTTP disconnects and detaches the listener after generation.
+  const { onGenerationOutputClose } = await import("../../packages/server/src/routes/generate/sse.js");
+  const closeEvents = new EventEmitter();
+  let closes = 0;
+  const detach = onGenerationOutputClose(
+    { raw: closeEvents } as unknown as Parameters<typeof onGenerationOutputClose>[0],
+    () => {
+      closes += 1;
+    },
+  );
+  closeEvents.emit("close");
+  assert.equal(closes, 1, "HTTP disconnect reaches the registered handler");
+  detach();
+  closeEvents.emit("close");
+  assert.equal(closes, 1, "completed generation detaches its disconnect handler");
 
   const abortStart = source.indexOf('app.post("/abort"');
   const abortRoute = source.slice(abortStart, abortStart + 3_000);

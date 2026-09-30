@@ -1,46 +1,10 @@
-import { Brain, Check, Link, X } from "lucide-react";
+import { Check, Link, X } from "lucide-react";
 import { useRef } from "react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { cn } from "../../../lib/utils";
 import { useCancelSlurpFollowUp } from "../../features/messages/slp-message-action-hooks";
 
-// The thread header controls, the connection switcher and one follow-up row.
-
-/** One header control. All of them are icons at the same size, so none reads as the primary one. */
-export function HeaderIconButton({
-  icon: Icon,
-  label,
-  onClick,
-  badge = 0,
-  className,
-}: {
-  icon: typeof Brain;
-  label: string;
-  onClick: () => void;
-  badge?: number;
-  className?: string;
-}) {
-  return (
-    <button
-      type="button"
-      aria-haspopup="dialog"
-      onClick={onClick}
-      aria-label={label}
-      title={label}
-      className={cn(
-        "relative flex min-h-11 w-11 shrink-0 items-center justify-center rounded-xl text-[var(--muted-foreground)] transition-[background-color,transform] hover:bg-[var(--slurp-surface)] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)] motion-reduce:transition-none motion-reduce:active:scale-100",
-        className,
-      )}
-    >
-      <Icon size={16} aria-hidden="true" />
-      {badge > 0 && (
-        <span className="absolute right-1.5 top-1.5 min-w-4 rounded-full bg-[var(--noodle-accent)] px-1 text-[0.6rem] font-black leading-4 text-zinc-950 [&_svg]:!text-zinc-950">
-          {badge}
-        </span>
-      )}
-    </button>
-  );
-}
+// The connection switcher and one follow-up row.
 
 export function SlurpConnectionSwitcher({
   connections,
@@ -74,7 +38,7 @@ export function SlurpConnectionSwitcher({
         title={`Text connection: ${label}`}
         className={cn(
           "flex h-10 w-10 items-center justify-center rounded-xl text-[var(--muted-foreground)] transition-colors hover:bg-[var(--noodle-accent)]/10 hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)] disabled:opacity-50",
-          open && "bg-[var(--noodle-accent)]/10 text-[var(--noodle-accent)]",
+          open && "bg-[var(--noodle-accent)]/10 text-[var(--noodle-accent-foreground)]",
         )}
       >
         <Link size={15} className="shrink-0" aria-hidden="true" />

@@ -40,7 +40,7 @@ export function SlurpMemoriesPanel({
     if (!threadId || !personaId) return;
     setError(null);
     setNotes
-      .mutateAsync({ threadId, personaId, notes: next })
+      .mutateAsync({ threadId, personaId, notes: next, baseNoteIds: notes.map((note) => note.id) })
       .then(() => {
         setEditingId(null);
         setAddingTier(null);
@@ -76,7 +76,7 @@ export function SlurpMemoriesPanel({
               setEditingId(null);
               setDraft("");
             }}
-            className="inline-flex min-h-9 items-center gap-1 rounded-lg px-2 text-[0.7rem] font-bold text-[var(--noodle-accent)] ring-1 ring-inset ring-[var(--noodle-accent)]/35 transition-colors hover:bg-[var(--noodle-accent)]/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)] disabled:opacity-40"
+            className="inline-flex min-h-9 items-center gap-1 rounded-lg px-2 text-[0.7rem] font-bold text-[var(--noodle-accent-foreground)] ring-1 ring-inset ring-[var(--noodle-accent)]/35 transition-colors hover:bg-[var(--noodle-accent)]/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)] disabled:opacity-40"
           >
             <Plus size={13} aria-hidden="true" />
             {localizeUi("ui.slurp.messages.memoryAdd", { defaultValue: "Add" })}
@@ -196,7 +196,7 @@ export function SlurpMemoriesPanel({
           <button
             type="button"
             onClick={onOpenPrompt}
-            className="inline-flex min-h-10 items-center gap-1.5 rounded-xl px-3 text-xs font-bold text-[var(--noodle-accent)] ring-1 ring-inset ring-[var(--noodle-accent)]/35 transition-colors hover:bg-[var(--noodle-accent)]/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)]"
+            className="inline-flex min-h-10 items-center gap-1.5 rounded-xl px-3 text-xs font-bold text-[var(--noodle-accent-foreground)] ring-1 ring-inset ring-[var(--noodle-accent)]/35 transition-colors hover:bg-[var(--noodle-accent)]/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)]"
           >
             <Search size={14} aria-hidden="true" />
             {localizeUi("ui.slurp.messages.promptDetails", { defaultValue: "Prompt details" })}
@@ -249,7 +249,7 @@ export function MemoryEditor({
           type="button"
           disabled={pending || !value.trim()}
           onClick={onSave}
-          className="min-h-9 rounded-lg bg-[var(--noodle-accent)] px-3 text-[0.7rem] font-bold text-zinc-950 [&_svg]:!text-zinc-950 disabled:opacity-40"
+          className="min-h-9 rounded-lg bg-[var(--noodle-accent)] px-3 text-[0.7rem] font-bold text-[var(--slurp-on-accent)] [&_svg]:!text-[var(--slurp-on-accent)] disabled:opacity-40"
         >
           {localizeUi("ui.slurp.messages.memorySave", { defaultValue: "Save" })}
         </button>

@@ -32,6 +32,7 @@ import {
   lookupStepTable,
   resolveRulesetValueRef,
   roundRulesetNumber,
+  type RulesetSheetItem,
 } from "./sheet-math.js";
 
 export interface RulesetLivePoolValue {
@@ -721,8 +722,13 @@ export function evaluateRulesetSheetLive(
   definition: RulesetDefinition,
   build: RulesetSheetBuild,
   stored?: unknown,
+  /** The items the character holds, which an `itemStat` reads; none outside a game. */
+  items?: ReadonlyArray<RulesetSheetItem>,
 ): ReturnType<typeof evaluateRulesetSheet> {
-  return evaluateRulesetSheet(definition, build, readRulesetLive(definition, build, stored));
+  return evaluateRulesetSheet(definition, build, {
+    ...readRulesetLive(definition, build, stored),
+    ...(items ? { items } : {}),
+  });
 }
 
 // ── Commands ──

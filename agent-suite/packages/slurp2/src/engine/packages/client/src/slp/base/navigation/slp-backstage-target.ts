@@ -1,100 +1,134 @@
+/** In order of use; Connections sits right under Overview so a model is one click away. */
 export const SLP_BACKSTAGE_SECTIONS = [
   "overview",
+  "models",
   "creators",
-  "world",
   "automation",
+  "content",
+  "world",
+  "stir",
+  "fans",
+  "spice",
   "prompts",
   "maintenance",
 ] as const;
 export type SlpBackstageSection = (typeof SLP_BACKSTAGE_SECTIONS)[number];
 
+/**
+ * Overview is the only hub. The Posting, Stories and World landing pages and the separate Backup
+ * page were removed in 0.2.74; saved navigation that names one falls back to its section's page.
+ */
 export const SLP_BACKSTAGE_TARGETS = [
   "overview",
   "creators",
   "improve",
-  "world",
   "tags",
   "events",
+  "storylines",
+  "calendar",
   "arcs",
+  "packs",
   "messaging",
   "audience",
   "ads",
   "wallet",
-  "automation",
   "general",
   "images",
+  "connections",
+  "spice",
   "prompts",
   "autopurge",
-  "advanced",
+  "stir",
 ] as const;
 export type SlpBackstageTarget = (typeof SLP_BACKSTAGE_TARGETS)[number];
 
 export const SLP_BACKSTAGE_TARGETS_BY_SECTION: Record<SlpBackstageSection, readonly SlpBackstageTarget[]> = {
   overview: ["overview"],
+  models: ["connections", "images"],
   creators: ["creators", "improve"],
-  world: ["world", "tags", "events", "arcs", "audience", "messaging", "ads", "wallet"],
-  automation: ["automation", "general", "images"],
+  automation: ["general"],
+  content: ["storylines", "arcs", "packs"],
+  world: ["events", "calendar"],
+  stir: ["stir"],
+  fans: ["audience", "messaging", "wallet", "ads", "tags"],
+  spice: ["spice"],
   prompts: ["prompts"],
-  maintenance: ["autopurge", "advanced"],
+  maintenance: ["autopurge"],
 };
 
 export const SLP_BACKSTAGE_DEFAULT_TARGET: Record<SlpBackstageSection, SlpBackstageTarget> = {
   overview: "overview",
+  models: "connections",
   creators: "creators",
-  world: "world",
-  automation: "automation",
+  world: "events",
+  stir: "stir",
+  fans: "audience",
+  content: "storylines",
+  automation: "general",
+  spice: "spice",
   prompts: "prompts",
   maintenance: "autopurge",
 };
 
 export const SLP_BACKSTAGE_SECTION_LABELS: Record<SlpBackstageSection, string> = {
   overview: "Overview",
+  models: "Connections",
   creators: "Creators",
-  world: "Features",
-  automation: "Automation",
-  prompts: "Prompts",
+  world: "World",
+  stir: "Stir",
+  fans: "Fans & money",
+  content: "Storylines",
+  automation: "Posting",
+  spice: "Spice",
+  prompts: "Writing",
   maintenance: "Maintenance",
 };
 
 export const SLP_BACKSTAGE_TARGET_LABELS: Record<SlpBackstageTarget, string> = {
   overview: "Overview",
-  creators: "Creator management",
+  creators: "All creators",
   improve: "Improve with AI",
-  world: "All areas",
-  automation: "All automations",
-  tags: "Discovery",
-  events: "Events and holidays",
-  arcs: "Arcs",
-  messaging: "Messaging rules",
+  tags: "Tags",
+  events: "Events",
+  storylines: "Rules",
+  calendar: "Calendar",
+  arcs: "Types",
+  packs: "Packs",
+  messaging: "Messages",
   audience: "Audience",
   ads: "Ads",
-  wallet: "Coins and access",
+  wallet: "Coins",
   general: "Publishing",
-  images: "Image generation",
+  images: "Images",
+  connections: "Text & chats",
+  spice: "Spice",
   prompts: "Prompts",
-  autopurge: "Storage and cleanup",
-  advanced: "Backup and data",
+  autopurge: "Storage and backup",
+  stir: "Support desk",
 };
 
 export function destinationForTarget(target: SlpBackstageTarget): SlpBackstageSection {
   return (
-    SLP_BACKSTAGE_SECTIONS.find((section) => SLP_BACKSTAGE_TARGETS_BY_SECTION[section].includes(target)) ?? "overview"
+    SLP_BACKSTAGE_SECTIONS.find(
+      (section) =>
+        SLP_BACKSTAGE_TARGETS_BY_SECTION[section].includes(target) || SLP_BACKSTAGE_DEFAULT_TARGET[section] === target,
+    ) ?? "overview"
   );
 }
 
 export const SLP_LEGACY_SETTINGS_DESTINATION = {
   overview: { section: "overview", target: "overview" },
   creators: { section: "creators", target: "creators" },
-  tags: { section: "world", target: "tags" },
-  arcs: { section: "world", target: "arcs" },
-  messaging: { section: "world", target: "messaging" },
-  audience: { section: "world", target: "audience" },
-  ads: { section: "world", target: "ads" },
-  wallet: { section: "world", target: "wallet" },
+  tags: { section: "fans", target: "tags" },
+  arcs: { section: "content", target: "storylines" },
+  messaging: { section: "fans", target: "messaging" },
+  audience: { section: "fans", target: "audience" },
+  ads: { section: "fans", target: "ads" },
+  wallet: { section: "fans", target: "wallet" },
   general: { section: "automation", target: "general" },
-  images: { section: "automation", target: "images" },
+  images: { section: "models", target: "images" },
   autopurge: { section: "maintenance", target: "autopurge" },
-  advanced: { section: "maintenance", target: "advanced" },
+  advanced: { section: "maintenance", target: "autopurge" },
 } as const satisfies Record<string, { section: SlpBackstageSection; target: SlpBackstageTarget }>;
 
 export function isSlpBackstageSection(value: unknown): value is SlpBackstageSection {
@@ -106,5 +140,16 @@ export function isSlpBackstageTarget(value: unknown): value is SlpBackstageTarge
 }
 
 export function targetBelongsToSection(section: SlpBackstageSection, target: SlpBackstageTarget): boolean {
-  return SLP_BACKSTAGE_TARGETS_BY_SECTION[section].includes(target);
+  return SLP_BACKSTAGE_TARGETS_BY_SECTION[section].includes(target) || SLP_BACKSTAGE_DEFAULT_TARGET[section] === target;
+}
+
+/**
+ * A page always shows under the section that holds it. Callers and saved state may name an older
+ * section for a page (World for Audience, Posting for Connections); the page decides.
+ */
+export function slpBackstageSectionFor(
+  section: SlpBackstageSection,
+  target: SlpBackstageTarget | undefined,
+): SlpBackstageSection {
+  return target && !targetBelongsToSection(section, target) ? destinationForTarget(target) : section;
 }

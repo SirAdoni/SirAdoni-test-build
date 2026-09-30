@@ -5,21 +5,32 @@ import { advanceSlurpWorld } from "./slp-world-operation.js";
 import { topUpSlurpReactionBank } from "./slp-reaction-bank-operation.js";
 import { createSlurpStorage } from "../../data/slp-storage.js";
 import { slurpWorldTimerDue } from "../../../../../shared/src/slp/slp-tuning.js";
+import { slurpPlayerPresent } from "./slp-world-tick-state.js";
+import { drainSlurpPendingText } from "./slp-pending-text-service.js";
+import { drainSlurpAudienceReplies } from "../audience/slp-audience-contract.js";
+import { advanceSlurpSupportDesk, drainSlurpContinuityExtraction } from "../messages/slp-messages-contract.js";
 
 /**
  * The background half of the world clock.
  *
- * The maintainer asked for a few catch-ups a day rather than a constant simulation, so this polls
- * slowly. The catch-up when the player opens Slurp does the same work through the same function;
- * this exists so a session left open still sees the world move, and so a long stretch is already
- * partly applied before the player arrives.
+ * Away, it polls slowly (a few catch-ups a day, unless "Run in the background" is on). While the
+ * player is here (the badge poll marks it) it runs every tick length, so the world moves while they
+ * watch, not only when the Inbox opens (user, fix phase 1b / R1-106).
  *
- * Every action it takes is free-tier, with one exception: topping up the free comment bank, which
- * spends one generation to buy hundreds of free comments. It is best-effort and its failures are
- * kept off this poll's backoff clock — the world tick must not slow down because a bank that is
- * only ever a nicety could not be filled.
+ * The tick itself is free-tier. The model work after it (bank top-up, pending rewrites, written
+ * replies, continuity) follows the AI budget: with the player here it runs as present work, away
+ * only in background mode, and every job claims a paced share of the day's calls. All of it is
+ * best-effort and kept off this poll's backoff clock: the free tick must not slow down because
+ * model work could not run.
  */
 const INITIAL_DELAY_MS = 90_000;
+
+/**
+ * Rewrites per scheduled pass. The read path keeps its small limit so the first read stays fast;
+ * here the AI budget and its day pace already decide the spend, so a busy world does not queue
+ * faster than it rewrites. ponytail: fixed at 10; derive it from the budget if 10 still falls behind.
+ */
+const SCHEDULED_DRAIN_LIMIT = 10;
 
 /** Fallback wake interval when settings cannot be read. Normally `clock.tickMinutes`. */
 const POLL_MS = 5 * 60 * 1000;
@@ -45,14 +56,36 @@ export function startSlurpWorldScheduler(app: FastifyInstance, registerStop?: (s
       // keeps the old four-catch-ups-a-day cadence; on ticks every `tickMinutes`.
       const { clock } = (await createSlurpStorage(app.db).getSettings()).simulationTuning;
       pollMs = clock.tickMinutes * 60_000;
-      if (!slurpWorldTimerDue(clock, lastRunMs, Date.now())) return;
+      // While the player is here the free tick runs every wake (R1-106): likes, follows and
+      // storylines move while they watch, not only when the Inbox opens.
+      const present = slurpPlayerPresent();
+      if (!present && !slurpWorldTimerDue(clock, lastRunMs, Date.now())) return;
       lastRunMs = Date.now();
       const result = await advanceSlurpWorld(app.db);
       if (result.actions > 0) logger.info("[slurp-world] Tick applied %d actions", result.actions);
+      // The Support desk rides the same clock (free tier: templates only).
+      await advanceSlurpSupportDesk(app.db).catch((error: unknown) =>
+        logger.warn(error, "[slurp-desk] Desk tick failed"),
+      );
       // After the tick, and never in a way that can fail it: the bank feeds the free comments the
       // tick above just wrote, so a slow or refused top-up costs nothing that is due now.
       await topUpSlurpReactionBank(app.db).catch((error: unknown) =>
         logger.warn(error, "[slurp-world] Free comment bank top-up failed"),
+      );
+      // The model work the Inbox catch-up does, on the same clock: "present" while the player is
+      // here, "background" (only in the AI budget's background mode) while they are away. Each job
+      // claims a paced share of the day, so the budget is spread over the whole day (R1-106).
+      const context = present ? "present" : "background";
+      await drainSlurpPendingText(app.db, SCHEDULED_DRAIN_LIMIT, context).catch((error: unknown) =>
+        logger.warn(error, "[slurp-pending] Scheduled drain failed"),
+      );
+      // Written replies to comments stay present-only work (R1-105).
+      if (present)
+        await drainSlurpAudienceReplies(app.db).catch((error: unknown) =>
+          logger.warn(error, "[slurp-audience-reply] Scheduled drain failed"),
+        );
+      await drainSlurpContinuityExtraction(app.db, context).catch((error: unknown) =>
+        logger.warn(error, "[slurp-continuity] Scheduled drain failed"),
       );
     })();
     try {

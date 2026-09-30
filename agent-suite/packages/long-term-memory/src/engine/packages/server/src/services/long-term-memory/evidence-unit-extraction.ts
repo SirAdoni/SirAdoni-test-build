@@ -1,5 +1,4 @@
 import {
-  DEFAULT_LTM_EXTRACTION_MAX_EXISTING_NOTE_TOKENS,
   DEFAULT_LTM_EXTRACTION_MAX_TOKENS,
   DEFAULT_LTM_EXTRACTION_REASONING_EFFORT,
   DEFAULT_LTM_EXTRACTION_VERBOSITY,
@@ -38,11 +37,7 @@ import { compileLtmEvidenceUnits } from "./evidence-unit-compiler.js";
 import { noteIdForEvidenceUnit, validateLtmEvidenceUnits } from "./evidence-unit-validation.js";
 import { normalizeStructuredSummaryEvidenceUnits } from "./structured-summary-normalizer.js";
 import { isLocalCharacterSubject } from "./chat-scope.js";
-import {
-  filterDominatedLtmSubjectNotesForPrompt,
-  trustedLtmSubjectPromptCatalog,
-  type TrustedLtmSubjectCatalog,
-} from "./subject-identity.js";
+import { trustedLtmSubjectPromptCatalog, type TrustedLtmSubjectCatalog } from "./subject-identity.js";
 
 const LTM_EXTRACTION_BUCKET_SCAN_ORDER = [
   "timeline_event",
@@ -85,7 +80,7 @@ const LTM_EXTRACTION_TIMELINE_LINK_RELATIONS = new Set<string>([
 
 function serverEnforcedLinkRules(allowedBuckets: readonly LtmEvidenceUnit["bucket"][]) {
   return [
-    "Every link target must resolve to sourceNote.id, an exact existingTypedNotes id, or a target note derived from a unit in the same response.",
+    "Every link target must resolve to sourceNote.id or a target note derived from a unit in the same response.",
     'Every non-timeline unit with claimKind "change" must link to a timeline_event associated with this source. Static units do not require timeline links. Every timeline_event must link to sourceNote.id with extracted_from.',
     ...(allowedBuckets.includes("relationship_state")
       ? [
@@ -102,7 +97,6 @@ function serverEnforcedLinkPrompt(rules: readonly string[]) {
 export interface RunLongTermMemoryEvidenceUnitExtractionOptions {
   sourceNote: LtmNote;
   sourceText: string;
-  existingNotes: LtmNote[];
   languageModel: PackageLanguageModel;
   root?: string;
   scope: LtmScope;
@@ -114,7 +108,6 @@ export interface RunLongTermMemoryEvidenceUnitExtractionOptions {
   verbosity?: "none" | "low" | "medium" | "high";
   maxOutputTokens?: number;
   temperature?: number;
-  maxExistingNoteTokens?: number;
   signal?: AbortSignal;
   operationId?: string;
   allowedBuckets?: LtmEvidenceUnit["bucket"][];
@@ -128,8 +121,25 @@ export interface CompileEvidenceUnitExtractionResult {
   unitResponse: LtmEvidenceUnitExtractionResponse;
   compiledResponse: LtmExtractionResponse;
   diagnostics: LtmExtractionDiagnostic[];
+  /** True when full (pre-truncation) diagnostics require human review before auto-apply. */
+  requiresReview: boolean;
   outcome: LtmExtractionOutcome;
   accounting: LtmExtractionAccounting;
+}
+
+/** Diagnostic codes that must block low-risk auto-apply even if later truncated from the retained list. */
+export function diagnosticsRequireExtractionReview(diagnostics: readonly LtmExtractionDiagnostic[]) {
+  return diagnostics.some(
+    (diagnostic) =>
+      diagnostic.code === "candidate_reconciliation_ambiguous" ||
+      diagnostic.code === "candidate_reconciliation_incomplete" ||
+      diagnostic.code === "event_shaped_character_fact",
+  );
+}
+
+export function boundLtmExtractionDiagnostics(diagnostics: readonly LtmExtractionDiagnostic[]) {
+  if (diagnostics.length <= MAX_LTM_EXTRACTION_DIAGNOSTICS) return [...diagnostics];
+  return [...diagnostics.slice(0, MAX_LTM_EXTRACTION_DIAGNOSTICS - 1), diagnostics[diagnostics.length - 1]!];
 }
 
 type ParsedEvidenceUnitPayload = {
@@ -149,15 +159,18 @@ type LtmEvidenceUnitChatOptions = LanguageModelChatOptions & {
   reasoningEffort?: NonNullable<LanguageModelChatOptions["reasoningEffort"]>;
 };
 type LtmEvidenceUnitLinkRelation = LtmEvidenceUnit["links"][number]["relation"];
+type RawSubjectTargets = Map<string, string | null>;
 
 type RawEvidenceUnitTargetHints = {
   targetNoteIds: Set<string>;
-  timelineSubjects: Map<string, string>;
-  threadSubjects: Map<string, string>;
-  characterSubjects: Map<string, string>;
-  relationshipSubjects: Map<string, string>;
-  worldSubjects: Map<string, string>;
-  toneSubjects: Map<string, string>;
+  remappedNoteIds: Map<string, string | null>;
+  remappedSubjectTargets: Map<string, Set<string>>;
+  timelineSubjects: RawSubjectTargets;
+  threadSubjects: RawSubjectTargets;
+  characterSubjects: RawSubjectTargets;
+  relationshipSubjects: RawSubjectTargets;
+  worldSubjects: RawSubjectTargets;
+  toneSubjects: RawSubjectTargets;
   subjectTargets: Map<string, Set<string>>;
 };
 
@@ -460,7 +473,7 @@ export function evidenceUnitResponseFormat(options: {
                 links: {
                   type: "array",
                   description:
-                    "Every link target must resolve to the source note, an existing note, or a target note derived from a unit in the same response.",
+                    "Every link target must resolve to the source note or a target note derived from a unit in the same response.",
                   maxItems: 50,
                   items: {
                     type: "object",
@@ -471,8 +484,7 @@ export function evidenceUnitResponseFormat(options: {
                         type: "string",
                         pattern: "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$",
                         maxLength: 120,
-                        description:
-                          "Exact existing note id or target note id derived from a unit in the same response.",
+                        description: "Target note id derived from a unit in the same response, or the source note id.",
                       },
                       relation: { type: "string", enum: LTM_EXTRACTION_LINK_RELATIONS },
                       aspect: { type: "string", maxLength: 50 },
@@ -590,8 +602,41 @@ function deterministicEvidenceUnitId(record: Record<string, unknown>, expectedSo
 function normalizedEvidenceUnitRecord(unit: unknown, expectedSourceHash: string, trustedEvidence: string[]): unknown {
   if (!unit || typeof unit !== "object" || Array.isArray(unit)) return unit;
   const record = unit as Record<string, unknown>;
+  const names = Array.isArray(record.subjectNames) ? record.subjectNames : [];
+  const expectedNames = record.bucket === "character_fact" ? 1 : record.bucket === "relationship_state" ? 2 : 0;
+  const recoverableNames =
+    names.length === expectedNames && names.every((name) => typeof name === "string" && name.trim());
+  const prefixes: Record<string, string> = {
+    timeline_event: "timeline",
+    relationship_state: "rel",
+    character_fact: "char",
+    thread: "thread",
+    world_fact: "world",
+    tone: "tone",
+  };
+  const prefix =
+    record.bucket === "anchor"
+      ? typeof record.sectionKey === "string" && record.sectionKey.startsWith("tone")
+        ? "tone"
+        : "world"
+      : typeof record.bucket === "string"
+        ? (prefixes[record.bucket] ?? null)
+        : null;
+  const subjectId =
+    expectedNames && recoverableNames && !ltmEvidenceUnitSchema.shape.subjectId.safeParse(record.subjectId).success
+      ? normalizeRawIdentifier(names.join("_"), "subject")
+      : record.subjectId;
+  const rawSubject = normalizeRawIdentifier(subjectId, "");
+  const maxSubjectLength = prefix
+    ? 120 - (rawSubject.startsWith(`${prefix}_`) ? 0 : prefix.length + 1) - (prefix === "timeline" ? 11 : 0)
+    : 120;
+  const boundedSubject =
+    rawSubject.length > maxSubjectLength
+      ? `${rawSubject.slice(0, maxSubjectLength - 11).replace(/_+$/g, "")}_${stableJsonHash(rawSubject).slice(0, 10)}`
+      : subjectId;
   return {
     ...record,
+    ...(boundedSubject !== record.subjectId ? { subjectId: boundedSubject } : {}),
     id: deterministicEvidenceUnitId(record, expectedSourceHash),
     sourceHash: expectedSourceHash,
     ...(record.evidence === undefined && trustedEvidence.length ? { evidence: trustedEvidence } : {}),
@@ -604,6 +649,27 @@ function normalizeEvidenceUnitResponse(raw: unknown, expectedSourceHash: string,
   const units = Array.isArray(parsed.units) ? parsed.units : [];
   const normalizedUnits = units.map((unit) => normalizedEvidenceUnitRecord(unit, expectedSourceHash, trustedEvidence));
   const targetHints = rawEvidenceUnitTargetHints(normalizedUnits);
+  for (const [index, original] of units.entries()) {
+    if (!original || typeof original !== "object" || Array.isArray(original)) continue;
+    const old = original as Record<string, unknown>;
+    const next = normalizedUnits[index] as Record<string, unknown> | undefined;
+    if (typeof old.bucket !== "string" || typeof old.subjectId !== "string" || typeof next?.subjectId !== "string")
+      continue;
+    const sectionKey = typeof old.sectionKey === "string" ? normalizeRawIdentifier(old.sectionKey, "") : "";
+    const before = noteIdForRawEvidenceUnit(old.bucket, normalizeRawIdentifier(old.subjectId, ""), sectionKey);
+    const after = noteIdForRawEvidenceUnit(old.bucket, next.subjectId, sectionKey);
+    if (before && after && before !== after) {
+      addRemappedNoteId(targetHints.remappedNoteIds, before, after);
+      addSubjectTarget(targetHints.remappedSubjectTargets, normalizeRawIdentifier(old.subjectId, ""), after);
+      addRemappedSubjectHint(
+        targetHints,
+        old.bucket,
+        normalizeRawIdentifier(old.subjectId, ""),
+        next.subjectId,
+        typeof old.sectionKey === "string" ? normalizeRawIdentifier(old.sectionKey, "") : "",
+      );
+    }
+  }
   return {
     ...parsed,
     units: normalizedUnits.map((unit) => normalizedEvidenceUnitLinks(unit, targetHints)),
@@ -613,6 +679,8 @@ function normalizeEvidenceUnitResponse(raw: unknown, expectedSourceHash: string,
 function rawEvidenceUnitTargetHints(units: unknown[]): RawEvidenceUnitTargetHints {
   const hints: RawEvidenceUnitTargetHints = {
     targetNoteIds: new Set(),
+    remappedNoteIds: new Map(),
+    remappedSubjectTargets: new Map(),
     timelineSubjects: new Map(),
     threadSubjects: new Map(),
     characterSubjects: new Map(),
@@ -637,23 +705,23 @@ function rawEvidenceUnitTargetHints(units: unknown[]): RawEvidenceUnitTargetHint
     addSubjectTarget(hints.subjectTargets, stripRawNotePrefix(subjectId), noteId);
 
     if (bucket === "timeline_event") {
-      hints.timelineSubjects.set(stripRawNotePrefix(subjectId, "timeline"), noteId);
+      addSubjectHint(hints.timelineSubjects, stripRawNotePrefix(subjectId, "timeline"), noteId);
     } else if (bucket === "thread") {
-      hints.threadSubjects.set(stripRawNotePrefix(subjectId, "thread"), noteId);
+      addSubjectHint(hints.threadSubjects, stripRawNotePrefix(subjectId, "thread"), noteId);
     } else if (bucket === "character_fact") {
-      hints.characterSubjects.set(stripRawNotePrefix(subjectId, "char"), noteId);
+      addSubjectHint(hints.characterSubjects, stripRawNotePrefix(subjectId, "char"), noteId);
     } else if (bucket === "relationship_state") {
-      hints.relationshipSubjects.set(stripRawNotePrefix(subjectId, "rel"), noteId);
+      addSubjectHint(hints.relationshipSubjects, stripRawNotePrefix(subjectId, "rel"), noteId);
     } else if (bucket === "world_fact") {
-      hints.worldSubjects.set(stripRawNotePrefix(subjectId, "world"), noteId);
+      addSubjectHint(hints.worldSubjects, stripRawNotePrefix(subjectId, "world"), noteId);
     } else if (bucket === "tone") {
-      hints.toneSubjects.set(stripRawNotePrefix(subjectId, "tone"), noteId);
+      addSubjectHint(hints.toneSubjects, stripRawNotePrefix(subjectId, "tone"), noteId);
     } else if (bucket === "anchor") {
       const subject = stripRawNotePrefix(subjectId, sectionKey.startsWith("tone") ? "tone" : "world");
       if (sectionKey.startsWith("tone")) {
-        hints.toneSubjects.set(subject, noteId);
+        addSubjectHint(hints.toneSubjects, subject, noteId);
       } else {
-        hints.worldSubjects.set(subject, noteId);
+        addSubjectHint(hints.worldSubjects, subject, noteId);
       }
     }
   }
@@ -666,6 +734,66 @@ function addSubjectTarget(targets: Map<string, Set<string>>, subjectId: string, 
   const current = targets.get(subjectId) ?? new Set<string>();
   current.add(noteId);
   targets.set(subjectId, current);
+}
+
+function addRemappedNoteId(remapped: Map<string, string | null>, before: string, after: string) {
+  const existing = remapped.get(before);
+  remapped.set(before, existing === undefined || existing === after ? after : null);
+}
+
+function addSubjectHint(targets: RawSubjectTargets, subjectId: string, noteId: string) {
+  if (!subjectId) return;
+  const existing = targets.get(subjectId);
+  targets.set(subjectId, existing === undefined || existing === noteId ? noteId : null);
+}
+
+function addRemappedSubjectHint(
+  hints: RawEvidenceUnitTargetHints,
+  bucket: string,
+  oldSubject: string,
+  newSubject: string,
+  sectionKey: string,
+) {
+  const target = noteIdForRawEvidenceUnit(bucket, newSubject, sectionKey);
+  if (!target || !oldSubject) return;
+  const prefix =
+    bucket === "timeline_event"
+      ? "timeline"
+      : bucket === "thread"
+        ? "thread"
+        : bucket === "character_fact"
+          ? "char"
+          : bucket === "relationship_state"
+            ? "rel"
+            : bucket === "world_fact"
+              ? "world"
+              : bucket === "tone" || (bucket === "anchor" && sectionKey.startsWith("tone"))
+                ? "tone"
+                : bucket === "anchor"
+                  ? "world"
+                  : null;
+  if (!prefix) return;
+  const subject = stripRawNotePrefix(oldSubject, prefix);
+  switch (prefix) {
+    case "timeline":
+      addSubjectHint(hints.timelineSubjects, subject, target);
+      break;
+    case "thread":
+      addSubjectHint(hints.threadSubjects, subject, target);
+      break;
+    case "char":
+      addSubjectHint(hints.characterSubjects, subject, target);
+      break;
+    case "rel":
+      addSubjectHint(hints.relationshipSubjects, subject, target);
+      break;
+    case "world":
+      addSubjectHint(hints.worldSubjects, subject, target);
+      break;
+    case "tone":
+      addSubjectHint(hints.toneSubjects, subject, target);
+      break;
+  }
 }
 
 function noteIdForRawEvidenceUnit(bucket: string, subjectId: string, sectionKey: string) {
@@ -728,12 +856,13 @@ function normalizeRawLinkTarget(
   const identifier = normalizeRawIdentifier(sourceNoteMatch?.[1] ?? value, "");
   if (!identifier) return null;
   if (sourceNoteMatch) return identifier;
+  if (hints.remappedNoteIds.has(identifier)) return hints.remappedNoteIds.get(identifier) ?? null;
   const rawWasIdentifier = rawText === identifier;
   if (hints.targetNoteIds.has(identifier)) return identifier;
 
   const unprefixed = stripRawNotePrefix(identifier);
   const sameBatchTarget = targetForRelation(identifier, unprefixed, relation, hints);
-  if (sameBatchTarget) return sameBatchTarget;
+  if (sameBatchTarget !== undefined) return sameBatchTarget;
   if (LTM_EXTRACTION_NOTE_ID_PREFIX_PATTERN.test(identifier)) return identifier;
 
   if (LTM_EXTRACTION_TIMELINE_LINK_RELATIONS.has(relation)) return prefixedRawNoteId("timeline", identifier);
@@ -753,28 +882,48 @@ function targetForRelation(
   unprefixed: string,
   relation: LtmEvidenceUnitLinkRelation,
   hints: RawEvidenceUnitTargetHints,
-) {
+): string | null | undefined {
   if (LTM_EXTRACTION_TIMELINE_LINK_RELATIONS.has(relation)) {
-    return hints.timelineSubjects.get(unprefixed) ?? hints.timelineSubjects.get(identifier);
+    return subjectHint(hints.timelineSubjects, unprefixed, identifier);
   }
   if (relation === "blocks") {
-    return hints.threadSubjects.get(unprefixed) ?? hints.threadSubjects.get(identifier);
+    return subjectHint(hints.threadSubjects, unprefixed, identifier);
   }
   if (relation === "affects_character") {
-    return hints.characterSubjects.get(unprefixed) ?? hints.characterSubjects.get(identifier);
+    return subjectHint(hints.characterSubjects, unprefixed, identifier);
   }
   if (relation === "affects_relationship") {
-    return hints.relationshipSubjects.get(unprefixed) ?? hints.relationshipSubjects.get(identifier);
+    return subjectHint(hints.relationshipSubjects, unprefixed, identifier);
   }
-  return (
-    hints.timelineSubjects.get(unprefixed) ??
-    hints.threadSubjects.get(unprefixed) ??
-    hints.characterSubjects.get(unprefixed) ??
-    hints.relationshipSubjects.get(unprefixed) ??
-    hints.worldSubjects.get(unprefixed) ??
-    hints.toneSubjects.get(unprefixed) ??
-    null
-  );
+  return genericSubjectHint(identifier, unprefixed, hints);
+}
+
+function subjectHint(targets: RawSubjectTargets, ...keys: string[]): string | null | undefined {
+  for (const key of keys) {
+    if (targets.has(key)) return targets.get(key);
+  }
+  return undefined;
+}
+
+function genericSubjectHint(identifier: string, unprefixed: string, hints: RawEvidenceUnitTargetHints) {
+  const candidates = new Set<string>();
+  for (const key of new Set([unprefixed, identifier])) {
+    for (const target of hints.remappedSubjectTargets.get(key) ?? []) candidates.add(target);
+  }
+  for (const targets of [
+    hints.timelineSubjects,
+    hints.threadSubjects,
+    hints.characterSubjects,
+    hints.relationshipSubjects,
+    hints.worldSubjects,
+    hints.toneSubjects,
+  ]) {
+    const target = subjectHint(targets, unprefixed, identifier);
+    if (target === null) return null;
+    if (target !== undefined) candidates.add(target);
+  }
+  if (candidates.size > 1) return null;
+  return candidates.size === 1 ? [...candidates][0]! : undefined;
 }
 
 function normalizeRawIdentifier(value: unknown, fallback: string) {
@@ -893,29 +1042,6 @@ function estimateLtmPromptTokens(text: string) {
   return Math.max(1, Math.ceil(text.length / 4));
 }
 
-function formatExistingNotes(notes: LtmNote[], maxTokens = DEFAULT_LTM_EXTRACTION_MAX_EXISTING_NOTE_TOKENS) {
-  let usedTokens = 0;
-  const blocks: string[] = [];
-  for (const note of notes) {
-    const sections = Object.entries(note.sections)
-      .map(([key, section]) => `${key}: ${section.text}`)
-      .join("\n");
-    const block = [
-      `id: ${note.id}`,
-      `type: ${note.type}`,
-      `status: ${note.status}`,
-      `tags: ${note.tags.join(", ") || "(none)"}`,
-      `subjects: ${note.subjects?.map((subject) => subject.key).join(", ") || "(unbound)"}`,
-      `sections:\n${sections}`,
-    ].join("\n");
-    const blockTokens = estimateLtmPromptTokens(block);
-    if (usedTokens + blockTokens > maxTokens) break;
-    usedTokens += blockTokens;
-    blocks.push(block);
-  }
-  return blocks.length ? blocks.join("\n\n---\n\n") : "(no relevant memory streams)";
-}
-
 async function preflightExtractionPromptContext({
   messages,
   chatOptions,
@@ -982,7 +1108,6 @@ async function preflightExtractionPromptContext({
       estimatedPromptTokens: fit.estimatedTokensBefore,
       fittedPromptTokens: fit.estimatedTokensAfter,
       sourceChars: extractionOptions.sourceText.length,
-      existingNotes: extractionOptions.existingNotes.length,
     },
     details: {
       reason: fit.trimmed ? "prompt_trim_required" : "output_budget_reduced",
@@ -1081,7 +1206,7 @@ export function evidenceUnitMessages(options: RunLongTermMemoryEvidenceUnitExtra
           salience: "0..1",
           status: "one allowedStatuses value",
           links:
-            "real links only, otherwise []; targets must be derived from units in the same response or copied exactly from sourceNote.id or existingTypedNotes",
+            "real links only, otherwise []; targets must be derived from units in the same response or copied exactly from sourceNote.id",
           dimensions:
             "relationship_state only: optional object with allowedRelationshipDimensions keys and 0..100 integer values",
           dimensionChanges:
@@ -1101,6 +1226,8 @@ export function evidenceUnitMessages(options: RunLongTermMemoryEvidenceUnitExtra
           "resolved_in",
           "evidenced_by",
           "caused_by",
+          "planted_in",
+          "paid_off_in",
           "affects_relationship",
           "affects_character",
         ],
@@ -1124,7 +1251,7 @@ export function evidenceUnitMessages(options: RunLongTermMemoryEvidenceUnitExtra
             : "Preserve the character_fact and relationship_state subjectId values from the supplied candidate units.",
           "For other streams, the compiler derives the target note id from bucket + subjectId: timeline_event -> timeline_<subjectId>, world_fact or anchor -> world_<subjectId> unless anchor sectionKey starts with tone, thread -> thread_<subjectId>, tone -> tone_<subjectId>.",
           "For timeline_event, subjectId must name the specific event or beat, not just a person, character, place, or broad entity. Use damo_arrival or lisa_minimizing_damo instead of damo_korvak.",
-          "Do not intentionally target an existing note id unless that exact note appears in existingTypedNotes. If a broad note is not listed, use a source-specific subjectId for a new in-scope note.",
+          "Use a source-specific subjectId derived from the source text; never target or invent an existing note id. The server resolves subject and link hints against the vault after extraction.",
           ...validationRules,
           "relationship_state dimension keys must come only from allowedRelationshipDimensions. Put professional curiosity, reputation, gossip, or attention as text/thread/world/timeline facts, not dimensions.",
           ...(resolveSubjectNames
@@ -1142,13 +1269,6 @@ export function evidenceUnitMessages(options: RunLongTermMemoryEvidenceUnitExtra
                 "For each unit, include 3-5 concise keywords or short phrases in keywords. Prefer concrete recall terms and multi-word entities when relevant.",
             }
           : {}),
-        existingTypedNotes: formatExistingNotes(
-          filterDominatedLtmSubjectNotesForPrompt(
-            options.existingNotes ?? [],
-            promptCatalog ?? { entries: [], notes: [] },
-          ),
-          options.maxExistingNoteTokens,
-        ),
         sourceText: options.sourceText,
       }),
     },
@@ -1196,8 +1316,6 @@ export async function runLongTermMemoryEvidenceUnitExtraction(
       promptChars,
       promptTokens: estimateLtmPromptTokens(messages.map((message) => message.content).join("\n")),
       sourceChars: options.sourceText.length,
-      existingNotes: options.existingNotes.length,
-      maxExistingNoteTokens: options.maxExistingNoteTokens ?? DEFAULT_LTM_EXTRACTION_MAX_EXISTING_NOTE_TOKENS,
     },
     details: {
       reasoningEffort: requestedReasoningEffort,
@@ -1363,11 +1481,13 @@ export function compileEvidenceUnitExtraction(options: {
   sourceText: string;
   sourceNote: LtmNote;
   existingNotes: LtmNote[];
+  aliasChoices?: ReadonlyMap<string, { title: string; canonicalName: string }>;
   scope: LtmScope;
   modes: LtmMode[];
   mode?: LtmMode;
   sourceHash: string;
   allowedBuckets?: readonly LtmEvidenceUnit["bucket"][];
+  eventSubjectIdentityKeys?: ReadonlySet<string>;
   skipStructuredBackfill?: boolean;
 }): CompileEvidenceUnitExtractionResult {
   const normalized = normalizeStructuredSummaryEvidenceUnits({
@@ -1391,29 +1511,19 @@ export function compileEvidenceUnitExtraction(options: {
     expectedSourceHash: options.sourceHash,
     allowedBuckets:
       options.allowedBuckets ?? DEFAULT_LTM_ALLOWED_STREAMS_BY_MODE[options.mode ?? options.modes[0] ?? "roleplay"],
+    eventSubjectIdentityKeys: options.eventSubjectIdentityKeys,
   });
   const keptUnits = validated.keptUnits;
-  const dedupResult = deduplicateUnits(keptUnits, options.existingNotes);
+  const dedupResult = deduplicateUnits(keptUnits, options.existingNotes, options.scope);
   const closed = closeSourceEventGraph(dedupResult.deduplicated, options.sourceNote, options.existingNotes);
   const parserDroppedCandidates = options.parserDroppedCandidates ?? [];
   const parserRejectionCount = options.parserRejectionCount ?? parserDroppedCandidates.length;
   const preValidationDroppedCandidates = options.preValidationDroppedCandidates ?? [];
-  const allDroppedCandidates = [
-    ...parserDroppedCandidates,
-    ...preValidationDroppedCandidates,
-    ...validated.droppedCandidates,
-    ...closed.droppedCandidates,
-  ];
-  const droppedCandidates = allDroppedCandidates.slice(0, LTM_EXTRACTION_MAX_REJECTION_DETAILS);
-  const droppedCandidateCount =
-    parserRejectionCount +
-    preValidationDroppedCandidates.length +
-    validated.droppedCandidates.length +
-    closed.droppedCandidates.length;
   const compiled = closed.units.length
     ? compileLtmEvidenceUnits({
         units: closed.units,
         existingNotes: options.existingNotes,
+        aliasChoices: options.aliasChoices,
         scope: options.scope,
         modes: options.modes,
         mode: options.mode,
@@ -1423,8 +1533,51 @@ export function compileEvidenceUnitExtraction(options: {
         summary: options.unitResponse.summary,
         mutations: [],
       };
-  const compiledResponse = compiled;
-  const diagnostics = [...validated.diagnostics, ...dedupResult.diagnostics, ...closed.diagnostics];
+  const duplicateAliasUnits = keptUnits.filter(
+    (unit) => options.aliasChoices?.has(unit.id) && !dedupResult.deduplicated.includes(unit),
+  );
+  const duplicateAliasClosure = closeSourceEventGraph(
+    duplicateAliasUnits,
+    options.sourceNote,
+    options.existingNotes,
+    closed.units,
+  );
+  const rejectedAliasIds = new Set(duplicateAliasClosure.diagnostics.map((diagnostic) => diagnostic.mutationId));
+  const allDroppedCandidates = [
+    ...parserDroppedCandidates,
+    ...preValidationDroppedCandidates,
+    ...validated.droppedCandidates,
+    ...closed.droppedCandidates,
+    ...duplicateAliasClosure.droppedCandidates,
+  ];
+  const droppedCandidates = allDroppedCandidates.slice(0, LTM_EXTRACTION_MAX_REJECTION_DETAILS);
+  const droppedCandidateCount =
+    parserRejectionCount +
+    preValidationDroppedCandidates.length +
+    validated.droppedCandidates.length +
+    closed.droppedCandidates.length +
+    duplicateAliasClosure.droppedCandidates.length;
+  const duplicateTitles = duplicateAliasClosure.units.length
+    ? compileLtmEvidenceUnits({
+        units: duplicateAliasClosure.units,
+        existingNotes: options.existingNotes,
+        aliasChoices: options.aliasChoices,
+        scope: options.scope,
+        modes: options.modes,
+        mode: options.mode,
+      }).mutations.filter(
+        (mutation) =>
+          mutation.kind === "set_title" &&
+          !compiled.mutations.some((existing) => existing.kind === "set_title" && existing.noteId === mutation.noteId),
+      )
+    : [];
+  const compiledResponse = { ...compiled, mutations: [...compiled.mutations, ...duplicateTitles] };
+  const diagnostics = [
+    ...validated.diagnostics,
+    ...dedupResult.diagnostics.filter((diagnostic) => !rejectedAliasIds.has(diagnostic.mutationId)),
+    ...closed.diagnostics,
+    ...duplicateAliasClosure.diagnostics,
+  ];
   if (options.unitResponse.incomplete) {
     diagnostics.push({
       severity: "warning",
@@ -1432,10 +1585,9 @@ export function compileEvidenceUnitExtraction(options: {
       message: "Extraction output was cut off by the model limit; the source remains retryable.",
     });
   }
-  const boundedDiagnostics =
-    diagnostics.length <= MAX_LTM_EXTRACTION_DIAGNOSTICS
-      ? diagnostics
-      : [...diagnostics.slice(0, MAX_LTM_EXTRACTION_DIAGNOSTICS - 1), diagnostics[diagnostics.length - 1]!];
+  // Review gating must see every diagnostic, including ones dropped by the retained-list bound below.
+  const requiresReview = diagnosticsRequireExtractionReview(diagnostics);
+  const boundedDiagnostics = boundLtmExtractionDiagnostics(diagnostics);
   const accounting = ltmExtractionAccountingSchema.parse({
     providerCandidates:
       options.providerCandidates ??
@@ -1444,14 +1596,19 @@ export function compileEvidenceUnitExtraction(options: {
     normalizedAdditions: (options.normalizedAdditions ?? 0) + normalized.addedUnits,
     parserRejections: parserRejectionCount,
     validationRejections:
-      preValidationDroppedCandidates.length + validated.droppedCandidates.length + closed.droppedCandidates.length,
-    deduplications: validated.keptUnits.length - dedupResult.deduplicated.length,
+      preValidationDroppedCandidates.length +
+      validated.droppedCandidates.length +
+      closed.droppedCandidates.length +
+      duplicateAliasClosure.droppedCandidates.length,
+    deduplications:
+      validated.keptUnits.length - dedupResult.deduplicated.length - duplicateAliasClosure.droppedCandidates.length,
     keptUnits: closed.units.length,
   });
   const totalCandidates = accounting.providerCandidates + accounting.normalizedAdditions;
   const outcome = summarizeExtractionOutcome({
     totalCandidates,
     keptUnits: closed.units.length,
+    mutations: compiledResponse.mutations.length,
     droppedCandidates,
     droppedCandidateCount,
     deduplications: accounting.deduplications,
@@ -1461,12 +1618,18 @@ export function compileEvidenceUnitExtraction(options: {
     unitResponse: { ...options.unitResponse, units: normalizedUnits },
     compiledResponse,
     diagnostics: boundedDiagnostics,
+    requiresReview,
     outcome,
     accounting,
   };
 }
 
-function closeSourceEventGraph(units: LtmEvidenceUnit[], sourceNote: LtmNote, existingNotes: LtmNote[]) {
+function closeSourceEventGraph(
+  units: LtmEvidenceUnit[],
+  sourceNote: LtmNote,
+  existingNotes: LtmNote[],
+  supportUnits: readonly LtmEvidenceUnit[] = [],
+) {
   let kept = [...units];
   const droppedCandidates: LtmExtractionDroppedCandidate[] = [];
   const diagnostics: LtmExtractionDiagnostic[] = [];
@@ -1480,7 +1643,7 @@ function closeSourceEventGraph(units: LtmEvidenceUnit[], sourceNote: LtmNote, ex
           ? [note.id]
           : [],
       ),
-      ...kept
+      ...[...supportUnits, ...kept]
         .filter(
           (unit) =>
             unit.bucket === "timeline_event" &&
@@ -1550,6 +1713,7 @@ function summarizeExtractionOutcome(input: {
   droppedCandidateCount: number;
   deduplications: number;
   incomplete: boolean;
+  mutations: number;
 }): LtmExtractionOutcome {
   const droppedUnits = input.droppedCandidateCount;
   const state =
@@ -1557,7 +1721,11 @@ function summarizeExtractionOutcome(input: {
       ? droppedUnits > 0 || input.deduplications > 0
         ? "partial_success"
         : "success"
-      : "no_suggestions_created";
+      : input.mutations > 0
+        ? droppedUnits > 0
+          ? "partial_success"
+          : "success"
+        : "no_suggestions_created";
   return {
     state,
     incomplete: input.incomplete === true,

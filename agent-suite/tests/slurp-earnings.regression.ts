@@ -7,10 +7,14 @@ import {
   payout,
   readSlurpEarnings,
   slurpPayoutAllowance,
+  slurpPayoutCoins,
+  slurpPlatformEarnings,
   reverse,
   slurpEarningsKey,
   slurpCreatorRevenueShare,
 } from "../packages/slurp2/src/engine/packages/server/src/slp/modules/economy/slp-earnings.js";
+import { readSlurpGoal } from "../packages/slurp2/src/engine/packages/server/src/slp/modules/projects/slp-goal.js";
+import { slurpShownSubscribers } from "../packages/slurp2/src/engine/packages/shared/src/slp/slp-reach.js";
 import { slurp2Source } from "./slurp2-source";
 
 const at = new Date("2026-09-05T12:00:00.000Z");
@@ -60,51 +64,72 @@ assert.equal(earn(earned, "tip", 1.5, at), earned);
 
 // ── The daily allowance protects the fan economy ────────────────────────────
 // This is the whole reason the two balances are separate. Earnings are meant to be large; spending
-// money is meant to be scarce, because a purchase you can always afford is not a choice. If a
-// successful Creator could move their whole balance across, the fan economy would end the moment
-// the first audience arrived.
+// money is meant to be scarce, because a purchase you can always afford is not a choice. 0.3.7:
+// earnings are platform dollars and the allowance is counted in coins (15 to 60 a day) at
+// `crowdWeight` dollars per coin, shared by every Creator one persona runs.
+const W = 5;
 {
   const small = earn(emptySlurpEarnings(), "tip", 500, at);
-  const large = earn(emptySlurpEarnings(), "tip", 50_000, at);
-  assert.ok(slurpPayoutAllowance(small, at) >= 60, "withdrawing must never be worse than the daily stipend");
-  assert.ok(slurpPayoutAllowance(large, at) > slurpPayoutAllowance(small, at), "success must be felt");
-  // Roughly four times the stipend at the top, not an escape from the economy.
-  assert.ok(slurpPayoutAllowance(large, at) <= 260);
-  assert.ok(
-    slurpPayoutAllowance(large, at) < slurpPayoutAllowance(small, at) * 4,
-    "the curve must flatten rather than run away",
-  );
-  // Never more than is actually there.
-  const broke = earn(emptySlurpEarnings(), "tip", 5, at);
-  assert.equal(slurpPayoutAllowance(broke, at), 5);
+  const large = earn(emptySlurpEarnings(), "tip", 500_000, at);
+  assert.ok(slurpPayoutAllowance(small, at, W) >= 75, "never worse than the daily refill: 15 coins");
+  assert.ok(slurpPayoutAllowance(large, at, W) > slurpPayoutAllowance(small, at, W), "success must be felt");
+  assert.equal(slurpPayoutAllowance(large, at, W), 300, "at most 60 coins a day, not an escape");
+  // Whole coins only, and never more than is there.
+  const broke = earn(emptySlurpEarnings(), "tip", 12, at);
+  assert.equal(slurpPayoutAllowance(broke, at, W), 10);
+  assert.equal(slurpPayoutCoins(10, W), 2);
+  // The limit is shared: what another Creator of the same persona took today counts.
+  const fresh = earn(emptySlurpEarnings(), "tip", 100, at);
+  assert.equal(slurpPayoutAllowance(fresh, at, W), 85, "17 coins at 100 dollars of lifetime earnings");
+  assert.equal(slurpPayoutAllowance(fresh, at, W, 10), 35, "10 coins taken elsewhere today");
+  assert.equal(slurpPayoutAllowance(fresh, at, W, 17), 0);
 }
 
 // The allowance is spent down within a day and resets the next.
 {
   const rich = earn(emptySlurpEarnings(), "tip", 5_000, at);
-  const allowance = slurpPayoutAllowance(rich, at);
-  const paidOut = payout(rich, allowance, at);
+  const allowance = slurpPayoutAllowance(rich, at, W);
+  const paidOut = payout(rich, allowance, at, W);
   assert.ok(paidOut);
-  assert.equal(slurpPayoutAllowance(paidOut, at), 0, "the day's allowance is used up");
+  assert.equal(slurpPayoutAllowance(paidOut, at, W), 0, "the day's allowance is used up");
   const tomorrow = new Date("2026-09-06T12:00:00.000Z");
-  assert.ok(slurpPayoutAllowance(paidOut, tomorrow) > 0, "a new day restores it");
+  assert.ok(slurpPayoutAllowance(paidOut, tomorrow, W) > 0, "a new day restores it");
   // Refused rather than clamped: a caller asking for more has misread the state, and silently
   // paying less would leave the player believing they moved more.
-  assert.equal(payout(rich, allowance + 1, at), null);
+  assert.equal(payout(rich, allowance + W, at, W), null);
+  assert.equal(payout(rich, W + 1, at, W), null, "only whole coins' worth");
+  // Counted in coins, so raising the weight later that day does not open more coins.
+  assert.equal(slurpPayoutAllowance(paidOut, at, 20), 0);
 }
+
+// ── Fan money is platform money ─────────────────────────────────────────────
+// A real 12-coin payment stands for five people, less Slurp's 20%: 48 dollars, which pays out 9 coins.
+assert.equal(slurpPlatformEarnings(12, W), 48);
+assert.equal(slurpPayoutCoins(slurpPlatformEarnings(12, W), W), 9);
+
+// The shown subscriber count uses the same weight; a player's own subscription counts once.
+assert.equal(slurpShownSubscribers(17, 1, W), 86);
+// A tip goal opened before 0.3.7 counted coins: both ends scale, so its progress does not jump.
+const oldGoal = readSlurpGoal('{"label":"Set","target":100,"startLifetime":40,"startedAt":"2026-09-01T00:00:00.000Z"}');
+assert.deepEqual([oldGoal?.target, oldGoal?.startLifetime, oldGoal?.platform], [500, 200, true]);
+const bigGoal = readSlurpGoal(
+  '{"label":"Car","target":500000,"startLifetime":0,"startedAt":"2026-09-01T00:00:00.000Z"}',
+);
+assert.equal(bigGoal?.target, 2_500_000, "a converted goal keeps its full target");
+assert.equal(readSlurpGoal(JSON.stringify(bigGoal))?.target, 2_500_000, "and reads back after it is stored");
 
 // ── A payout moves money out but never lowers the score ─────────────────────
 // Withdrawing what you earned does not mean you earned less. `lifetime` is what the Creator home
 // shows as the score, so a payout must leave it alone.
-const paid = payout(earned, 40, at);
+const paid = payout(earned, 40, at, W);
 assert.ok(paid);
 assert.equal(paid.coins, 22);
 assert.equal(paid.lifetime, 62, "a payout must not reduce lifetime earnings");
 assert.equal(paid.ledger[0]?.amount, -40);
 
 // A payout larger than the balance is refused, so callers must handle it.
-assert.equal(payout(earned, 999, at), null);
-assert.equal(payout(earned, 0, at), null);
+assert.equal(payout(earned, 999, at, W), null);
+assert.equal(payout(earned, 0, at, W), null);
 
 // ── A reversal undoes money that was never really earned ────────────────────
 // Unlike a payout, this does lower the score: the charge failed, so it was not income.
@@ -119,7 +144,13 @@ assert.deepEqual(readSlurpEarnings("not json"), emptySlurpEarnings());
 assert.deepEqual(readSlurpEarnings("[]"), emptySlurpEarnings());
 assert.equal(readSlurpEarnings('{"coins":-4}').coins, 0);
 // Lifetime can never sit below the balance: every coin held was earned at some point.
-assert.equal(readSlurpEarnings('{"coins":100,"lifetime":5}').lifetime, 100);
+assert.equal(readSlurpEarnings('{"coins":100,"lifetime":5,"platform":true}').lifetime, 100);
+// A record from before 0.3.7 held coins: it reads as dollars at the legacy weight, so it pays out the same coins.
+const legacy = readSlurpEarnings('{"coins":100,"lifetime":300,"receipts":{"r1":{"kind":"tip","amount":12}}}');
+assert.equal(legacy.coins, 500);
+assert.equal(legacy.lifetime, 1500);
+assert.equal(legacy.receipts.r1?.amount, 60, "a later reversal matches the scaled credit");
+assert.equal(legacy.platform, true);
 // Same ledger validation as the wallet, for the same reason: the UI reads kind, amount, and at
 // unconditionally, so a hand-edited blob must not reach it.
 {
@@ -228,5 +259,18 @@ const payoutRoutes = slurp2Source(
   join(import.meta.dirname, "..", "packages/slurp2/src/engine/packages/server/src/routes/slurp.routes.ts"),
 );
 assert.match(payoutRoutes, /app\.post\("\/slurp\/accounts\/:id\/payout"/u);
+
+// 0.3.7 wiring: fan money is credited at the platform scale (a brand's fee is not scaled twice), and
+// the wallet gets coins at the weight, under one limit per persona.
+const context = slurp2Source("packages/slurp2/src/engine/packages/server/src/slp/data/host/slp-storage-context.ts");
+assert.match(
+  context,
+  /if \(kind !== "sponsor"\) amount = slurpPlatformEarnings\(amount, settings\.simulationTuning\.economy\.crowdWeight\)/u,
+);
+const payouts = slurp2Source(
+  "packages/slurp2/src/engine/packages/server/src/slp/data/economy/slp-economy-storage-3.ts",
+);
+assert.match(payouts, /credit\(wallet, "topUp", slurpPayoutCoins\(amount, crowdWeight\)/u);
+assert.match(payouts, /sibling\.sourceEntityId === creator\.sourceEntityId/u);
 
 console.log("slurp earnings regression passed");

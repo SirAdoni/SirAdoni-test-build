@@ -52,6 +52,7 @@ import {
   serializeInventoryTag,
   swapGameInventoryStacks,
   takeFromGameInventory,
+  type GameInventoryItemRules,
   type GameInventoryStack,
   type InventoryItem,
 } from "../../packages/shared/src/index.js";
@@ -432,6 +433,11 @@ try {
       [` action="add" item="Gold" quantity="50000"`, { action: "add", items: ["Gold"], count: 9999 }],
       [` action="add" item="Gold" count="-3"`, { action: "add", items: ["Gold"], count: 1 }],
       [` action="remove" note="nothing named"`, null],
+      // Wearing and binding (#6801).
+      [` equip item="Hand axe" who="Bram"`, { action: "equip", items: ["Hand axe"], count: 1, who: "Bram" }],
+      [` action="unbind" item="Widow's ring"`, { action: "unbind", items: ["Widow's ring"], count: 1 }],
+      [` action="unequip" item="Coat, Bow"`, { action: "unequip", items: ["Coat", "Bow"], count: 1 }],
+      [` bind item="Bell"`, { action: "bind", items: ["Bell"], count: 1 }],
     ];
     for (const [body, expected] of forms) assert.deepEqual(parseInventoryTagBody(body), expected, body);
     // What the Game Master claims happened is not part of the request.
@@ -453,6 +459,11 @@ try {
       ),
       [{ action: "remove", item: "Rope", count: 1, ok: false, reason: "none-held" }],
       "only answered tags are announced",
+    );
+    // An answer that changed nothing keeps its zero, so nothing is announced for it.
+    assert.deepEqual(
+      readResolvedInventoryTags(`[inventory: action="equip" item="Coat" count="0" result="ok" now="1"]`),
+      [{ action: "equip", item: "Coat", count: 0, ok: true, now: 1 }],
     );
   }
 
@@ -811,6 +822,102 @@ try {
       ["Crown unapplied", "Orb unapplied"],
     );
     assert.match(unapplied, /\[inventory: raw="nonsense" result="refused" reason="unapplied"\]/);
+  }
+
+  // ── Wearing and carrying in the Game Master's tags (#6801) ──
+  {
+    const known = [
+      { item: "gear/coat", name: "Coat", weight: 3, slots: { body: 1 } },
+      { item: "gear/ring", name: "Ring", slots: { finger: 1 }, binds: { cursed: true } },
+      { item: "gear/arrow", name: "Arrow", weight: 1 },
+    ];
+    const rules: GameInventoryItemRules = {
+      itemNamed: (name) => known.find((each) => each.name.toLowerCase() === name.trim().toLowerCase()),
+      itemOf: (item) => known.find((each) => each.item === item),
+      offers: (item) => known.some((each) => each.item === item),
+      slots: [
+        { id: "body", label: "Body", count: 1 },
+        { id: "finger", label: "Finger", count: 1 },
+      ],
+      // The player carries 6 without strain and 12 at most; Bram 9 and 12.
+      bearer: (holder) =>
+        holder ? { encumberedAbove: 9, limit: 12, bindingMax: 1 } : { encumberedAbove: 6, limit: 12, bindingMax: 1 },
+      actor: "game-master",
+    };
+    const party = { player: "Ada", members: ["Bram"] };
+    const answers = (text: string, stacks: GameInventoryStack[]) => {
+      const outcome = applyGameInventoryTags(text, stacks, party, nextId, rules);
+      return {
+        stacks: outcome.stacks,
+        tags: readResolvedInventoryTags(outcome.content).map(
+          (tag) =>
+            `${tag.action} ${tag.item} ${tag.who ?? "-"} ${tag.ok ? `ok ${tag.count}->${tag.now}` : `${tag.reason} ${tag.count}`}`,
+        ),
+      };
+    };
+    const packed: GameInventoryStack[] = [
+      { id: "coat", name: "Coat", item: "gear/coat", quantity: 1 },
+      { id: "bram-arrows", name: "Arrow", item: "gear/arrow", quantity: 5, holder: "Bram" },
+    ];
+    // An add with nobody named goes to whoever can carry it, answered per bag, the player's naming
+    // nobody; what nobody can carry is refused as too heavy.
+    assert.deepEqual(answers(`[inventory: action="add" item="Arrow" count="10"]`, packed).tags, [
+      "add Arrow - ok 5->5",
+      "add Arrow Bram ok 5->10",
+    ]);
+    assert.deepEqual(answers(`[inventory: action="add" item="Arrow" count="30"]`, packed).tags, [
+      "add Arrow - ok 9->9",
+      "add Arrow Bram ok 7->12",
+      "add Arrow - too-heavy 14",
+    ]);
+    // Into one bag, only as much as its bearer can carry at all.
+    assert.deepEqual(answers(`[inventory: action="add" item="Arrow" count="10" who="Bram"]`, packed).tags, [
+      "add Arrow Bram ok 7->12",
+      "add Arrow Bram too-heavy 3",
+    ]);
+    // A give past the receiver's limit is refused whole.
+    assert.deepEqual(
+      answers(`[inventory: action="give" item="Arrow" count="5" who="Bram" to="Ada"]`, [
+        ...packed,
+        { id: "arrows", name: "Arrow", item: "gear/arrow", quantity: 8 },
+      ]).tags,
+      ["give Arrow Bram too-heavy 5"],
+    );
+    // Asking for more than the giver holds weighs only what they hold: Bram's 5 fit the player.
+    assert.deepEqual(answers(`[inventory: action="give" item="Arrow" count="20" who="Bram" to="Ada"]`, packed).tags, [
+      "give Arrow Bram ok 5->5",
+    ]);
+    // Putting on, binding, and the Game Master ending a curse; each answers how many are so now.
+    const ring: GameInventoryStack[] = [...packed, { id: "rings", name: "Ring", item: "gear/ring", quantity: 2 }];
+    const worn = answers(
+      [
+        `[inventory: action="equip" item="Coat"]`,
+        `[inventory: action="bind" item="Ring" count="2"]`,
+        `[inventory: action="equip" item="Ring"]`,
+        `[inventory: action="unbind" item="Ring"]`,
+        `[inventory: action="equip" item="Arrow" who="Bram"]`,
+        `[inventory: action="unequip" item="Lantern"]`,
+        `[inventory: action="unequip" item="Coat"]`,
+        `[inventory: action="unequip" item="Coat"]`,
+      ].join(" "),
+      ring,
+    );
+    assert.deepEqual(worn.tags, [
+      "equip Coat - ok 1->1",
+      "bind Ring - ok 1->1",
+      "equip Ring - ok 1->1",
+      "unbind Ring - ok 1->0",
+      "equip Arrow Bram not-wearable 1",
+      "unequip Lantern - none-held 1",
+      "unequip Coat - ok 1->0",
+      "unequip Coat - ok 0->0",
+    ]);
+    assert.deepEqual(
+      worn.stacks.map(
+        (stack) => `${stack.name} ${stack.quantity}${stack.equipped ? " worn" : ""}${stack.bound ? " bound" : ""}`,
+      ),
+      ["Coat 1", "Arrow 5", "Ring 1", "Ring 1 worn"],
+    );
   }
 
   // ── The route and the storage ──

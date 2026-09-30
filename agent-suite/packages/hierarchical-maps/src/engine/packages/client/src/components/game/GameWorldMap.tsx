@@ -630,7 +630,7 @@ export function GameWorldMap({
             key={`${chatId}:${viewLocationId}`}
             contentRef={canvasRef}
             compact={compact}
-            className="aspect-[16/9] w-full"
+            className="aspect-square w-full"
           >
             {mapBackgroundImageUrl && (
               <img

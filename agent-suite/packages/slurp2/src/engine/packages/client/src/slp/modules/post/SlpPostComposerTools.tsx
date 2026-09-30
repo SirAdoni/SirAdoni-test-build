@@ -25,7 +25,7 @@ export function SlpToolButton({
       aria-label={title}
       disabled={disabled}
       className={cn(
-        "flex h-8 w-8 shrink-0 items-center justify-center rounded-full p-0 !text-[var(--noodle-accent)] transition-colors active:scale-95 [&_svg]:!text-[var(--noodle-accent)]",
+        "flex h-8 w-8 shrink-0 items-center justify-center rounded-full p-0 !text-[var(--noodle-accent-foreground)] transition-colors active:scale-95 [&_svg]:!text-[var(--noodle-accent-foreground)]",
         disabled
           ? "cursor-not-allowed opacity-40"
           : active
@@ -124,7 +124,7 @@ export function SlurpToolPopover({
           <button
             type="button"
             onClick={onClose}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[var(--noodle-accent)] transition-colors hover:bg-foreground/10"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[var(--noodle-accent-foreground)] transition-colors hover:bg-foreground/10"
             title={localizeUi("capabilities.actions.close")}
           >
             <X size={14} />

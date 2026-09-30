@@ -4,6 +4,7 @@
 import { useSlurpSettings } from "../settings/slp-settings-contract";
 import { ArcConfigSection } from "./SlpArcConfigSection";
 import { ProjectEditor, canSave } from "./SlpProjectEditor";
+import { openSlpStir } from "../../base/state/slp-stir-sheet-store";
 import { useState } from "react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import type { SlurpProject } from "./slp-projects-contract";
@@ -252,7 +253,7 @@ export function SlurpProjectsPanel({
                   ].join(" · ")}
                 </span>
                 {project.twist && (
-                  <span className="block truncate text-[0.7rem] text-[var(--noodle-accent)]">
+                  <span className="block truncate text-[0.7rem] text-[var(--noodle-accent-foreground)]">
                     {localizeUi("ui.slurp.projects.twistPending", {
                       defaultValue: "Twist for the next post: {{twist}}",
                       twist: project.twist,
@@ -304,6 +305,25 @@ export function SlurpProjectsPanel({
                         </button>
                       ))}
                     </span>
+                  </span>
+                )}
+                {/* W: moving a chapter is a story lever, so it lives in Stir; the rules stay here. */}
+                {project.chapters.length > 0 && (project.status === "active" || project.status === "paused") && (
+                  <span className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--slurp-muted)]">
+                    {project.held
+                      ? localizeUi("ui.slurp.projects.chapterHeld", {
+                          chapter: project.chapters[project.chapter] ?? "",
+                        })
+                      : localizeUi("ui.slurp.projects.chapterNow", {
+                          chapter: project.chapters[project.chapter] ?? "",
+                        })}
+                    <button
+                      type="button"
+                      onClick={() => openSlpStir({ creatorId: creatorAccountId })}
+                      className="min-h-11 font-semibold text-[var(--slurp-ink)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)]"
+                    >
+                      {localizeUi("ui.slurp.stir.moveInStir")}
+                    </button>
                   </span>
                 )}
                 {director &&
@@ -418,32 +438,7 @@ export function SlurpProjectsPanel({
                         ? localizeUi("ui.slurp.projects.pause", { defaultValue: "Pause" })
                         : localizeUi("ui.slurp.projects.resume", { defaultValue: "Resume" })}
                     </button>
-                    {project.chapter > 0 && (
-                      <button type="button" onClick={() => act(project, "back")} className="underline" disabled={busy}>
-                        {localizeUi("ui.slurp.projects.back", { defaultValue: "Go back" })}
-                      </button>
-                    )}
-                    {project.chapter < project.chapters.length - 1 && (
-                      <button type="button" onClick={() => act(project, "skip")} className="underline" disabled={busy}>
-                        {localizeUi("ui.slurp.projects.skip", { defaultValue: "Skip chapter" })}
-                      </button>
-                    )}
-                    {project.chapters.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setDirecting({
-                            id: project.id,
-                            action: "label",
-                            value: project.chapters[project.chapter] ?? "",
-                          })
-                        }
-                        className="underline"
-                        disabled={busy}
-                      >
-                        {localizeUi("ui.slurp.projects.renameChapter", { defaultValue: "Rename chapter" })}
-                      </button>
-                    )}
+                    {/* Back, skip and rename live in the chapter controls under the arc now. */}
                     <button
                       type="button"
                       onClick={() => setDirecting({ id: project.id, action: "twist", value: "" })}

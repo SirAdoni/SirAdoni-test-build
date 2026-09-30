@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { runRegressionToCompletion } from "./regression-helpers.ts";
 
 async function main() {
@@ -18,7 +21,11 @@ async function main() {
   const { projectLtmDraftMutationGroup } = await import(`${source}/draft-projector.ts`);
   const { sourceHashForLtmSourceNote } = await import(`${source}/source-hash.ts`);
   const { normalizeStructuredSummaryEvidenceUnits } = await import(`${source}/structured-summary-normalizer.ts`);
+  const { validateLtmEvidenceUnits } = await import(`${source}/evidence-unit-validation.ts`);
   const { resolveScopedEvidenceUnitTargets, scopedVariantNoteId } = await import(`${source}/scoped-targets.ts`);
+  const { configurePackageRuntime } = await import(`${source}/package-runtime.ts`);
+  const { processLongTermMemorySource } = await import(`${source}/source-processing.ts`);
+  const { LongTermMemoryStorage } = await import(`${source}/storage.ts`);
   const { ltmNoteIdSchema } =
     await import("../packages/long-term-memory/src/engine/packages/shared/src/features/agents/long-term-memory/schema.ts");
 
@@ -59,7 +66,7 @@ async function main() {
       status?: "active" | "resolved";
       links?: Array<{
         target: string;
-        relation: "extracted_from" | "evidenced_by" | "caused_by" | "resolved_in";
+        relation: "extracted_from" | "evidenced_by" | "caused_by" | "resolved_in" | "affects_character" | "involves";
       }>;
       subjectNames?: string[];
       dimensionChanges?: Record<string, number>;
@@ -81,6 +88,7 @@ async function main() {
     units: ReturnType<typeof unit>[],
     skipStructuredBackfill = true,
     existingNotes: any[] = [],
+    scope: Record<string, unknown> = {},
   ) =>
     compileEvidenceUnitExtraction({
       unitResponse: { summary: "Extraction graph regression", units },
@@ -88,7 +96,7 @@ async function main() {
       sourceText: note.sections.source.text,
       sourceNote: note,
       existingNotes,
-      scope: {},
+      scope: scope as any,
       modes: ["roleplay"],
       mode: "roleplay",
       sourceHash: sourceHashForLtmSourceNote(note),
@@ -100,6 +108,7 @@ async function main() {
     { kind: "chat_summary", sourceId: "chat-a", entryId: "summary-a" },
     "Mara learned the observatory script and is guarded. Alice and Rowan trusted each other less after the argument.",
   );
+  const scopedChat = { ...chat, scope: { chatId: "chat-a", chatIds: ["chat-a"] } };
 
   const linklessCharacter = compile(chat, [
     unit(chat, {
@@ -229,22 +238,32 @@ async function main() {
   ]);
   assert.equal(sourceHashMismatch.outcome.droppedCandidates[0]?.validatorCode, "source_hash_mismatch");
 
-  const invalidTimelineSection = unit(chat, {
+  // Issue #1137: a flat summary (no recognized headings) must normalize a
+  // timeline_event to the event section instead of dropping it as invalid.
+  const flatSummaryTimeline = unit(chat, {
     bucket: "timeline_event",
     subjectId: "argument_strained_trust",
     sectionKey: "facts",
     text: "Alice and Rowan argued, straining their trust.",
     links: [{ target: chat.id, relation: "extracted_from" }],
   });
-  const invalidTimelineResult = compile(chat, [invalidTimelineSection]);
-  const invalidTimelineDrop = invalidTimelineResult.outcome.droppedCandidates[0];
-  assert.equal(invalidTimelineDrop?.validatorCode, "invalid_timeline_section");
-  assert.equal(invalidTimelineDrop?.recoveryCandidate?.text, invalidTimelineSection.text);
-  assert.equal(invalidTimelineDrop?.recoveryCandidate?.sourceHash, invalidTimelineSection.sourceHash);
-  assert.deepEqual(invalidTimelineDrop?.recoveryCandidate?.evidence, invalidTimelineSection.evidence);
-  const repairedTimelineResult = compile(chat, [{ ...invalidTimelineDrop!.recoveryCandidate!, sectionKey: "event" }]);
-  assert.equal(repairedTimelineResult.outcome.droppedCandidates.length, 0);
-  assert.equal(repairedTimelineResult.accounting.keptUnits, 1);
+  const flatTimelineResult = compile(chat, [flatSummaryTimeline]);
+  assert.equal(flatTimelineResult.accounting.keptUnits, 1);
+  assert.equal(flatTimelineResult.outcome.droppedCandidates.length, 0);
+  assert.equal(flatTimelineResult.unitResponse.units[0]?.sectionKey, "event");
+  // The validator guard and its recovery candidate stay intact for direct callers.
+  const rawInvalidTimeline = validateLtmEvidenceUnits({
+    units: [flatSummaryTimeline],
+    sourceText: chat.sections.source.text,
+    sourceNote: chat,
+    existingNotes: [],
+    expectedSourceHash: sourceHashForLtmSourceNote(chat),
+  });
+  const rawInvalidTimelineDrop = rawInvalidTimeline.droppedCandidates[0];
+  assert.equal(rawInvalidTimelineDrop?.validatorCode, "invalid_timeline_section");
+  assert.equal(rawInvalidTimelineDrop?.recoveryCandidate?.text, flatSummaryTimeline.text);
+  assert.equal(rawInvalidTimelineDrop?.recoveryCandidate?.sourceHash, flatSummaryTimeline.sourceHash);
+  assert.deepEqual(rawInvalidTimelineDrop?.recoveryCandidate?.evidence, flatSummaryTimeline.evidence);
 
   const relationshipWithEvent = compile(chat, [
     unit(chat, {
@@ -324,13 +343,15 @@ async function main() {
   const missingThreadTarget = compile(chat, [resolvedThread]);
   assert.equal(missingThreadTarget.accounting.keptUnits, 0);
   assert.equal(missingThreadTarget.outcome.droppedCandidates[0]?.validatorCode, "unknown_link_target");
-  const removedResolutionEvent = compile(chat, [resolvedThread, { ...resolutionEvent, sectionKey: "facts" }]);
-  assert.equal(removedResolutionEvent.accounting.keptUnits, 0);
+  // Issue #1137: a resolution event from a flat summary is normalized to the
+  // event section, so it still satisfies the resolved thread's fan-out.
+  const repairedResolutionEvent = compile(chat, [resolvedThread, { ...resolutionEvent, sectionKey: "facts" }]);
+  assert.equal(repairedResolutionEvent.accounting.keptUnits, 2);
   assert.equal(
-    removedResolutionEvent.outcome.droppedCandidates.some(
+    repairedResolutionEvent.outcome.droppedCandidates.some(
       (candidate) => candidate.validatorCode === "unknown_link_target",
     ),
-    true,
+    false,
   );
   const missingResolutionEvent = compile(chat, [
     unit(chat, {
@@ -414,6 +435,115 @@ async function main() {
   );
   assert.equal(structuredCharacterUnits[1]?.text.startsWith("Began processing Damo's state compensation claim"), true);
 
+  // Issue #1137: an unrecognized `##` heading must close the previous section so
+  // its following fields are not misattributed to the last known bucket.
+  const unknownHeadingSource = sourceNote(
+    "source_unknown_heading",
+    { kind: "chat_summary", sourceId: "chat-unknown", entryId: "summary-unknown" },
+    [
+      "## character_fact",
+      "- Mara | section: facts | text: Mara reads old scripts.",
+      "## misc_notes",
+      "- Rowan | section: facts | text: Rowan guards the gate.",
+    ].join("\n"),
+  );
+  const unknownHeadingUnits = normalizeStructuredSummaryEvidenceUnits({
+    units: [],
+    sourceText: unknownHeadingSource.sections.source.text,
+    sourceNote: unknownHeadingSource,
+    sourceHash: sourceHashForLtmSourceNote(unknownHeadingSource),
+    mode: "roleplay",
+    modes: ["roleplay"],
+  }).units.filter((candidate) => candidate.bucket === "character_fact");
+  assert.deepEqual(
+    unknownHeadingUnits.map((candidate) => candidate.subjectId),
+    ["mara"],
+    "fields under an unrecognized heading must not be attributed to the previous section",
+  );
+
+  // Issue #1137: structured backfill must not append a unit that duplicates a
+  // provider candidate already returned for the same source. The shorthand line
+  // folds its leading description into the parsed text, so a provider unit with
+  // only the canonical `text:` value must still count as covered.
+  const structuredCharacterProviderResult = normalizeStructuredSummaryEvidenceUnits({
+    units: [
+      unit(structuredCharacterSource, {
+        bucket: "character_fact",
+        subjectId: "denise",
+        sectionKey: "facts",
+        text: 'Damo\'s reentry case officer at the Marlowe Street reentry office; distinguishes his case as an "exoneree" rather than parolee, entitling him to state compensation.',
+        subjectNames: ["Denise"],
+      }),
+      unit(structuredCharacterSource, {
+        bucket: "character_fact",
+        subjectId: "denise",
+        sectionKey: "facts",
+        text: "Began processing Damo's state compensation claim using his college records as evidence of disrupted earning potential, and referred him to civil rights attorney Mara Castellano for a possible civil suit.",
+        subjectNames: ["Denise"],
+      }),
+    ],
+    sourceText: structuredCharacterSource.sections.source.text,
+    sourceNote: structuredCharacterSource,
+    sourceHash: sourceHashForLtmSourceNote(structuredCharacterSource),
+    mode: "roleplay",
+    modes: ["roleplay"],
+  });
+  assert.equal(
+    structuredCharacterProviderResult.addedUnits,
+    0,
+    "structured backfill must not duplicate provider candidates for the same source",
+  );
+  assert.equal(
+    structuredCharacterProviderResult.units.filter((candidate) => candidate.bucket === "character_fact").length,
+    2,
+  );
+
+  // Issue #1137: provider coverage must be symmetric and must not compare two
+  // backfill lines against each other, or a richer structured fact whose text
+  // contains a shorter sibling/provider fact for the same subject and section is
+  // dropped. The provider already holding the short fact must not hide the
+  // richer structured sibling, while an exact provider duplicate is still
+  // suppressed rather than re-added.
+  const nestedBackfillSource = sourceNote(
+    "source_nested_backfill",
+    { kind: "chat_summary", sourceId: "chat-nested", entryId: "summary-nested" },
+    [
+      "## character_fact",
+      "- Alice | section: facts | text: Alice has a scar on her left cheek.",
+      "- Alice | section: facts | text: Alice has a scar on her left cheek and speaks French.",
+    ].join("\n"),
+  );
+  const nestedBackfillResult = normalizeStructuredSummaryEvidenceUnits({
+    units: [
+      unit(nestedBackfillSource, {
+        bucket: "character_fact",
+        subjectId: "alice",
+        sectionKey: "facts",
+        text: "Alice has a scar on her left cheek.",
+        subjectNames: ["Alice"],
+      }),
+    ],
+    sourceText: nestedBackfillSource.sections.source.text,
+    sourceNote: nestedBackfillSource,
+    sourceHash: sourceHashForLtmSourceNote(nestedBackfillSource),
+    mode: "roleplay",
+    modes: ["roleplay"],
+  });
+  const nestedBackfillTexts = nestedBackfillResult.units
+    .filter((candidate) => candidate.bucket === "character_fact")
+    .map((candidate) => candidate.text);
+  assert.equal(nestedBackfillTexts.length, 2, "a richer sibling backfill fact must not be suppressed");
+  assert.equal(
+    nestedBackfillTexts.some((text) => text.includes("speaks French")),
+    true,
+    "the distinct detail from the richer backfill fact must be retained",
+  );
+  assert.equal(
+    nestedBackfillTexts.filter((text) => text === "Alice has a scar on her left cheek.").length,
+    1,
+    "a provider fact already covering the structured line must not be re-added",
+  );
+
   const idiomaticStaticSource = sourceNote(
     "source_static_fact_heuristic",
     { kind: "chat_summary", sourceId: "chat-static", entryId: "summary-static" },
@@ -492,71 +622,342 @@ async function main() {
     assert.equal(result.accounting.keptUnits, 1, text);
   }
 
-  const transientCharacterAction = compile(chat, [
-    unit(chat, {
-      bucket: "character_fact",
+  const assertEventShapedWarningKept = (
+    text: string,
+    subject: { subjectId: string; subjectNames: string[] } = {
       subjectId: "rowan",
-      sectionKey: "facts",
-      text: "Rowan met Mara at the observatory.",
-      claimKind: "static",
       subjectNames: ["Rowan"],
-    }),
-  ]);
-  assert.equal(transientCharacterAction.accounting.keptUnits, 0);
-  assert.equal(transientCharacterAction.outcome.droppedCandidates[0]?.validatorCode, "event_shaped_character_fact");
+    },
+  ) => {
+    const result = compile(chat, [
+      unit(chat, {
+        bucket: "character_fact",
+        subjectId: subject.subjectId,
+        sectionKey: "facts",
+        text,
+        claimKind: "static",
+        subjectNames: subject.subjectNames,
+      }),
+    ]);
+    assert.equal(result.accounting.keptUnits, 1, text);
+    assert.equal(result.outcome.droppedCandidates.length, 0, text);
+    assert.ok(
+      result.diagnostics.some(
+        (diagnostic) => diagnostic.code === "event_shaped_character_fact" && diagnostic.severity === "warning",
+      ),
+      text,
+    );
+    return result;
+  };
 
-  const transientDurableTokenCharacter = compile(chat, [
-    unit(chat, {
-      bucket: "character_fact",
-      subjectId: "rowan",
-      sectionKey: "facts",
-      text: "Rowan met Mara and is walking away.",
-      claimKind: "static",
-      subjectNames: ["Rowan"],
-    }),
-  ]);
-  assert.equal(transientDurableTokenCharacter.accounting.keptUnits, 0);
-  assert.equal(
-    transientDurableTokenCharacter.outcome.droppedCandidates[0]?.validatorCode,
-    "event_shaped_character_fact",
-  );
+  assertEventShapedWarningKept("Rowan met Mara at the observatory.");
+  assertEventShapedWarningKept("Rowan met Mara and is walking away.");
+  assertEventShapedWarningKept("Rowan met Mara and uses a lantern.");
+  assertEventShapedWarningKept("Rowan met Mara and is walking away, but is her assigned case officer.");
+  const mara = { subjectId: "mara", subjectNames: ["Mara"] };
+  assertEventShapedWarningKept("Mara learned to read the observatory script.", mara);
+  assertEventShapedWarningKept("Mara discovered she could read the observatory script.", mara);
+  assertEventShapedWarningKept("Mara carries the observatory key.", mara);
+  assertEventShapedWarningKept("Mara returned to the observatory.", mara);
 
-  const transientUsesCharacter = compile(chat, [
-    unit(chat, {
-      bucket: "character_fact",
-      subjectId: "rowan",
-      sectionKey: "facts",
-      text: "Rowan met Mara and uses a lantern.",
-      claimKind: "static",
-      subjectNames: ["Rowan"],
-    }),
-  ]);
-  assert.equal(transientUsesCharacter.accounting.keptUnits, 0);
-  assert.equal(transientUsesCharacter.outcome.droppedCandidates[0]?.validatorCode, "event_shaped_character_fact");
+  {
+    const dataDir = await mkdtemp(join(tmpdir(), "marinara-ltm-event-shaped-review-"));
+    const releaseHost = configurePackageRuntime({
+      isDebugAgentsEnabled: () => false,
+      logger: { debug() {}, info() {}, warn() {}, error() {} },
+      dataDir,
+      resources: {
+        listCharacters: async () => [{ id: "mara", data: { name: "Mara" }, comment: "" }],
+        listPersonas: async () => [],
+        listLorebooks: async () => [],
+      },
+      persistence: {
+        getChat: async () => null,
+        listChats: async () => [],
+        updateChatMetadata: async () => {},
+      },
+    });
+    const root = join(dataDir, "long-term-memory");
+    const reviewScope = { characterIds: ["mara"] };
+    try {
+      const storage = new LongTermMemoryStorage(root);
+      const reviewSourceText = "Mara learned to read the observatory script.";
+      await storage.createNote({
+        ...chat,
+        id: "source_event_shaped_review",
+        title: "Event-shaped review source",
+        scope: reviewScope,
+        sections: { source: { text: reviewSourceText, updatedAt: timestamp } },
+      } as never);
+      const reviewSource = (await storage.getNote("source_event_shaped_review"))!;
+      const sourceHash = sourceHashForLtmSourceNote(reviewSource);
+      const committed = await processLongTermMemorySource({
+        sourceNote: reviewSource as never,
+        languageModel: {
+          name: "FixtureModel",
+          model: "fixture-model",
+          maxContext: null,
+          maxOutputTokens: null,
+          fitContext(messages: unknown[], fitOptions: { maxTokens: number }) {
+            return {
+              messages,
+              maxTokens: fitOptions.maxTokens,
+              estimatedTokensBefore: 20,
+              estimatedTokensAfter: 20,
+              trimmed: false,
+            };
+          },
+          async chatComplete() {
+            return {
+              content: JSON.stringify({
+                summary: "One durable outcome.",
+                units: [
+                  {
+                    bucket: "character_fact",
+                    subjectId: "mara",
+                    sectionKey: "facts",
+                    text: reviewSourceText,
+                    claimKind: "static",
+                    importance: "major",
+                    evidence: [`source_note:${reviewSource.id}`],
+                    confidence: 0.9,
+                    salience: 0.8,
+                    status: "active",
+                    links: [],
+                    subjectNames: ["Mara"],
+                    sourceHash,
+                  },
+                ],
+              }),
+              finishReason: "stop",
+            };
+          },
+        } as never,
+        scope: reviewScope,
+        modes: ["roleplay"],
+        mode: "roleplay",
+        extractionMode: "roleplay",
+        operationId: randomUUID(),
+        root,
+        applyLowRisk: true,
+      });
+      assert.equal(committed.draft.reviewRequired, true, "event-shaped character facts must require review");
+      assert.ok(
+        committed.diagnostics.some(
+          (diagnostic) => diagnostic.code === "event_shaped_character_fact" && diagnostic.severity === "warning",
+        ),
+        "event-shaped character facts must warn without hard-dropping",
+      );
+      assert.ok(committed.draft.mutations.length > 0, "event-shaped durable outcomes must remain available for review");
+      assert.equal(
+        committed.appliedMutationIds.length,
+        0,
+        "event-shaped character facts must block low-risk auto-apply",
+      );
+    } finally {
+      releaseHost();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  }
 
-  const mixedDurableTransientCharacter = compile(chat, [
-    unit(chat, {
+  {
+    // Pad diagnostics past the retained-list bound so the event-shaped warning is truncated
+    // out of the bounded array but still forces requiresReview / blocks auto-apply.
+    const padUnits = Array.from({ length: 520 }, (_, index) =>
+      unit(chat, {
+        bucket: "world_fact",
+        subjectId: `pad_diag_${index}`,
+        sectionKey: "facts",
+        text: `Unrelated token salad ${index} xyzzy quux plugh.`,
+        claimKind: "static",
+      }),
+    );
+    const truncatedEventShaped = unit(chat, {
       bucket: "character_fact",
-      subjectId: "rowan",
+      subjectId: "mara",
       sectionKey: "facts",
-      text: "Rowan met Mara and is walking away, but is her assigned case officer.",
+      text: "Mara learned to read the observatory script.",
       claimKind: "static",
-      subjectNames: ["Rowan"],
-    }),
-  ]);
-  assert.equal(mixedDurableTransientCharacter.accounting.keptUnits, 0);
-  assert.equal(
-    mixedDurableTransientCharacter.outcome.droppedCandidates[0]?.validatorCode,
-    "event_shaped_character_fact",
-  );
+      subjectNames: ["Mara"],
+    });
+    const trailingPad = unit(chat, {
+      bucket: "world_fact",
+      subjectId: "trailing_diag",
+      sectionKey: "facts",
+      text: "Trailing unrelated token salad xyzzy quux plugh.",
+      claimKind: "static",
+    });
+    const truncatedCompile = compileEvidenceUnitExtraction({
+      unitResponse: {
+        summary: "Truncated event-shaped review signal",
+        units: [...padUnits, truncatedEventShaped, trailingPad],
+      },
+      providerCandidates: padUnits.length + 2,
+      sourceText: chat.sections.source.text,
+      sourceNote: chat,
+      existingNotes: [],
+      scope: {},
+      modes: ["roleplay"],
+      mode: "roleplay",
+      sourceHash: sourceHashForLtmSourceNote(chat),
+      skipStructuredBackfill: true,
+    });
+    assert.ok(truncatedCompile.diagnostics.length <= 500);
+    assert.equal(
+      truncatedCompile.diagnostics.some((diagnostic) => diagnostic.code === "event_shaped_character_fact"),
+      false,
+      "event-shaped warning must sit outside the retained diagnostic window for this proof",
+    );
+    assert.equal(
+      truncatedCompile.requiresReview,
+      true,
+      "requiresReview must be computed from full diagnostics before truncation",
+    );
+
+    const dataDir = await mkdtemp(join(tmpdir(), "marinara-ltm-event-shaped-truncated-review-"));
+    const releaseHost = configurePackageRuntime({
+      isDebugAgentsEnabled: () => false,
+      logger: { debug() {}, info() {}, warn() {}, error() {} },
+      dataDir,
+      resources: {
+        listCharacters: async () => [{ id: "mara", data: { name: "Mara" }, comment: "" }],
+        listPersonas: async () => [],
+        listLorebooks: async () => [],
+      },
+      persistence: {
+        getChat: async () => null,
+        listChats: async () => [],
+        updateChatMetadata: async () => {},
+      },
+    });
+    const root = join(dataDir, "long-term-memory");
+    const reviewScope = { characterIds: ["mara"] };
+    try {
+      const storage = new LongTermMemoryStorage(root);
+      const durableFact = "The observatory archive keeps a cobalt ledger.";
+      const eventShapedText = "Mara learned to read the observatory script.";
+      const sourceText = `${durableFact} ${eventShapedText}`;
+      await storage.createNote({
+        ...chat,
+        id: "source_event_shaped_truncated_review",
+        title: "Truncated event-shaped review source",
+        scope: reviewScope,
+        sections: { source: { text: sourceText, updatedAt: timestamp } },
+      } as never);
+      const reviewSource = (await storage.getNote("source_event_shaped_truncated_review"))!;
+      const sourceHash = sourceHashForLtmSourceNote(reviewSource);
+      const fixtureUnits = [
+        ...Array.from({ length: 520 }, (_, index) => ({
+          bucket: "world_fact" as const,
+          subjectId: `pad_diag_${index}`,
+          sectionKey: "facts",
+          text: `Unrelated token salad ${index} xyzzy quux plugh.`,
+          claimKind: "static" as const,
+          importance: "minor" as const,
+          evidence: [`source_note:${reviewSource.id}`],
+          confidence: 0.9,
+          salience: 0.5,
+          status: "active" as const,
+          links: [] as [],
+          sourceHash,
+        })),
+        {
+          bucket: "character_fact" as const,
+          subjectId: "mara",
+          sectionKey: "facts",
+          text: eventShapedText,
+          claimKind: "static" as const,
+          importance: "major" as const,
+          evidence: [`source_note:${reviewSource.id}`],
+          confidence: 0.9,
+          salience: 0.8,
+          status: "active" as const,
+          links: [] as [],
+          subjectNames: ["Mara"],
+          sourceHash,
+        },
+        {
+          bucket: "world_fact" as const,
+          subjectId: "cobalt_ledger",
+          sectionKey: "facts",
+          text: durableFact,
+          claimKind: "static" as const,
+          importance: "major" as const,
+          evidence: [`source_note:${reviewSource.id}`],
+          confidence: 0.95,
+          salience: 0.8,
+          status: "active" as const,
+          links: [] as [],
+          sourceHash,
+        },
+      ];
+      const committed = await processLongTermMemorySource({
+        sourceNote: reviewSource as never,
+        languageModel: {
+          name: "FixtureModel",
+          model: "fixture-model",
+          maxContext: null,
+          maxOutputTokens: null,
+          fitContext(messages: unknown[], fitOptions: { maxTokens: number }) {
+            return {
+              messages,
+              maxTokens: fitOptions.maxTokens,
+              estimatedTokensBefore: 20,
+              estimatedTokensAfter: 20,
+              trimmed: false,
+            };
+          },
+          async chatComplete() {
+            return {
+              content: JSON.stringify({
+                summary: "Durable world fact with a truncated event-shaped warning.",
+                units: fixtureUnits,
+              }),
+              finishReason: "stop",
+            };
+          },
+        } as never,
+        scope: reviewScope,
+        modes: ["roleplay"],
+        mode: "roleplay",
+        extractionMode: "roleplay",
+        operationId: randomUUID(),
+        root,
+        applyLowRisk: true,
+      });
+      assert.equal(committed.draft.reviewRequired, true, "truncated event-shaped warnings must still require review");
+      assert.equal(
+        committed.diagnostics.some((diagnostic) => diagnostic.code === "event_shaped_character_fact"),
+        false,
+        "bounded diagnostics must omit the truncated event-shaped warning",
+      );
+      assert.ok(
+        committed.draft.mutations.some((mutation) => mutation.risk === "low"),
+        "fixture must still produce an otherwise low-risk mutation",
+      );
+      assert.equal(
+        committed.appliedMutationIds.length,
+        0,
+        "truncated event-shaped warnings must block low-risk auto-apply",
+      );
+    } finally {
+      releaseHost();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  }
 
   const invalidEventWithDependent = compile(chat, [
-    unit(chat, {
-      bucket: "timeline_event",
-      subjectId: "invalid_argument",
-      sectionKey: "history",
-      text: "Alice and Rowan argued.",
-    }),
+    {
+      ...unit(chat, {
+        bucket: "timeline_event",
+        subjectId: "invalid_argument",
+        sectionKey: "event",
+        text: "Alice and Rowan argued.",
+      }),
+      // A stale source hash is the invalidation trigger now that the normalizer
+      // repairs a non-event section instead of dropping the unit.
+      sourceHash: "stale-source-hash",
+    },
     unit(chat, {
       bucket: "world_fact",
       subjectId: "argument_aftermath",
@@ -574,12 +975,15 @@ async function main() {
   );
 
   const invalidEventWithStaticFact = compile(chat, [
-    unit(chat, {
-      bucket: "timeline_event",
-      subjectId: "invalid_static_argument",
-      sectionKey: "history",
-      text: "Alice and Rowan argued.",
-    }),
+    {
+      ...unit(chat, {
+        bucket: "timeline_event",
+        subjectId: "invalid_static_argument",
+        sectionKey: "event",
+        text: "Alice and Rowan argued.",
+      }),
+      sourceHash: "stale-source-hash",
+    },
     unit(chat, {
       bucket: "world_fact",
       subjectId: "observatory",
@@ -638,14 +1042,25 @@ async function main() {
   const extractionMessages = evidenceUnitMessages({
     sourceNote: chat,
     sourceText: chat.sections.source.text,
-    existingNotes: [],
     scope: {},
     modes: ["roleplay"],
     sourceHash,
     mode: "roleplay",
   } as any);
-  const unitFields = JSON.parse(String(extractionMessages[1]?.content)).unitFields;
+  const extractionPrompt = JSON.parse(String(extractionMessages[1]?.content));
+  assert.equal(
+    extractionPrompt.existingTypedNotes,
+    undefined,
+    "issue #1086: the prompt must not serialize existingTypedNotes",
+  );
+  const unitFields = extractionPrompt.unitFields;
   assert.match(unitFields.title, /short memory label/i);
+  for (const relation of ["planted_in", "paid_off_in"]) {
+    assert.ok(
+      extractionPrompt.allowedTimelineRelations.includes(relation),
+      `issue #1138: allowedTimelineRelations must advertise ${relation}`,
+    );
+  }
   assert.equal(
     evidenceUnitResponseFormat({
       allowedBuckets: ["timeline_event"],
@@ -673,6 +1088,116 @@ async function main() {
     parsedSourcePrefixedLink.response.units[0]?.links,
     [{ target: chat.id, relation: "extracted_from" }],
     "source_note:<id> extracted_from targets must normalize to the source note id",
+  );
+  const nearLimitEvent = parseEvidenceUnitPayload(
+    {
+      summary: "Near-limit provider event",
+      units: [
+        unit(chat, {
+          bucket: "timeline_event",
+          subjectId: `event_${"a".repeat(105)}`,
+          sectionKey: "event",
+          text: "Mara learned the observatory script.",
+          links: [{ target: chat.id, relation: "extracted_from" }],
+        }),
+        unit(chat, {
+          bucket: "character_fact",
+          subjectId: "mara",
+          sectionKey: "facts",
+          text: "Mara learned the observatory script.",
+          links: [{ target: `event_${"a".repeat(105)}`, relation: "caused_by" }],
+        }),
+      ],
+    },
+    sourceHash,
+  );
+  const boundedEvent = normalizeStructuredSummaryEvidenceUnits({
+    units: nearLimitEvent.response.units,
+    sourceText: chat.sections.source.text,
+    sourceNote: chat,
+    sourceHash,
+  }).units[0]!;
+  assert.equal(
+    ltmNoteIdSchema.safeParse(`timeline_${boundedEvent.subjectId}`).success,
+    true,
+    "provider event IDs must leave room for server-added prefix and source suffix",
+  );
+  assert.deepEqual(
+    nearLimitEvent.response.units[1]?.links,
+    [{ target: `timeline_${nearLimitEvent.response.units[0]?.subjectId}`, relation: "caused_by" }],
+    "same-response links must follow a bounded provider target",
+  );
+  const sharedLongSubject = `shared_${"a".repeat(115)}`;
+  const sharedLongSubjectResponse = parseEvidenceUnitPayload(
+    {
+      summary: "Shared near-limit provider targets",
+      units: [
+        {
+          ...unit(chat, {
+            bucket: "timeline_event",
+            subjectId: sharedLongSubject,
+            sectionKey: "event",
+            text: "Mara opened the observatory gate.",
+          }),
+          links: [
+            { target: sharedLongSubject, relation: "affects_character" },
+            { target: sharedLongSubject, relation: "involves" },
+          ],
+        },
+        {
+          ...unit(chat, {
+            bucket: "character_fact",
+            subjectId: sharedLongSubject,
+            sectionKey: "facts",
+            text: "Mara opened the observatory gate.",
+          }),
+          links: [{ target: sharedLongSubject, relation: "caused_by" }],
+        },
+      ],
+    },
+    sourceHash,
+  );
+  const sharedTimeline = sharedLongSubjectResponse.response.units.find(
+    (candidate) => candidate.bucket === "timeline_event",
+  )!;
+  const sharedCharacter = sharedLongSubjectResponse.response.units.find(
+    (candidate) => candidate.bucket === "character_fact",
+  )!;
+  assert.deepEqual(
+    sharedTimeline.links,
+    [{ target: `char_${sharedCharacter.subjectId}`, relation: "affects_character" }],
+    "relation-aware remapping must route a shared bare subject to the character target",
+  );
+  assert.deepEqual(
+    sharedCharacter.links,
+    [{ target: `timeline_${sharedTimeline.subjectId}`, relation: "caused_by" }],
+    "relation-aware remapping must route a shared bare subject to the timeline target",
+  );
+  const ambiguousGenericResponse = parseEvidenceUnitPayload(
+    {
+      summary: "Ambiguous generic target",
+      units: [
+        unit(chat, {
+          bucket: "timeline_event",
+          subjectId: "shared_identity",
+          sectionKey: "event",
+          text: "Mara opened the observatory gate.",
+          links: [{ target: "shared_identity", relation: "involves" }],
+        }),
+        unit(chat, {
+          bucket: "character_fact",
+          subjectId: "shared_identity",
+          sectionKey: "facts",
+          text: "Mara opened the observatory gate.",
+        }),
+      ],
+    },
+    sourceHash,
+  );
+  assert.deepEqual(
+    ambiguousGenericResponse.response.units[0]?.links,
+    [],
+    "generic links must fail closed when matching timeline and character targets conflict",
   );
   const oversizedPayload = parseEvidenceUnitPayload(
     {
@@ -776,6 +1301,34 @@ async function main() {
     true,
   );
   assert.notEqual(scopedVariantNoteId("world_legacy_scope", legacyScope), legacyNoteId);
+  const chatOnlyDestination = { chatId: "chat-a", chatIds: ["chat-a"] };
+  const narrowerResolution = await resolveScopedEvidenceUnitTargets({
+    units: [
+      unit(chat, {
+        bucket: "world_fact",
+        subjectId: "legacy_scope_fact",
+        sectionKey: "facts",
+        text: "Only chat A may see this new evidence.",
+        links: [{ target: chat.id, relation: "extracted_from" }],
+      }),
+    ],
+    existingNotes: [{ ...legacyNote, id: "world_legacy_scope_fact" }],
+    storage: {
+      getNotesByIds: async () =>
+        new Map([["world_legacy_scope_fact", { ...legacyNote, id: "world_legacy_scope_fact" }]]),
+    },
+    scope: chatOnlyDestination,
+  });
+  assert.equal(
+    narrowerResolution.remaps.has("world_legacy_scope_fact"),
+    true,
+    "chat-only evidence forks instead of updating a persona-visible memory",
+  );
+  assert.equal(
+    narrowerResolution.existingNotes.some((note) => note.id === "world_legacy_scope_fact"),
+    false,
+  );
+  assert.notEqual(narrowerResolution.units[0]?.subjectId, "legacy_scope_fact");
   const destinationScopeVariants = [
     { groupIds: ["group-a"], chatIds: ["chat-a"] },
     { groupIds: ["group-a"], chatIds: ["chat-b"] },
@@ -1274,6 +1827,23 @@ async function main() {
     ],
     notes: [],
   });
+  const aliasEvent = validateLtmEvidenceUnits({
+    units: [
+      unit(chat, {
+        bucket: "timeline_event",
+        subjectId: "Sera",
+        sectionKey: "event",
+        text: "Sera arrived at the observatory.",
+      }),
+    ],
+    sourceText: chat.sections.source.text,
+    sourceNote: chat,
+    existingNotes: [],
+    expectedSourceHash: sourceHashForLtmSourceNote(chat),
+    eventSubjectIdentityKeys: new Set(["sera"]),
+  });
+  assert.equal(aliasEvent.droppedCandidates[0]?.validatorCode, "event_subject_matches_character_alias");
+  assert.equal(aliasEvent.droppedCandidates[0]?.reason, "unsupported_bucket");
   const subjectIdentityRejection = resolveLtmSubjectIdentities({
     units: [
       unit(chat, {
@@ -1290,17 +1860,230 @@ async function main() {
     mode: "roleplay",
   });
   assert.equal(subjectIdentityRejection.droppedCandidates[0]?.validatorCode, "untrusted_subject_identity");
+  const collisionCatalog = buildTrustedLtmSubjectCatalog({
+    roster: [
+      { kind: "character", id: "alex-a", name: "Alex" },
+      { kind: "character", id: "alex-b", name: "Alex" },
+      { kind: "character", id: "rowan-a", name: "Rowan" },
+      { kind: "character", id: "rowan-b", name: "Rowan" },
+    ],
+    notes: [],
+  });
+  const collisionChat = sourceNote(
+    "source_identity_collisions",
+    { kind: "chat_summary", sourceId: "chat-c", entryId: "summary-c" },
+    "alex-a remembers the gate. alex-b remembers the gate. Pair a trusts the other. Pair b trusts the other.",
+  );
+  const collisionUnits = [
+    ...["alex-a", "alex-b"].map((id) => ({
+      ...unit(collisionChat, {
+        bucket: "character_fact" as const,
+        subjectId: "alex",
+        sectionKey: "facts",
+        claimKind: "static",
+        text: `${id} remembers the gate.`,
+      }),
+      subjectKeys: [`character:${id}`],
+    })),
+    ...["a", "b"].map((suffix) => ({
+      ...unit(collisionChat, {
+        bucket: "relationship_state" as const,
+        subjectId: "alex_rowan",
+        sectionKey: "state",
+        claimKind: "static",
+        text: `Pair ${suffix} trusts the other.`,
+      }),
+      subjectKeys: [`character:alex-${suffix}`, `character:rowan-${suffix}`],
+    })),
+  ];
+  const collisionResolution = resolveLtmSubjectIdentities({
+    units: collisionUnits,
+    catalog: collisionCatalog,
+    existingNotes: [],
+    scope: {},
+    mode: "roleplay",
+  });
+  assert.equal(collisionResolution.units.length, 4);
+  const collisionIds = collisionResolution.units.map((resolved: any) =>
+    resolved.bucket === "character_fact" ? `char_${resolved.subjectId}` : `rel_${resolved.subjectId}`,
+  );
+  assert.equal(new Set(collisionIds).size, 4, "distinct trusted identities must have distinct targets");
+  const collisionCompilation = compile(collisionChat, collisionResolution.units, true);
+  assert.deepEqual(
+    new Set(
+      collisionCompilation.compiledResponse.mutations.map((mutation: any) =>
+        mutation.kind === "create_note" ? mutation.note.id : mutation.noteId,
+      ),
+    ),
+    new Set(collisionIds),
+    "normalization and compilation must not mix facts from different identities",
+  );
+  for (const [index, id] of collisionIds.entries()) {
+    const created = collisionCompilation.compiledResponse.mutations.find(
+      (mutation: any) => mutation.kind === "create_note" && mutation.note.id === id,
+    );
+    assert.equal(
+      Object.values((created as any)?.note.sections ?? {}).some((section: any) =>
+        section.text.includes(collisionUnits[index]!.text),
+      ),
+      true,
+      "each distinct target must receive only its own fact",
+    );
+  }
+  const resolvedVoice = { ...collisionResolution.units[0]!, subjectId: "alex_voice", sectionKey: "voice" };
+  assert.equal(
+    normalizeStructuredSummaryEvidenceUnits({ units: [resolvedVoice], sourceText: "", sourceHash }).units[0]?.subjectId,
+    "alex_voice",
+    "a subject-bound target ending in a section name must not be stripped again",
+  );
   const canonicalIdentityNote = identityNote("char_seraphina", "Seraphina Duvall", [
     identityCatalog.entries.find((entry: any) => entry.name === "Seraphina Duvall")!.subject,
   ]);
   identityCatalog.notes.push(canonicalIdentityNote);
+  const canonicalSubject = canonicalIdentityNote.subjects[0];
+  const legacyIdentityNote = {
+    ...identityNote("char_seraphina_legacy", "Legacy Seraphina", [canonicalSubject]),
+    sections: { facts: { text: "Seraphina Duvall is trusted.", updatedAt: timestamp } },
+  };
+  const canonicalizedUnit = {
+    ...unit(chat, {
+      bucket: "character_fact",
+      subjectId: "seraphina_duvall",
+      sectionKey: "facts",
+      text: "Seraphina Duvall is trusted.",
+      subjectNames: ["Seraphina Duvall"],
+    }),
+    subjects: [canonicalSubject],
+  };
+  const subjectIdentityDedup = deduplicateUnits([canonicalizedUnit], [legacyIdentityNote]);
+  assert.equal(
+    subjectIdentityDedup.deduplicated.length,
+    0,
+    "canonical subject identity must deduplicate an equivalent legacy target id",
+  );
+  const distinctSubjectDedup = deduplicateUnits(
+    [
+      {
+        ...canonicalizedUnit,
+        subjectId: "rowan_hale",
+        subjects: [subject("character:rowan", { kind: "character", id: "rowan" })],
+      },
+    ],
+    [legacyIdentityNote],
+  );
+  assert.equal(distinctSubjectDedup.deduplicated.length, 1, "distinct canonical subjects must remain separate");
+  const scopeA = { chatId: "chat-a", chatIds: ["chat-a"] };
+  const scopeB = { chatId: "chat-b", chatIds: ["chat-b"] };
+  const overlappingScope = { chatIds: ["chat-a", "chat-b"] };
+  const targetScopeNote = {
+    ...legacyIdentityNote,
+    id: "char_seraphina_scope_a",
+    scope: scopeA,
+    sections: { facts: { text: "Seraphina Duvall is cautious.", updatedAt: timestamp } },
+  };
+  const otherScopeDuplicate = {
+    ...legacyIdentityNote,
+    id: "char_seraphina_scope_b",
+    scope: scopeB,
+    sections: { facts: { text: "Seraphina Duvall is trusted.", updatedAt: timestamp } },
+  };
+  const scopedUnit = {
+    ...unit(scopedChat, {
+      bucket: "character_fact",
+      subjectId: "seraphina_scope_a",
+      sectionKey: "facts",
+      text: "Seraphina Duvall is trusted.",
+      claimKind: "static",
+      subjectNames: ["Seraphina Duvall"],
+    }),
+    subjects: [canonicalSubject],
+  };
+  const crossScopeDedup = deduplicateUnits([scopedUnit], [targetScopeNote, otherScopeDuplicate], overlappingScope);
+  assert.equal(
+    crossScopeDedup.deduplicated.length,
+    1,
+    "an identical memory in a merely overlapping scope must not suppress the target-scope write",
+  );
+  const crossScopeCompilation = compile(scopedChat, [scopedUnit], true, [targetScopeNote, otherScopeDuplicate], scopeA);
+  assert.equal(
+    crossScopeCompilation.accounting.keptUnits,
+    1,
+    "an overlapping-scope duplicate must not be dropped before the target-scope write",
+  );
+  assert.equal(
+    crossScopeCompilation.outcome.droppedCandidates.filter(
+      (candidate: any) => candidate.noteId === "char_seraphina_scope_a",
+    ).length,
+    0,
+    "the target-scope note must not be dropped as out of scope",
+  );
+  assert.equal(
+    crossScopeDedup.diagnostics.some((diagnostic) => diagnostic.code === "deduplicated_evidence_unit"),
+    false,
+  );
+  const sameScopeDedup = deduplicateUnits(
+    [scopedUnit],
+    [targetScopeNote, { ...otherScopeDuplicate, scope: scopeA }],
+    overlappingScope,
+  );
+  assert.equal(sameScopeDedup.deduplicated.length, 0, "same-scope subject duplicates must still deduplicate");
+  const omittedScopeDedup = deduplicateUnits([scopedUnit], [otherScopeDuplicate]);
+  assert.equal(
+    omittedScopeDedup.deduplicated.length,
+    1,
+    "an omitted scope must not fall back to matching a subject-equivalent note in another scope",
+  );
+  const directTargetNote = {
+    ...canonicalIdentityNote,
+    id: "char_seraphina_duvall",
+  };
+  const directTargetCatalog = buildTrustedLtmSubjectCatalog({
+    roster: [{ kind: "character", id: "seraphina", name: "Seraphina Duvall" }],
+    notes: [],
+  });
+  const directTargetIdentity = resolveLtmSubjectIdentities({
+    units: [
+      unit(chat, {
+        bucket: "character_fact",
+        subjectId: "seraphina_duvall",
+        sectionKey: "facts",
+        text: "Seraphina Duvall is trusted.",
+        subjectNames: ["Seraphina Duvall"],
+      }),
+    ],
+    catalog: directTargetCatalog,
+    existingNotes: [],
+    scope: {},
+    mode: "roleplay",
+  });
+  const directTargetResolution = await resolveScopedEvidenceUnitTargets({
+    units: directTargetIdentity.units,
+    existingNotes: directTargetIdentity.existingNotes,
+    storage: {
+      getNotesByIds: async () => new Map([[directTargetNote.id, directTargetNote]]),
+    },
+    scope: {},
+  });
+  assert.deepEqual(
+    directTargetResolution.existingNotes.map((note: any) => note.id),
+    ["char_seraphina_duvall"],
+    "direct target lookup must join a retrieval-missed canonical note to deduplication",
+  );
+  const directTargetCompilation = compile(
+    chat,
+    directTargetResolution.units,
+    true,
+    directTargetResolution.existingNotes,
+  );
+  assert.equal(directTargetCompilation.accounting.deduplications, 1);
+  assert.equal(directTargetCompilation.compiledResponse.mutations.length, 0);
   assert.deepEqual(
     trustedLtmIdentityNotesForSource({
       sourceText: "Serafina Duvall entered the observatory.",
       catalog: identityCatalog,
     }).map((note: any) => note.id),
-    ["char_seraphina"],
-    "a unique spelling variation should select the trusted canonical identity note",
+    [],
+    "a spelling variation alone must not select a trusted identity note",
   );
   assert.deepEqual(
     trustedLtmIdentityNotesForSource({
@@ -1312,12 +2095,15 @@ async function main() {
   );
   const legacySpellingNote = identityNote("char_serafina_legacy", "Serafina Duvall");
   identityCatalog.notes.push(legacySpellingNote);
-  assert.equal(
-    analyzeTrustedLtmNoteSubjects(identityCatalog).matches.find((match: any) => match.note.id === legacySpellingNote.id)
-      ?.basis,
-    "spelling_variation",
-    "identity repair should expose the conservative fuzzy match basis",
+  const spellingIssue = analyzeTrustedLtmNoteSubjects(identityCatalog).unresolved.find(
+    (issue: any) => issue.note.id === legacySpellingNote.id,
   );
+  assert.equal(
+    spellingIssue?.basis,
+    "spelling_variation",
+    "identity repair should suggest rather than bind a fuzzy identity",
+  );
+  assert.deepEqual(spellingIssue?.candidateSubjectKeys, ["character:seraphina"]);
   const ambiguousCatalog = buildTrustedLtmSubjectCatalog({
     roster: [
       { kind: "character", id: "one", name: "Seraphina Duvall" },

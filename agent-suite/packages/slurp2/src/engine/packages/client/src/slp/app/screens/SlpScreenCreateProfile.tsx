@@ -55,7 +55,7 @@ export function StageProfileSourcePicker({
           {localizeUi("ui.noodle.stageprofilesourcepicker.noodlerWillCreateASeparateStageIdentityFromThis")}
         </p>
         <label className="relative mt-5 block">
-          <Search size={16} className="absolute left-3 top-3 !text-[var(--noodle-accent)]" />
+          <Search size={16} className="absolute left-3 top-3 !text-[var(--noodle-accent-foreground)]" />
           <input
             value={search}
             onChange={(event) => onSearch(event.target.value)}
@@ -97,7 +97,7 @@ export function StageProfileSourcePicker({
                 type="button"
                 aria-pressed={kind === option}
                 onClick={() => onKindChange(option)}
-                className={`min-h-11 rounded-lg px-2 text-xs font-semibold capitalize ${kind === option ? "bg-[var(--noodle-accent)] text-zinc-950 [&_svg]:!text-zinc-950" : "text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]"}`}
+                className={`min-h-11 rounded-lg px-2 text-xs font-semibold capitalize ${kind === option ? "bg-[var(--noodle-accent)] text-[var(--slurp-on-accent)] [&_svg]:!text-[var(--slurp-on-accent)]" : "text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]"}`}
               >
                 {option === "all"
                   ? localizeUi("ui.noodle.stageprofilesourcepicker.all")
@@ -136,7 +136,7 @@ export function StageProfileSourcePicker({
                     )}
                   </span>
                   {selectedId === account.id ? (
-                    <Check size={18} className="text-[var(--noodle-accent)]" />
+                    <Check size={18} className="text-[var(--noodle-accent-foreground)]" />
                   ) : (
                     <ChevronRight size={17} className="text-[var(--muted-foreground)]" />
                   )}
@@ -209,7 +209,7 @@ export function DisclosureStep({
               <span
                 className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${value === option.value ? "border-[var(--noodle-accent)] bg-[var(--noodle-accent)]" : "border-[var(--noodle-divider)]"}`}
               >
-                {value === option.value && <Check size={13} className="!text-zinc-950" />}
+                {value === option.value && <Check size={13} className="!text-[var(--slurp-on-accent)]" />}
               </span>
               <span>
                 <span className="block text-sm font-bold">{option.label}</span>

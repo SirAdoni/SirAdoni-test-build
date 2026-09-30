@@ -1,3 +1,4 @@
+import { containsPackagedAboutMeAgent } from "./about-me-package-boundary.mjs";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
@@ -34,12 +35,14 @@ import {
 } from "./catalog-path-safety.mjs";
 import {
   RULESET_ASSET_PATH,
+  assertRulesetApplies,
   assertRulesetAssetDocument,
   assertRulesetBattle,
   assertRulesetCatalogs,
   assertRulesetCombat,
   assertRulesetCreatures,
   assertRulesetPackageContract,
+  assertRulesetReactions,
   assertRulesetScaled,
   isRulesetPackage,
   rulesetCatalogAssetPaths,
@@ -204,16 +207,6 @@ for (const relativePath of hierarchicalMapsOwnedSourcePaths) {
   }
 }
 
-const slurpOwnedSourcePaths = [
-  "packages/client/src/components/slurp",
-  "packages/client/src/hooks/use-slurp.ts",
-  "packages/client/src/slurp-package-entry.tsx",
-  "packages/client/src/stores/slurp-package.store.ts",
-  "packages/server/src/db/schema/slurp.ts",
-  "packages/server/src/routes/slurp.routes.ts",
-  "packages/server/src/services/slurp",
-  "packages/server/src/services/storage/slurp.storage.ts",
-];
 // Must equal slurp2OwnedSourcePaths in the builder: the three slp roots and three permanent exceptions.
 const slurp2OwnedSourcePaths = [
   "packages/client/src/slp",
@@ -223,15 +216,9 @@ const slurp2OwnedSourcePaths = [
   "packages/server/src/services/garnish-ads",
   "packages/server/src/db/schema/slurp.ts",
 ];
-for (const [packageId, ownedSourcePaths] of [
-  ["slurp", slurpOwnedSourcePaths],
-  ["slurp2", slurp2OwnedSourcePaths],
-]) {
-  for (const relativePath of ownedSourcePaths) {
-    const packageOwnedPath = join(repoRoot, `packages/${packageId}/src/engine`, relativePath);
-    if (!existsSync(packageOwnedPath)) {
-      throw new Error(`${packageId} package source is missing: ${relativePath}`);
-    }
+for (const relativePath of slurp2OwnedSourcePaths) {
+  if (!existsSync(join(repoRoot, "packages/slurp2/src/engine", relativePath))) {
+    throw new Error(`slurp2 package source is missing: ${relativePath}`);
   }
 }
 
@@ -329,7 +316,8 @@ async function assertNoAboutMeKeeperReferences(path) {
     }
     if (!textExtensions.has(extname(entry.name))) continue;
     const contents = await readFile(entryPath, "utf8");
-    if (aboutMeKeeperMarkers.some((marker) => contents.includes(marker))) {
+    const generatedPayload = entry.name === "client.js" || entry.name === "server.mjs";
+    if (containsPackagedAboutMeAgent(contents, generatedPayload)) {
       throw new Error(`About Me is a core Conversation feature and must not be bundled as an agent: ${entryPath}`);
     }
   }
@@ -512,7 +500,7 @@ for (const entry of catalog.packages) {
       }
     }
   }
-  if (manifest.id === "slurp" || manifest.id === "slurp2") {
+  if (manifest.id === "slurp2") {
     const expectedLocales = ["de", "ko", "pl"];
     const actualLocales = Object.keys(manifest.localizations ?? {}).sort();
     if (JSON.stringify(actualLocales) !== JSON.stringify(expectedLocales)) {
@@ -714,6 +702,8 @@ for (const entry of catalog.packages) {
     // So does the combat block, and the bestiary whose creatures are written in its own names.
     assertRulesetCombat(manifest, document);
     assertRulesetCreatures(manifest, document, catalogSources);
+    assertRulesetReactions(manifest, document, catalogSources);
+    assertRulesetApplies(manifest, document, catalogSources);
   } else {
     if (!manifest.entrypoints.agents) throw new Error(`Missing agent definition entrypoint for ${manifest.id}`);
     const agentDefinitions = JSON.parse(
@@ -925,8 +915,8 @@ const agentOnly = publishedCatalog.packages.filter(
   (entry) => !isRulesetPackage(entry.manifest) && !entry.manifest.entrypoints.server,
 ).length;
 const features = publishedCatalog.packages.length - agentOnly - rulesets;
-if (publishedCatalog.packages.length !== 38 || agentOnly !== 24 || features !== 14 || rulesets !== 0) {
-  throw new Error(`Expected 24 agents, 14 features, and 0 rulesets, found ${agentOnly}, ${features}, and ${rulesets}`);
+if (publishedCatalog.packages.length !== 37 || agentOnly !== 24 || features !== 13 || rulesets !== 0) {
+  throw new Error(`Expected 24 agents, 13 features, and 0 rulesets, found ${agentOnly}, ${features}, and ${rulesets}`);
 }
 console.log(
   `Catalog valid: ${publishedCatalog.packages.length} packages (${agentOnly} agents, ${features} features, ${rulesets} rulesets).`,

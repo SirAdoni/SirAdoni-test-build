@@ -5,7 +5,7 @@ import {
   NOODLE_FAN_ACTIVITY_MAX_ACTIVITIES_PER_CREATOR,
   parsePersistedSlpFanActivityDayPlan,
 } from "../../modules/audience/slp-fan-activity-day-plan.js";
-import { canViewCreatorPost, isCreatorHiddenFromViewer } from "../../base/identity/slp-access.js";
+import { canViewCreatorPost } from "../../base/identity/slp-access.js";
 import {
   slpAccounts,
   slpAccountSubscriptions,
@@ -84,7 +84,7 @@ export function createFeedInteractionStorage3(context: SlurpStorageContext) {
         )[0];
         if (!authorRow) return null;
         const author = mapAccount(authorRow);
-        if (actor.kind !== "persona" || isCreatorHiddenFromViewer(author, input.viewerPersonaId)) return null;
+        if (actor.kind !== "persona") return null;
         const ownsAuthor = author.sourceKind === "persona" && author.sourceEntityId === input.viewerPersonaId;
         const subscribed =
           (
@@ -200,6 +200,8 @@ export function createFeedInteractionStorage3(context: SlurpStorageContext) {
         actorId: string;
         actorSnapshot: SlpAuthorSnapshot;
         runId: string;
+        /** A "Refresh now" run, which the player asked for with the scheduled audience switched off. */
+        manual?: boolean;
         type: "like" | "reply" | "repost";
         content: string | null;
         /** The comment being answered. Null, or an unusable id, means answering the post. */
@@ -224,7 +226,7 @@ export function createFeedInteractionStorage3(context: SlurpStorageContext) {
         const settings = normalizeSlurpSettings(await createAppSettingsStorage(tx).get(SLURP_SETTINGS_KEY));
         const creator = mapAccount(creatorRows[0]);
         const override = creator.settings.scheduler.fanActivity;
-        if (!settings.fanActivityEnabled || override?.enabled === false) return null;
+        if ((!settings.fanActivityEnabled && !input.manual) || override?.enabled === false) return null;
         const actorAccountRow = (
           await tx
             .select()

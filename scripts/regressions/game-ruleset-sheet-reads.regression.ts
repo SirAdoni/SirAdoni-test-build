@@ -254,7 +254,7 @@ try {
     refuses(emberText, scaledTrick({ listSum: { list: "tricks", column: "uses" } }), noSum, "adding itself up");
     refuses(emberText, scaledTrick({ listSum: { list: "gear", column: "bulk" } }), noSum, "adding up another list");
     refuses(emberText, scaledTrick({ derived: "burden" }), noSum, "or through a derived value that does");
-    variant(emberText, scaledTrick({ derived: "guard" }), "a scaled column off an ordinary derived value");
+    variant(emberText, scaledTrick({ derived: "grit_max" }), "a scaled column off an ordinary derived value");
 
     // hideWhen says one thing, about values the field can hold.
     refuses(

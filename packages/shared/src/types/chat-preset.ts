@@ -122,6 +122,7 @@ export const CHAT_PRESET_EXCLUDED_METADATA_KEYS: readonly string[] = [
   "gameWidgetState",
   "gameMorale",
   "gameInventoryTurn",
+  "gameInventedItems",
   "lastMapPosition",
   // Engine-owned per-chat write ordinals (#5406). They index one chat's counter space, so saving
   // them into a reusable profile would stamp every chat the profile is applied to with another

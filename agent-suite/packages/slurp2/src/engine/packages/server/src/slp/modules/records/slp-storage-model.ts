@@ -1,4 +1,6 @@
 import { normalizeAvatarCrop, AvatarCrop } from "@marinara-engine/shared";
+import { normalizeSlurpCreatorStrategy } from "../creators/slp-creator-strategy.js";
+import { SLURP_STAGE_FACT_MAX_LENGTH } from "../creators/slp-stage-profile-repair.js";
 import {
   SlpCreateInteractionInput,
   SlpCreatorCreateInteractionInput,
@@ -26,6 +28,7 @@ import {
   SlpRefreshAttempt,
 } from "../../../../../shared/src/slp/slp-social.types.js";
 import { slurpDiscoveryFields, SlurpDiscoveryGender } from "../discovery/slp-discovery-profile.js";
+import { normalizeSlpCreatorPage } from "../../../../../shared/src/slp/slp-creator-page.js";
 import { SLURP_DEFAULT_ECONOMY } from "../economy/slp-wallet.js";
 import type {
   slpAccounts,
@@ -63,6 +66,8 @@ export type SlurpAccount = Omit<SlpAccount, "settings"> & {
 
 export type SlpCreatorPostPageOptions = {
   accountIds: string[];
+  /** Posts by someone else that belong on this page too: joint collab posts. */
+  extraPostIds?: string[];
   creatorSearchAccountIds?: string[];
   readableContentAccountIds?: string[];
   unlockedPostIds?: string[];
@@ -71,6 +76,13 @@ export type SlpCreatorPostPageOptions = {
   readableOnly?: boolean;
   cursor?: SlpCreatorPostPageCursor | null;
   limit: number;
+};
+
+export type SlpCreatorStoryQueryOptions = {
+  accountIds: string[];
+  creatorSearchAccountIds?: string[];
+  search?: string;
+  since: string;
 };
 
 export type SlpCreatorPreparedPostPayload = {
@@ -117,10 +129,13 @@ export function slpCreatorReservePolicyFingerprint(
     | "imagePromptInterpretation"
     | "imageGenerationUseAvatarReferences"
     | "imageGenerationIncludeDescriptions"
+    | "appearanceProfileMode"
     | "enableImageInterpretation"
     | "nightQuiet"
   >,
   sourceUpdatedAt?: string | null,
+  /** See `resolveCreatorSourceContentHash`. What staleness is judged on. */
+  contentHash?: string | null,
 ): string {
   // Pick the policy fields explicitly: callers pass the whole settings object, and
   // serializing it wholesale would invalidate every prepared post on any unrelated
@@ -131,6 +146,7 @@ export function slpCreatorReservePolicyFingerprint(
         imagePromptInterpretation: settings.imagePromptInterpretation,
         imageGenerationUseAvatarReferences: settings.imageGenerationUseAvatarReferences,
         imageGenerationIncludeDescriptions: settings.imageGenerationIncludeDescriptions,
+        appearanceProfileMode: settings.appearanceProfileMode,
         enableImageInterpretation: settings.enableImageInterpretation,
         nightQuiet: settings.nightQuiet,
       }
@@ -139,6 +155,7 @@ export function slpCreatorReservePolicyFingerprint(
     sourceKind: account.sourceKind,
     sourceId: account.sourceEntityId,
     sourceUpdatedAt: sourceUpdatedAt ?? null,
+    contentHash: contentHash ?? null,
     stageProfileUpdatedAt: account.updatedAt,
     disclosure: account.settings.privacy.identityDisclosure ?? "open",
     stagePersonality: account.settings.privacy.stagePersonality ?? "",
@@ -147,6 +164,28 @@ export function slpCreatorReservePolicyFingerprint(
     mediaPolicy,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
   });
+}
+
+/** The fingerprint fields that change what a prepared post says: its card (and schedule), identity, and voice. */
+const CONTENT_POLICY_FIELDS = ["sourceKind", "sourceId", "disclosure", "stagePersonality"] as const;
+
+/**
+ * Whether a prepared post was written for a card, schedule, disclosure, or stage voice that has
+ * changed since. The fingerprint was stored but never compared, so in pre_generate mode a post
+ * written hours earlier published with the old card and the old day. Only content fields count:
+ * the rest of the fingerprint (account timestamps, media policy) changes too often to rewrite on,
+ * and an unreadable stored value is not treated as stale.
+ */
+export function slpReservePolicyStale(stored: unknown, current: string): boolean {
+  try {
+    const before = JSON.parse(String(stored)) as Record<string, unknown>;
+    const now = JSON.parse(current) as Record<string, unknown>;
+    // A fingerprint from before the content hash existed is not judged on it.
+    const contentChanged = typeof before.contentHash === "string" && before.contentHash !== now.contentHash;
+    return contentChanged || CONTENT_POLICY_FIELDS.some((field) => (before[field] ?? null) !== (now[field] ?? null));
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -338,6 +377,8 @@ export function normalizeSlpAccountSettings(value: unknown): SlurpSlpAccountSett
   const rawSocial = parseRecord(raw.social);
   const rawPrivacy = parseRecord(raw.privacy);
   const rawWallet = parseRecord(raw.wallet);
+  const rawStage = parseRecord(raw.stage);
+  const rawAppearanceProfile = parseRecord(raw.appearanceProfile);
   const rawAvatarCrop = nestedOrLegacy(rawProfile, raw, "avatarCrop");
   const rawBannerUrl = nestedOrLegacy(rawProfile, raw, "bannerUrl");
   const rawLocation = nestedOrLegacy(rawProfile, raw, "location");
@@ -355,6 +396,7 @@ export function normalizeSlpAccountSettings(value: unknown): SlurpSlpAccountSett
   const rawAccess = parseRecord(rawPrivacy.access);
   const normalizedAvatarCrop = rawAvatarCrop === null ? null : normalizeAvatarCrop(rawAvatarCrop);
   const discovery = slurpDiscoveryFields(rawProfile);
+  const page = rawProfile.page === undefined ? null : normalizeSlpCreatorPage(rawProfile.page);
   const profile = {
     ...(rawAvatarCrop !== undefined &&
       (rawAvatarCrop === null || normalizedAvatarCrop !== null) && { avatarCrop: normalizedAvatarCrop }),
@@ -367,6 +409,8 @@ export function normalizeSlpAccountSettings(value: unknown): SlurpSlpAccountSett
     ...(rawCreatorWizardExecutionId !== undefined &&
       validProfileField("noodlerWizardExecutionId", rawCreatorWizardExecutionId)),
     ...(rawCreatorSourceSnapshot !== undefined && validProfileField("noodlerSourceSnapshot", rawCreatorSourceSnapshot)),
+    ...(page && { page }),
+    ...(rawProfile.pageWanted !== undefined && validProfileField("pageWanted", rawProfile.pageWanted)),
     ...discovery,
   };
   const followingAccountTimestamps = Object.fromEntries(
@@ -394,13 +438,56 @@ export function normalizeSlpAccountSettings(value: unknown): SlurpSlpAccountSett
       hiddenFromAccountIds: parseStringArray(rawAccess.hiddenFromAccountIds),
     },
   };
+  const strategy = normalizeSlurpCreatorStrategy(raw.strategy);
+  const stage = {
+    ...(stageFact(rawStage.appearance) !== undefined && { appearance: stageFact(rawStage.appearance)! }),
+    ...(stageFact(rawStage.wardrobe) !== undefined && { wardrobe: stageFact(rawStage.wardrobe)! }),
+    ...(stageFact(rawStage.locations) !== undefined && { locations: stageFact(rawStage.locations)! }),
+  };
+  const appearanceProfile =
+    typeof rawAppearanceProfile.text === "string" && rawAppearanceProfile.text.trim()
+      ? {
+          text: rawAppearanceProfile.text.trim().slice(0, SLURP_STAGE_FACT_MAX_LENGTH),
+          source:
+            rawAppearanceProfile.source === "source_appearance" ||
+            rawAppearanceProfile.source === "description" ||
+            rawAppearanceProfile.source === "avatar" ||
+            rawAppearanceProfile.source === "mixed"
+              ? rawAppearanceProfile.source
+              : "mixed",
+          sourceEntityId:
+            typeof rawAppearanceProfile.sourceEntityId === "string" ? rawAppearanceProfile.sourceEntityId : "",
+          sourceRevisionToken:
+            typeof rawAppearanceProfile.sourceRevisionToken === "string"
+              ? rawAppearanceProfile.sourceRevisionToken
+              : "",
+          confidence:
+            rawAppearanceProfile.confidence === "high" ||
+            rawAppearanceProfile.confidence === "medium" ||
+            rawAppearanceProfile.confidence === "low"
+              ? rawAppearanceProfile.confidence
+              : "low",
+          status: rawAppearanceProfile.status === "accepted" ? "accepted" : "needs_review",
+          generatedAt: typeof rawAppearanceProfile.generatedAt === "string" ? rawAppearanceProfile.generatedAt : "",
+          acceptedAt: typeof rawAppearanceProfile.acceptedAt === "string" ? rawAppearanceProfile.acceptedAt : null,
+        }
+      : undefined;
   return {
     profile,
+    ...(strategy && { strategy }),
     social,
     scheduler: normalizeScheduler(raw.scheduler),
+    ...(Object.keys(stage).length > 0 && { stage }),
+    ...(appearanceProfile && { appearanceProfile }),
     privacy,
     wallet: { coins: normalizePersistedInteger(rawWallet.coins) ?? SLURP_DEFAULT_ECONOMY.startingCoins },
   };
+}
+
+/** Trim and cap one stage fact. Empty means the Creator has not been given one. */
+function stageFact(value: unknown): string | undefined {
+  const text = typeof value === "string" ? value.trim().slice(0, SLURP_STAGE_FACT_MAX_LENGTH) : "";
+  return text || undefined;
 }
 
 export function parseRefreshAttempts(value: unknown): SlpRefreshAttempt[] {

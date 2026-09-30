@@ -77,7 +77,19 @@ export function useSlurpMediaSrc(
   imageUrl: string | null | undefined,
   options: { enabled?: boolean; width?: number } = {},
 ): string | null {
-  const [resolved, setResolved] = useState<string | null>(null);
+  return useSlurpMediaResolution(imageUrl, options).src;
+}
+
+/**
+ * The resolved source, and whether the fetch failed. A non-OK response resolves to no object URL;
+ * without `failed` a post picture that could not load shimmered as "loading" forever (R1-060).
+ */
+function useSlurpMediaResolution(
+  imageUrl: string | null | undefined,
+  options: { enabled?: boolean; width?: number },
+): { src: string | null; failed: boolean } {
+  // `null` while the fetch is in flight; `objectUrl: null` once it failed.
+  const [resolved, setResolved] = useState<{ objectUrl: string | null } | null>(null);
   const managed = imageUrl?.startsWith("/api/slurp2/") === true;
   const enabled = options.enabled ?? true;
   const requestedUrl = imageUrl && managed ? variantUrl(imageUrl, options.width) : imageUrl;
@@ -90,7 +102,7 @@ export function useSlurpMediaSrc(
     let cancelled = false;
     const cached = retainMedia(requestedUrl);
     void cached.promise.then((objectUrl) => {
-      if (!cancelled && objectUrl) setResolved(objectUrl);
+      if (!cancelled) setResolved({ objectUrl });
     });
     return () => {
       cancelled = true;
@@ -99,8 +111,9 @@ export function useSlurpMediaSrc(
     };
   }, [enabled, managed, requestedUrl]);
 
-  if (!imageUrl) return null;
-  return managed ? resolved : requestedUrl;
+  if (!imageUrl) return { src: null, failed: false };
+  if (!managed) return { src: requestedUrl ?? null, failed: false };
+  return { src: resolved?.objectUrl ?? null, failed: resolved !== null && resolved.objectUrl === null };
 }
 
 export function useNearViewportSlurpMediaSrc(
@@ -108,7 +121,8 @@ export function useNearViewportSlurpMediaSrc(
   options: { eager?: boolean; width?: number; rootMargin?: string } = {},
 ) {
   const [nearViewport, setNearViewport] = useState(options.eager ?? false);
-  const rootMargin = options.rootMargin ?? "600px 0px";
+  // About two phone screens ahead: at 600 px a fast flick outran the fetch and showed empty frames (0.3.6).
+  const rootMargin = options.rootMargin ?? "1600px 0px";
   // React calls a ref callback with `null` when the node detaches. Returning early there left one
   // observer alive per card that unmounted before it ever entered the viewport.
   const observerRef = useRef<IntersectionObserver | null>(null);
@@ -142,6 +156,7 @@ export function useNearViewportSlurpMediaSrc(
     },
     [],
   );
-  const src = useSlurpMediaSrc(imageUrl, { enabled: nearViewport, width: options.width });
-  return { src, observe, loading: Boolean(imageUrl && !src) };
+  const { src, failed } = useSlurpMediaResolution(imageUrl, { enabled: nearViewport, width: options.width });
+  // A failed fetch is not loading: the card drops the frame, as it does when the <img> errors.
+  return { src, observe, loading: Boolean(imageUrl && !src && !failed), failed };
 }

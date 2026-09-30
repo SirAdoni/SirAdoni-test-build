@@ -21,12 +21,20 @@ const at = new Date("2026-09-14T12:30:00.000Z");
 const budget = slurpModelBudgetSchema.parse({ callsPerHour: 2, callsPerDay: 3, jobs: { rewrite: { maxPerDay: 1 } } });
 assert.match(
   fanActivityOperation,
-  /Math\.min\(settings\.fanActivityRunsPerDay, settings\.modelBudget\.jobs\.thread\.maxPerDay\)/u,
+  /Math\.min\(boosted, settings\.modelBudget\.jobs\.thread\.maxPerDay\)/u,
   "fan activity uses the lower configured and thread model limits",
 );
-assert.match(fanActivityOperation, /slpCreatorFanActivityRunLimit\(settings\),/gu);
+// Fix phase 1b (R1-112): the limit also reads the story engine's occurrences; both callers pass them the same way.
+assert.match(
+  fanActivityOperation,
+  /slpCreatorFanActivityRunLimit\(settings, at, await noodle\.platformInfluenceStory\(\)\),/gu,
+);
 assert.equal(
-  [...fanActivityOperation.matchAll(/slpCreatorFanActivityRunLimit\(settings\),/gu)].length,
+  [
+    ...fanActivityOperation.matchAll(
+      /slpCreatorFanActivityRunLimit\(settings, at, await noodle\.platformInfluenceStory\(\)\),/gu,
+    ),
+  ].length,
   2,
   "plan reconciliation and status use the same authoritative limit",
 );
@@ -59,6 +67,7 @@ const pending = slurp2Source(join(root, "services/slurp/slurp-pending-text.servi
 const scheduler = slurp2Source(join(root, "services/slurp/slurp-world-scheduler.service.ts"));
 const messages = slurp2Source(join(root, "services/slurp/slurp-message.operation.ts"));
 const followUps = slurp2Source(join(root, "services/slurp/slurp-follow-up-scheduler.service.ts"));
+const generation = slurp2Source(join(root, "services/slurp/slurp-message-generation.service.ts"));
 assert.match(pending, /modelBudget\.jobs/u, "queued jobs read the live per-kind policy");
 assert.match(pending, /\.sort\(/u, "queued jobs are ordered before the drain limit");
 assert.match(schema, /export const slurpModelJobs = slurpPendingText/u, "existing rewrite jobs migrate in place");
@@ -73,5 +82,22 @@ assert.match(messages, /return \{ status: "queued", pacing \}/u);
 // not also require the global background-worker switch.
 assert.match(messages, /workerContext: "present"/u);
 assert.match(followUps, /postponeScheduledFollowUp/u);
+// Replies to the player's own send are chat, not upkeep; only the scheduler's answers spend caps.
+assert.match(messages, /playerSend: input\.background !== true/u);
+// 0.3.6: the player's own chat is off the budget entirely (mode, job switch and caps).
+assert.match(generation, /const world = !input\.skipBudgetCap && !input\.playerSend;/u);
+assert.match(generation, /if \(world && !slurpModelWorkerAllows\(budget, context\)\)/u);
+assert.match(generation, /if \(world && !\(await claimSlurpModelBudget\(input\.db, budget, "dm_reply"\)\)\)/u);
+
+const read = (path: string) =>
+  slurp2Source(join(import.meta.dirname, "..", "packages/slurp2/src/engine/packages", path));
+// 0.3.6: run-now, refresh and "Create posts now" keep their pictures off the budget with `playerAsked`,
+// never with a foreground admission: that also opened the persona gate (the AI posting as the player).
+const operation = read("server/src/slp/features/feed/slp-post-operation.ts");
+assert.match(operation, /admissionMode: options\.playerAsked \? \{ kind: "foreground" \} : admissionMode,/u);
+assert.match(operation, /admissionMode\?\.kind !== "foreground"\) \{\s+return \{ status: "disabled" \}/u);
+for (const source of [operation, read("server/src/slp/features/feed/slp-feed-publishing-routes.ts")])
+  assert.doesNotMatch(source, /undefined,\s+\{ kind: "foreground" \},/u, "no player route passes foreground");
+assert.doesNotMatch(read("server/src/slp/features/assist/slp-action-runner.ts"), /playerAsked|kind: "foreground"/u);
 
 console.log("slurp2 model worker regression passed");

@@ -75,11 +75,16 @@ function normalizeContent(content: string) {
 
 function regexError(source: string): boolean {
   try {
-    // Same flags as the scanner (no unicode flag), so the verdict matches generation.
-    new RegExp(source, "g");
+    new RegExp(source, "u");
     return false;
   } catch {
-    return true;
+    try {
+      // Keys run without the unicode flag at scan time; accept either form.
+      new RegExp(source);
+      return false;
+    } catch {
+      return true;
+    }
   }
 }
 
@@ -119,10 +124,11 @@ export function lintLorebookEntries(
 
     const seenInEntry = new Set<string>();
     for (const key of keys) {
-      // Regex keys compare by exact source: case folding would merge patterns
-      // such as \w and \W that mean different things.
+      // Regex escapes are case-sensitive syntax even for case-insensitive matching (\D is not \d).
       const normalized = normalizeKey(key, entry.caseSensitive || entry.useRegex);
-      const ownerKey = `${entry.useRegex ? "re" : "lit"}:${normalized}`;
+      // Only identical matching modes are duplicates. Regex/literal and
+      // case-sensitive/insensitive keys may overlap without being equivalent.
+      const ownerKey = `${entry.useRegex ? "re" : "lit"}:${entry.caseSensitive ? "case" : "nocase"}:${normalized}`;
       if (!seenInEntry.has(ownerKey)) {
         seenInEntry.add(ownerKey);
         const owner = keyOwners.get(ownerKey);

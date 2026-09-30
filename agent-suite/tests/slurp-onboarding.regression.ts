@@ -122,11 +122,9 @@ assert.match(
   /const viewingOwnCreator = profile\.sourceAccountId === viewerAccount\?\.entityId/u,
   "Profile ownership must follow the active persona",
 );
-assert.match(
-  home,
-  /onRefresh=\{\(\) =>[\s\S]*?viewerQuery\.refetch\(\)[\s\S]*?ui\.slurp\.feed\.refreshed/u,
-  "The timeline refresh action must refetch and report completion",
-);
+// Step 3.1 (user): no refresh action; the feed refetches itself (30 s poll + focus, see
+// slurp2-step3.1-shell-polish) and new posts wait behind the "New posts" pill.
+assert.doesNotMatch(home, /onRefresh=/u, "The timeline has no manual refresh action");
 assert.doesNotMatch(creatorCard, /repost|Repeat2/iu, "Slurp creator cards must not expose repost actions");
 assert.doesNotMatch(postCard, /repost|Repeat2/iu, "Slurp post cards must not expose repost actions");
 assert.doesNotMatch(fanActivity, /fanRepostsPerRefresh|repost/iu, "Synthetic Slurp audience activity must not repost");

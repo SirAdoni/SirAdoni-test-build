@@ -3,7 +3,7 @@
 // Read-only review of likely duplicates (same normalized name or overlapping
 // description/personality). Offers open and compare; never deletes.
 // ──────────────────────────────────────────────
-import { useEffect, useState } from "react";
+import { useEffect, useState, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import { Columns2, ExternalLink, Loader2, User } from "lucide-react";
 import { Modal } from "../ui/Modal";
@@ -28,6 +28,7 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onOpenCharacter: (id: string) => void;
+  restoreFocusRef?: RefObject<HTMLElement | null>;
 }
 
 function fieldText(data: Record<string, unknown>, field: (typeof COMPARE_FIELDS)[number]) {
@@ -96,13 +97,20 @@ function CompareView({ group }: { group: DuplicateGroup }) {
   );
 }
 
-export function CharacterDuplicatesModal({ open, onClose, onOpenCharacter }: Props) {
+export function CharacterDuplicatesModal({ open, onClose, onOpenCharacter, restoreFocusRef }: Props) {
   const { t } = useTranslation();
   const { data, isLoading, isError, refetch, isFetching } = useCharacterDuplicates(open);
   const [comparingKey, setComparingKey] = useState<string | null>(null);
 
   return (
-    <Modal open={open} onClose={onClose} title={t("characters.duplicates.title")} width="max-w-3xl" mobileFullscreen>
+    <Modal
+      open={open}
+      onClose={onClose}
+      restoreFocusRef={restoreFocusRef}
+      title={t("characters.duplicates.title")}
+      width="max-w-3xl"
+      mobileFullscreen
+    >
       <div className="space-y-3">
         <p className="text-xs leading-relaxed text-[var(--muted-foreground)]">{t("characters.duplicates.hint")}</p>
         {isLoading ? (

@@ -1,4 +1,8 @@
 import type { SlpAuthorSnapshot } from "../../../../../shared/src/slp/slp-social.types.js";
+import {
+  slurpInfluenceMultiplier,
+  type SlurpInfluenceStory,
+} from "../../../../../shared/src/slp/slp-platform-events.js";
 import type { DB } from "../../../db/connection.js";
 import { eq } from "../../../db/file-query.js";
 import { slpCreatorFanActivityState } from "../../../db/schema/slurp.js";
@@ -50,7 +54,13 @@ import {
 } from "../../../../../shared/src/slp/slp-audience-characters.js";
 import { createCharactersStorage } from "../../../services/storage/characters.storage.js";
 import { newId } from "../../../utils/id-generator.js";
-import { claimSlurpModelBudget, slurpModelWorkerAllows } from "../../base/model/slp-model-worker.js";
+import {
+  claimSlurpModelBudget,
+  getSlurpModelBudgetLedger,
+  slurpModelWorkerAllows,
+  slurpEffectiveModelBudget,
+  spendSlurpModelBudget,
+} from "../../base/model/slp-model-worker.js";
 
 const FAN_PLAN_ROW_PREFIX = "fan-day:";
 
@@ -62,8 +72,20 @@ const FAN_RUN_NEWCOMERS = 2;
 const FAN_PLAN_RETENTION_DAYS = 7;
 const FAN_ACTIVITY_RECOVERY_MAX_AGE_MS = 15 * 60 * 1000;
 
-export function slpCreatorFanActivityRunLimit(settings: Pick<SlurpSettings, "fanActivityRunsPerDay" | "modelBudget">) {
-  return Math.min(settings.fanActivityRunsPerDay, settings.modelBudget.jobs.thread.maxPerDay);
+export function slpCreatorFanActivityRunLimit(
+  settings: Pick<SlurpSettings, "fanActivityRunsPerDay" | "modelBudget"> &
+    Partial<Pick<SlurpSettings, "platformEvents">>,
+  at = new Date(),
+  /** Occurrences, so a started manual event counts and a dismissed one does not (R1-112). */
+  story: SlurpInfluenceStory = {},
+) {
+  // Occasions may raise or lower audience activity ("audience.activity"); the budget cap still wins.
+  // The day plan is shared by every Creator, so only events aimed at everybody move it.
+  const boosted = Math.round(
+    settings.fanActivityRunsPerDay *
+      slurpInfluenceMultiplier(settings.platformEvents ?? [], at, "audience.activity", story),
+  );
+  return Math.min(boosted, settings.modelBudget.jobs.thread.maxPerDay);
 }
 
 export type SlpCreatorFanRunResult = {
@@ -74,6 +96,7 @@ export type SlpCreatorFanRunResult = {
     | "disabled"
     | "busy"
     | "limit_reached"
+    | "ai_off"
     | "connection_required"
     | "connection_not_found"
     | "no_eligible_posts"
@@ -223,6 +246,12 @@ async function findRecoverablePlan(db: DB) {
   return null;
 }
 
+// The switch turns on the scheduled audience. "Refresh now" is the player asking for one run, so
+// it works with the switch off; a Creator switched off on their own page stays off either way.
+function fanActivitySettingsFor(settings: SlurpSettings, manual: boolean): SlurpSettings {
+  return manual ? { ...settings, fanActivityEnabled: true } : settings;
+}
+
 async function reconcilePlan(db: DB, settings: SlurpSettings, at: Date) {
   const noodle = createSlurpStorage(db);
   const creators = await noodle.listNoodlerAccounts();
@@ -235,7 +264,7 @@ async function reconcilePlan(db: DB, settings: SlurpSettings, at: Date) {
     await readCurrentPlan(db, at),
     eligibleIds,
     at,
-    slpCreatorFanActivityRunLimit(settings),
+    slpCreatorFanActivityRunLimit(settings, at, await noodle.platformInfluenceStory()),
   );
   await writePlan(db, plan);
   return plan;
@@ -249,6 +278,8 @@ async function applyAcceptedActivities(
   finishedAt: Date,
 ) {
   const noodle = createSlurpStorage(db);
+  const manual = run.manual === true;
+  const effective = fanActivitySettingsFor(settings, manual);
   let current = plan;
   let created = 0;
   // ponytail: interaction creation is idempotent by activity.id (see createNoodlerFanInteraction),
@@ -256,12 +287,13 @@ async function applyAcceptedActivities(
   for (const activity of run.acceptedActivities) {
     if (activity.applied) continue;
     const creator = await noodle.getNoodlerAccountById(activity.creatorId);
-    if (!creator || !resolveCreatorFanActivityPolicy(settings, creator).enabled) {
+    if (!creator || !resolveCreatorFanActivityPolicy(effective, creator).enabled) {
       current = markSlpFanActivityApplied(current, run.id, activity.id);
       continue;
     }
     const result = await noodle.createNoodlerFanInteraction(activity.targetPostId, {
       id: activity.id,
+      manual,
       creatorAccountId: activity.creatorId,
       actorId: activity.actorId,
       actorSnapshot: activity.snapshot as SlpAuthorSnapshot,
@@ -309,7 +341,8 @@ export async function runCreatorFanActivity(input: {
   const operation = await trySlpOperation<SlpCreatorFanRunResult>("noodler-fan-activity", async () => {
     const at = input.at ?? new Date();
     const noodle = createSlurpStorage(input.db);
-    const settings = await noodle.getSettings();
+    const settings = fanActivitySettingsFor(await noodle.getSettings(), input.mode === "manual");
+    settings.modelBudget = await slurpEffectiveModelBudget(input.db, settings.modelBudget);
     const recoverable = await findRecoverablePlan(input.db);
     if (recoverable?.interrupted) {
       const abandoned = finishSlpFanActivityRun(recoverable.plan, recoverable.run.id, "abandoned", at);
@@ -347,10 +380,19 @@ export async function runCreatorFanActivity(input: {
         plan = claimSlpFanActivityRun(plan, run.id, at);
         run = plan.runs.find((candidate) => candidate.id === run!.id)!;
       }
-      const workerContext = input.mode === "manual" ? "present" : "background";
+      // Fan activity has its own on switch, and a scheduled run is what that switch asked for. Sent as
+      // "background", every run was refused under the default "present" budget mode — nothing
+      // detects presence — so automatic audience activity never ran. The daily caps still apply.
+      // A run the player started ("Refresh now", Stir's "Run audience") never spends the budget (0.3.6).
+      const world = input.mode !== "manual";
+      const workerContext = "present";
+      if (world && !slurpModelWorkerAllows(settings.modelBudget, workerContext))
+        return { status: "ai_off", created: 0 };
+      // Look without spending: the call is claimed below, once the run has somebody to write for,
+      // so a run with no eligible posts no longer uses a call (R1-113).
       if (
-        !slurpModelWorkerAllows(settings.modelBudget, workerContext) ||
-        !(await claimSlurpModelBudget(input.db, settings.modelBudget, "thread", at))
+        world &&
+        !spendSlurpModelBudget(settings.modelBudget, await getSlurpModelBudgetLedger(input.db, at), "thread")
       ) {
         return { status: "limit_reached", created: 0 };
       }
@@ -426,6 +468,13 @@ export async function runCreatorFanActivity(input: {
         await writePlan(input.db, plan);
         return { status: "no_eligible_posts", created: 0, runId: run.id };
       }
+      // ponytail: another worker can spend the last call between the look above and this claim; the
+      // run is then skipped rather than retried. Reserve-and-release on the ledger if that matters.
+      if (world && !(await claimSlurpModelBudget(input.db, settings.modelBudget, "thread", at))) {
+        plan = finishSlpFanActivityRun(plan, run.id, "skipped", at);
+        await writePlan(input.db, plan);
+        return { status: "limit_reached", created: 0, runId: run.id };
+      }
 
       try {
         const accepted = await generateCreatorFanActivityBatch({
@@ -441,7 +490,8 @@ export async function runCreatorFanActivity(input: {
         const created = await applyAcceptedActivities(input.db, plan, storedRun, settings, at);
         return { status: "generated", created, runId: run.id };
       } catch (error) {
-        plan = finishSlpFanActivityRun(plan, run.id, "abandoned", at);
+        const message = error instanceof Error ? error.message : String(error);
+        plan = finishSlpFanActivityRun(plan, run.id, "abandoned", at, message.slice(0, 500));
         await writePlan(input.db, plan);
         throw error;
       }
@@ -454,7 +504,9 @@ export async function runCreatorFanActivity(input: {
 
 export async function getCreatorFanActivityStatus(db: DB, at = new Date()) {
   const plan = await readCurrentPlan(db, at);
-  const settings = await createSlurpStorage(db).getSettings();
+  const noodle = createSlurpStorage(db);
+  const settings = await noodle.getSettings();
+  settings.modelBudget = await slurpEffectiveModelBudget(db, settings.modelBudget);
   const automaticRuns = plan?.runs.filter((run) => !run.manual) ?? [];
   const lastRun = plan
     ? ([...plan.runs]
@@ -467,8 +519,15 @@ export async function getCreatorFanActivityStatus(db: DB, at = new Date()) {
     : null;
   return {
     localDate: plan?.localDate ?? localPlanDate(at),
-    usedRuns: automaticRuns.filter((run) => run.status !== "scheduled").length,
-    runLimit: slpCreatorFanActivityRunLimit(settings),
+    // Skipped runs spent nothing; counting them showed "5/6 used" on days when nothing ran.
+    usedRuns: automaticRuns.filter((run) => run.status !== "scheduled" && run.status !== "skipped").length,
+    runLimit: slpCreatorFanActivityRunLimit(settings, at, await noodle.platformInfluenceStory()),
     lastRun,
+    // The next automatic run today, for Pulse's "Coming up" (task C).
+    nextRunAt:
+      automaticRuns
+        .filter((run) => run.status === "scheduled" && Date.parse(run.scheduledAt) > at.getTime())
+        .map((run) => run.scheduledAt)
+        .sort()[0] ?? null,
   };
 }

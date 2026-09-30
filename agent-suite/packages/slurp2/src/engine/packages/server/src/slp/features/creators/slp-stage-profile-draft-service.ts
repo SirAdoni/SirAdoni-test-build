@@ -36,6 +36,8 @@ import { noodlerConcealedSourceText, slpCreatorSourceText } from "../../base/pro
 import { createCreatorSourceRevisionToken } from "../../base/identity/slp-source-revision.js";
 import type { SlurpStageProfileInput } from "../../modules/discovery/slp-discovery-profile.js";
 import { composeSlurpPromptBlocks, type SlurpPromptBlockOverrides } from "../../base/prompting/slp-prompt-blocks.js";
+import { slurpPromptContext } from "../../base/prompting/slp-prompt-blocks.js";
+import { slpRetryProviderCall } from "../../base/model/slp-provider-retry.js";
 
 /** Used only when a source card carries no usable prose, so the model still gets a starting point. */
 const CONCEALED_SOURCE_FALLBACK_BRIEF = "General temperament and creative interests from the source profile.";
@@ -183,6 +185,8 @@ export async function generateCreatorStageProfileDraft(
   input: {
     request: SlpStageProfileDraftRequest;
     connection: GenerationConnection;
+    /** Told when the connection answers "too many requests" (a bulk add slows down). */
+    onRateLimit?: () => void;
   },
 ): Promise<
   SlurpStageProfileInput & {
@@ -228,7 +232,7 @@ export async function generateCreatorStageProfileDraft(
     publicAccount,
     source,
     allowedTags,
-    promptBlocks: (await noodle.getSettings()).promptBlocks,
+    promptBlocks: slurpPromptContext(await noodle.getSettings()).blocks,
   });
   const debugMode = isDebugAgentsEnabled();
   logDebugOverride(
@@ -238,7 +242,7 @@ export async function generateCreatorStageProfileDraft(
   );
   const connections = createConnectionsStorage(db);
   const fallbackConnection = await connections.getFallbackForMain();
-  const provider = withConnectionFallbackProvider({
+  const fallbackProvider = withConnectionFallbackProvider({
     primary: createLLMProvider(
       input.connection.provider,
       resolveBaseUrl(input.connection),
@@ -255,6 +259,12 @@ export async function generateCreatorStageProfileDraft(
     fallbackBaseUrl: fallbackConnection ? resolveBaseUrl(fallbackConnection) : "",
     category: "main",
   });
+  // A bulk add drafts several Creators on one connection; a busy provider is waited out, not failed,
+  // and the batch hears about it so it can go one at a time.
+  const provider = {
+    chatComplete: (...args: Parameters<typeof fallbackProvider.chatComplete>) =>
+      slpRetryProviderCall(() => fallbackProvider.chatComplete(...args), { onRateLimit: input.onRateLimit }),
+  };
   const completionOptions = {
     model: input.connection.model,
     maxTokens: clampGenerationMaxOutputTokens({

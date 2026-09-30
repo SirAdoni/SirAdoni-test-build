@@ -67,6 +67,11 @@ function fakePool(ads: GarnishAd[], events: GarnishAdEvent[] = []) {
     async replaceEvents(next: GarnishAdEvent[]) {
       events = next;
     },
+    // R: packs carry brands; this fake has none of its own, so its ads' brands are not under test here.
+    async listBrands() {
+      return [];
+    },
+    async saveBrand() {},
     read: () => ({ ads, events }),
   };
 }

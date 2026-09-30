@@ -128,6 +128,7 @@ export function GlobalSearchModal({
   // Pages are separate scans; a chat that got a new message between them can
   // move up the order and repeat a hit, so keep the first copy only.
   const results = useMemo(() => {
+    if (!query.trim()) return [];
     const seen = new Set<string>();
     return (search.data?.pages.flatMap((page) => page.results) ?? []).filter((result) => {
       const key = `${result.chatId}:${result.messageId}`;
@@ -135,8 +136,8 @@ export function GlobalSearchModal({
       seen.add(key);
       return true;
     });
-  }, [search.data]);
-  const lastPage = search.data?.pages[search.data.pages.length - 1];
+  }, [query, search.data]);
+  const lastPage = query.trim() ? search.data?.pages[search.data.pages.length - 1] : undefined;
   const activeFilterCount = [mode, role, characterId, fromDate, toDate].filter(Boolean).length;
   const waiting = query.trim() !== debouncedQuery || (search.isFetching && !search.isFetchingNextPage);
 
@@ -307,7 +308,7 @@ export function GlobalSearchModal({
           </div>
         )}
 
-        {search.hasNextPage && !waiting && (
+        {query.trim() && search.hasNextPage && !waiting && (
           <button
             type="button"
             onClick={() => void search.fetchNextPage()}

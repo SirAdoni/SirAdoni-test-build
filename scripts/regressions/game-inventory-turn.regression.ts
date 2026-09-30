@@ -30,11 +30,13 @@ const { createConnectionsStorage } = await import("../../packages/server/src/ser
 const { gameRoutes } = await import("../../packages/server/src/routes/game.routes.js");
 const { createGameRulesetsStorage } =
   await import("../../packages/server/src/services/storage/game-rulesets.storage.js");
+const { createCharactersStorage } = await import("../../packages/server/src/services/storage/characters.storage.js");
 const {
   normalizeGameInventoryStacks,
   gameInventoryCount,
   readResolvedInventoryTags,
   CHAT_PRESET_EXCLUDED_METADATA_KEYS,
+  characterDataSchema,
 } = await import("../../packages/shared/src/index.js");
 const { ClaudeSubscriptionProvider } =
   await import("../../packages/server/src/services/llm/providers/claude-subscription.provider.js");
@@ -42,6 +44,17 @@ const { ClaudeSubscriptionProvider } =
 const prompts: ChatMessage[][] = [];
 let reply = "";
 async function* scriptedChat(messages: ChatMessage[], _options: ChatOptions): AsyncGenerator<string, LLMUsage> {
+  const first = messages[0]?.content ?? "";
+  if (
+    first.startsWith("You maintain an evidence-based scene timeline") ||
+    (messages.length === 1 &&
+      /^(?:Extract durable continuity records|Review continuity source-first|Repair only the reviewed continuity findings)/u.test(
+        first,
+      ))
+  ) {
+    yield '{"visits":[],"records":[],"dispositions":[],"recordChecks":[],"findings":[]}';
+    return { promptTokens: 1, completionTokens: 1, totalTokens: 2, finishReason: "stop" };
+  }
   prompts.push(structuredClone(messages));
   yield reply;
   return { promptTokens: 10, completionTokens: 5, totalTokens: 15, finishReason: "stop" };
@@ -100,9 +113,11 @@ try {
     return { response, saved: (await chats.listMessages(chat.id)).at(-1)! };
   };
   const gameMasterPromptText = (sinceCall: number) => {
-    const messages = prompts.slice(sinceCall).findLast((call) =>
-      call.some((message) => message.content.includes("PARTY INVENTORY:") || message.content.includes("PLAYER INVENTORY:")),
-    );
+    const messages = prompts
+      .slice(sinceCall)
+      .findLast((call) =>
+        call.some((message) => /^(?:PARTY|PLAYER) INVENTORY(?: \([^\r\n]*\))?:/m.test(message.content)),
+      );
     assert.ok(messages, "the current turn made a Game Master provider call with inventory");
     return messages.map((message) => message.content).join("\n");
   };
@@ -193,7 +208,9 @@ try {
     const providerCallsBeforeSword = prompts.length;
     const told = await turn(sword);
     assert.deepEqual(
-      readResolvedInventoryTags(told.saved.content).map((tag) => `${tag.action} ${tag.item} ${tag.ok ? `ok ${tag.count}->${tag.now}` : tag.reason}`),
+      readResolvedInventoryTags(told.saved.content).map(
+        (tag) => `${tag.action} ${tag.item} ${tag.ok ? `ok ${tag.count}->${tag.now}` : tag.reason}`,
+      ),
       ["add Sword ok 1->1"],
       `the generated sword tag is applied to the saved reply; latest=${JSON.stringify(told.saved.content)}; response=${told.response.body.slice(-1500)}`,
     );
@@ -413,6 +430,10 @@ try {
     const ember = JSON.parse(
       readFileSync(fileURLToPath(new URL("../../docs/examples/rulesets/ember-roads.json", import.meta.url)), "utf8"),
     ) as Record<string, any>;
+    // Without carrying: these checks are about which item a name is and how many one stack holds, and
+    // carrying has its own section below.
+    delete ember.items.carry;
+    for (const family of ember.items.currencies ?? []) delete family.perWeight;
     const strict = structuredClone(ember);
     strict.id = "ember-strict";
     strict.items.freeform = "refuse";
@@ -540,7 +561,7 @@ try {
     const prompt = gameMasterPromptText(nextPromptStart);
     assert.match(
       prompt,
-      /PLAYER INVENTORY: Road rations ×10 \[Provisions, Common; Bulk 1\]; Arrows ×4; Lamp; Arrows ×2 \[Ammunition, Common; Bulk 1\]/,
+      /PLAYER INVENTORY \(Body 0 of 1, Hands 0 of 2\): Road rations ×10 \[Provisions, Common; Bulk 1\]; Arrows ×4; Lamp; Arrows ×2 \[Ammunition, Common, Arrow; Bulk 1\]/,
     );
     assert.match(prompt, /an item named exactly as one of them becomes that item/);
 
@@ -589,6 +610,555 @@ try {
       "Arrows <outfitter/arrows> 20",
       "Arrows <outfitter/arrows> 10",
     ]);
+  }
+
+  // ── Wearing and carrying (#6801): the route and a turn read each character's sheet ──
+  {
+    const read = (name: string) =>
+      JSON.parse(
+        readFileSync(fileURLToPath(new URL(`../../docs/examples/rulesets/${name}.json`, import.meta.url)), "utf8"),
+      ) as Record<string, any>;
+    const ember = { ...read("ember-roads"), id: "ember-carry" };
+    const gravewatch = { ...read("gravewatch"), id: "gravewatch-kit" };
+    const rulesets = createGameRulesetsStorage(db);
+    await rulesets.put({
+      rulesetId: "local/ember-carry",
+      version: ember.version,
+      sourceKind: "local",
+      definition: JSON.stringify(ember),
+    });
+    await rulesets.put({
+      rulesetId: "local/gravewatch-kit",
+      version: gravewatch.version,
+      sourceKind: "local",
+      definition: JSON.stringify(gravewatch),
+    });
+    const connection = (await createConnectionsStorage(db).list())[0]!;
+    // Bram is a party member, so the Game Master's shared adds may go to him.
+    const bram = await createCharactersStorage(db).create(characterDataSchema.parse({ name: "Bram" }));
+    const game = async (id: string, version: number, cards: unknown[]) => {
+      const made = await chats.create({
+        name: `Wearing ${id}`,
+        mode: "game",
+        characterIds: [],
+        connectionId: connection.id,
+        promptPresetId: null,
+      });
+      assert.ok(made);
+      await chats.patchMetadata(made.id, {
+        enableAgents: false,
+        enableTools: false,
+        gameRuleset: { id, version, packageId: null, options: {} },
+        gameCharacterCards: cards,
+        gamePartyCharacterIds: [bram.id],
+      });
+      return made;
+    };
+    const stacksOf = async (chatId: string) => {
+      const row = await chats.getById(chatId);
+      const meta = typeof row!.metadata === "string" ? JSON.parse(row!.metadata) : row!.metadata;
+      return normalizeGameInventoryStacks(meta.gameInventory).map(
+        (stack) =>
+          `${stack.name} ${stack.quantity} ${stack.holder ?? "player"}${stack.equipped ? " worn" : ""}${stack.bound ? " bound" : ""}`,
+      );
+    };
+    const change = async (chatId: string, ops: unknown[]) => {
+      const response = await app.inject({ method: "POST", url: "/api/game/inventory", payload: { chatId, ops } });
+      assert.equal(response.statusCode, 200, response.body);
+      return response.json().results as Array<Record<string, unknown>>;
+    };
+    const turnIn = async (chatId: string, text: string) => {
+      reply = text;
+      await chats.createMessage({ chatId, role: "user", content: "We go on." });
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/generate/",
+        payload: { chatId, streaming: true, cacheGuardAcknowledged: true },
+      });
+      assert.equal(response.statusCode, 200, response.body);
+      assert.ok(!response.body.includes('"type":"error"'), response.body);
+      assert.ok(!response.body.includes('"type":"cache_warning"'), response.body);
+      return readResolvedInventoryTags((await chats.listMessages(chatId)).at(-1)!.content).map(
+        (tag) => `${tag.action} ${tag.item} ${tag.who ?? "-"} ${tag.ok ? `ok ${tag.count}->${tag.now}` : tag.reason}`,
+      );
+    };
+
+    // Ember Roads: a traveller carries 6 + Brawn before the road slows them, and 12 at the most. With
+    // no persona the first card is the player's: Ada, Brawn 0 (6); Bram, Brawn 3 (9).
+    const sheet = (brawn: number) => ({
+      v: 1,
+      build: { abilities: { brawn, wits: 0, heart: 0 }, fields: {}, lists: {} },
+    });
+    const road = await game("local/ember-carry", ember.version, [
+      { name: "Ada", rulesetSheet: sheet(0) },
+      { name: "Bram", rulesetSheet: sheet(3) },
+    ]);
+    const shared = ["", "Bram"];
+    // The coat (Bulk 3) fits Ada. Five rations do not fit her any more, so they all go to Bram.
+    await change(road.id, [
+      { op: "add", name: "Leather coat", count: 1, among: shared },
+      { op: "add", name: "Road rations", count: 5, among: shared },
+    ]);
+    assert.deepEqual(await stacksOf(road.id), ["Leather coat 1 player", "Road rations 5 Bram"]);
+    // Ten arrows fit nobody whole: split by the room each has left (Bram 4, Ada 3), then one at a time
+    // to whoever is then least over. The answers say who got how many.
+    assert.deepEqual(
+      await turnIn(
+        road.id,
+        `The quartermaster hands over a bundle. [inventory: action="add" item="Arrows" count="10"]`,
+      ),
+      ["add Arrows - ok 5->5", "add Arrows Bram ok 5->5"],
+    );
+    // Four bows (Bulk 2) are more than anyone can carry at all: three go, one stays behind.
+    assert.deepEqual(await turnIn(road.id, `A rack of bows. [inventory: action="add" item="Hunting bow" count="4"]`), [
+      "add Hunting bow - ok 2->2",
+      "add Hunting bow Bram ok 1->1",
+      "add Hunting bow - too-heavy",
+    ]);
+    // Past what Bram can carry at all, the player cannot hand him more.
+    const savedStacks = async () =>
+      normalizeGameInventoryStacks(JSON.parse((await chats.getById(road.id))!.metadata as string).gameInventory);
+    const bows = (await savedStacks()).find((stack) => stack.name === "Hunting bow" && !stack.holder)!;
+    const coat = (await savedStacks()).find((stack) => stack.name === "Leather coat")!;
+    assert.deepEqual(
+      (await change(road.id, [{ op: "give", id: bows.id, to: "Bram", count: 1 }])).map((result) => result.reason),
+      ["too-heavy"],
+    );
+    // Slots: the coat takes the body and one bow both hands (taken out of the pair into its own
+    // stack), so the other bow finds no hand free.
+    assert.deepEqual(
+      (
+        await change(road.id, [
+          { op: "equip", id: coat.id },
+          { op: "equip", id: bows.id },
+        ])
+      ).map((result) => (result.ok ? "ok" : result.reason)),
+      ["ok", "ok"],
+    );
+    const spare = (await savedStacks()).find(
+      (stack) => stack.name === "Hunting bow" && !stack.holder && !stack.equipped,
+    )!;
+    assert.equal(spare.quantity, 1);
+    assert.deepEqual(
+      (await change(road.id, [{ op: "equip", id: spare.id }])).map((result) => (result.ok ? "ok" : result.reason)),
+      ["no-slot"],
+    );
+    // The next turn's prompt shows each character's load and slots, and what is worn.
+    const prompt = async () => {
+      const promptStart = prompts.length;
+      reply = "The road is long.";
+      await chats.createMessage({ chatId: road.id, role: "user", content: "We walk." });
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/generate/",
+        payload: { chatId: road.id, streaming: true, cacheGuardAcknowledged: true },
+      });
+      assert.equal(response.statusCode, 200, response.body);
+      assert.ok(!response.body.includes('"type":"error"'), response.body);
+      assert.ok(!response.body.includes('"type":"cache_warning"'), response.body);
+      return gameMasterPromptText(promptStart);
+    };
+    const text = await prompt();
+    const at = text.indexOf("PARTY INVENTORY:");
+    const block = text.slice(at, text.indexOf("\n\n", at));
+    assert.match(
+      block,
+      /- User \(load 12 of 6, most 12, encumbered; Body 1 of 1, Hands 2 of 2\): Leather coat \(1 worn\) \[[^\]]*\]; Arrows ×5 \[[^\]]*\]; Hunting bow ×2 \(1 worn\)/,
+    );
+    assert.match(block, /- Bram \(load 12 of 9, most 12, encumbered; Body 0 of 1, Hands 0 of 2\): /);
+    // And each sheet reads what its character wears (#6826): Guard is 6 + Wits, and Ada's coat adds 1.
+    assert.match(text, /\nAda\nBRN \+0, WIT \+0, HRT \+0\nGrit maximum 6, Guard 7\n/);
+    assert.match(text, /\nBram\nBRN \+3, WIT \+0, HRT \+0\nGrit maximum \d+, Guard 6\n/);
+    // And a check reads it (#6832): the coat Ada wears costs her Sneak 1, and the saved record says so.
+    reply = `Ada creeps past the guards. [skill_check: skill="Sneak" dc="8"]`;
+    await chats.createMessage({ chatId: road.id, role: "user", content: "I sneak." });
+    const sneaked = await app.inject({
+      method: "POST",
+      url: "/api/generate/",
+      payload: { chatId: road.id, streaming: true, cacheGuardAcknowledged: true },
+    });
+    assert.equal(sneaked.statusCode, 200, sneaked.body);
+    const checked = (await chats.listMessages(road.id)).at(-1)!.content;
+    assert.match(
+      checked,
+      // And 12 bulk carried is past the 10 at which the road slows anybody (#6846): a level off a
+      // derived value, with nobody ticking a track.
+      /\[skill_check: skill="Sneak" dc="8" rolls="\d+\|\d+"[^\]]* effects="-2" from="Bulk carried 10; Leather coat"\]/,
+    );
+    assert.match(text, /an add with who left out goes to whoever can carry it/);
+    // A check the ruleset rolled with its own dice is saved as it rolled it: Bram's Scrap with his
+    // Brawn of 3 and his name, never rolled a second time as if nobody's sheet were read.
+    reply = `Bram heaves the cart free. [skill_check: skill="Scrap" dc="8" who="Bram"]`;
+    await chats.createMessage({ chatId: road.id, role: "user", content: "Bram pushes." });
+    const heaved = await app.inject({
+      method: "POST",
+      url: "/api/generate/",
+      payload: { chatId: road.id, streaming: true, cacheGuardAcknowledged: true },
+    });
+    assert.equal(heaved.statusCode, 200, heaved.body);
+    assert.match(
+      (await chats.listMessages(road.id)).at(-1)!.content,
+      /\[skill_check: skill="Scrap" dc="8" rolls="\d+\|\d+" used="\d+" modifier="3" [^\]]*who="Bram"\]/,
+    );
+    assert.match(text, /\[inventory: action="equip\|unequip" item=/);
+
+    // Gravewatch: binding up to the bearer's Nerve. Ada has Nerve 1, so the ring binds and the bell
+    // cannot. The ring is cursed: the player cannot unbind it, give it or throw it away, and the Game
+    // Master can end the curse in the story.
+    const watch = await game("local/gravewatch-kit", gravewatch.version, [
+      {
+        name: "Ada",
+        rulesetSheet: { v: 1, build: { abilities: { sinew: 1, nerve: 1, warmth: 1 }, fields: {}, lists: {} } },
+      },
+    ]);
+    await change(watch.id, [
+      { op: "add", name: "Widow's ring", count: 1 },
+      { op: "add", name: "Dawn bell", count: 1 },
+      { op: "add", name: "Grave spade", count: 1 },
+    ]);
+    const kit = normalizeGameInventoryStacks(
+      JSON.parse((await chats.getById(watch.id))!.metadata as string).gameInventory,
+    );
+    const id = (name: string) => kit.find((stack) => stack.name === name)!.id;
+    assert.deepEqual(
+      (
+        await change(watch.id, [
+          { op: "bind", id: id("Widow's ring") },
+          { op: "bind", id: id("Dawn bell") },
+          { op: "bind", id: id("Grave spade") },
+          { op: "unbind", id: id("Widow's ring") },
+          { op: "give", id: id("Widow's ring"), to: "Bram" },
+          { op: "set", id: id("Widow's ring"), quantity: 0 },
+        ])
+      ).map((result) => (result.ok ? "ok" : result.reason)),
+      ["ok", "binding-full", "not-bindable", "cursed", "cursed", "cursed"],
+    );
+    assert.deepEqual(
+      await turnIn(watch.id, `The priest lifts the curse. [inventory: action="unbind" item="Widow's ring"]`),
+      ["unbind Widow's ring - ok 1->0"],
+    );
+    assert.deepEqual(await stacksOf(watch.id), ["Widow's ring 1 player", "Dawn bell 1 player", "Grave spade 1 player"]);
+
+    // When no card has the player's name, the first card is read for the player, and that card's own
+    // bag still reads it too: Bram (Brawn 3) takes all eight rations without strain.
+    const firstOnly = await game("local/ember-carry", ember.version, [{ name: "Bram", rulesetSheet: sheet(3) }]);
+    await change(firstOnly.id, [{ op: "add", name: "Road rations", count: 8, among: ["Bram", ""] }]);
+    assert.deepEqual(await stacksOf(firstOnly.id), ["Road rations 7 Bram", "Road rations 1 Bram"]);
+  }
+
+  // ── Invented items (#6814): a turn invents, the game keeps it, the next prompt and session read it ──
+  {
+    const ember = JSON.parse(
+      readFileSync(fileURLToPath(new URL("../../docs/examples/rulesets/ember-roads.json", import.meta.url)), "utf8"),
+    ) as Record<string, any>;
+    const pin = { id: "local/ember-carry", version: ember.version, packageId: null, options: {} };
+    const connection = (await createConnectionsStorage(db).list())[0]!;
+    const made = await chats.create({
+      name: "Invented items",
+      mode: "game",
+      characterIds: [],
+      connectionId: connection.id,
+      promptPresetId: null,
+    });
+    assert.ok(made);
+    await chats.patchMetadata(made.id, { enableAgents: false, enableTools: false, gameRuleset: pin });
+    const metaOf = async (chatId: string) => {
+      const row = await chats.getById(chatId);
+      return (typeof row!.metadata === "string" ? JSON.parse(row!.metadata) : row!.metadata) as Record<string, any>;
+    };
+    const turnIn = async (text: string, payload: Record<string, unknown> = {}) => {
+      reply = text;
+      if (!payload.regenerateMessageId) {
+        await chats.createMessage({ chatId: made.id, role: "user", content: "I take what she offers." });
+      }
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/generate/",
+        payload: { chatId: made.id, streaming: true, cacheGuardAcknowledged: true, ...payload },
+      });
+      assert.equal(response.statusCode, 200, response.body);
+      return (await chats.listMessages(made.id)).at(-1)!;
+    };
+
+    const told = await turnIn(
+      `The widow gives you the blade. [inventory: action="add" item="Mourning Edge" like="outfitter/hand-axe" rarity="storied" stats="guard=4, damage=1d10"]`,
+    );
+    assert.match(
+      told.content,
+      /\[inventory: action="add" item="Mourning Edge" count="1" result="ok" now="1" note="Guard is 3 instead of 4, the most at Storied\."\]/,
+    );
+    const kept = await metaOf(made.id);
+    assert.deepEqual(kept.gameInventedItems, [
+      {
+        id: "mourning-edge",
+        name: "Mourning Edge",
+        item: {
+          category: "weapon",
+          rarity: "storied",
+          tags: ["thrown"],
+          stats: { bulk: 1, damage: "1d10", swing: "brawn", reach: "close", guard: 3 },
+          slots: { hands: 1 },
+          // Made like the axe, it is a weapon that reads its own damage stat: 1d10.
+          attack: {
+            budget: "act",
+            toHit: { abilities: { stat: "swing" } },
+            damage: { dice: { stat: "damage" }, abilities: { stat: "swing" }, type: "cut" },
+            reach: 2,
+            range: { normal: 10, long: 20 },
+          },
+        },
+        notes: ["Guard is 3 instead of 4, the most at Storied."],
+      },
+    ]);
+    assert.deepEqual(
+      normalizeGameInventoryStacks(kept.gameInventory).map((stack) => [stack.name, stack.item, stack.quantity]),
+      [["Mourning Edge", "invented:mourning-edge", 1]],
+    );
+
+    // Told again with another proposal: the telling starts from before the blade, so nobody holds it,
+    // and the retelling's blade is an item of its own, since the first telling still holds the first.
+    await turnIn(
+      `The widow gives you the blade. [inventory: action="add" item="Mourning Edge" category="weapon" rarity="uncommon" stats="damage=2d6"]`,
+      { regenerateMessageId: told.id },
+    );
+    const retold = await metaOf(made.id);
+    assert.deepEqual(
+      retold.gameInventedItems.map((item: { id: string; item: { rarity: string; stats: { damage: string } } }) => [
+        item.id,
+        item.item.rarity,
+        item.item.stats.damage,
+      ]),
+      [
+        ["mourning-edge", "storied", "1d10"],
+        ["mourning-edge-2", "uncommon", "2d6"],
+      ],
+    );
+    const stacksNow = async () =>
+      normalizeGameInventoryStacks((await metaOf(made.id)).gameInventory).map((stack) => [stack.item, stack.quantity]);
+    assert.deepEqual(await stacksNow(), [["invented:mourning-edge-2", 1]]);
+    // Switched back to the first telling, the stacks hold the first blade, which is still itself; and
+    // forward again.
+    const showTelling = async (index: number) => {
+      const response = await app.inject({
+        method: "PUT",
+        url: `/api/chats/${made.id}/messages/${told.id}/active-swipe`,
+        payload: { index },
+      });
+      assert.equal(response.statusCode, 200, response.body);
+    };
+    await showTelling(0);
+    assert.deepEqual(await stacksNow(), [["invented:mourning-edge", 1]]);
+    assert.equal((await metaOf(made.id)).gameInventedItems[0].item.stats.damage, "1d10");
+    await showTelling(1);
+    assert.deepEqual(await stacksNow(), [["invented:mourning-edge-2", 1]]);
+
+    // The next turn's prompt reads the invented item like one of the ruleset's own, and shows the
+    // proposal form with the ruleset's caps.
+    const nextPromptStart = prompts.length;
+    await turnIn("The road goes on.");
+    const prompt = gameMasterPromptText(nextPromptStart);
+    assert.match(prompt, /PLAYER INVENTORY \([^)]*\): Mourning Edge \[Weapon, Uncommon; Damage 2d6\]/);
+    assert.match(prompt, /invent one of its items in the add/);
+    assert.match(
+      prompt,
+      /The most at each rarity: common guard 1, worn or carried bonus 1; uncommon guard 2, worn or carried bonus 1; storied guard 3, worn or carried bonus 2\./,
+    );
+
+    // A new session keeps the invented items still held and drops the ones nobody holds.
+    const gameId = "invented-items-sessions";
+    const ended = await chats.create({
+      name: "Invented items, Session 1",
+      mode: "game",
+      characterIds: [],
+      groupId: gameId,
+    });
+    assert.ok(ended);
+    await chats.patchMetadata(ended.id, {
+      gameId,
+      gameSessionStatus: "concluded",
+      gameSessionNumber: 1,
+      gameRuleset: pin,
+      gameInventory: retold.gameInventory,
+      gameInventedItems: [
+        ...retold.gameInventedItems,
+        { id: "lost-charm", name: "Lost Charm", item: { category: "gear", rarity: "common" } },
+      ],
+    });
+    await chats.createMessage({ chatId: ended.id, role: "assistant", content: "The road ends here." });
+    const carried = await app.inject({ method: "POST", url: "/api/game/session/start", payload: { gameId } });
+    assert.equal(carried.statusCode, 200, carried.body);
+    const next = await metaOf(carried.json().sessionChat.id);
+    assert.deepEqual(
+      next.gameInventedItems.map((item: { id: string }) => item.id),
+      ["mourning-edge-2"],
+    );
+    assert.deepEqual(
+      normalizeGameInventoryStacks(next.gameInventory).map((stack) => stack.item),
+      ["invented:mourning-edge-2"],
+    );
+    // A game whose ruleset cannot be read any more keeps them as saved, by the same rule, and
+    // anything that is not an invented item at all is dropped.
+    const unread = await chats.create({
+      name: "Invented items, no ruleset",
+      mode: "game",
+      characterIds: [],
+      groupId: "invented-items-unread",
+    });
+    assert.ok(unread);
+    await chats.patchMetadata(unread.id, {
+      gameId: "invented-items-unread",
+      gameSessionStatus: "concluded",
+      gameSessionNumber: 1,
+      gameInventory: retold.gameInventory,
+      gameInventedItems: [
+        ...retold.gameInventedItems,
+        { id: "lost-charm", name: "Lost Charm", item: { category: "gear" } },
+        "junk",
+        { name: "No id" },
+      ],
+    });
+    await chats.createMessage({ chatId: unread.id, role: "assistant", content: "The road ends here." });
+    const unreadNext = await app.inject({
+      method: "POST",
+      url: "/api/game/session/start",
+      payload: { gameId: "invented-items-unread" },
+    });
+    assert.equal(unreadNext.statusCode, 200, unreadNext.body);
+    assert.deepEqual(
+      (await metaOf(unreadNext.json().sessionChat.id)).gameInventedItems,
+      [retold.gameInventedItems[1]],
+      "kept as saved while held, the rest dropped",
+    );
+    assert.ok(CHAT_PRESET_EXCLUDED_METADATA_KEYS.includes("gameInventedItems"));
+  }
+
+  // ── The native switch (#6822): a ruleset without Game Mode's own items ──
+  {
+    const ember = JSON.parse(
+      readFileSync(fileURLToPath(new URL("../../docs/examples/rulesets/ember-roads.json", import.meta.url)), "utf8"),
+    ) as Record<string, any>;
+    const closed = { ...ember, id: "ember-native" };
+    closed.items = { ...ember.items, native: false };
+    delete closed.items.carry;
+    for (const family of closed.items.currencies ?? []) delete family.perWeight;
+    await createGameRulesetsStorage(db).put({
+      rulesetId: "local/ember-native",
+      version: closed.version,
+      sourceKind: "local",
+      definition: JSON.stringify(closed),
+    });
+    const pin = { id: "local/ember-native", version: closed.version, packageId: null, options: {} };
+    const connection = (await createConnectionsStorage(db).list())[0]!;
+    const made = await chats.create({
+      name: "No untyped items",
+      mode: "game",
+      characterIds: [],
+      connectionId: connection.id,
+      promptPresetId: null,
+    });
+    assert.ok(made);
+    await chats.patchMetadata(made.id, {
+      enableAgents: false,
+      enableTools: false,
+      gameRuleset: pin,
+      gameInventory: [{ id: "st-rope", name: "Rope", quantity: 1 }],
+    });
+    const stacksOf = async (chatId: string) => {
+      const row = await chats.getById(chatId);
+      const meta = typeof row!.metadata === "string" ? JSON.parse(row!.metadata) : row!.metadata;
+      return normalizeGameInventoryStacks(meta.gameInventory).map(
+        (stack) => `${stack.name}${stack.item ? ` <${stack.item}>` : ""} ${stack.quantity}`,
+      );
+    };
+
+    // The Game Master: a new untyped name is refused; more of what is held, the ruleset's own items and
+    // an item it invents all land.
+    reply = `The pedlar's cart. [inventory: action="add" item="Lamp"] [inventory: action="add" item="Rope"] [inventory: action="add" item="Hand axe"] [inventory: action="add" item="Moon Charm" category="gear" rarity="common"]`;
+    await chats.createMessage({ chatId: made.id, role: "user", content: "I look over the cart." });
+    const turn = await app.inject({
+      method: "POST",
+      url: "/api/generate/",
+      payload: { chatId: made.id, streaming: true, cacheGuardAcknowledged: true },
+    });
+    assert.equal(turn.statusCode, 200, turn.body);
+    assert.deepEqual(
+      readResolvedInventoryTags((await chats.listMessages(made.id)).at(-1)!.content).map(
+        (tag) => `${tag.item} ${tag.ok ? `ok ${tag.count}->${tag.now}` : tag.reason}`,
+      ),
+      ["Lamp not-ruleset-item", "Rope ok 1->2", "Hand axe ok 1->1", "Moon Charm ok 1->1"],
+    );
+    // The player's typed-in items still follow freeform, which keeps plain items.
+    const typed = await app.inject({
+      method: "POST",
+      url: "/api/game/inventory",
+      payload: { chatId: made.id, ops: [{ op: "add", name: "Candle", count: 1 }] },
+    });
+    assert.equal(typed.statusCode, 200, typed.body);
+    assert.deepEqual(await stacksOf(made.id), [
+      "Rope <plain:rope> 2",
+      "Hand axe <outfitter/hand-axe> 1",
+      "Moon Charm <invented:moon-charm> 1",
+      "Candle <plain:candle> 1",
+    ]);
+    // And the next turn tells the Game Master so.
+    reply = "The road goes on.";
+    await chats.createMessage({ chatId: made.id, role: "user", content: "We walk on." });
+    const next = await app.inject({
+      method: "POST",
+      url: "/api/generate/",
+      payload: { chatId: made.id, streaming: true, cacheGuardAcknowledged: true },
+    });
+    assert.equal(next.statusCode, 200, next.body);
+    assert.match(
+      prompts
+        .at(-1)!
+        .map((message) => message.content)
+        .join("\n"),
+      /This ruleset has no untyped items: an add must name one of its items or invent one of its items as below/,
+    );
+
+    // A new session brings back a plain item only the detailed inventory still names: the switch is
+    // about what the Game Master adds, not about what the party carried.
+    const gameId = "native-switch-sessions";
+    const ended = await chats.create({
+      name: "No untyped items, Session 1",
+      mode: "game",
+      characterIds: [],
+      groupId: gameId,
+    });
+    assert.ok(ended);
+    await chats.patchMetadata(ended.id, {
+      gameId,
+      gameSessionStatus: "concluded",
+      gameSessionNumber: 1,
+      gameRuleset: pin,
+      gameInventory: [],
+    });
+    const last = await chats.createMessage({ chatId: ended.id, role: "assistant", content: "The road ends here." });
+    await createGameStateStorage(db).create({
+      chatId: ended.id,
+      messageId: last.id,
+      swipeIndex: 0,
+      date: null,
+      time: null,
+      location: null,
+      weather: null,
+      temperature: null,
+      presentCharacters: [],
+      recentEvents: [],
+      playerStats: {
+        stats: [],
+        attributes: null,
+        skills: {},
+        inventory: [{ name: "Old Map", description: "", quantity: 1, location: "on_person" }],
+        activeQuests: [],
+        status: "",
+      } as never,
+      personaStats: null,
+    });
+    const carried = await app.inject({ method: "POST", url: "/api/game/session/start", payload: { gameId } });
+    assert.equal(carried.statusCode, 200, carried.body);
+    assert.deepEqual(await stacksOf(carried.json().sessionChat.id), ["Old Map <plain:old-map> 1"]);
   }
 
   console.info("game inventory turn regressions passed.");

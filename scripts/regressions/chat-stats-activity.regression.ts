@@ -281,6 +281,22 @@ try {
   await db.update(messages).set({ content: "side note with more words" }).where(eq(messages.id, "b1"));
   const edited = await cache.get(0, { refresh: true });
   assert.equal(edited.totalWords, again.totalWords + 3, "edited resident chat is re-read");
+  // A flushed edit must invalidate cached summaries after its chat unit is evicted.
+  await db.update(messages).set({ content: "side note with even more extra words" }).where(eq(messages.id, "b1"));
+  await db.select().from(messages).where(eq(messages.chatId, "chat-a"));
+  await db.select().from(messages).where(eq(messages.chatId, "chat-mari"));
+  const previousResidentCap = process.env.MARINARA_MAX_RESIDENT_CHATS;
+  try {
+    process.env.MARINARA_MAX_RESIDENT_CHATS = "2";
+    await db._fileStore.flush();
+    assert.equal(db._fileStore.getResidentChatUnits().has("chat-b"), false, "edited chat was evicted");
+    const evicted = await cache.get(0, { refresh: true });
+    assert.equal(evicted.totalWords, edited.totalWords + 2, "edited non-resident chat is re-read");
+  } finally {
+    if (previousResidentCap === undefined) delete process.env.MARINARA_MAX_RESIDENT_CHATS;
+    else process.env.MARINARA_MAX_RESIDENT_CHATS = previousResidentCap;
+  }
+
   // Deleted chats drop out of the overview and the summary cache.
   await db.delete(messages).where(eq(messages.chatId, "chat-b"));
   await db.delete(chats).where(eq(chats.id, "chat-b"));
@@ -308,6 +324,18 @@ try {
   const bogusZone = await app.inject({ method: "GET", url: "/api/chat-insights/activity?tzOffset=0&tz=Not%2FAZone" });
   assert.equal(bogusZone.statusCode, 200, "an unknown zone falls back to the offset");
 
+
+  for (const path of ["/activity", "/chats/chat-a/stats"]) {
+    for (const query of ["tz=UTC&tz=Pacific%2FKiritimati", "tzOffset=0&tzOffset=60"]) {
+      const repeated = await app.inject({ method: "GET", url: `/api/chat-insights${path}?${query}` });
+      assert.equal(repeated.statusCode, 400, `${path} rejects repeated timezone parameters`);
+    }
+    const single = await app.inject({
+      method: "GET",
+      url: `/api/chat-insights${path}?tzOffset=0&tz=Pacific%2FKiritimati`,
+    });
+    assert.equal(single.statusCode, 200, `${path} accepts single timezone values`);
+  }
   await app.close();
   await db._fileStore.close();
   process.stdout.write("chat-stats-activity regression passed\n");

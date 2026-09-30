@@ -41,6 +41,7 @@ void configureClientDiagnosticSender(async (record, signal) => {
     method: "POST",
     body: JSON.stringify(record),
     signal,
+    keepalive: true,
     suppressClientDiagnostics: true,
   });
   if (response.ok) {

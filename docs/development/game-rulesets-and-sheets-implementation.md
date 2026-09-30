@@ -1020,6 +1020,440 @@ words a ruleset declares for its items. No runtime reads it yet.
   of the block and of an item, a catalog file, the published schema, the `use` line and the 1.49
   gate inline and in a file), with 39 deliberate breaks each caught.
 
+### What invented items settled
+
+Capability API 1.51, for #6814. Slice I3-1 of the ruleset items plan: the Game Master invents items
+of the ruleset, and the ruleset bounds what it may invent.
+
+- **The format.** `items.rarityCaps` (one per rarity at most, each naming a rarity the block declares)
+  caps number stats only, inside each stat's own range and in whole numbers for an integer stat; the cap on worn and carried modifiers waits
+  for those modifiers (I4). `items.propose` (default `true`) forbids invention when `false`. Either key
+  needs 1.51 at install, read structurally from the raw file as the other gates are.
+- **A proposal** is the Game Master's add tag with parts (`like`, `category`, `rarity`, `tags`,
+  `stats`, `slots`, `binds`, `summary`), each word by id or label in any case. Read against the
+  block: an unknown category, tag, stat or slot is left out, a rarity the ruleset lacks becomes its
+  lowest, a value its stat cannot hold is left out, a number is rounded, held to its range and then
+  to its rarity's cap (the part `like` started it from as well), and a cost is never invented. Every
+  change is one plain sentence, at most eight, kept on the item; the answer's `note` leaves out the ones about a stat the Game Master is not shown.
+- **Identity.** An invented item is `invented:<id>` on a stack, with the id spelled from its name
+  (`mourning-edge`) or a fingerprint, numbered on collision. A name that is one of the ruleset's own
+  items is that item. A name still held is that item and a proposal never changes it, and the book
+  that made one finds it again (a reply is read before and after its save). Otherwise a proposal is
+  an item of its own under a new id, even for a name an older item has: a retold turn's item never
+  overwrites the first telling's, so switching back finds the item that telling holds.
+  At most 200 per game.
+- **Where it lives.** Chat metadata `gameInventedItems`, written in the same save as the turn's
+  stacks and kept only while the stacks or the turn's remembered tellings hold it, read back only while every part is still one of the ruleset's words, excluded from chat
+  profiles, and carried into a new session only while a carried stack holds it. The item book reads
+  invented items after the ruleset's own (catalog names win) and never lists them in the picker;
+  only the Game Master's book can invent.
+- **What the Game Master is told.** The proposal form and the ruleset's words (categories, rarities
+  lowest first, tags, the stats it is shown with their kinds, slots, and the caps), only when the
+  ruleset has items and allows invention, and never a stat the Game Master is not shown, nor its cap.
+  An invented item reads in its inventory like the ruleset's own, with its facts in brackets.
+- **Examples.** Ember Roads caps Guard at 1, 2 and 3 by rarity.
+- **Proven** by `scripts/regressions/game-ruleset-invented-items.regression.ts` (the format, every
+  refusal and the 1.51 gate, every change a proposal can meet, the book, the tag and the prompt) and
+  the real routes in `scripts/regressions/game-inventory-turn.regression.ts` (a turn invents, a retold
+  turn replaces, the next prompt reads it, a new session keeps only what is held), with 48
+  deliberate breaks each caught.
+
+### What the native switch settled
+
+No new keys, for #6822. Slice I3-2 of the ruleset items plan: `items.native: false`, declared since
+1.49, now does what it says.
+
+- **The Game Master's adds.** Its item book refuses a new untyped name (`not-ruleset-item`), so it
+  adds only the ruleset's items and the ones it invents; more of something already held, removing
+  and giving work as before. Its instructions say so beside the proposal form, or say it may give
+  only the listed items when the ruleset also forbids invention. The player's typed-in items still
+  follow `freeform`.
+- **Carrying over.** A new session restores what the party carried whatever the switch says, so a
+  plain item held before it was turned off comes back.
+- **Fights.** The fight-start blueprint no longer asks for `itemEffects` and drops any the model
+  gives; the directed fight starts with no items and no effects; the round and tactical routes refuse
+  an item action; and the screen offers no items. Items do nothing in a fight until I6 and I8 let a
+  ruleset say what they do.
+- **Proven** by `game-inventory-turn.regression.ts` (a Game Master turn: a new untyped name refused,
+  more of a held plain item, a catalog item and an invented one added; the player still typing one in;
+  the next prompt; a plain item carried into a new session), `ruleset-combat-director-route` (the
+  blueprint prompt), `combat-director-route` (a directed fight with no items and the inventory kept),
+  `hybrid-terrain-route` (the round and tactical routes) and `game-ruleset-invented-items` (the
+  instructions, with and without invention), plus `combat-boss-provider` (the fight-start route asks for
+  no guess and drops one) and `e2e/game-ruleset-items.e2e.ts` (a restored classic fight offers no
+  item), with 13 deliberate breaks each caught and the browser check failing without the screen's part.
+
+### What items on the sheet settled
+
+Capability API 1.52, for #6826. Slice I4-1 of the ruleset items plan: the sheet reads the items a
+character holds.
+
+- **The format.** A value reference `itemStat`: `from` (`worn`, `carried` or `all`), `pick` (`sum`,
+  `max`, `min` or `count`), and optionally `stat`, `slot`, `category`, `tag` and `default`. `stat` is
+  required unless it counts; `sum`, `max` and `min` need a number stat. Every name is checked against
+  the items block, and a ruleset without one cannot read items. It is refused wherever a live read is
+  (pool and track maximums, the proficiency bonus, `binding.max`, the carry numbers, scaled columns
+  and scaling), directly or through a derived value, because items change in play. Needs 1.52 at
+  install, found by walking the ruleset file and every catalog file for the camelCase key, which no
+  sheet id can be.
+- **What it reads.** Worn is an item that takes slots while equipped, one that binds while bound,
+  one that does both while both; an item that does neither is only carried. `sum` is each value
+  times the stack's quantity, `max` and `min` a single value, `count` the quantities (only of the
+  items that give the stat, when one is named). Nothing picked reads `default`, or 0. Only the
+  ruleset's own items count, invented ones included; a plain stack has no stats.
+- **Whose.** The player's card (named for the chat's persona, else the first, the rule carrying and
+  binding already use) reads the player's bag; every other card reads the bag under its name.
+- **Where.** The items are part of the live values an evaluation takes, so every in-game evaluation
+  passes them: a check's sheets, the Game Master's sheet block, the in-game sheet (and its editor),
+  and a ruleset fight's start, whose combatants keep what they held for anything the fight works out
+  again (initiative thrown every round). A caller reads the inventory and the item catalogs only when
+  the ruleset has an `itemStat` anywhere. Outside a game nothing is held.
+- **Examples.** Ember Roads adds the Guard of worn armor to its Guard, and its Game Master summary now
+  shows Guard. Lanes that model an older Engine strip that read with the items block.
+- **Proven** by `scripts/regressions/game-ruleset-item-stats.regression.ts` (every refusal and place,
+  the 1.52 gate in the ruleset and a catalog file, every pick and filter, worn and whose, a check
+  through the real context loader, the sheet block, a fight's initiative, and a ruleset fight started
+  through the real route), `game-inventory-turn.regression.ts` (the Game Master's prompt on a real
+  turn) and `e2e/game-ruleset-wearing.e2e.ts` (the in-game sheet's Guard before and after the coat is
+  put on), with 40 deliberate breaks each caught.
+
+### What worn effects on checks settled
+
+Capability API 1.53, for #6832. Slice I4-2 of the ruleset items plan: conditions and worn or carried
+items change checks outside a fight.
+
+- **The format.** An item's `worn` and `carried` blocks take the parts of a condition a check reads:
+  the four check and save effects, modifiers to checks or saves, `failsSaves`, and `skills` and
+  `saves` narrowing; what an item does in a fight waits for I5, so the rest is refused. A condition or
+  a level gains `skills` (narrowing its check effects and its modifiers to checks), and a modifier
+  gains its own `skills` (to checks), `saves` (to saves) and `mode`, so one source can lean one skill
+  and add to another. A modifier may be a mode alone. `rarityCaps[].bonus` holds an invented item's
+  worn or carried flat bonus; at a capped rarity a bonus in dice is left out, and a penalty is never
+  capped. Every skill and save named is checked against the sheet. Needs 1.53 at install, read
+  structurally from the ruleset file and every catalog file.
+- **A check outside a fight** reads the roller's active sheet conditions (gates on a source read as
+  in sight, as a fight with no board does), the levels their tracks have reached, and their items'
+  `worn` effects while worn and `carried` ones while only carried, each item once. A modifier's own
+  narrowing wins over its source's; an ability check or an unknown one reads only what is narrowed to
+  nothing, and a save only what is about saves. Numbers are rolled and added like `resolution.adjust`
+  (dice on a pool, a number on a sum); leans cancel with the Game Master's `mode=`, only where the
+  ruleset rolls twice; a failed save rolls nothing and buys nothing. The record carries `effects=`,
+  `from=` (what changed it) and `automatic="true"`, and reads them back. A Game Master's complete
+  record for a check anything changes is never vouched for, a record claiming a save failed without
+  a roll is never taken from it (a ruleset game decides the save again; a game with no ruleset keeps
+  only the ask), and the sighted pool spends a second d20 when the effects lean the roll. The effects' own dice never come out of that pool.
+- **Fights** keep anything narrowed to skills out of contests (they roll the fight's own checks),
+  count a modifier's mode like the effect, narrow save modifiers by their own saves, and leave a
+  mode-only modifier out of the numbers.
+- **Seen and said.** Item facts carry worn and carried facts: the item details and the picker show
+  them in localized words, and the Game Master's inventory line appends them. The check line tells
+  the Game Master the Engine applies conditions and worn or carried items, where the ruleset has
+  either. The Game Master can give an invented item `worn=` and `carried=` (changes split by `;`),
+  read against the sheet's skills and saves, copied from `like=` otherwise, and held to `bonus`.
+- **Found along the way.** The general dice resolver rolled every non-d20 ruleset check again after
+  the ruleset's own pass (#6835), which lost the sheet in every 2d6 and pool game; fixed on its own,
+  and carried here.
+- **Examples.** Ember Roads' leather coat costs Sneak 1 while worn, a carried waystone helps Sway, and
+  its rarities cap an invented bonus at 1, 1 and 2; Gravewatch's bound Dawn bell adds a die to Ward,
+  and Rattled takes one off Soothe and Barter.
+- **Proven** by `scripts/regressions/game-ruleset-check-effects.regression.ts` (every refusal and the
+  1.53 gate in the ruleset and a catalog file, sources and narrowing, checks and saves through the
+  turn's resolver on the 5e example, Ember Roads and Gravewatch, the record read back, vouching,
+  fights, item facts, invented items and the Game Master's line), `game-inventory-turn.regression.ts`
+  (a real turn saves the Sneak check with the coat) and `e2e/game-ruleset-check-effects.e2e.ts` (the
+  coat's details and the dice card of a real turn), with 65 deliberate breaks each caught. The published JSON schema mirrors the new refinements, pinned by `game-ruleset-json-schema.regression.ts`.
+
+### What requirements, abilities and derived levels settled
+
+Capability API 1.54, for #6846. Slice I4-3 of the ruleset items plan, the last of I4.
+
+- **Abilities.** A worn or carried effect may carry `abilities`, each `{ set }` (a floor a higher score
+  keeps) or `{ add }` (not 0), checked against the sheet's abilities and a `set` against their range.
+  `evaluateRulesetSheet` applies them first, from the items in the live values: the additions, then
+  the highest floor, inside the ability's own range, each item once. So every in-game reader (the
+  sheet, checks, the Game Master's block, fights) reads the changed ability. Maximums and the
+  proficiency bonus are worked out without the live state and so without items, as `itemStat` already
+  was. `rulesetReadsItems` now means "has an items block", since abilities and derived levels read
+  items without an `itemStat`.
+- **Requirements.** An item's `requires` (up to four) names a value reference, `atLeast`, and an
+  `otherwise` effect in the worn vocabulary, which may not change an ability (the value may read one).
+  While the item is worn and the value, read off the sheet with items applied, falls short, the
+  `otherwise` is one more check source named for the item. What an item does in a fight still waits
+  for I5.
+- **Derived levels.** A level reads a `track` or a `derived` value, exactly one; the derived value is
+  worked out with the live state and items, on checks outside a fight and in a fight (from what the
+  fighter held as it began). A derived value may share a track's id, so a derived level is marked
+  `derived` on its way to a roll's bonuses and guards, is counted apart from the track's at import,
+  and the fight log names it by the derived value's label.
+- **Seen and said.** Item facts carry ability changes ("Brawn at least 2", "+1 Heart") and
+  requirements ("needs Sinew 3, otherwise -1 on checks (Dig)"), on the screen in localized words and
+  in the Game Master's inventory line. Every value a requirement may read has a label: a modifier and
+  a count of items say so ("Sinew modifier", "Silver items"), and a list's column names its list. Invented items take an ability's name in `worn=`/`carried=` as
+  an addition, held to the rarity's `bonus`; a `set` copied from `like=` is left out at a capped rarity,
+  and `like=` brings its requirements. A real small model (Gemma 4 E4B) wrote the bonus as `Brawn +1`,
+  inside `stats=` or beside `tags="none"`, so a proposal reads a number after the name, `worn=`,
+  `carried=` or `summary=` inside `stats=` when no stat has that name, and `none` as an empty list.
+- **Gate and schema.** 1.54 at install for `requires`, an effect's `abilities` (inline and in catalog
+  files) and a level's `derived`. The published JSON schema mirrors the one-of level, abilities as an
+  item effect's content, and no abilities in an unmet requirement.
+- **Examples.** Ember Roads: ox-hide gauntlets set Brawn to at least 2, and a derived "Bulk carried"
+  slows anyone carrying 10 or more. Gravewatch: the grave spade asks for Sinew 3.
+- **Proven** by `scripts/regressions/game-ruleset-requirements.regression.ts` (every refusal and the
+  gate, abilities from items on the sheet, a derived value, the Game Master's block and a fight,
+  requirements on checks including one met by an item, derived levels on checks and in a fight, item
+  facts, invented items and a proposal's slips), `game-inventory-turn.regression.ts` (a real turn's
+  Sneak check carries the bulk level beside the coat) and `e2e/game-ruleset-wearing.e2e.ts` (Brawn +2
+  on the in-game sheet, and both kinds of item details), with 57 deliberate breaks each caught.
+
+### What weapons as items settled
+
+Capability API 1.55, for #6855. Slice I5-1 of the ruleset items plan, split from I5 on 2026-09-29:
+armor and what a worn item does in a fight are I5-2, and ammunition and firearms I5-3.
+
+- **The shape.** An item's `attack` is an attack row with values in place of columns: `budget`;
+  `toHit` (`abilities`, the best counting; `skill`, with the attack's ability swapped in as a row's
+  is; `proficiency`, a value off the holder, adding the proficiency bonus above 0; `bonus`; `target`);
+  `damage` (`dice`, best of `abilities`, `bonus`, `type`); `reach`; `range`; `versatile`; `strikes`.
+  Every number or word may be `{ "stat": id }`, read off the item's own stat, so an invented weapon
+  fights with its own stats and `rarityCaps` holds them. There is no `thrown` key: a weapon with
+  both a reach and a range is thrown, which is what an attack row already meant.
+- **Checked at import** against the ruleset: budgets, abilities, skills, damage types, and each stat
+  read by kind (an enum read as abilities, a skill or a type holds only those words). A summed fight
+  needs dice; `target` is a pool fight's where the target moves; distances need `combat.distance`; a
+  weapon must be wearable (a slot or a binding), and `versatile` needs a slot. A ruleset with no
+  combat block carries a weapon and reads nothing, as a catalog entry's `budget` is.
+- **In a fight** each worn item with an attack is an action `item:<index>` named as the stack is,
+  built once as the fight begins, beside the attack rows (`abilityAndSkill` is now shared with them).
+  `versatile` dice apply while each slot the weapon takes has room for as much again among the worn
+  items (a stack counts by its quantity). A pool action carries its own `target`, which the attack's
+  throw and its forecast both pass to the pool roller, held inside the ruleset's range.
+- **What gets through.** A creature's `resist` and `immune` entries may be `{ type, except }`, with
+  `except` naming item tags; a weapon's damage carries its item's tags as `qualities`, and every
+  part of its blow does. A plain word is what it always was, and a GM-invented creature keeps
+  whatever entries survive the known-type filter.
+- **Seen and said.** Item facts gain `attack` (sums written in labels, digits and signs, the best of
+  abilities joined by "/"), the Game Master's item line ends with it, and the item details show it in
+  two localized lines. `like=` copies the attack onto an invented item unless it could never be worn.
+  Gemma 4 E4B described weapons fully and never wrote `like=`, so an item invented in a category of
+  weapons with nothing to start from takes the attack of the one of them it is most like by name (a
+  word shared either way, else the first), and the stats that attack reads which the proposal left
+  out, re-invented so rarity caps hold them; the note says "It fights as Hand axe does.", and the
+  proposal form says a weapon made like one fights like it where the ruleset has fights.
+- **Examples.** Ember Roads: the hand axe (thrown), a new boar spear (reach two cells, thrown,
+  versatile 1d8) and the hunting bow (range 30 to 60). Gravewatch: the grave spade (target 6) and the
+  silver coffin nail, and a new grave wight whose tearing resistance silver gets through.
+- **Proven** by `scripts/regressions/game-ruleset-weapons.regression.ts` (every refusal and the gate,
+  weapons in a summed fight and a pool fight, versatile with a hand free and with both full, stat
+  reads, the best ability, a skill, proficiency, strikes, a weapon's own target on the throw and the
+  forecast, silver through a resistance and an immunity, facts and invented weapons), lanes that pin
+  item facts or the examples, and `e2e/game-ruleset-weapons.e2e.ts` (the axe's attack in its details,
+  and on the fight menu while the carried bow is not), with 67 deliberate breaks each caught.
+
+### What armor and worn effects in a fight settled
+
+Capability API 1.56, for #6857. Slice I5-2 of the ruleset items plan.
+
+- **The vocabulary.** An item's `worn` and `carried` take every condition effect but the four a level
+  cannot have (the same reason: nobody put it on and it never ends by itself), modifiers to every
+  target, and new keys `resist`, `vulnerable`, `immune` (damage types, checked against
+  `combat.damageTypes`) and `conditionImmunities`. `RULESET_ITEM_CHECK_EFFECTS` names what a check
+  outside a fight reads, which is all an item had before; the refusal that said fights came later is
+  gone. An unmet requirement's `otherwise` takes the same.
+- **One reader.** `rulesetItemSources` (check-effects.ts) is what a character's items do, worn
+  against carried, one item once, and a worn item's unmet requirement; a check and a fight both read
+  items through it. A fight adds its sources to `rulesetActiveConditions` as entries marked `item`,
+  named for the stack, so attacks, defense, speed, effects, failed saves, save and check modes read
+  them with no new path; `item` is carried to a modifier, a roll's bonus and a guard, and the log
+  names the stack rather than looking it up as a condition. `rulesetCombatHide` joins a creature's
+  hide with its items' for damage, and `rulesetImmuneToCondition` takes the definition to read items
+  (a blow's condition and an opening crash both pass it).
+- **`resolution.adjust` in a fight.** Every roll a fight builds from a sheet adds it, as a check does:
+  attack rows and weapons (through `abilityAndSkill`), ability entries that roll to hit, saves,
+  contest checks and initiative, as the fight opens and when it is thrown again each round. A value
+  reference to an ability's modifier or score, a skill or a save is a roll made with that ability;
+  anything else takes only the entries for every roll. Nothing in either example moves by default,
+  since both of their entries read a live state at its default.
+- **Hardness.** `combat.pool.hardness` (a value off the sheet, read like soak) and a creature's
+  `hardness` are refused unless a style spends initiative, and a creature written as a sheet takes it
+  from the sheet. One the Game Master invents has none: the clamp drops it, as it drops soak, since no
+  tier bounds it. A spending blow whose dice are below it lands (the number goes back to the base)
+  and records a `hardness` event instead of damage; the spending style's forecast is 0 against the
+  first target it would stop (for an area, the first one any legal aim catches). This is Exalted's hardness, against decisive (spending) blows. The
+  Storyteller record's "Not built" note about a taking blow against a sturdy target was loosely put:
+  a taking blow already meets soak, and the author guide's "Not yet" line now says so.
+- **Seen and said.** Item facts gain fight kinds: attacks, defense (named by the ruleset's own
+  word, "Guard"), speed (a number, or half or double), the fight effects in words, and harm and
+  conditions kept off, with localized lines on the screen and English ones for the Game Master. A
+  defense written as a number has no name, so it reads "defense". In a pool ruleset an item's
+  modifier to attacks is a flat number of dice, as a condition's is, at import and when invented.
+  Its modifiers to checks and saves may still be dice, as they could before 1.56: a fight adds what
+  they roll as dice, exactly as a pool check outside a fight does, so refusing them now would only
+  refuse rulesets that installed on 1.54.
+  Invented items read `+N`/`-N`/advantage or disadvantage on attacks and `+N`/`-N` on defense (or its
+  word), held to the rarity's bonus; a copied speed change is not capped (it is a distance, not a
+  bonus), and a copied effect whose only part left is what it keeps off is kept. Gemma 4 E4B wrote
+  "+1 Guard" beside a `guard=1` stat for one +1 in 4 of 6 bracers, and ignored a form line asking for
+  one or the other, so an invented item that gives a stat the defense counts
+  (`rulesetItemStatsRead`, following derived values) drops a worn change to defense and says so; the
+  form still names that stat (only one the Game Master is shown). "Bonus" after attacks or defense is
+  read too ("+1 attack roll bonus").
+- **Examples.** Ember Roads' waystone, carried, resists burn. Gravewatch's cursed widow's ring costs a
+  die on attacks, and its Dawn bell, bound, keeps the bearer from being rattled.
+- **Proven** by `scripts/regressions/game-ruleset-armor.regression.ts` (import and the gate for every
+  part, items in a fight on attacks, defense, speed, effects, saves, harm and conditions, a blow's
+  condition and a crash's kept off, requirements, the log's names, `resolution.adjust` on every kind
+  of roll, hardness on the blow, the forecast and a bestiary creature, facts, invented items), lanes
+  that pin older gates, the examples or the proposal form, and `e2e/game-ruleset-armor.e2e.ts`, with
+  62 deliberate breaks each caught.
+
+### What ammunition and reloading settled
+
+Capability API 1.57, for #6871. Slice I5-3 of the ruleset items plan, split from the rest of section
+4.4 (fire modes, off-hand attacks, a damage floor and conditions on a hit, now I5-4) so the part that
+writes to the inventory ships on its own.
+
+- **The keys.** A weapon's `attack` gains `ammo` (`tag`, one of the items block's tags; `perAttack`,
+  1 by default; `recover`, a share from 0 to 1) and `clip` (`max`, a number or a number stat of the
+  item; `reload`, a budget). A clip's rounds are not picked up, so `recover` beside a `clip` is
+  refused, and so is an attack that would shoot more than a written-down clip holds. A ruleset with
+  no combat block reads neither, as it reads no other part of an attack.
+- **Counted on the fighter.** `sheet.items` is what the fighter held as the fight began and is
+  never changed; `itemsUsed`, `loaded` and `recoverable` on the combatant, keyed by the item's place
+  in that list, are what the fight did (`ammo.ts`). Ammunition is drawn first stack first from
+  every carried stack with the tag, worn or not. `rulesetActionAvailable` asks
+  `rulesetShotsAvailable`, so the menu, windows and sequences see an empty weapon the same way, and
+  so does `rulesetOpportunityAttack`, which keeps its own copy of that bookkeeping (the menu's module
+  reads it); `spendAvailability` spends the shots wherever an action is taken.
+- **Reload.** A weapon with a clip adds a second action, `reload:<index>`, of a new kind `reload`
+  (targets nobody, no roll, no window), offered while the clip has room and, where it draws `ammo`,
+  while the bag holds some. It fills to `max` out of the bag, or in full without `ammo`. The combat
+  AI weighs it as any action that targets nobody (setup), and since an empty weapon is off the menu,
+  a party member the Engine plays reloads it and then fires it.
+- **Loaded, on the stack.** `GameInventoryStack.loaded` is kept on a stack of one item only (a worn
+  stack always is), read into `RulesetSheetItem.loaded`, and a weapon without one is loaded full.
+  Pouring stacks together forgets it (a `ponytail:` ceiling on the stack type).
+- **Recovery.** `pushOutcome` recovers on `victory` only: a fled fight never reaches it (the director
+  ends that one), and a lost one holds no field. The share is summed per stack as it is shot and
+  rounded down once, with a hair of tolerance for a sum of fractions.
+- **Written back.** `RulesetSheetItem.stack` carries the inventory stack's id, item ref and holder.
+  The director's `save()` diffs the fight against the stored state (`rulesetFightItemChanges`) and
+  writes the changes by stack id (`applyRulesetFightItemChanges`) through
+  `applyGameInventoryChangeHeld`, in the same transaction as the party's live sheets, with journal
+  entries ("used", and "acquired" for what came back). A stack a won fight gives back to after it
+  was emptied is made again with its own id; a stack gone, short, or holding another item under that
+  id refuses the step, as the classic spend does.
+- **Seen and said.** Item facts gain `ammo` (the tag's label, per attack, recover) and `clip` (max,
+  the reload budget's label); the Game Master's line ends with `ammunition Arrow (1 an attack, 50%
+  picked up after a won fight)` or `holds 1, reload (Act)`. The menu says `3 to shoot` or `0 of 1 loaded`
+  beside an option, a Reload group names the weapon, and the log prints `shot`, `reload` and
+  `recovered`.
+- **Examples.** Ember Roads' arrows carry a new `arrow` tag and its hunting bow shoots them, half
+  picked up. Gravewatch gains a `shot` tag, a `powder` category, a watch pistol (a clip of one,
+  reloaded with the act) and shot and powder.
+- **Proven** by `scripts/regressions/game-ruleset-ammo.regression.ts` (import and the gate, shooting
+  from one stack and from two, an empty weapon off the menu and refused, recovery after a won fight
+  and not a lost one, a clip spent, reloaded from the bag or for free, a clip read off a stat, the
+  write-back by stack id with removal and a stack made again, the loaded count on a stack of one,
+  facts and the log), lanes that pin older gates or the examples, and
+  `e2e/game-ruleset-ammo.e2e.ts`, with 61 deliberate breaks each caught (one of them, the director's
+  write, by the e2e).
+
+### What modes, off-hand attacks, a floor and conditions on a hit settled
+
+Capability API 1.58, for #6875. Slice I5-4 of the ruleset items plan: the rest of section 4.4.
+
+- **Modes.** A weapon's `attack.modes` (up to six) each carry an `id`, a `label` and what they
+  change: `ammo` (one attack's shots, so the weapon has `ammo` or a `clip`, and no more than a
+  written clip holds), `toHit`, `target` (a pool fight whose target can move) and `targets`.
+  `rulesetModedAction` (ammo.ts) derives the attack in a mode: the label gains the mode's in
+  brackets, `toHit` adds, a pool target moves from the weapon's own or else the pool's default, the
+  target count is the mode's, and `shots` replaces its ammunition's per-attack count. The menu lists
+  on the option the modes its holder has the shots for, each with its own forecast, and none in a
+  window. A choice's `mode` (and a held attack's `resume.mode`) makes the attack in that mode; one
+  the option does not offer is refused as `unknown-mode`. The mode travels like an initiative
+  style: the command schema, the director's command and GM-candidate paths, the client's menu step
+  (after the style step), the board and `DirectedCombatUI`.
+- **The Engine's picker weighs modes** (`modedWays` beside `styledWays`) only when aimed at one
+  target: it aims every candidate at one, and a mode for several would pay for shots it never takes
+  (a `ponytail:` note; a candidate per group of targets is the upgrade).
+- **Off hand.** `combat.offHand` (`budget`, `ability` `full` or `penalty-only`) and an item's
+  `attack.offHand`. A worn off-hand weapon's main attack carries `pairs` (its item index), and a
+  second action `offhand:<index>` on the off-hand budget carries `offHandOf`, one blow (no
+  `strikes`) with the damage ability the ruleset allows. Taking a `pairs` attack on a turn sets
+  `flags.offHand`, cleared with the other flags as the next turn begins, and `rulesetActionAvailable`
+  offers an off-hand attack only after another weapon's. `rulesetOpportunityAttack` never picks one.
+  The option says `offHand`, and the client names it "<weapon>, off hand".
+- **Floor.** `attack.floor` (a number or a number stat) is `damage.floor` on the action. The first
+  amount of a pool blow's harm after soak, or of a summed blow's damage, is raised to it before a
+  save halves it and before a resistance does; the damage event carries `floor` when it raised it,
+  and the log says so. A spending blow's path never reads it.
+- **On a hit.** `attack.onHit` entries (`condition`, `atLeast`, `rounds`) are applied through
+  `applyConditionId` after the blow, when the harm dealt (after soak and resistances) reached
+  `atLeast`, for `rounds` or with no clock; immunity is read as for any condition.
+- **Seen and said.** Item facts gain `modes`, `offHand` (the budget's label), `floor` and `onHit`
+  (the condition's label); the Game Master's line ends with `modes Volley (2 shots, -2 to hit, up to
+  2 targets)`, `off hand (Quick)`, `at least 1 on a hit before resistance` or `Marked for 2
+  rounds when a hit deals 2 or more`, and the item details say the same in localized lines.
+- **Examples.** Ember Roads' hunting bow gains a volley. Gravewatch gains `combat.offHand` on its
+  quick budget; its silver coffin nail is an off-hand weapon that marks what it harms twice or more
+  for two rounds, and its grave spade never deals less than one on a hit.
+- **Proven** by `scripts/regressions/game-ruleset-weapon-modes.regression.ts` (import and the gate,
+  a volley at two and at one, a mode refused or not offered, a pool mode's target, the off hand after
+  another weapon and not after a spade or alone, never in passing, `penalty-only`, a floor in a pool
+  and a summed fight and under a resistance, conditions on a hit at and below the number, lasting
+  and resisted, the director's command, the Engine's picker choosing a mode, facts and the log),
+  lanes that pin older gates, the examples or the Game Master's lines, and
+  `e2e/game-ruleset-weapon-modes.e2e.ts`, with 60 deliberate breaks each caught (two of them, in the
+  client's mode step and its command, by the e2e).
+
+### What using items in a fight settled
+
+Capability API 1.59, for #6880. Slice I6-1 of the ruleset items plan, split from using items outside
+a fight (the Use button, the Game Master's `use`, scroll gates, charges regained on rests and
+`breaksOn`, now I6-2) so the fight side ships on its own.
+
+- **The keys.** An item gains `use` and `charges`. `use` is the `mechanics` vocabulary less what only
+  a sheet row can mean (`cost`, `perCostStep`, `check`, `concentration`, `reaction`, `scales`,
+  `gives`, `standard`, `rider`, and the kinds `utility` and `rider`), plus a weapon-style `toHit`
+  (only with `attackRoll`), a `saveDifficulty` (a number or a number stat, required when anything in
+  it asks a save, since an item has no catalog source to read one off), `consumes` and a `charges`
+  cost. `charges.max` is a number or a number stat. A use is used up or spends charges, never both;
+  charges need a use that spends them and a `stack` of 1. With a combat block, a use needs a budget
+  or `free`, its budget and its to-hit are checked as a weapon's are, a pool fight's harm dice are the
+  pool's die, and a wound track refuses its `temporary` as it refuses an ability's.
+- **One action per use.** `mechanicsAction` (lifted out of `abilityAction`) builds the action from
+  either; `itemUseActions` adds `use:<index>` of a new kind `item` for each held item with a use, worn
+  where it takes slots or binds, with `itemUse` (the item's index, `consumes`, and the charges' cost
+  and max). Only a sheet row carries `use` (the pool payment), so an item pays with itself. Charges or
+  a save's number read off a stat the item does not give leave the use off the menu.
+- **Counted on the fighter.** `rulesetItemUseLeft` reads what is left: the stack's quantity less
+  `itemsUsed`, or `charges` on the combatant, else the stack's kept count, else `max`.
+  `rulesetShotsAvailable` asks it, so the menu, windows and sequences see an item with none left the
+  same way; `spendRulesetShots` spends one off the stack or the charges and emits the existing `uses`
+  event. `rulesetOpportunityAttack` never picks a use.
+- **Charges, on the stack.** `GameInventoryStack.charges` is kept on a stack of one only and read into
+  `RulesetSheetItem.charges`; pouring stacks together forgets it, as `loaded` is forgotten.
+- **Written back.** `RulesetFightItemChange` gains `charges`; the director's `save()` writes it
+  through the same `applyGameInventoryChangeHeld` path as shots and loads, and a stack gone refuses
+  the step.
+- **Seen and said.** The menu has an **Items** group after abilities, and the board counts a use as
+  something to do in reach. Item facts gain `use` (budget label, kind, amount, type, to-hit, save,
+  conditions, temporary, range, area, the distance unit, `consumes`, charges); the Game Master's line
+  ends with `use (Action): heals 1d4 + 1, range 0 paces, used up`, the item details say the same in
+  localized lines and show the charges left.
+- **Invented items.** An item made `like=` one with a use copies `use` and `charges`, and `stack`
+  already came with it.
+- **Examples.** Ember Roads gains a poultice (a heal on the Action, used up). Gravewatch's warming
+  tonic heals a box of harm on the quick budget, used up, and its dawn bell, worn and bound, spends
+  one of three charges to rattle what fails a Steel save against 7.
+- **Proven** by `scripts/regressions/game-ruleset-item-use.regression.ts` (import and the gate, a
+  poultice on its holder and a friend and never a foe, used up and refused, the Items group, a tonic
+  on the quick budget beside a blow, a bell only while worn, its charges spent and kept, a use that
+  spends two, charges read off a stat, never in passing, the write-back by stack id, charges on a
+  stack of one, the Engine's own party member healing whoever is hurt, facts, the Game Master's
+  lines and invented items), lanes that pin older gates, the examples or the menu's groups, and
+  `e2e/game-ruleset-item-use.e2e.ts`, with 69 deliberate breaks each caught.
+
 ## Gaps a ruleset author found
 
 The author of [Marinara-RPG-Extension](https://github.com/Kenhito/Marinara-RPG-Extension), who

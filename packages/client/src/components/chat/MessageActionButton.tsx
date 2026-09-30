@@ -99,26 +99,38 @@ export function useMessageActionMenu(align: "left" | "right") {
       const menu = menuRef.current;
       if (!button || !menu) return;
       const rect = button.getBoundingClientRect();
+      const viewport = window.visualViewport;
+      const viewportTop = viewport?.offsetTop ?? 0;
+      const viewportLeft = viewport?.offsetLeft ?? 0;
+      const viewportBottom = viewportTop + (viewport?.height ?? window.innerHeight);
+      const viewportRight = viewportLeft + (viewport?.width ?? window.innerWidth);
       const left = align === "right" ? rect.right - menu.offsetWidth : rect.left;
       setPosition({
-        top: Math.max(8, rect.top - menu.offsetHeight - 7),
-        left: Math.max(8, Math.min(left, window.innerWidth - menu.offsetWidth - 8)),
+        top: Math.max(
+          viewportTop + 8,
+          Math.min(rect.top - menu.offsetHeight - 7, viewportBottom - menu.offsetHeight - 8),
+        ),
+        left: Math.max(viewportLeft + 8, Math.min(left, viewportRight - menu.offsetWidth - 8)),
       });
     };
     update();
     window.addEventListener("resize", update);
     window.addEventListener("scroll", update, true);
+    window.visualViewport?.addEventListener("resize", update);
+    window.visualViewport?.addEventListener("scroll", update);
     const observer = new ResizeObserver(update);
     if (menuRef.current) observer.observe(menuRef.current);
     return () => {
       window.removeEventListener("resize", update);
       window.removeEventListener("scroll", update, true);
+      window.visualViewport?.removeEventListener("resize", update);
+      window.visualViewport?.removeEventListener("scroll", update);
       observer.disconnect();
     };
   }, [align, open]);
-
   useEffect(() => {
     if (!open) return;
+    menuRef.current?.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target as Node;
       if (!buttonRef.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);

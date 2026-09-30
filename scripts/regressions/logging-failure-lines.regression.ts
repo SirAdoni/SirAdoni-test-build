@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { Writable } from "node:stream";
 import pino from "../../packages/server/node_modules/pino/pino.js";
 import Fastify from "../../packages/server/node_modules/fastify/fastify.js";
 
 // One line per failure: an unknown 500 is logged once, a user stop is info, causes survive,
 // repeating failures are rate limited, and model or provider text stays out of non-debug lines.
 const { logger } = await import("../../packages/server/src/lib/logger.js");
-const { failureLevel, isCancellation, logContextMixin } = await import("../../packages/server/src/lib/log-context.js");
+const { sanitizeDiagnosticValue } = await import("../../packages/server/src/lib/diagnostics.js");
+const { failureLevel, isCancellation } = await import("../../packages/server/src/lib/log-context.js");
 const { logRateLimited, resetRateLimitedLogs, takeRateLimitedSlot } =
   await import("../../packages/server/src/lib/log-rate-limit.js");
 const { errorHandler } = await import("../../packages/server/src/middleware/error-handler.js");
@@ -26,15 +26,22 @@ assert.equal(failureLevel(abort), "info");
 assert.equal(failureLevel(new Error("boom")), "error");
 assert.equal(failureLevel(new Error("boom"), "warn"), "warn");
 
-// The shared logger serialises Errors under err and error, cause chain included.
+// The shared logger sanitizes Errors under either field into bounded structured diagnostics.
+// Pino's serializer key is err; { error } is already a plain object by then.
 const serializers = Reflect.get(logger, pino.symbols.serializersSym) as Record<string, (value: unknown) => unknown>;
 assert.equal(typeof serializers.err, "function");
-assert.equal(typeof serializers.error, "function", "{ error } is serialised, not printed as {}");
+assert.equal(serializers.error, undefined, "the shared logger uses Pino's conventional err key");
 const root = new Error("disk full");
 const wrapped = new Error("Could not save chat", { cause: root });
-const serialised = serializers.error!(wrapped) as { message: string; stack: string };
-assert.match(serialised.message, /Could not save chat: disk full/u, "the cause message is kept");
-assert.match(serialised.stack, /caused by: Error: disk full/u, "the cause stack is kept");
+const serialised = sanitizeDiagnosticValue(wrapped) as {
+  message: string;
+  stack: string;
+  cause: { message: string; stack: string };
+};
+assert.equal(serialised.message, "Could not save chat");
+assert.match(serialised.stack, /Error: Could not save chat/u);
+assert.equal(serialised.cause.message, "disk full", "the cause message is kept");
+assert.match(serialised.cause.stack, /Error: disk full/u, "the cause stack is kept");
 
 // Repeats: the first line is written, the rest of the window is counted, the next line says how many.
 resetRateLimitedLogs();
@@ -112,16 +119,8 @@ try {
 assert.ok(startContexts.length >= 2, "both sidecar starts ran");
 assert.deepEqual([...new Set(startContexts)], ["root"], "sidecar starts do not inherit the requester's requestId");
 
-// An unknown 500 produces exactly one error line; a cancellation that escapes a route is info.
-const lines: Array<Record<string, unknown>> = [];
-const sink = new Writable({
-  write(chunk, _encoding, done) {
-    for (const line of String(chunk).split("\n")) if (line.trim()) lines.push(JSON.parse(line));
-    done();
-  },
-});
-const shared = pino({ level: "debug", mixin: logContextMixin, serializers }, sink);
-const app = Fastify({ loggerInstance: shared, logController: new RequestLogController() });
+// The error handler reports through the shared application logger, not Fastify's request logger.
+const app = Fastify({ logger: false, logController: new RequestLogController() });
 app.setErrorHandler(errorHandler);
 app.get("/boom", async () => {
   throw new Error("synthetic failure");
@@ -129,18 +128,35 @@ app.get("/boom", async () => {
 app.get("/stop", async () => {
   throw abort;
 });
-await app.ready();
-const boom = await app.inject({ method: "GET", url: "/boom" });
-assert.equal(boom.statusCode, 500);
-const errorLines = lines.filter((line) => Number(line.level) >= 50);
-assert.equal(errorLines.length, 1, "one error line per 500, not one from the handler and one from Fastify");
-assert.match(String((errorLines[0]!.err as { message?: string })?.message), /synthetic failure/u);
+const reported: Array<{ level: "error" | "info"; fields: Record<string, unknown> }> = [];
+const priorError = logger.error;
+const priorInfo = logger.info;
+logger.error = ((fields: Record<string, unknown>) => reported.push({ level: "error", fields })) as typeof logger.error;
+logger.info = ((fields: Record<string, unknown>) => reported.push({ level: "info", fields })) as typeof logger.info;
+try {
+  await app.ready();
+  const boom = await app.inject({ method: "GET", url: "/boom" });
+  assert.equal(boom.statusCode, 500);
+  assert.equal(reported.length, 1, "one shared diagnostic report per 500");
+  assert.equal(reported[0]!.level, "error");
+  assert.equal(reported[0]!.fields.event, "request.error");
+  assert.ok(typeof reported[0]!.fields.errorId === "string" && typeof reported[0]!.fields.requestId === "string");
+  assert.equal((reported[0]!.fields.err as Error).message, "synthetic failure");
 
-lines.length = 0;
-await app.inject({ method: "GET", url: "/stop" });
-assert.equal(lines.filter((line) => Number(line.level) >= 40).length, 0, "a cancellation is not a warning or error");
-assert.ok(lines.some((line) => (line.err as { message?: string })?.message === "stopped" && line.level === 30));
-await app.close();
+  reported.length = 0;
+  const stopped = await app.inject({ method: "GET", url: "/stop" });
+  assert.equal(stopped.statusCode, 500, "severity classification preserves the existing HTTP contract");
+  assert.equal(reported.length, 1, "the cancellation is reported once");
+  assert.equal(reported[0]!.level, "info", "a cancellation is neither warning nor error");
+  assert.equal(reported[0]!.fields.errName, "AbortError");
+  assert.equal(reported[0]!.fields.errMessage, "stopped");
+  assert.equal(reported[0]!.fields.errorCode, "ME_CANCELLED");
+  assert.equal(reported[0]!.fields.err, undefined, "info cancellations carry bounded error fields, not a stack");
+} finally {
+  logger.error = priorError;
+  logger.info = priorInfo;
+  await app.close();
+}
 
 // Model and provider text stays out of warn lines at the sites that used to include it.
 const read = (path: string) => readFileSync(new URL(`../../packages/server/src/${path}`, import.meta.url), "utf8");

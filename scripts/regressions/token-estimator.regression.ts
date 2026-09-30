@@ -58,7 +58,7 @@ for (const [path, expression] of [
   ],
   [
     "packages/server/src/routes/generate.routes.ts",
-    'estimateTextTokens( (assembled.lorebookActivatedEntries ?? []).map((entry) => entry.content).join(""), )',
+    'estimateTextTokens((assembled.lorebookActivatedEntries ?? []).map((entry) => entry.content).join(""))',
   ],
   [
     "packages/server/src/routes/lorebooks.routes.ts",

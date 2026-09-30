@@ -87,23 +87,31 @@ try {
     const realDb = await createFileNativeDB();
     let deleteCalls = 0;
     let failDeletesAfter = Infinity;
-    const db = new Proxy(realDb as object, {
-      get(target, prop, receiver) {
-        const value = Reflect.get(target, prop, receiver);
-        if (prop === "delete" && typeof value === "function") {
-          return (...args: unknown[]) => {
-            deleteCalls++;
-            if (deleteCalls > failDeletesAfter) {
-              // Fail once only, so a rollback that deletes the copies can succeed.
-              failDeletesAfter = Infinity;
-              throw new Error("simulated delete failure");
-            }
-            return value.apply(target, args);
-          };
-        }
-        return typeof value === "function" ? value.bind(target) : value;
-      },
-    });
+    const withDeleteFailure = (database: typeof realDb): typeof realDb =>
+      new Proxy(database, {
+        get(target, prop, receiver) {
+          const value = Reflect.get(target, prop, receiver);
+          if (prop === "transaction" && typeof value === "function") {
+            return (
+              callback: Parameters<typeof realDb.transaction>[0],
+              options?: Parameters<typeof realDb.transaction>[1],
+            ) => value.call(target, (tx: typeof realDb) => callback(withDeleteFailure(tx)), options);
+          }
+          if (prop === "delete" && typeof value === "function") {
+            return (...args: unknown[]) => {
+              deleteCalls++;
+              if (deleteCalls > failDeletesAfter) {
+                // Fail once so recovery can retain or clean up destination copies.
+                failDeletesAfter = Infinity;
+                throw new Error("simulated delete failure");
+              }
+              return value.apply(target, args);
+            };
+          }
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    const db = withDeleteFailure(realDb);
     const server = Fastify();
     server.decorate("db", db);
     await server.register(lorebooksRoutes, { prefix: "/api/lorebooks" });
@@ -154,6 +162,7 @@ try {
     });
     failDeletesAfter = Infinity;
     assert.ok(moved.statusCode >= 500, `move should fail, got ${moved.statusCode}`);
+    assert.equal(deleteCalls, 2, "fault injection reaches the second transaction-scoped source delete");
     const sourceNames = ((await request("GET", `/api/lorebooks/${source.id}/entries`)) as Array<{ name: string }>).map(
       (entry) => entry.name,
     );

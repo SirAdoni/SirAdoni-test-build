@@ -10,6 +10,7 @@ import {
   type SlpPostAccess,
 } from "../../../../../shared/src/slp/slp-social.types.js";
 import { createSlurpMessagesStorage } from "../../data/slp-storage.js";
+import { listSlurpPostMedia } from "../../data/feed/slp-post-media-storage.js";
 import type { SlpImagePromptReviewItem } from "../media/slp-media-contract.js";
 import type { DB } from "../../../db/connection.js";
 import { logger } from "../../../lib/logger.js";
@@ -18,7 +19,8 @@ import { createConnectionsStorage } from "../../../services/storage/connections.
 import { resolveSlurpTextConnection } from "../../base/identity/slp-connection.js";
 import { createSlurpStorage } from "../../data/slp-storage.js";
 import { slpCreatorUnlockPriceMetadata } from "../../modules/economy/slp-prices.js";
-import { generateCreatorPost, resolveSlurpAutomaticPostAccess } from "./slp-generation-service.js";
+import { generateCreatorPost } from "./slp-generation-service.js";
+import { resolveSlurpAutomaticPostAccess } from "./slp-automatic-post-access.js";
 import type { SlpCreatorContentFormat } from "./slp-generation-service.js";
 import type { ConnectionAdmissionMode } from "../../../services/generation/connection-admission.js";
 import {
@@ -83,7 +85,8 @@ export async function generateAndApplyCreatorPost(
   request: SlpCreatorGenerationRequest & { format?: SlpCreatorContentFormat },
   media?: SlpCreatorPostMediaUpload,
   admissionMode?: ConnectionAdmissionMode,
-  options: { allowStory?: boolean } = {},
+  /** `playerAsked`: the player's own tap, so the picture's prompt rewrite is off the AI budget (0.3.6). */
+  options: { allowStory?: boolean; playerAsked?: boolean } = {},
 ): Promise<GenerateAndApplyCreatorPostResult> {
   const noodle = createSlurpStorage(db);
 
@@ -131,7 +134,9 @@ export async function generateAndApplyCreatorPost(
       request,
       connection,
       media,
-      admissionMode,
+      // The persona gate above read the caller's own mode. A player's tap then generates in the
+      // foreground (the default queue anyway), which keeps its picture off the AI budget (0.3.6).
+      admissionMode: options.playerAsked ? { kind: "foreground" } : admissionMode,
       allowStory: options.allowStory,
     });
     await invalidateNearFutureReserve(noodle, account.id, generated.post.createdAt);
@@ -171,12 +176,20 @@ export async function refreshAllCreatorsNow(db: DB): Promise<SlpCreatorRefreshNo
     prioritized,
     MAX_CONCURRENT_MANUAL_REFRESH,
     async (account): Promise<SlpCreatorRefreshNowOutcome> => {
-      const result = await generateAndApplyCreatorPost(db, {
-        mode: "noodler",
-        targetAccountId: account.id,
-        format: "caption",
-        access: await resolveSlurpAutomaticPostAccess(noodle, account.id),
-      });
+      // "Refresh now" is the player's tap: its pictures are off the AI budget. Not foreground: that
+      // would also open the persona gate above.
+      const result = await generateAndApplyCreatorPost(
+        db,
+        {
+          mode: "noodler",
+          targetAccountId: account.id,
+          format: "caption",
+          access: await resolveSlurpAutomaticPostAccess(noodle, account.id),
+        },
+        undefined,
+        undefined,
+        { playerAsked: true },
+      );
       // "disabled"/"busy" are no-op refreshes, not failures; surface them as skipped so the
       // client doesn't lump a busy creator in with a real generation/connection failure.
       const status = result.status === "disabled" || result.status === "busy" ? "skipped" : result.status;
@@ -220,8 +233,9 @@ export async function refreshTargetedCreatorsNow(
           undefined,
           undefined,
           // The player pressed "Create posts now" and counts feed posts. A Story never reaches the feed,
-          // so a batch that landed on a Story slot looked like one post had gone missing.
-          { allowStory: false },
+          // so a batch that landed on a Story slot looked like one post had gone missing. The player's
+          // tap, so its pictures are off the AI budget.
+          { allowStory: false, playerAsked: true },
         );
       // A Creator busy with the scheduler or another run used to be skipped at once, and the batch
       // still read as done. An explicit request waits for that run to finish instead.
@@ -335,12 +349,18 @@ export async function updateCreatorPostWithMedia(
     const current = await noodle.getNoodlerPostById(id);
     if (!current) return { status: "noodler_post_not_found" } as const;
     if (current.authorAccountId !== accountId) return { status: "forbidden" } as const;
-    const oldPath = readCreatorMediaPath(current);
+    // A later picture of a set is replaced in its own row (R1-039); the post picture as before.
+    const position = input.imagePosition ?? 0;
+    const setFile = async () =>
+      position > 0
+        ? ((await listSlurpPostMedia(db, id)).find((item) => item.position === position)?.mediaPath ?? null)
+        : null;
+    const oldPath = position > 0 ? await setFile() : readCreatorMediaPath(current);
     const post = await persistCreatorPostWithUploadedMedia(current.authorAccountId, id, media, (persistedMedia) =>
       noodle.updateNoodlerPost(id, input, persistedMedia),
     );
     if (!post) return { status: "noodler_post_not_found" } as const;
-    const nextPath = readCreatorMediaPath(post);
+    const nextPath = position > 0 ? await setFile() : readCreatorMediaPath(post);
     if (oldPath !== nextPath) unlinkCreatorMedia(oldPath);
     return { status: "updated", post } as const;
   });

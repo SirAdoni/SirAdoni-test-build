@@ -472,105 +472,109 @@ exec sleep 30
       "decision-sidecar-runtime: skipping the installed-runtime cases (the decision runtime is Linux x64 only)",
     );
   }
-  const unknownAfter = await preflightDecisionModel(model, { fresh: true });
-  assert.notEqual(unknownAfter.assessment.verdict, "unsupported", "and does not stop an installed model launching");
-  rmSync(noCapability);
-  const installed = await preflightDecisionModel(huge, { fresh: true });
-  assert.notEqual(installed.assessment.verdict, "not_enough_disk", "an installed model reaches the memory check");
-  assert.equal(installed.installable, true);
+  if (runtimeSupported) {
+    const unknownAfter = await preflightDecisionModel(model, { fresh: true });
+    assert.notEqual(unknownAfter.assessment.verdict, "unsupported", "and does not stop an installed model launching");
+    rmSync(noCapability);
+    const installed = await preflightDecisionModel(huge, { fresh: true });
+    assert.notEqual(installed.assessment.verdict, "not_enough_disk", "an installed model reaches the memory check");
+    assert.equal(installed.installable, true);
 
-  // ── a stop during a start's preflight cancels the start ───────────────────────
+    // ── a stop during a start's preflight cancels the start ───────────────────────
 
-  const starting = decisionProcessService.ensureRunning(model);
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  await decisionProcessService.stop();
-  assert.equal(await starting, null, "the start gives up");
-  assert.equal(existsSync(spawnMarker), false, "nothing was launched after the stop");
-  assert.equal(decisionProcessService.getStatus().running, false);
+    const starting = decisionProcessService.ensureRunning(model);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await decisionProcessService.stop();
+    assert.equal(await starting, null, "the start gives up");
+    assert.equal(existsSync(spawnMarker), false, "nothing was launched after the stop");
+    assert.equal(decisionProcessService.getStatus().running, false);
 
-  // Positive control, and proof a cancelled start does not leave a one-minute backoff.
-  // The first request a freshly loaded model answers is slow (about 1.5 s on 2B against
-  // 0.09 s after it), so a start sends one small question before it publishes the
-  // address. While that answer is held, the process must not read as running yet.
-  holdNext = true;
-  const warming = nextRequest();
-  const startingUp = decisionProcessService.ensureRunning(model);
-  await warming;
-  assert.equal(decisionProcessService.getStatus().running, false, "the address is not published during the warm-up");
-  held!.respond(200);
-  const url = await startingUp;
-  assert.equal(url, fakeUrl, "an uninterrupted start launches straight away");
-  assert.equal(readFileSync(spawnMarker, "utf8").trim(), "started");
-  assert.equal(received.length, 1, "exactly one warm-up request before the address was published");
-  assert.equal(received[0]!.path, "/v1/systemone");
-  assert.equal(received[0]!.body.model, "jev-latest");
-  assert.deepEqual(
-    Object.values(received[0]!.body.questions as Record<string, { instructions: unknown }>).map((q) => q.instructions),
-    [buildDecisionInstructions("The door is open.", model.calibration.questionShape)],
-    "shaped like a real question for this model",
-  );
+    // Positive control, and proof a cancelled start does not leave a one-minute backoff.
+    // The first request a freshly loaded model answers is slow (about 1.5 s on 2B against
+    // 0.09 s after it), so a start sends one small question before it publishes the
+    // address. While that answer is held, the process must not read as running yet.
+    holdNext = true;
+    const warming = nextRequest();
+    const startingUp = decisionProcessService.ensureRunning(model);
+    await warming;
+    assert.equal(decisionProcessService.getStatus().running, false, "the address is not published during the warm-up");
+    held!.respond(200);
+    const url = await startingUp;
+    assert.equal(url, fakeUrl, "an uninterrupted start launches straight away");
+    assert.equal(readFileSync(spawnMarker, "utf8").trim(), "started");
+    assert.equal(received.length, 1, "exactly one warm-up request before the address was published");
+    assert.equal(received[0]!.path, "/v1/systemone");
+    assert.equal(received[0]!.body.model, "jev-latest");
+    assert.deepEqual(
+      Object.values(received[0]!.body.questions as Record<string, { instructions: unknown }>).map(
+        (q) => q.instructions,
+      ),
+      [buildDecisionInstructions("The door is open.", model.calibration.questionShape)],
+      "shaped like a real question for this model",
+    );
 
-  // ── the running model is counted once ─────────────────────────────────────────
+    // ── the running model is counted once ─────────────────────────────────────────
 
-  // An 8 GB card with this model already loaded on it. Counted twice it reads as
-  // not fitting; counted once it fits with room to spare.
-  writeFileSync(gpuState, `8192 ${Math.round(model.vramBytes / 1024 / 1024) + 14}\n`);
-  const whileRunning = await preflightDecisionModel(model, { fresh: true });
-  assert.equal(whileRunning.assessment.verdict, "recommended", "the running model is not counted twice");
-  await decisionProcessService.stop();
-  assert.equal(decisionProcessService.getStatus().running, false);
-  writeFileSync(gpuState, "24463 14\n");
+    // An 8 GB card with this model already loaded on it. Counted twice it reads as
+    // not fitting; counted once it fits with room to spare.
+    writeFileSync(gpuState, `8192 ${Math.round(model.vramBytes / 1024 / 1024) + 14}\n`);
+    const whileRunning = await preflightDecisionModel(model, { fresh: true });
+    assert.equal(whileRunning.assessment.verdict, "recommended", "the running model is not counted twice");
+    await decisionProcessService.stop();
+    assert.equal(decisionProcessService.getStatus().running, false);
+    writeFileSync(gpuState, "24463 14\n");
 
-  // ── the warm-up never blocks a start, and a stop during it still wins ─────────
+    // ── the warm-up never blocks a start, and a stop during it still wins ─────────
 
-  // A failed warm-up is not a failed start: the model is loaded and serving, and only
-  // the first real question pays the warm-up.
-  holdNext = true;
-  const failing = nextRequest();
-  const afterFailedWarmUp = decisionProcessService.ensureRunning(model);
-  await failing;
-  held!.respond(500);
-  assert.equal(await afterFailedWarmUp, fakeUrl, "a failed warm-up still publishes the address");
-  await decisionProcessService.stop();
+    // A failed warm-up is not a failed start: the model is loaded and serving, and only
+    // the first real question pays the warm-up.
+    holdNext = true;
+    const failing = nextRequest();
+    const afterFailedWarmUp = decisionProcessService.ensureRunning(model);
+    await failing;
+    held!.respond(500);
+    assert.equal(await afterFailedWarmUp, fakeUrl, "a failed warm-up still publishes the address");
+    await decisionProcessService.stop();
 
-  // A stop that lands while the warm-up is in flight cancels the start, exactly as a
-  // stop during loading does: the address of a process nobody wants is never handed out.
-  holdNext = true;
-  const stopping = nextRequest();
-  const cancelledDuringWarmUp = decisionProcessService.ensureRunning(model);
-  await stopping;
-  // The held answer is never sent. The stop has to cancel the warm-up request itself,
-  // not wait out its time limit, which the stand-in would hold open for the whole minute.
-  await Promise.race([
-    decisionProcessService.stop(),
-    new Promise((_, reject) => setTimeout(() => reject(new Error("the stop waited out the warm-up request")), 5000)),
-  ]);
-  assert.equal(await cancelledDuringWarmUp, null, "a stop during the warm-up cancels the start");
-  assert.equal(decisionProcessService.getStatus().running, false);
-  assert.equal(decisionProcessService.getStatus().error, null, "a stop is not reported as a failure");
+    // A stop that lands while the warm-up is in flight cancels the start, exactly as a
+    // stop during loading does: the address of a process nobody wants is never handed out.
+    holdNext = true;
+    const stopping = nextRequest();
+    const cancelledDuringWarmUp = decisionProcessService.ensureRunning(model);
+    await stopping;
+    // The held answer is never sent. The stop has to cancel the warm-up request itself,
+    // not wait out its time limit, which the stand-in would hold open for the whole minute.
+    await Promise.race([
+      decisionProcessService.stop(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("the stop waited out the warm-up request")), 5000)),
+    ]);
+    assert.equal(await cancelledDuringWarmUp, null, "a stop during the warm-up cancels the start");
+    assert.equal(decisionProcessService.getStatus().running, false);
+    assert.equal(decisionProcessService.getStatus().error, null, "a stop is not reported as a failure");
 
-  // The warm-up is the model's first forward pass, where a CUDA failure shows up. A
-  // process that dies there fails the start, and the panel must be told why rather
-  // than showing a stopped sidecar and a minute of failed-open gates with no reason.
-  holdNext = true;
-  const crashing = nextRequest();
-  const crashedDuringWarmUp = decisionProcessService.ensureRunning(model);
-  await crashing;
-  const crashedPid = decisionProcessService.getStatus().pid;
-  assert.ok(crashedPid, "the process is up while it warms");
-  process.kill(crashedPid, "SIGKILL");
-  // The held warm-up answer is never sent: the exit itself has to end the start, not the
-  // warm-up's one-minute limit.
-  const crashResult = await Promise.race([
-    crashedDuringWarmUp,
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("the start waited out the warm-up after the exit")), 5000),
-    ),
-  ]);
-  assert.equal(crashResult, null, "a process that exits during the warm-up is not published");
-  assert.match(decisionProcessService.getStatus().error ?? "", /exited/u, "and the reason is kept for the panel");
-  // Clears the one-minute backoff the failed start leaves.
-  await decisionProcessService.stop();
+    // The warm-up is the model's first forward pass, where a CUDA failure shows up. A
+    // process that dies there fails the start, and the panel must be told why rather
+    // than showing a stopped sidecar and a minute of failed-open gates with no reason.
+    holdNext = true;
+    const crashing = nextRequest();
+    const crashedDuringWarmUp = decisionProcessService.ensureRunning(model);
+    await crashing;
+    const crashedPid = decisionProcessService.getStatus().pid;
+    assert.ok(crashedPid, "the process is up while it warms");
+    process.kill(crashedPid, "SIGKILL");
+    // The held warm-up answer is never sent: the exit itself has to end the start, not the
+    // warm-up's one-minute limit.
+    const crashResult = await Promise.race([
+      crashedDuringWarmUp,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("the start waited out the warm-up after the exit")), 5000),
+      ),
+    ]);
+    assert.equal(crashResult, null, "a process that exits during the warm-up is not published");
+    assert.match(decisionProcessService.getStatus().error ?? "", /exited/u, "and the reason is kept for the panel");
+    // Clears the one-minute backoff the failed start leaves.
+    await decisionProcessService.stop();
+  }
 
   // ── the chosen GPU is the one weighed ─────────────────────────────────────────
 

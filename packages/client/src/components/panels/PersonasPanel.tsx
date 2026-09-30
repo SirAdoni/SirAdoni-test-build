@@ -3,6 +3,7 @@
 // ──────────────────────────────────────────────
 import { PANEL_PHONE_FLOOR_CLASS, PANEL_ROW_NAME_WRAP_CLASS } from "./panel-phone-floor";
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { AvatarImage } from "../characters/AvatarImage";
 import { toast } from "sonner";
 import {
   fetchAllPersonaPages,
@@ -58,7 +59,6 @@ import { clearActiveChatResourceDrag, writeChatResourceDragPayload } from "../..
 import { ChatResourceActionButton } from "../chat/ChatResourceActionButton";
 import { CharacterPhoto } from "../ui/CharacterPhoto";
 import { PanelErrorState, PanelListSkeleton } from "../ui/PanelStates";
-import { AvatarImage } from "../characters/AvatarImage";
 import { estimateTextTokens, type Persona } from "@marinara-engine/shared";
 
 type PersonaGroupRow = { id: string; name: string; description: string; personaIds: string; createdAt: string };
@@ -838,6 +838,7 @@ export function PersonasPanel() {
                       onKeyDown={(e) => {
                         if (e.key === "Enter") e.currentTarget.blur();
                         if (e.key === "Escape") {
+                          e.preventDefault();
                           setEditingGroupId(null);
                           setEditGroupName("");
                         }
@@ -1224,6 +1225,7 @@ export function PersonasPanel() {
                     <AvatarImage
                       src={persona.avatarPath}
                       alt=""
+                      iconSize="1rem"
                       loading="lazy"
                       className="h-full w-full object-cover"
                       style={getAvatarCropStyle(persona.avatarCrop)}

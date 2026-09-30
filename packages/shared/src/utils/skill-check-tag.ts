@@ -437,6 +437,19 @@ export function parseSkillCheckTagBody(body: string): SkillCheckTag | null {
   const adjust = Number.isInteger(adjustValue) && adjustValue !== 0 ? { adjust: adjustValue } : {};
   // The standing re-throw the record says was thrown, read back with the rest of what it applied.
   const thrownAgain = tag.reroll ? { reroll: tag.reroll } : {};
+  // And what the character's conditions and items did, said by the Engine's own record only.
+  const effectsValue = Number(values.get("effects"));
+  const fromNames = (values.get("from") ?? "")
+    .split(";")
+    .map((name) => name.trim().slice(0, 120))
+    .filter(Boolean)
+    .slice(0, 24);
+  const automatic = values.get("automatic")?.trim().toLowerCase() === "true";
+  const effected = {
+    ...(Number.isInteger(effectsValue) && effectsValue !== 0 ? { effects: effectsValue } : {}),
+    ...(fromNames.length > 0 ? { from: fromNames } : {}),
+    ...(automatic ? { automatic: true } : {}),
+  };
   const rollsValue = values.get("rolls");
   const modifier = Number.parseInt(values.get("modifier") ?? "", 10);
   const total = Number.parseInt(values.get("total") ?? "", 10);
@@ -447,12 +460,13 @@ export function parseSkillCheckTagBody(body: string): SkillCheckTag | null {
   // without a roll and records `dice="0dN" rolls=""`. Read it back as the failure it was, so the
   // record survives a reload instead of looking like a check nobody rolled. Nothing else may have
   // an empty `rolls=`, and the shape is never Engine-rollable, so this cannot adopt a model's claim
-  // as a roll: it can only ever say "no dice, no successes".
+  // as a roll: it can only ever say "no dice, no successes". A save something made fail without a
+  // roll (`automatic="true"`) has the same shape on a summed check too.
   const emptyPool =
     recordDc !== undefined &&
     values.has("rolls") &&
     (rollsValue ?? "").trim() === "" &&
-    resolution === "successes" &&
+    (resolution === "successes" || automatic) &&
     // The written strings, not the parsed numbers: `parseInt` reads "0 or so" as 0, and only the
     // Engine's own exact record may be read back this way.
     values.get("total")?.trim() === "0" &&
@@ -477,6 +491,7 @@ export function parseSkillCheckTagBody(body: string): SkillCheckTag | null {
       ...complication,
       ...adjust,
       ...thrownAgain,
+      ...effected,
     };
     return tag;
   }
@@ -591,6 +606,7 @@ export function parseSkillCheckTagBody(body: string): SkillCheckTag | null {
     ...complication,
     ...adjust,
     ...thrownAgain,
+    ...effected,
   };
 
   return tag;

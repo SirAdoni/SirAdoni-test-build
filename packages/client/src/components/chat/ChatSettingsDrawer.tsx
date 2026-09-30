@@ -344,6 +344,10 @@ import {
   takePendingChatResourcePanelRestore,
 } from "../../lib/chat-resource-drag";
 import { GameWidgetFileControls, GameWidgetSetupEditor, normalizeGameHudWidgets } from "../game/GameWidgetSetupEditor";
+import {
+  MultiplayerPlayersSection,
+  type MultiplayerGameStart,
+} from "../../features/multiplayer/MultiplayerHostControls";
 
 const QuickPresetSectionsEditor = lazy(() =>
   import("../presets/PresetEditor").then((module) => ({ default: module.QuickPresetSectionsEditor })),
@@ -366,7 +370,8 @@ interface ChatSettingsDrawerProps {
   open: boolean;
   onClose: () => void;
   anchor?: ChatToolbarFloatingPanelAnchor;
-  initialSection?: "autonomous" | "memory-recall" | null;
+  initialSection?: "autonomous" | "memory-recall" | "multiplayer" | null;
+  multiplayerGameStart?: MultiplayerGameStart;
   spriteArrangeMode?: boolean;
   onToggleSpriteArrange?: () => void;
   onResetSpritePlacements?: () => void;
@@ -867,6 +872,7 @@ export function ChatSettingsDrawer({
   onClose,
   anchor,
   initialSection,
+  multiplayerGameStart,
   spriteArrangeMode = false,
   onToggleSpriteArrange,
   onResetSpritePlacements,
@@ -1286,6 +1292,13 @@ export function ChatSettingsDrawer({
     });
     return () => window.cancelAnimationFrame(frame);
   }, [initialSection, isRoleplayMode, open]);
+  useEffect(() => {
+    if (!open || initialSection !== "multiplayer") return;
+    const frame = window.requestAnimationFrame(() =>
+      panelRef.current?.querySelector('[data-chat-settings-section="multiplayer"]')?.scrollIntoView({ block: "start" }),
+    );
+    return () => window.cancelAnimationFrame(frame);
+  }, [initialSection, open]);
   const hasGeneratedConversationSchedules =
     !!metadata.characterSchedules &&
     typeof metadata.characterSchedules === "object" &&
@@ -4905,6 +4918,13 @@ export function ChatSettingsDrawer({
           )}
         >
           {/* Settings profile bar — hidden in Game Mode. Scene chats keep it, but scene instructions stay chat-owned. */}
+          {metadata.multiplayer && (
+            <MultiplayerPlayersSection
+              chatId={chat.id}
+              forceOpen={initialSection === "multiplayer"}
+              gameStart={multiplayerGameStart}
+            />
+          )}
           {modeSettingsSurfaces.showSettingsProfiles && (
             <div
               style={{ order: CHAT_SETTINGS_ORDER.settingsPresets }}
@@ -6574,7 +6594,7 @@ export function ChatSettingsDrawer({
               label={localizeUi("ui.chat.chatsettingsdrawer.autonomousMessaging")}
               icon={<Bot size="0.875rem" />}
               help={localizeUi("ui.chat.chatsettingsdrawer.charactersCanMessageYouUnpromptedBasedOnTheirPersonality")}
-              forceOpen={open && initialSection === "autonomous"}
+              forceOpen={initialSection === "autonomous"}
             >
               <div className="space-y-2">
                 {/* Enable autonomous messages toggle */}
@@ -9818,7 +9838,7 @@ export function ChatSettingsDrawer({
           {!isConversation && import.meta.env.VITE_MARINARA_LITE !== "true" && (
             <Section
               id={`${chatMode}-memory-recall`}
-              forceOpen={open && initialSection === "memory-recall"}
+              forceOpen={initialSection === "memory-recall"}
               style={{ order: CHAT_SETTINGS_ORDER.memoryRecall }}
               label={localizeUi("ui.chat.chatsettingsdrawer.memoryRecall")}
               icon={<Brain size="0.875rem" />}

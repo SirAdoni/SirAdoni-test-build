@@ -134,9 +134,37 @@ for (const bad of [-1, Number.NaN]) {
 assert.equal(slurpAudienceOpener("seed"), slurpAudienceOpener("seed"));
 assert.ok(new Set(Array.from({ length: 60 }, (_, index) => slurpAudienceOpener(`o${index}`))).size > 4);
 
+// The player's own first lines (Messaging settings) replace the built-in ones; empty keeps the built-in ones.
+const ownFan = ["hey you", "big fan"];
+assert.ok(
+  Array.from({ length: 30 }, (_, index) => slurpAudienceOpener(`o${index}`, ownFan)).every((line) =>
+    ownFan.includes(line),
+  ),
+);
+assert.equal(slurpAudienceOpener("seed", []), slurpAudienceOpener("seed"));
+const ownCommission = ["Quick one:"];
+assert.ok(
+  Array.from({ length: 30 }, (_, index) => slurpCommissionBrief(`c${index}`, ownCommission)).every((brief) =>
+    brief.startsWith("Quick one: "),
+  ),
+);
+assert.equal(slurpCommissionBrief("seed-1", []), slurpCommissionBrief("seed-1"));
+
 // ── Wiring ──────────────────────────────────────────────────────────────────
 const root = join(import.meta.dirname, "..", "packages/slurp2/src/engine/packages/server/src");
 const read = (path: string) => slurp2Source(join(root, path));
+
+// 0.3.7: `applyAction` takes the settings (for the player's own openers); `applyPulse` still takes the
+// Fan Type list its caller passes. A pulse given the wrong shape read `fanTypes` as undefined.
+const worldActions = read("slp/features/world/slp-world-actions.ts");
+assert.match(
+  worldActions,
+  /export async function applyPulse\([^)]*banks: SlurpReactionBanks,\s*fanTypes: readonly SlurpFanType\[\],/u,
+);
+assert.match(
+  read("slp/features/world/slp-world-operation.ts"),
+  /applyPulse\(db, action, settings\.audienceReactionBank, settings\.fanTypes, characterFanPinnedTypeIds\)/u,
+);
 
 const operation = read("services/slurp/slurp-world.operation.ts");
 // One function, two callers. Writing the logic twice is what the plan forbids.

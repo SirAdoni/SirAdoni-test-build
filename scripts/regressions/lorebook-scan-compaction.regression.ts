@@ -26,6 +26,7 @@ const { createChatsStorage, settleLorebookScanCompactions } =
   await import("../../packages/server/src/services/storage/chats.storage.js");
 const { createLorebooksStorage } = await import("../../packages/server/src/services/storage/lorebooks.storage.js");
 const { lorebooksRoutes } = await import("../../packages/server/src/routes/lorebooks.routes.js");
+const { chatsRoutes } = await import("../../packages/server/src/routes/chats.routes.js");
 const { compactLorebookScan, lorebookScanHasContent, storedContentForTextlessScanEntries } =
   await import("../../packages/server/src/services/lorebook/lorebook-scan-compaction.js");
 
@@ -77,6 +78,7 @@ const lorebooks = createLorebooksStorage(db);
 const app = Fastify();
 app.decorate("db", db);
 await app.register(lorebooksRoutes, { prefix: "/api/lorebooks" });
+await app.register(chatsRoutes, { prefix: "/api/chats" });
 const extraOf = (row: { extra?: unknown } | null | undefined) =>
   JSON.parse(typeof row?.extra === "string" ? row.extra : "{}") as Record<string, any>;
 const firstEntryText = (row: { extra?: unknown } | null | undefined) =>
@@ -155,7 +157,12 @@ try {
 
   // A scan saved later on an older generated message (any message id reaches updateMessageExtra) does not take over:
   // the newest message by order keeps its text and the older one is compacted again.
-  await chats.updateMessageExtra(first.id, { lorebookScan: scan("late", entry.id) });
+  const markedScan = await app.inject({
+    method: "PATCH",
+    url: `/api/chats/${chat.id}/messages/${first.id}/extra`,
+    payload: { lorebookScan: scan("late", entry.id), privateNote: "Keep this reader note" },
+  });
+  assert.equal(markedScan.statusCode, 200, markedScan.body);
   await settleLorebookScanCompactions();
   assert.match(firstEntryText(await chats.getMessage(second.id)) ?? "", /^second /u, "the newest message keeps text");
   assert.match(firstEntryText((await chats.getSwipes(second.id))[0]) ?? "", /^second /u);
@@ -164,6 +171,7 @@ try {
     false,
     "a late scan on an older message is compacted",
   );
+  assert.equal(extraOf(await chats.getMessage(first.id)).privateNote, "Keep this reader note");
 
   // An impersonated turn saves its scan on a user message. Active Context and agent retries still read the newest
   // assistant message, so that one keeps its text and the user message's scan is compacted instead.
@@ -310,7 +318,7 @@ try {
   );
   const script = new URL("../compact-lorebook-scans.mjs", import.meta.url);
   const run = (...args: string[]) =>
-    spawnSync(process.execPath, [fileURLToPath(script), ...args], { encoding: "utf8" });
+    spawnSync(process.execPath, [fileURLToPath(script), ...args], { windowsHide: true, encoding: "utf8" });
 
   const dry = run(storage);
   assert.equal(dry.status, 0, dry.stderr);

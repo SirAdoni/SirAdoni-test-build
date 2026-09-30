@@ -1,12 +1,17 @@
-// The first thing Slurp shows after an install and after every update. It appears ahead of the age gate and
-// the "what is Slurp" explainer. It is the alpha warning, in Gunterlie's own words, plus the notes
-// for the versions the user has not seen yet and an approval the user has to tick.
-import { AlertTriangle, ChevronDown, ExternalLink, Wrench } from "lucide-react";
+// The first thing Slurp shows after an install and after an update. It appears ahead of the age gate and
+// the "what is Slurp" explainer. Consent happens once: a first install gets the welcome in Gunterlie's
+// own words (alpha + the AI cost note) and an approval to tick; an update only gets a dismissible
+// "What's new" sheet with the notes the player has not seen yet.
+import { useTranslation } from "react-i18next";
+import { AlertTriangle, ChevronDown, ExternalLink, X } from "lucide-react";
 import { Modal } from "../../../components/ui/Modal";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { cn } from "../../../lib/utils";
 import { GUNTERLIE_AVATAR_SRC } from "../../base/chrome/slp-gunterlie-avatar";
-import { getSlpAccentStyle, SLP_PINK } from "../../base/chrome/SlpChrome";
-import { getSlurp2UnseenReleases, SLURP2_VERSION } from "./slp-release";
+import { getSlpAccentStyle, SLP_PINK, SLP_TYPE } from "../../base/chrome/SlpChrome";
+import { SlpButton, SlpPrimaryButton, SlpSquareCheck } from "../../modules/chrome/SlpButton";
+import { SlpSheet } from "../../modules/chrome/SlpSheet";
+import { getSlurp2UnseenReleases, SLURP2_VERSION, slurp2SplashKind, type Slurp2ReleaseEntry } from "./slp-release";
 
 // Per browser, not per Engine: the splash is a notice, not a setting, and a localStorage key keeps
 // it off the server and off the migration path.
@@ -33,6 +38,26 @@ function readSeenVersion(): string | null {
   }
 }
 
+function markSeen() {
+  try {
+    window.localStorage.setItem(SEEN_KEY, SLURP2_VERSION);
+  } catch {
+    // Nothing to do. The splash simply returns next time.
+  }
+}
+
+/**
+ * The Engine Modal's onClose for a consent step (splash, age gate): the X and Escape leave Slurp, a
+ * backdrop tap does nothing, so a stray tap never throws the player out.
+ */
+export function leaveUnlessBackdrop(onLeave: (() => void) | undefined) {
+  // ponytail: the Engine Modal gives no way to tell a backdrop tap from the X, so a click that
+  // did not land on a button is the backdrop. Upgrade path: a `dismissOnBackdrop` Modal prop.
+  const event = window.event;
+  if (event?.type === "click" && !(event.target instanceof Element && event.target.closest("button"))) return;
+  onLeave?.();
+}
+
 /** True when the splash is due: a fresh install, or an update since it was last acknowledged.
  *  Callers hold this as state so the gate behind the splash stays shut until it is dismissed. */
 export function slurp2SplashPending(): boolean {
@@ -41,14 +66,35 @@ export function slurp2SplashPending(): boolean {
 
 /** Only English copy: this is the author speaking, and the notes mirror CHANGELOG.md, which is
  *  English only too. */
-export function SlurpSplash({ open, onDismiss }: { open: boolean; onDismiss: () => void }) {
+export function SlurpSplash({
+  open,
+  onDismiss,
+  onLeave,
+}: {
+  open: boolean;
+  onDismiss: () => void;
+  /** The way out of the first-run consent (X, Escape, "Leave Slurp"). Nothing is stored. */
+  onLeave?: () => void;
+}) {
+  // Read once: the kind must not flip while the splash is closing after it was acknowledged.
+  const [seen] = useState(readSeenVersion);
+  const kind = slurp2SplashKind(seen);
+  const dismiss = () => {
+    markSeen();
+    onDismiss();
+  };
+  if (kind === "whats-new") return <SlurpWhatsNew open={open} seen={seen} onDismiss={dismiss} />;
+  return <SlurpWelcome open={open} onDismiss={dismiss} onLeave={onLeave} />;
+}
+
+function SlurpWelcome({ open, onDismiss, onLeave }: { open: boolean; onDismiss: () => void; onLeave?: () => void }) {
   const [approved, setApproved] = useState(false);
-  const [historyExpanded, setHistoryExpanded] = useState(false);
   const topRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
 
   // The avatar must be the first thing users see. Keep the modal content at the top after the
   // modal focus cycle and after the avatar loads, because either operation can change scroll state.
+  // Focus lands on the heading (not the Discord link), so a pointer open shows no focus ring.
   const scrollToTop = useCallback(() => {
     if (contentRef.current) contentRef.current.scrollTop = 0;
   }, []);
@@ -61,42 +107,32 @@ export function SlurpSplash({ open, onDismiss }: { open: boolean; onDismiss: () 
     });
     return () => window.cancelAnimationFrame(frame);
   }, [open, scrollToTop]);
-  const seen = readSeenVersion();
-  const unseen = getSlurp2UnseenReleases(seen);
-  const featuredRelease = unseen[0];
-  const earlierReleases = unseen.slice(1);
 
   const dismiss = () => {
     if (!approved) return;
-    try {
-      window.localStorage.setItem(SEEN_KEY, SLURP2_VERSION);
-    } catch {
-      // Nothing to do. The splash simply returns next time.
-    }
     onDismiss();
   };
 
   return (
     <Modal
       open={open}
-      onClose={() => undefined}
+      // The X and Escape mean Leave Slurp, like the age gate: consent has a real way out.
+      onClose={() => leaveUnlessBackdrop(onLeave)}
       title={`Slurp ${SLURP2_VERSION}`}
       width="max-w-2xl"
       contentRef={contentRef}
-      // This is a required acknowledgement screen. Hide the disabled close control instead of
-      // passing a prop the shared Modal does not support.
-      panelClassName="[&>div:first-child>button]:hidden"
       panelStyle={getSlpAccentStyle(SLP_PINK)}
-      closeDisabled
+      closeDisabled={!onLeave}
     >
-      <div data-component="SlurpSplash" className="flex flex-col gap-4">
+      <div data-component="SlurpSplash" className="flex flex-col gap-4 text-[var(--slurp-text)]">
         <div
           ref={topRef}
           tabIndex={-1}
+          data-autofocus
           className="grid grid-cols-[minmax(0,1fr)_6rem] items-center gap-3 overflow-hidden outline-none sm:grid-cols-[minmax(0,1fr)_8rem] sm:gap-5"
         >
           <div className="min-w-0">
-            <p className="text-2xl font-black leading-tight sm:text-3xl">Hey, I’m G.</p>
+            <h2 className="text-2xl font-black leading-tight sm:text-3xl">Hey, I’m G.</h2>
             <p className="mt-1 text-sm leading-5 text-[var(--muted-foreground)] sm:text-base sm:leading-6">
               The dude responsible for all the bugs.
             </p>
@@ -109,7 +145,7 @@ export function SlurpSplash({ open, onDismiss }: { open: boolean; onDismiss: () 
             <svg
               aria-hidden="true"
               viewBox="0 0 28 44"
-              className="absolute -left-2 top-1/2 h-10 w-7 -translate-y-1/2 overflow-visible text-[var(--noodle-accent)] sm:-left-3 sm:h-12 sm:w-8"
+              className="absolute -left-2 top-1/2 h-10 w-7 -translate-y-1/2 overflow-visible text-[var(--noodle-accent-foreground)] sm:-left-3 sm:h-12 sm:w-8"
             >
               <path
                 d="M22 4 13 0M18 22H4m18 18-9 4"
@@ -128,108 +164,223 @@ export function SlurpSplash({ open, onDismiss }: { open: boolean; onDismiss: () 
           </div>
         </div>
 
-        <p className="text-sm leading-6">
-          You’re testing <span className="font-black uppercase">alpha</span> software. It’s unfinished, occasionally
-          feral, and absolutely full of bugs.
+        <p className={cn(SLP_TYPE.body, "text-pretty")}>
+          You’re testing <span className="font-bold">alpha</span>
+          {" software. It’s unfinished, occasionally feral, and absolutely full of bugs."}
         </p>
 
-        <div className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm leading-6">
-          <AlertTriangle size={18} aria-hidden="true" className="mt-1 shrink-0 text-amber-500" />
-          <span>
-            Slurp can use text and image models without always asking first. One click may cost more than you expect.
+        <div
+          className={cn(
+            SLP_TYPE.body,
+            "flex items-start gap-3 rounded-2xl bg-[color-mix(in_srgb,var(--slurp-warning)_12%,var(--slurp-surface-raised))] px-4 py-3 shadow-[var(--slurp-highlight)]",
+          )}
+        >
+          <AlertTriangle size={18} aria-hidden="true" className="mt-px shrink-0 text-[var(--slurp-warning)]" />
+          <span className="text-pretty">
+            Heads up: Slurp calls your text and image models on its own, and one tap can call them more than once. Your
+            provider may bill every call.
           </span>
         </div>
 
-        <a
-          href="https://discord.com/channels/1417099416812392641/1539355721853046926"
-          target="_blank"
-          rel="noreferrer"
-          className="flex min-h-11 items-center gap-3 rounded-lg border border-[var(--border)] px-4 py-2 text-sm leading-5 transition-[background-color,border-color] hover:border-[var(--noodle-accent)]/45 hover:bg-[var(--noodle-accent)]/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)]"
+        <DiscordRow>
+          Found a bug? Obviously. Tell me what happened in <span className="font-semibold">Slurp General</span>.
+        </DiscordRow>
+
+        <label
+          className={cn(
+            SLP_TYPE.body,
+            "flex min-h-11 cursor-pointer items-center gap-3 rounded-2xl bg-[var(--slurp-surface-raised)] px-4 py-3 shadow-[var(--slurp-shadow-raised),var(--slurp-highlight)] has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[var(--slurp-focus)]",
+          )}
         >
-          <DiscordMark />
-          <span>
-            Found a bug? Obviously. Tell me what happened in <span className="font-semibold">Slurp General</span>.
-            <span className="sr-only"> Opens in a new tab.</span>
-          </span>
-          <ExternalLink size={15} aria-hidden="true" className="ms-auto shrink-0 text-[var(--muted-foreground)]" />
-        </a>
-
-        {featuredRelease && (
-          <div className="rounded-lg border border-[var(--border)] px-4 py-3">
-            <h3 className="flex items-center gap-2 text-sm font-black">
-              <Wrench size={15} aria-hidden="true" className="text-[var(--muted-foreground)]" />
-              What changed
-            </h3>
-            <div className="mt-1 max-h-64 overflow-y-auto pe-1">
-              <section className="mt-2">
-                <p className="text-sm font-semibold">
-                  {featuredRelease.version}{" "}
-                  <span className="text-[var(--muted-foreground)]">({featuredRelease.date})</span>
-                </p>
-                <ul className="mt-1 list-disc space-y-1 ps-5 text-sm leading-6">
-                  {featuredRelease.notes.map((note) => (
-                    <li key={note}>{note}</li>
-                  ))}
-                </ul>
-              </section>
-
-              {earlierReleases.length > 0 && (
-                <>
-                  <button
-                    type="button"
-                    aria-expanded={historyExpanded}
-                    aria-controls="slurp2-earlier-releases"
-                    onClick={() => setHistoryExpanded((expanded) => !expanded)}
-                    className="mt-3 flex min-h-11 w-full items-center gap-2 border-t border-[var(--border)] pt-2 text-start text-sm font-semibold text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)]"
-                  >
-                    <ChevronDown
-                      size={16}
-                      aria-hidden="true"
-                      className={`shrink-0 transition-transform motion-reduce:transition-none ${historyExpanded ? "rotate-180" : ""}`}
-                    />
-                    {historyExpanded
-                      ? "Hide earlier releases"
-                      : `Show ${earlierReleases.length} earlier release${earlierReleases.length === 1 ? "" : "s"}`}
-                  </button>
-                  <div id="slurp2-earlier-releases" hidden={!historyExpanded}>
-                    {earlierReleases.map((release) => (
-                      <section key={release.version} className="mt-3">
-                        <p className="text-sm font-semibold">
-                          {release.version} <span className="text-[var(--muted-foreground)]">({release.date})</span>
-                        </p>
-                        <ul className="mt-1 list-disc space-y-1 ps-5 text-sm leading-6">
-                          {release.notes.map((note) => (
-                            <li key={note}>{note}</li>
-                          ))}
-                        </ul>
-                      </section>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        )}
-
-        <label className="flex items-start gap-3 rounded-lg border border-[var(--border)] px-4 py-3 text-sm leading-5">
           <input
             type="checkbox"
             checked={approved}
             onChange={(event) => setApproved(event.target.checked)}
-            className="mt-1 h-4 w-4 shrink-0 accent-[var(--noodle-accent)]"
+            className="sr-only"
           />
-          <span>I understand this is alpha software and I use it at my own risk.</span>
+          <SlpSquareCheck checked={approved} />
+          <span className="text-pretty">I understand this is alpha software and I use it at my own risk.</span>
         </label>
 
-        <button
-          type="button"
-          onClick={dismiss}
-          disabled={!approved}
-          className="h-12 rounded-lg bg-[var(--noodle-accent)] text-base font-black uppercase tracking-wide text-zinc-950 [&_svg]:!text-zinc-950 transition-[opacity,transform] hover:opacity-90 active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)] disabled:cursor-not-allowed disabled:opacity-40 motion-reduce:transition-none motion-reduce:active:scale-100"
-        >
-          Let me in
-        </button>
+        <div className="flex flex-col items-stretch gap-1">
+          <SlpPrimaryButton onClick={dismiss} disabled={!approved} className="h-12 text-[15px]">
+            Let me in
+          </SlpPrimaryButton>
+          <p aria-live="polite" className={cn(SLP_TYPE.meta, "min-h-4 text-center text-[var(--slurp-muted)]")}>
+            {approved ? "" : "Tick the box above to get in."}
+          </p>
+          {onLeave && (
+            <SlpButton variant="tertiary" onClick={onLeave} className="self-center text-[var(--slurp-muted)]">
+              Leave Slurp
+            </SlpButton>
+          )}
+        </div>
       </div>
     </Modal>
+  );
+}
+
+function DiscordRow({ children }: { children: ReactNode }) {
+  return (
+    <a
+      href="https://discord.com/channels/1417099416812392641/1539355721853046926"
+      target="_blank"
+      rel="noreferrer"
+      className={cn(
+        SLP_TYPE.body,
+        "flex min-h-11 items-center gap-3 rounded-2xl bg-[var(--slurp-surface-raised)] px-4 py-2.5 shadow-[var(--slurp-shadow-raised),var(--slurp-highlight)] transition-colors hover:bg-[var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)]",
+      )}
+    >
+      <DiscordMark />
+      <span className="min-w-0 flex-1 text-pretty">
+        {children}
+        <span className="sr-only"> Opens in a new tab.</span>
+      </span>
+      <ExternalLink size={16} aria-hidden="true" className="shrink-0 text-[var(--slurp-muted)]" />
+    </a>
+  );
+}
+
+function ReleaseNotes({ release }: { release: Slurp2ReleaseEntry }) {
+  const { t } = useTranslation();
+  const notes = [...release.notes, ...(release.noteKeys ?? []).map((key) => t(key))];
+  return (
+    <ul className={cn(SLP_TYPE.body, "list-disc space-y-1.5 ps-5 marker:text-[var(--noodle-accent)]")}>
+      {notes.map((note) => (
+        <li key={note} className="text-pretty">
+          {note}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function releaseDate(date: string) {
+  const parsed = new Date(`${date}T12:00:00`);
+  return Number.isNaN(parsed.getTime())
+    ? date
+    : parsed.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+/** After an update: what is new since the version this browser last saw. No checkbox, one scroll container. */
+function SlurpWhatsNew({ open, seen, onDismiss }: { open: boolean; seen: string | null; onDismiss: () => void }) {
+  const [historyExpanded, setHistoryExpanded] = useState(false);
+  const unseen = getSlurp2UnseenReleases(seen);
+  const featuredRelease = unseen[0];
+  const earlierReleases = unseen.slice(1);
+  return (
+    <SlpSheet
+      open={open}
+      onClose={onDismiss}
+      title={`What's new in ${SLURP2_VERSION}`}
+      width="max-w-lg"
+      headerAccessory={
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label="Close"
+          className="-me-2 grid size-10 shrink-0 place-items-center rounded-full text-[var(--slurp-muted)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--slurp-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)] [&_svg]:!text-current"
+        >
+          <X size={20} aria-hidden="true" />
+        </button>
+      }
+      footer={
+        <SlpPrimaryButton onClick={onDismiss} className="w-full">
+          Got it
+        </SlpPrimaryButton>
+      }
+    >
+      <div data-component="SlurpSplash" className="flex flex-col gap-4 px-3 pb-2">
+        <section
+          className="overflow-hidden rounded-2xl p-4 shadow-[var(--slurp-highlight)]"
+          style={{
+            background:
+              "linear-gradient(135deg, color-mix(in srgb, var(--noodle-accent) 14%, var(--slurp-surface-raised)), var(--slurp-surface-raised))",
+          }}
+        >
+          <div className="flex items-center gap-3">
+            <div className="relative flex h-24 w-24 shrink-0 items-center justify-center sm:h-32 sm:w-32">
+              <span
+                aria-hidden="true"
+                className="absolute inset-2 rounded-full bg-[var(--noodle-accent)]/15 shadow-[0_0_32px_color-mix(in_srgb,var(--noodle-accent)_20%,transparent)]"
+              />
+              <img src={GUNTERLIE_AVATAR_SRC} alt="" className="relative h-full w-full object-contain" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h2 className="text-2xl font-black leading-tight sm:text-3xl">Hey, I’m G.</h2>
+              <p className={cn(SLP_TYPE.body, "mt-1 text-pretty text-[var(--slurp-muted)]")}>
+                The dude responsible for all the bugs.
+              </p>
+            </div>
+          </div>
+          <p className={cn(SLP_TYPE.body, "mt-3 border-t border-[var(--noodle-divider)] pt-3 text-pretty")}>
+            You’re testing <span className="font-bold">alpha</span> software. It’s unfinished, occasionally feral, and
+            absolutely full of bugs.
+          </p>
+        </section>
+        {featuredRelease && (
+          <section>
+            <h3
+              tabIndex={-1}
+              data-autofocus
+              className={cn(SLP_TYPE.meta, "pb-2 text-[var(--slurp-muted)] outline-none")}
+            >
+              {featuredRelease.version} · {releaseDate(featuredRelease.date)}
+            </h3>
+            <ReleaseNotes release={featuredRelease} />
+          </section>
+        )}
+
+        {earlierReleases.length > 0 && (
+          <div>
+            <button
+              type="button"
+              aria-expanded={historyExpanded}
+              aria-controls="slurp2-earlier-releases"
+              onClick={() => setHistoryExpanded((expanded) => !expanded)}
+              className={cn(
+                SLP_TYPE.body,
+                "flex min-h-11 w-full items-center gap-2 rounded-xl px-1 text-start font-semibold text-[var(--noodle-accent-foreground)] transition-colors hover:bg-[var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)]",
+              )}
+            >
+              <ChevronDown
+                size={16}
+                aria-hidden="true"
+                className={`shrink-0 transition-transform motion-reduce:transition-none ${historyExpanded ? "rotate-180" : ""}`}
+              />
+              {historyExpanded
+                ? "Hide earlier releases"
+                : `Show ${earlierReleases.length} earlier release${earlierReleases.length === 1 ? "" : "s"}`}
+            </button>
+            <div id="slurp2-earlier-releases" hidden={!historyExpanded}>
+              {earlierReleases.map((release) => (
+                <section key={release.version} className="pb-3">
+                  {/* Sticky inside the one scroll container, so scrolled notes keep their version. */}
+                  <h3
+                    className={cn(
+                      SLP_TYPE.meta,
+                      "sticky top-0 z-[1] -mx-1 bg-[color-mix(in_srgb,var(--noodle-accent)_7%,var(--slurp-surface))] px-1 py-2 font-semibold",
+                    )}
+                  >
+                    {release.version}{" "}
+                    <span className="font-medium text-[var(--slurp-muted)]">· {releaseDate(release.date)}</span>
+                  </h3>
+                  <ReleaseNotes release={release} />
+                </section>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <p className={cn(SLP_TYPE.meta, "flex items-start gap-2 text-pretty text-[var(--slurp-muted)]")}>
+          <AlertTriangle size={16} aria-hidden="true" className="mt-px shrink-0 text-[var(--slurp-warning)]" />
+          Keep in mind: Slurp uses image and text generation in the background. Be sure you can afford that.
+        </p>
+
+        <DiscordRow>
+          Found a bug? Tell me in <span className="font-semibold">Slurp General</span>.
+        </DiscordRow>
+      </div>
+    </SlpSheet>
   );
 }

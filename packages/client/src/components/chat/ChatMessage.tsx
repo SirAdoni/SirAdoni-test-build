@@ -1900,8 +1900,13 @@ export const ChatMessage = memo(function ChatMessage({
 
   // Translation
   const { translate, translations, translationSources, translating } = useTranslate();
-  const translatedText = translations[message.id];
   const translationSource = translationSources[message.id];
+  // Translations are keyed by message, not swipe. Show one only for the text it
+  // was made from, so a new swipe or a live stream never inherits the old one.
+  const translatedText =
+    !isStreaming && (translationSource === undefined || translationSource === message.content)
+      ? translations[message.id]
+      : undefined;
   const isTranslating = !!translating[message.id];
 
   // TTS
@@ -2538,7 +2543,13 @@ export const ChatMessage = memo(function ChatMessage({
   const displayContent = useMemo(() => formatDisplayContent(message.content), [formatDisplayContent, message.content]);
 
   useEffect(() => {
-    if (!visualNovel || !ttsConfig || visualNovelSpeech?.messageId !== message.id || !onVisualNovelSpeechParagraph)
+    if (
+      !visualNovel ||
+      !ttsConfig ||
+      visualNovelSpeech?.messageId !== message.id ||
+      !onVisualNovelSpeechParagraph ||
+      document.querySelector('[data-component="ExpandedTextarea"]')
+    )
       return;
     // Display regexes/macros can remove or merge source paragraphs. Match the
     // speech against the very same text that the VN renderer splits below.
@@ -2757,17 +2768,16 @@ export const ChatMessage = memo(function ChatMessage({
   }, [message.id]);
 
   const inlineRoleplayCommands = useMemo(() => {
-    const commands =
-      isRoleplay && !isUser
-        ? [
-            ...readRoleplayDiceRolls(fullText, extra).map((roll) => ({ ...roll, kind: "roll" as const })),
-            ...getRoleplayWhispers(extra).map((whisper) => ({
-              ...whisper,
-              kind: "whisper" as const,
-              offset: getRoleplayCommandContentOffset(fullText, whisper.activity),
-            })),
-          ].sort((a, b) => a.offset - b.offset || a.index - b.index)
-        : [];
+    const commands = isRoleplay
+      ? [
+          ...(isUser ? [] : readRoleplayDiceRolls(fullText, extra).map((roll) => ({ ...roll, kind: "roll" as const }))),
+          ...getRoleplayWhispers(extra).map((whisper) => ({
+            ...whisper,
+            kind: "whisper" as const,
+            offset: getRoleplayCommandContentOffset(fullText, whisper.activity),
+          })),
+        ].sort((a, b) => a.offset - b.offset || a.index - b.index)
+      : [];
     let paragraphStart = 0;
     let nextParagraphStart = Number.POSITIVE_INFINITY;
     if (visualNovel) {
@@ -2795,9 +2805,17 @@ export const ChatMessage = memo(function ChatMessage({
       command.kind === "whisper" ? (
         <RoleplayWhisper
           key={`whisper-${message.id}-${message.activeSwipeIndex}-${command.index}-${personaInfo?.id}`}
+          chatId={message.chatId}
+          messageId={message.id}
+          swipeIndex={message.activeSwipeIndex}
+          activityIndex={command.index}
+          extra={extra}
+          isStreaming={!!isStreaming}
           character={command.command.character}
           text={command.command.text}
-          forPersona={command.recipient.kind === "persona" && command.recipient.id === (personaInfo?.id ?? "user")}
+          knownToUser={
+            isUser || (command.recipient.kind === "persona" && command.recipient.id === (personaInfo?.id ?? "user"))
+          }
         />
       ) : (
         <RoleplayDiceRoll
@@ -2806,7 +2824,16 @@ export const ChatMessage = memo(function ChatMessage({
           createdAt={message.createdAt}
         />
       ),
-    [message.id, message.activeSwipeIndex, message.createdAt, personaInfo?.id],
+    [
+      message.chatId,
+      message.id,
+      message.activeSwipeIndex,
+      message.createdAt,
+      personaInfo?.id,
+      extra,
+      isStreaming,
+      isUser,
+    ],
   );
 
   const renderedContent = useMemo(() => {
@@ -3086,7 +3113,7 @@ export const ChatMessage = memo(function ChatMessage({
       chatId={message.chatId}
       messageId={message.id}
       swipeIndex={message.activeSwipeIndex}
-      characterName={charName}
+      characterName={displayName}
       extra={extra}
       isStreaming={!!isStreaming}
     />

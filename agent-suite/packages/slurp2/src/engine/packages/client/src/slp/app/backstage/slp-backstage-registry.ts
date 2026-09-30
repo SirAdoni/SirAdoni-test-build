@@ -1,21 +1,24 @@
 import type { SlpBackstagePanelEntry } from "../../features/backstage/slp-backstage-contract";
 import { SlpAdsPanel } from "../../features/ads/SlpAdsPanel";
 import { SlpAudiencePanel } from "../../features/audience/SlpAudiencePanel";
-import { SlpBackstageAutomationPanel } from "../../features/backstage/SlpBackstageAutomationPanel";
 import { SlpBackstageOverviewPanel } from "../../features/backstage/SlpBackstageOverviewPanel";
-import { SlpBackstageWorldPanel } from "../../features/backstage/SlpBackstageWorldPanel";
 import { SlpCreatorImprovePanel } from "../../features/creators/SlpCreatorImprovePanel";
 import { SlpCreatorsPanel } from "../../features/creators/SlpCreatorsPanel";
 import { SlpDiscoveryPanel } from "../../features/discovery/SlpDiscoveryPanel";
 import { SlpWalletPanel } from "../../features/economy/SlpWalletPanel";
 import { SlpPublishingPanel } from "../../features/feed/SlpPublishingPanel";
 import { SlpAutopurgePanel } from "../../features/maintenance/SlpAutopurgePanel";
-import { SlpBackupPanel } from "../../features/maintenance/SlpBackupPanel";
 import { SlpImagesPanel } from "../../features/media/SlpImagesPanel";
+import { SlpConnectionsPanel } from "../../features/settings/SlpConnectionsPanel";
 import { SlpMessagingPanel } from "../../features/messages/SlpMessagingPanel";
 import { SlpProjectsPanel } from "../../features/projects/SlpProjectsPanel";
+import { SlpStorylinesPanel } from "../../features/projects/SlpStorylinesPanel";
 import { SlpPromptsPanel } from "../../features/settings/SlpPromptsPanel";
+import { SlpSpicePanel } from "../../features/creators/SlpSpicePanel";
 import { SlpWorldEventsPanel } from "../../features/world/SlpWorldEventsPanel";
+import { SlpPacksPanel } from "../../features/world/SlpPacksPanel";
+import { SlpCalendarPanel } from "../../features/world/SlpCalendarPanel";
+import { SlpStirSettingsPanel } from "../../features/stir/SlpStirSettingsPanel";
 import type { SlpBackstageTarget } from "../../base/navigation/slp-backstage-target";
 
 /**
@@ -30,20 +33,23 @@ export const SLP_BACKSTAGE_PANELS: readonly SlpBackstagePanelEntry[] = [
   { target: "overview", Component: SlpBackstageOverviewPanel },
   { target: "creators", Component: SlpCreatorsPanel },
   { target: "improve", Component: SlpCreatorImprovePanel },
-  { target: "world", Component: SlpBackstageWorldPanel },
   { target: "tags", Component: SlpDiscoveryPanel },
   { target: "events", Component: SlpWorldEventsPanel },
+  { target: "storylines", Component: SlpStorylinesPanel },
+  { target: "packs", Component: SlpPacksPanel },
+  { target: "calendar", Component: SlpCalendarPanel },
   { target: "arcs", Component: SlpProjectsPanel },
   { target: "messaging", Component: SlpMessagingPanel },
   { target: "audience", Component: SlpAudiencePanel },
   { target: "ads", Component: SlpAdsPanel },
   { target: "wallet", Component: SlpWalletPanel },
-  { target: "automation", Component: SlpBackstageAutomationPanel },
   { target: "general", Component: SlpPublishingPanel },
   { target: "images", Component: SlpImagesPanel },
+  { target: "connections", Component: SlpConnectionsPanel },
+  { target: "spice", Component: SlpSpicePanel },
   { target: "prompts", Component: SlpPromptsPanel },
   { target: "autopurge", Component: SlpAutopurgePanel },
-  { target: "advanced", Component: SlpBackupPanel },
+  { target: "stir", Component: SlpStirSettingsPanel },
 ];
 
 const byTarget = new Map(SLP_BACKSTAGE_PANELS.map((entry) => [entry.target, entry]));

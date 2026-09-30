@@ -17,13 +17,13 @@ import {
 } from "@marinara-engine/shared";
 import { Modal } from "../ui/Modal";
 import { cn } from "../../lib/utils";
-import { useBulkEditCharacterTags } from "../../hooks/use-characters";
+import { useAllCharacterCatalog, useBulkEditCharacterTags } from "../../hooks/use-characters";
 
 interface Props {
   open: boolean;
   onClose: () => void;
-  characters: Array<{ id: string; tags: string[] }>;
-  onApplied: () => void;
+  selectedIds: ReadonlySet<string>;
+  onApplied: (failedIds: string[]) => void;
 }
 
 const splitTags = (value: string) =>
@@ -32,9 +32,15 @@ const splitTags = (value: string) =>
     .map((tag) => tag.trim())
     .filter(Boolean);
 
-export function CharacterBulkTagsModal({ open, onClose, characters, onApplied }: Props) {
+export function CharacterBulkTagsModal({ open, onClose, selectedIds, onApplied }: Props) {
   const { t } = useTranslation();
   const bulkEdit = useBulkEditCharacterTags();
+  const catalog = useAllCharacterCatalog(open);
+  // Selection survives library search and pagination; the visible page is not the selection.
+  const characters = useMemo(
+    () => (catalog.data ?? []).filter((character) => selectedIds.has(character.id)),
+    [catalog.data, selectedIds],
+  );
   const [addText, setAddText] = useState("");
   const [removeTags, setRemoveTags] = useState<Set<string>>(new Set());
   const [renames, setRenames] = useState<Array<{ from: string; to: string }>>([]);
@@ -76,7 +82,7 @@ export function CharacterBulkTagsModal({ open, onClose, characters, onApplied }:
         toast.success(t("characters.bulkTags.success", { count: result.updatedIds.length }));
       }
       reset();
-      onApplied();
+      onApplied(result.failedIds);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("characters.bulkTags.failure"));
     }
@@ -86,11 +92,25 @@ export function CharacterBulkTagsModal({ open, onClose, characters, onApplied }:
     <Modal
       open={open}
       onClose={close}
-      title={t("characters.bulkTags.title", { count: characters.length })}
+      title={t("characters.bulkTags.title", { count: selectedIds.size })}
       width="max-w-md"
       closeDisabled={bulkEdit.isPending}
     >
-      {!reviewing ? (
+      {catalog.isPending ? (
+        <p role="status" className="flex items-center gap-2 text-xs text-[var(--muted-foreground)]">
+          <Loader2 size="0.875rem" className="animate-spin" />
+          {t("characters.bulkTags.loading")}
+        </p>
+      ) : catalog.isError ? (
+        <div className="space-y-2 text-xs">
+          <p role="alert" className="text-[var(--destructive)]">
+            {t("characters.bulkTags.loadFailed")}
+          </p>
+          <button type="button" onClick={() => void catalog.refetch()} className="mari-chrome-control px-3 py-2">
+            {t("characters.duplicates.retry")}
+          </button>
+        </div>
+      ) : !reviewing ? (
         <div className="space-y-4">
           <label className="block space-y-1.5">
             <span className="text-xs font-medium">{t("characters.bulkTags.add")}</span>

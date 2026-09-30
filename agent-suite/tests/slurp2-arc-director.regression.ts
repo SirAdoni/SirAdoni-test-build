@@ -109,6 +109,9 @@ assert.match(storage, /arcDirectorMode: false,/, "Director mode is off by defaul
 const arcs = routes.slice(routes.indexOf('"/slurp/accounts/:id/arcs"'), routes.indexOf("A Creator's arc overrides"));
 assert.match(arcs, /status !== "suggested"/);
 assert.doesNotMatch(arcs, /direction,|twist,/);
-assert.match(arcs, /isCreatorHiddenFromViewer/);
+// Viewer access is gone. Fix phase 1b (user, R1-073): fans see Hinted Creators' storylines too, with
+// the arc text passed through the identity protection for every Hinted Creator the viewer does not own.
+assert.doesNotMatch(arcs, /identityDisclosure \?\? "open"\) !== "open"\) return \{ arcs: \[\] \}/);
+assert.match(arcs, /title: protect\(title\),[\s\S]*chapters: chapters\.map\(protect\)/);
 
 console.log("slurp2 arc director regression passed");

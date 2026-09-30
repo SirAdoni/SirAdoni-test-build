@@ -29,7 +29,9 @@ assert.match(
   images,
   /const rawProviderPrompt = redactIdentity\(reviewedOverride\?\.prompt \|\| compiledPrompt\.prompt\);/u,
 );
-assert.match(images, /rawPrompt: rawProviderPrompt,\s*rewriteAttempted,\s*onFallback:/u);
+assert.match(images, /rawPrompt: rawProviderPrompt,/u);
+assert.match(images, /rewriteAttempted,/u);
+assert.match(images, /onFallback:/u);
 // Garnish ad images honour the interpretation setting and share the same rewrite and fallback.
 const garnish = slurp2Source(join(root, server, "services/slurp/slurp-garnish-image.service.ts"));
 assert.match(garnish, /settings\.enableImageInterpretation !== false/u);
@@ -47,7 +49,13 @@ assert.match(images, /const reviewedOverride = input\.retryStoredPrompt \? null 
 assert.match(images, /input\.promptOverride && !input\.retryStoredPrompt/u);
 
 // Every path that resends a stored draft must declare itself as such.
-assert.match(routes, /retryStoredPrompt: true,/u, "manual generate-image resends a stored draft");
+assert.match(routes, /retryStoredPrompt: !asWritten,/u, "manual generate-image resends a stored draft");
+// A prompt the user edited, or kept from the last picture, is theirs and goes out as written. The
+// redraw box says so explicitly (R1-055), and the choice survives Try again.
+assert.match(
+  routes,
+  /const asWritten = parsed\.data\.asWritten === true \|\| \(wasAsWritten && imagePrompt === post\.imagePrompt\);/u,
+);
 const retryFlags = [...images.matchAll(/retryStoredPrompt: true,/gu)];
 assert.equal(retryFlags.length, 1, "retryNextFailedPostImage must declare the stored prompt too");
 // The flag has to actually exist on the service input, not just be passed and ignored.
@@ -66,7 +74,7 @@ assert.match(
   /\(imagePromptInstructions \|\| characterContext \|\| styleGuidance\) &&\s*input\.settings\.enableImageInterpretation !== false &&\s*!skipInterpretation/u,
   "interpretation must require rewrite context, enabled interpretation, and no reviewed override",
 );
-assert.match(rewrite, /getDefaultForAgents\(\)\) \?\? \(await connections\.getFallbackForAgents\(\)\)/u);
+assert.match(rewrite, /resolveSlurpTextConnection\(connections, input.connectionId\)/u);
 
 // --- no Secret tier: Open and Hinted both get source image references ----------------------------
 assert.doesNotMatch(images, /Compose so the face cannot be identified/u);

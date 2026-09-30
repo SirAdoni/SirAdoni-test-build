@@ -6,7 +6,7 @@ export function SlurpEmptyArtwork({ className }: { className?: string }) {
     <svg
       viewBox="0 0 640 220"
       aria-hidden="true"
-      className={cn("pointer-events-none h-full w-full text-[var(--noodle-accent)]", className)}
+      className={cn("pointer-events-none h-full w-full text-[var(--noodle-accent-foreground)]", className)}
       preserveAspectRatio="none"
     >
       <g fill="none" stroke="currentColor" strokeLinecap="round">

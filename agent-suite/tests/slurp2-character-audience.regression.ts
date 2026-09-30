@@ -9,6 +9,7 @@ import {
   slurpAudienceCharacterVoice,
   slurpCharacterFanEntityId,
   slurpCharacterIdFromFanEntityId,
+  isSlurpCharacterFanAccount,
 } from "../packages/slurp2/src/engine/packages/shared/src/slp/slp-audience-characters.js";
 import { slurp2Source } from "./slurp2-source";
 
@@ -74,5 +75,60 @@ assert.match(storageSource, /audienceCharacterLimit: z\.number\(\)\.int\(\)\.min
 assert.match(storageSource, /audienceCharacterLimit: 5/u);
 assert.match(messageSource, /resolveSlurpCharacterFanVoice/u);
 assert.match(pendingSource, /resolveSlurpCharacterFanVoice/u);
+
+// 0.3.0 report B: a character imported as a Creator and again from the audience panel.
+{
+  const fan = { id: "fan-row", kind: "random_user", entityId: slurpCharacterFanEntityId("mira") };
+  const creator = { id: "creator-row", kind: "character", entityId: "mira" };
+  const ambient = { id: "ambient-row", kind: "random_user", entityId: "ambient-1" };
+  // The fan row is not a Creator: the Creators list, needs-attention and the world tick skip it.
+  assert.deepEqual(
+    [creator, fan, ambient].filter((account) => !isSlurpCharacterFanAccount(account)).map((account) => account.id),
+    ["creator-row", "ambient-row"],
+  );
+  // Deleting the fan row sets the character to false; that wins over its group, so no tick makes it again.
+  const before = { audienceCharacters: { mira: true }, audienceCharacterGroupIds: ["g"] };
+  const groupsWithMira = [{ id: "g", characterIds: JSON.stringify(["mira", "kai"]) }];
+  assert.deepEqual(resolveSlurpAudienceCharacterIds(before, groupsWithMira), ["mira", "kai"]);
+  const deletedFan = slurpCharacterIdFromFanEntityId(fan.entityId);
+  assert.equal(deletedFan, "mira");
+  const after = { ...before, audienceCharacters: { ...before.audienceCharacters, [deletedFan!]: false } };
+  assert.deepEqual(resolveSlurpAudienceCharacterIds(after, groupsWithMira), ["kai"], "only what was chosen stays");
+
+  const engine = "packages/slurp2/src/engine/packages";
+  const creatorsStorage = slurp2Source(`${engine}/server/src/slp/data/creators/slp-creators-storage-3.ts`);
+  assert.match(
+    creatorsStorage,
+    /async buildNoodlerStageProfiles\(\)[\s\S]{0,400}!isSlurpViewerActorAccount\(account\) && !isSlurpCharacterFanAccount\(account\)/u,
+  );
+  assert.match(
+    slurp2Source(`${engine}/server/src/slp/features/world/slp-world-operation.ts`),
+    /automaticCreators = accounts\.filter\([\s\S]{0,200}!isSlurpCharacterFanAccount\(account\)/u,
+  );
+  assert.match(
+    slurp2Source(`${engine}/server/src/slp/features/maintenance/slp-maintenance-routes.ts`),
+    /isSlurpCharacterFanAccount\(target\)\s+\? slurpCharacterIdFromFanEntityId\(target\.entityId\)\s+: null;\s+if \(fanOf\) await noodle\.setAudienceCharacter\(fanOf, false\);/u,
+  );
+  // Duplicate import: the audience list names the character's Creator and opens it.
+  assert.match(
+    slurp2Source(`${engine}/server/src/slp/features/audience/slp-audience-routes.ts`),
+    /creatorAccountId: \(await noodle\.getNoodlerAccountForSource\("character", summary\.id\)\)\?\.id \?\? null/u,
+  );
+  const panel = slurp2Source(`${engine}/client/src/slp/features/audience/SlpAudiencePanel.tsx`);
+  assert.match(panel, /disabled=\{Boolean\(creatorId\) && !enabled\}/u);
+  assert.match(panel, /onClick=\{\(\) => openSlpCreatorSettings\(creatorId\)\}/u);
+  // Delete ends with feedback: awaited, and a Creator that is gone closes the modal.
+  const sections = slurp2Source(`${engine}/client/src/slp/features/creators/settings/SlpCreatorSettingsSections.tsx`);
+  assert.match(
+    sections,
+    /await deleteCreator\.mutateAsync\(creator\.id\);\s+toast\.success\([^\n]+\);\s+onClose\(\);/u,
+  );
+  const modal = slurp2Source(`${engine}/client/src/slp/features/creators/settings/SlpCreatorSettingsModal.tsx`);
+  assert.match(
+    modal,
+    /const gone = creatorId !== null && accountsQuery\.isSuccess && !accountsQuery\.isFetching && !creator;/u,
+  );
+  assert.match(modal, /if \(gone\) close\(\);/u);
+}
 
 console.log("slurp2 character audience regression passed");

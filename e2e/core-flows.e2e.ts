@@ -21772,6 +21772,126 @@ test("pinch zoom keeps the Roleplay layout size and does not open keyboard mode"
   }
 });
 
+test("zoomed mobile chat keeps the composer above the keyboard and restores on dismissal", async ({
+  page,
+}, testInfo) => {
+  test.skip(!testInfo.project.name.includes("mobile"), "Software-keyboard viewport behavior is mobile-only.");
+  const response = await page.request.post("/api/chats", {
+    data: { name: "Zoomed keyboard regression", mode: "roleplay", characterIds: [] },
+  });
+  expect(response.ok()).toBeTruthy();
+  const chat = (await response.json()) as { id: string };
+  try {
+    await installMockVisualViewport(page);
+    await prepareFreshClient(page);
+    await page.addInitScript((id) => localStorage.setItem("marinara-active-chat-id", id), chat.id);
+    await page.goto("/");
+    const shell = page.locator('.mari-app[data-chat-surface-active="true"]');
+    const composer = page.locator(".chat-input-container:visible");
+    const textarea = composer.locator("textarea:visible");
+    await expect(textarea).toBeVisible();
+    const original = await shell.boundingBox();
+    expect(original).not.toBeNull();
+    const layoutHeight = await page.evaluate(() => window.innerHeight);
+    const setViewport = (height: number, top: number, scale: number) =>
+      page.evaluate(
+        ({ height, top, scale, layoutHeight }) => {
+          (
+            window as typeof window & {
+              __setMarinaraVisualViewport: (
+                height: number,
+                top: number,
+                pageTop: number,
+                layout: number,
+                scale: number,
+              ) => void;
+            }
+          ).__setMarinaraVisualViewport(height, top, top, layoutHeight, scale);
+        },
+        { height, top, scale, layoutHeight: page.viewportSize()?.height ?? layoutHeight },
+      );
+
+    const expectTextareaInViewport = async (top: number, height: number) => {
+      await expect.poll(async () => (await textarea.boundingBox())?.y ?? -Infinity).toBeGreaterThanOrEqual(top - 1);
+      await expect
+        .poll(async () => {
+          const box = await textarea.boundingBox();
+          return box ? box.y + box.height : Infinity;
+        })
+        .toBeLessThanOrEqual(top + Math.round(height) + 1);
+    };
+
+    for (const scale of [1.05, 1.25, 2]) {
+      await setViewport(layoutHeight / scale, 0, scale);
+      await expect(page.locator("html")).not.toHaveAttribute("data-mari-software-keyboard-open");
+      await expect.poll(async () => (await shell.boundingBox())?.height).toBe(original!.height);
+      await textarea.focus();
+      await textarea.fill("Keep this draft visible above the keyboard.");
+      const visibleHeight = 420 / scale;
+      const top = 36;
+      await setViewport(visibleHeight, top, scale);
+      await expect(page.locator("html")).toHaveAttribute("data-mari-software-keyboard-open", "");
+      await expect.poll(async () => (await shell.boundingBox())?.height).toBe(Math.round(visibleHeight));
+      await expect
+        .poll(async () => {
+          const box = await composer.boundingBox();
+          return box ? box.y + box.height : Infinity;
+        })
+        .toBeLessThanOrEqual(top + Math.round(visibleHeight) + 1);
+      await expectTextareaInViewport(top, visibleHeight);
+      await expect(textarea).toHaveValue("Keep this draft visible above the keyboard.");
+      await testInfo.attach(`zoomed-keyboard-${scale}.png`, {
+        body: await page.screenshot({ animations: "disabled" }),
+        contentType: "image/png",
+      });
+      // The OS keyboard can close while the textarea remains focused and zoom stays active.
+      await setViewport(layoutHeight / scale, 0, scale);
+      await expect(page.locator("html")).not.toHaveAttribute("data-mari-software-keyboard-open");
+      await expect.poll(async () => (await shell.boundingBox())?.height).toBe(original!.height);
+      await expect.poll(async () => (await shell.boundingBox())?.y).toBe(original!.y);
+      await textarea.blur();
+    }
+    // Split-view changes width as well as height; it must establish a new
+    // keyboard baseline, including while pinch zoom is still active.
+    await page.setViewportSize({ width: 320, height: 600 });
+    await setViewport(300, 0, 2);
+    await expect(page.locator("html")).not.toHaveAttribute("data-mari-software-keyboard-open");
+    await expect.poll(async () => (await shell.boundingBox())?.height).toBe(600);
+    await textarea.focus();
+    await setViewport(160, 0, 2);
+    await expect(page.locator("html")).toHaveAttribute("data-mari-software-keyboard-open", "");
+    await expect.poll(async () => (await shell.boundingBox())?.height).toBe(160);
+    await expectTextareaInViewport(0, 160);
+    // Keep tracking if split-view is resized with the keyboard already open.
+    await page.setViewportSize({ width: 360, height: 700 });
+    await setViewport(210, 0, 2);
+    await expect.poll(async () => (await shell.boundingBox())?.height).toBe(210);
+    await expect(page.locator("html")).toHaveAttribute("data-mari-software-keyboard-open", "");
+    await expectTextareaInViewport(0, 210);
+    await setViewport(350, 0, 2);
+    await expect.poll(async () => (await shell.boundingBox())?.height).toBe(700);
+    await expect(page.locator("html")).not.toHaveAttribute("data-mari-software-keyboard-open");
+    // Android may resize the layout viewport too. Height-only keyboard
+    // updates must retain its baseline across a subsequent width change.
+    await page.setViewportSize({ width: 360, height: 420 });
+    await setViewport(210, 0, 2);
+    await expect.poll(async () => (await shell.boundingBox())?.height).toBe(210);
+    await expect(page.locator("html")).toHaveAttribute("data-mari-software-keyboard-open", "");
+    await expectTextareaInViewport(0, 210);
+    await page.setViewportSize({ width: 320, height: 360 });
+    await setViewport(180, 0, 2);
+    await expect.poll(async () => (await shell.boundingBox())?.height).toBe(180);
+    await expect(page.locator("html")).toHaveAttribute("data-mari-software-keyboard-open", "");
+    await expectTextareaInViewport(0, 180);
+    await page.setViewportSize({ width: 320, height: 640 });
+    await setViewport(320, 0, 2);
+    await expect.poll(async () => (await shell.boundingBox())?.height).toBe(640);
+    await expect(page.locator("html")).not.toHaveAttribute("data-mari-software-keyboard-open");
+  } finally {
+    await page.request.delete(`/api/chats/${chat.id}?force=true`);
+  }
+});
+
 test("iPhone chat menus stay in the visual viewport while editing", async ({ page }, testInfo) => {
   test.skip(!testInfo.project.name.includes("mobile-webkit"), "The visual-viewport pan regression is iPhone-only.");
 

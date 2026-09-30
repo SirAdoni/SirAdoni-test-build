@@ -1,7 +1,9 @@
 import { AlertTriangle, Download, Loader2, RefreshCw, Trash2, Upload } from "lucide-react";
 
+import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { BackstagePageHeader } from "../../modules/settings/SlpSettingsKit";
+import { slpKeys } from "../../base/state/slp-query-keys";
+import { SectionTitle } from "../../modules/settings/SlpSettingsControls";
 import {
   applySlurpRestoreInspection,
   discardSlurpRestoreInspection,
@@ -11,19 +13,17 @@ import {
 } from "./slp-backup";
 
 import { showConfirmDialog, showPromptDialog } from "../../../lib/app-dialogs";
-import { SlurpMaintenanceHealth } from "./SlpMaintenanceHealth";
 import { MaintenanceTask, focusRing, quietButton } from "./SlpMaintenanceTask";
 import type { SlpBackstagePageProps } from "../backstage/slp-backstage-contract";
 import { errorMessage, formatBytes } from "../../modules/settings/slp-backstage-format";
 
 /** Backup and data: export, restore and the destructive delete actions. */
 export function SlpBackupPanel(page: SlpBackstagePageProps) {
+  const queryClient = useQueryClient();
   const {
     onRestartOnboarding,
     t,
-    section,
     maintenanceSummary,
-    autopurgePreview,
     deleteAllData,
     deleteUnusedData,
     backupJob,
@@ -46,22 +46,10 @@ export function SlpBackupPanel(page: SlpBackstagePageProps) {
     : null;
   return (
     <>
-      {section === "maintenance" && (
-        <div className="mb-5">
-          <SlurpMaintenanceHealth
-            summary={maintenanceSummary.data}
-            loading={maintenanceSummary.isLoading}
-            error={maintenanceSummary.isError}
-            preview={autopurgePreview.data}
-          />
-        </div>
-      )}
-
       <div className="space-y-4">
-        <BackstagePageHeader
-          title={t("ui.slurp.settings.advanced.title")}
+        <SectionTitle
+          title={t("ui.slurp.settings.advanced.pageTitle")}
           detail={t("ui.slurp.settings.advanced.detail")}
-          scope="all-slurp"
         />
 
         <MaintenanceTask
@@ -153,7 +141,7 @@ export function SlpBackupPanel(page: SlpBackstagePageProps) {
               aria-labelledby="slurp-restore-preview-title"
             >
               <div className="bg-[color-mix(in_srgb,var(--noodle-accent)_10%,var(--slurp-surface-raised))] p-4">
-                <p className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--noodle-accent)]">
+                <p className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--noodle-accent-foreground)]">
                   {t("ui.slurp.settings.maintenance.restore.eyebrow", { defaultValue: "Restore preview" })}
                 </p>
                 <h3
@@ -242,6 +230,9 @@ export function SlpBackupPanel(page: SlpBackstagePageProps) {
                           setRestoreInspection(null);
                           setRestoreFileName("");
                           const done = await followBackupJob(job);
+                          // Everything on screen predates the restore: drop staged edits and reload it all.
+                          page.setDraftPatch({});
+                          await queryClient.invalidateQueries({ queryKey: slpKeys.all });
                           toast.success(
                             t("ui.slurp.settings.advanced.restoreSuccess", {
                               creators: done.creators,
@@ -343,6 +334,35 @@ export function SlpBackupPanel(page: SlpBackstagePageProps) {
             <AlertTriangle size={16} aria-hidden="true" />
             {t("ui.slurp.settings.maintenance.dangerTitle", { defaultValue: "Danger zone" })}
           </h2>
+          <MaintenanceTask
+            danger
+            title={t("ui.slurp.settings.advanced.resetActivityTitle")}
+            detail={t("ui.slurp.settings.advanced.resetActivityDetail")}
+          >
+            <button
+              type="button"
+              disabled={deleteAllData.isPending}
+              onClick={() =>
+                void showConfirmDialog({
+                  title: t("ui.slurp.settings.advanced.resetActivityConfirmTitle"),
+                  message: t("ui.slurp.settings.advanced.resetActivityConfirmDetail"),
+                  confirmLabel: t("ui.slurp.settings.advanced.resetActivityButton"),
+                })
+                  .then((confirmed) => {
+                    if (!confirmed) return;
+                    deleteAllData.mutate(true, {
+                      onSuccess: () => toast.success(t("ui.slurp.settings.advanced.resetActivitySuccess")),
+                      onError: (error) => toast.error(errorMessage(error)),
+                    });
+                  })
+                  .catch((error) => toast.error(errorMessage(error)))
+              }
+              className={`inline-flex min-h-11 items-center gap-2 rounded-lg px-3 text-xs font-semibold text-[var(--slurp-danger)] ring-1 ring-inset ring-[var(--slurp-danger)]/50 hover:bg-[var(--slurp-danger)]/10 disabled:opacity-50 ${focusRing}`}
+            >
+              <RefreshCw size={14} aria-hidden="true" />
+              {t("ui.slurp.settings.advanced.resetActivityButton")}
+            </button>
+          </MaintenanceTask>
           <MaintenanceTask
             danger
             title={t("ui.slurp.settings.advanced.deleteAllTitle")}

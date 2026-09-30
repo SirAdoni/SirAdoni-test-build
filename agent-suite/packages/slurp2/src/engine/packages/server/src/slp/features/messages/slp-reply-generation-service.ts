@@ -8,7 +8,7 @@ import {
 } from "../../../../../shared/src/slp/slp-social.types.js";
 import { isDebugAgentsEnabled } from "../../../config/runtime-config.js";
 import { resolveSlurpCreatorMenu } from "../../data/settings/slp-post-guidance-storage.js";
-import { slurpPlatformEventInstruction } from "../../../../../shared/src/slp/slp-platform-events.js";
+import { resolveSlurpEventInstruction } from "../world/slp-world-contract.js";
 import type { DB } from "../../../db/connection.js";
 import { logDebugOverride } from "../../../lib/logger.js";
 import { resolveBaseUrl } from "../../../services/generation/connection-base-url.js";
@@ -20,7 +20,11 @@ import { parseGameJsonish } from "../../../services/game/jsonish.js";
 import { requireModelAnswer } from "../../base/model/slp-model-answer.js";
 import { withConnectionFallbackProvider } from "../../../services/llm/connection-fallback-provider.js";
 import type { ChatMessage } from "../../../services/llm/base-provider.js";
-import { composeSlurpPromptBlocks, type SlurpPromptBlockOverrides } from "../../base/prompting/slp-prompt-blocks.js";
+import {
+  composeSlurpPromptBlocks,
+  type SlurpPromptBlockOverrides,
+  type SlurpReusablePromptInstruction,
+} from "../../base/prompting/slp-prompt-blocks.js";
 import { createLLMProvider } from "../../../services/llm/provider-registry.js";
 import { createConnectionsStorage } from "../../../services/storage/connections.storage.js";
 import { describeSlurpPostCondition } from "../feed/slp-feed-contract.js";
@@ -43,6 +47,11 @@ import { createChatsStorage } from "../../../services/storage/chats.storage.js";
 import { createCharactersStorage } from "../../../services/storage/characters.storage.js";
 import { SLURP_PLATFORM_CONTEXT } from "../../modules/prompting/slp-prompt.js";
 import { resolveCreatorCharacterCanon } from "../../data/creators/slp-source-resolve.js";
+import { resolveSlurpCreatorFlavour } from "../../data/creators/slp-flavour-source.js";
+import { slurpRotationHash } from "../../modules/feed/slp-post-variation.js";
+import { slurpPromptContext } from "../../base/prompting/slp-prompt-blocks.js";
+import { SLURP_PERFORMED_INTIMACY } from "../../modules/creators/slp-performance.js";
+import { slpWithProviderRetry } from "../../base/model/slp-provider-retry.js";
 
 type GenerationConnection = NonNullable<Awaited<ReturnType<ReturnType<typeof createConnectionsStorage>["getWithKey"]>>>;
 
@@ -78,11 +87,14 @@ export function buildCreatorReplyMessages(input: {
   /** Same Creator state the post path uses: energy, exposure, emotion, day vibe, goal. */
   creatorCondition?: string | null;
   characterCanon?: string;
+  /** The flavour brief (see `slp-creator-flavour.ts`); replaces the card dump when present. */
+  flavourBrief?: string;
   /** The Creator's private content menu. See `slurp-post-guidance.ts`. */
   contentMenu?: string;
   /** Holidays and site events running today. See `slurp-platform-events.ts`. */
   platformEvents?: string | null;
   promptBlocks?: SlurpPromptBlockOverrides;
+  promptInstructions?: SlurpReusablePromptInstruction[];
 }): ChatMessage[] {
   const protect = (value: string | null | undefined) =>
     protectCreatorGeneratedIdentity(value, input.disclosureMode, input.publicIdentity) ?? "";
@@ -92,7 +104,7 @@ export function buildCreatorReplyMessages(input: {
       {
         id: "task",
         kind: "editable" as const,
-        text: "You write exactly one direct reply from one Slurp creator to one real viewer comment on the creator's post. Address the viewer's comment naturally and do not write for the viewer.",
+        text: "You write exactly one direct reply from one Slurp creator to one real viewer comment on the creator's post. Address the viewer's comment naturally and do not write for the viewer. Reply in the language of the comment.",
       },
       { id: "platform", kind: "required" as const, text: SLURP_PLATFORM_CONTEXT },
       { id: "safety", kind: "required" as const, text: NOODLER_UNTRUSTED_CONTENT_INSTRUCTION },
@@ -109,6 +121,20 @@ export function buildCreatorReplyMessages(input: {
         id: "identity",
         kind: "required" as const,
         text: slpCreatorIdentityInstruction(input.disclosureMode, input.publicIdentity),
+      },
+      {
+        id: "performance",
+        kind: "context" as const,
+        optional: true,
+        text: SLURP_PERFORMED_INTIMACY,
+      },
+      {
+        id: "canon",
+        kind: "context" as const,
+        optional: true,
+        text: input.flavourBrief?.trim()
+          ? '"Who you are", after the data, is you: how you talk and what is going on in your life lately. Let it colour the reply. Never quote it.'
+          : "",
       },
       {
         id: "style",
@@ -129,6 +155,7 @@ export function buildCreatorReplyMessages(input: {
       { id: "output", kind: "required" as const, text: "Return JSON only. No prose outside the JSON object." },
     ],
     input.promptBlocks,
+    input.promptInstructions,
   );
   const data = {
     ...(input.platformEvents ? { platformEvents: input.platformEvents } : {}),
@@ -158,13 +185,15 @@ export function buildCreatorReplyMessages(input: {
     // The comment path used to answer as a Creator with no state at all, so the same person was
     // exhausted and broke in a DM and blandly cheerful under her own post.
     creatorCondition: protect(input.creatorCondition) || "No Creator state is available right now.",
-    ...(input.characterCanon ? { characterCanon: protect(input.characterCanon) } : {}),
+    ...(input.characterCanon && !input.flavourBrief?.trim() ? { characterCanon: protect(input.characterCanon) } : {}),
   };
   return [
     { role: "system", content: system },
     {
       role: "user",
-      content: `# Untrusted Slurp data\n${JSON.stringify(data, null, 2)}`,
+      content: `# Untrusted Slurp data\n${JSON.stringify(data, null, 2)}${
+        input.flavourBrief?.trim() ? `\n\n# Who you are\n${protect(input.flavourBrief)}` : ""
+      }`,
     },
   ];
 }
@@ -182,26 +211,29 @@ export async function generateCreatorReply(input: {
 }): Promise<{ content: string; moodShift: SlurpMoodShift }> {
   const connections = createConnectionsStorage(input.db);
   const fallbackConnection = await connections.getFallbackForMain();
-  const provider = withConnectionFallbackProvider({
-    primary: createLLMProvider(
-      input.connection.provider,
-      resolveBaseUrl(input.connection),
-      input.connection.apiKey,
-      input.connection.maxContext,
-      input.connection.openrouterProvider,
-      input.connection.maxTokensOverride,
-      input.connection.claudeFastMode === "true",
-      input.connection.treatAsLocalEndpoint === "true",
-      input.connection.defaultParameters,
-    ),
-    primaryConnectionId: input.connection.id,
-    fallbackConnection,
-    fallbackBaseUrl: fallbackConnection ? resolveBaseUrl(fallbackConnection) : "",
-    category: "main",
-  });
+  const provider = slpWithProviderRetry(
+    withConnectionFallbackProvider({
+      primary: createLLMProvider(
+        input.connection.provider,
+        resolveBaseUrl(input.connection),
+        input.connection.apiKey,
+        input.connection.maxContext,
+        input.connection.openrouterProvider,
+        input.connection.maxTokensOverride,
+        input.connection.claudeFastMode === "true",
+        input.connection.treatAsLocalEndpoint === "true",
+        input.connection.defaultParameters,
+      ),
+      primaryConnectionId: input.connection.id,
+      fallbackConnection,
+      fallbackBaseUrl: fallbackConnection ? resolveBaseUrl(fallbackConnection) : "",
+      category: "main",
+    }),
+  );
   const disclosureMode = input.creator.settings.privacy.identityDisclosure ?? "open";
   const publicIdentity = await resolveNoodlerPublicIdentity(input.db, input.creator);
   const settings = await createSlurpStorage(input.db).getSettings();
+  const prompts = slurpPromptContext(settings);
   const source = await createSlurpStorage(input.db).resolveAccountSource(input.creator);
   const characterCanon = await resolveCreatorCharacterCanon(input.db, source, disclosureMode);
   const scheduleContext = source
@@ -227,12 +259,20 @@ export async function generateCreatorReply(input: {
     generationGuidance: settings.generationGuidance,
     scheduleContext,
     characterCanon,
+    flavourBrief: await resolveSlurpCreatorFlavour(input.db, {
+      account: input.creator,
+      source,
+      disclosureMode,
+      use: "comment",
+      sequence: slurpRotationHash(input.parent.id),
+    }),
     relationship,
     creatorCondition,
     imageContext: imageContexts.get(input.post.id),
     contentMenu: await resolveSlurpCreatorMenu(input.db, input.creator.id).catch(() => ""),
-    platformEvents: slurpPlatformEventInstruction(settings.platformEvents, new Date()),
-    promptBlocks: settings.promptBlocks,
+    platformEvents: await resolveSlurpEventInstruction(input.db, input.creator.id, new Date()),
+    promptBlocks: prompts.blocks,
+    promptInstructions: prompts.instructions,
   });
   const debugMode = input.debugMode === true || isDebugAgentsEnabled();
   const options = {
@@ -244,7 +284,7 @@ export async function generateCreatorReply(input: {
     maxTokens: clampGenerationMaxOutputTokens({
       provider: input.connection.provider as APIProvider,
       model: input.connection.model,
-      maxTokens: 512,
+      maxTokens: 2048,
       maxTokensOverride: input.connection.maxTokensOverride,
     }),
     stream: false,

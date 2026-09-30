@@ -1,23 +1,25 @@
 import type { SlpAccount } from "../../../../../shared/src/slp/slp-social.types.js";
-import type { SlpPostCardModel } from "./SlpPostCard";
+import type { SlpPostCardModel } from "./SlpPostTypes";
 import { cn } from "../../../lib/utils";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import {
   textareaClass,
   fieldClass,
-  labelClass,
   SLP_MEDIA_PICKER_TABS,
   SLP_TEXT_MEDIA_PICKER_TABS,
   SlpMentionSuggestions,
   SlpToolButton,
   SlurpToolPopover,
   createSlpLightboxImage,
-} from "./SlpPostCard";
+} from "./SlpPostHelpers";
 import { SlpAnchoredPopover } from "../../base/chrome/SlpAnchoredPopover";
+import { labelClass } from "../../base/chrome/SlpChrome";
 import { ConversationMediaPickerPanel } from "../../../components/chat/ConversationMediaPickerPanel";
 import { ImageIcon, Smile, X } from "lucide-react";
 
 export interface SlpReplyComposerProps {
+  /** "Ask for a reply" from the Creator; absent on the Creator's own posts (R1-027). */
+  askForReply?: { asked: boolean; setAsked: (asked: boolean) => void };
   nested: boolean;
   post: SlpPostCardModel;
   replyParentInteractionId: string | null;
@@ -89,6 +91,7 @@ export function SlpReplyComposer({
   appendToReply,
   mediaPickerTab,
   setMediaPickerTab,
+  askForReply,
 }: SlpReplyComposerProps) {
   const { t: localizeUi } = useUiTranslation();
 
@@ -101,7 +104,7 @@ export function SlpReplyComposer({
       {replyParentInteractionId && replyTargetActor && (
         <p className="mb-2 text-xs text-[var(--muted-foreground)]">
           {localizeUi("ui.noodle.noodlepostcard.replyingTo")}{" "}
-          <span className="font-semibold text-[var(--noodle-accent)]">@{replyTargetActor.handle}</span>
+          <span className="font-semibold text-[var(--noodle-accent-foreground)]">@{replyTargetActor.handle}</span>
         </p>
       )}
       <textarea
@@ -142,7 +145,7 @@ export function SlpReplyComposer({
             <img
               src={replyImageUrl}
               alt={localizeUi("ui.noodle.noodlepostcard.attachedReplyPreview")}
-              className="max-h-52 w-full object-cover"
+              className="slp-crop-top max-h-52 w-full object-cover"
             />
           </button>
           <button
@@ -180,6 +183,17 @@ export function SlpReplyComposer({
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {askForReply && (
+            <label className="flex cursor-pointer items-center gap-1.5 text-xs font-semibold text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]">
+              <input
+                type="checkbox"
+                checked={askForReply.asked}
+                onChange={(event) => askForReply.setAsked(event.target.checked)}
+                className="h-3.5 w-3.5 accent-[var(--noodle-accent)]"
+              />
+              {localizeUi("ui.noodle.noodlepostcard.askForReply")}
+            </label>
+          )}
           <button
             type="button"
             onClick={clearReplyComposer}
@@ -189,7 +203,7 @@ export function SlpReplyComposer({
           </button>
           <button
             type="button"
-            className="h-8 rounded-full bg-[var(--noodle-accent)] px-4 text-xs font-bold text-zinc-950 [&_svg]:!text-zinc-950 transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            className="h-8 rounded-full bg-[var(--noodle-accent)] px-4 text-xs font-bold text-[var(--slurp-on-accent)] [&_svg]:!text-[var(--slurp-on-accent)] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             disabled={(!replyHasText && !replyImageUrl.trim()) || postReplyPending}
             onClick={() => submitReply(post)}
           >
@@ -211,7 +225,7 @@ export function SlpReplyComposer({
               type="button"
               onClick={() => replyImageFileRef.current?.click()}
               disabled={uploadGlobalImages.isPending}
-              className="h-9 w-full rounded-full bg-[var(--noodle-accent)] px-4 text-xs font-bold text-zinc-950 [&_svg]:!text-zinc-950 transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              className="h-9 w-full rounded-full bg-[var(--noodle-accent)] px-4 text-xs font-bold text-[var(--slurp-on-accent)] [&_svg]:!text-[var(--slurp-on-accent)] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {uploadGlobalImages.isPending
                 ? localizeUi("ui.noodle.noodleprofilesurface.uploading")
@@ -219,7 +233,7 @@ export function SlpReplyComposer({
             </button>
             <div
               data-component="NoodleView.ReplyImageDivider"
-              className="flex items-center gap-2 text-[0.625rem] font-semibold uppercase tracking-normal text-[var(--noodle-accent)]"
+              className="flex items-center gap-2 text-xs font-semibold text-[var(--noodle-accent-foreground)]"
             >
               <span className="h-px flex-1 bg-[var(--noodle-divider)]" />
               {localizeUi("ui.noodle.noodlehome.or")}
@@ -237,7 +251,7 @@ export function SlpReplyComposer({
             <button
               type="button"
               onClick={applyReplyImageUrl}
-              className="h-9 w-full rounded-full border border-[var(--noodle-divider)] px-4 text-xs font-bold text-[var(--noodle-accent)] transition-colors hover:bg-[var(--noodle-accent)]/10"
+              className="h-9 w-full rounded-full border border-[var(--noodle-divider)] px-4 text-xs font-bold text-[var(--noodle-accent-foreground)] transition-colors hover:bg-[var(--noodle-accent)]/10"
             >
               {localizeUi("ui.noodle.noodlehome.attachUrl")}
             </button>

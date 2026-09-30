@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { slurp2BackstageSource } from "./slurp2-backstage-source";
 import { slurp2Source } from "./slurp2-source";
+import { isSlurpPreferenceSettingKey } from "../packages/slurp2/src/engine/packages/server/src/slp/modules/maintenance/slp-backup";
 
 const pkg = join(import.meta.dirname, "..", "packages/slurp2/src/engine/packages");
 const read = (path: string) => slurp2Source(join(pkg, path));
@@ -18,14 +19,36 @@ const importStart = storage.indexOf("async importSlurpBackup(");
 const importBody = storage.slice(importStart, storage.indexOf("await tx._fileStore.flush();", importStart));
 assert.match(
   importBody,
-  /const replaceSettings =\s*backup\.importSettings === true &&\s*Object\.keys\(backup\.settings \?\? \{\}\)\.some\(\(key\) => key\.startsWith\(SLURP_SETTINGS_NAMESPACE\)\)/u,
-  "settings are replaced only on opt-in with slurp2 settings present",
+  /const carriesKeys = Object\.keys\(backup\.settings \?\? \{\}\)\.some\(\(key\) => key\.startsWith\(SLURP_SETTINGS_NAMESPACE\)\);\s*const replaceSettings = backup\.importSettings === true && carriesKeys;/u,
+  "preferences are replaced only on opt-in with slurp2 settings present",
 );
-const guard = importBody.indexOf("if (replaceSettings) {");
+// R1-100: only preferences wait for the opt-in; data keys (wallets, earnings, storylines) come back with the tables.
+assert.match(
+  importBody,
+  /const restoresKey = \(key: string\) => replaceSettings \|\| !isSlurpPreferenceSettingKey\(key\);/u,
+);
+const guard = importBody.indexOf("if (carriesKeys) {");
 assert.ok(
   guard > 0 && guard < importBody.indexOf("settingsTx.remove("),
-  "the settings wipe must sit behind the opt-in guard",
+  "nothing is wiped when the archive carries no slurp2 keys (a Legacy import)",
 );
+assert.match(
+  importBody,
+  /for \(const row of stale\) if \(restoresKey\(String\(row\.key\)\)\) await settingsTx\.remove/u,
+);
+assert.match(importBody, /if \(restoresKey\(key\)\) await settingsTx\.set\(key, value\);/u);
+for (const key of ["slurp2.settings", "slurp2.image-connections", "slurp2.post-guidance", "slurp2.viewer.p1.settings"])
+  assert.equal(isSlurpPreferenceSettingKey(key), true, key);
+for (const key of [
+  "slurp2.viewer.v1.wallet",
+  "slurp2.creator.c1.earnings",
+  "slurp2.creator.c1.projects",
+  "slurp2.creator.c1.goal",
+  "slurp2.creator.c1.wardrobe",
+  "slurp2.creator-prices",
+  "slurp2.canon-anchors",
+])
+  assert.equal(isSlurpPreferenceSettingKey(key), false, key);
 
 const routes = read("server/src/routes/slurp.routes.ts");
 assert.match(routes, /importSlurpBackup\(\{ settings, tables, importSettings \}\)/u);
@@ -69,8 +92,9 @@ const beforeFollow = home.slice(0, followButton);
 assert.match(
   beforeFollow.slice(beforeFollow.lastIndexOf("leadingActions=")),
   // 0.0.8 dropped the static badge: the subscribe button already shows the subscription, so the
-  // follow toggle is simply hidden while subscribed.
-  /\{!viewerCreator\.subscribed && \(/u,
+  // follow toggle is simply hidden while subscribed. Step 3.2: "subscribed" means renewing; a
+  // cancelled one gets the fan row again under Resume subscription.
+  /\{renewing \? \(/u,
   "the follow toggle must be gated on viewerCreator.subscribed",
 );
 

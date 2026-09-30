@@ -7,9 +7,10 @@ import { useMemo, useState } from "react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useCharacterSummaries } from "../../hooks/use-characters";
-import { useChat, useDeleteTrashedMessages, useMessageTrash, useRestoreTrashedMessages } from "../../hooks/use-chats";
+import { useDeleteTrashedMessages, useMessageTrash, useRestoreTrashedMessages } from "../../hooks/use-chats";
 import { useFeatureNumber } from "../../hooks/use-feature-settings";
 import { cn } from "../../lib/utils";
+import { isMessageHiddenFromUser } from "../../lib/chat-message-visibility";
 
 const ROW_CLASS =
   "block w-full px-3 py-2.5 text-left transition-colors hover:bg-[var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--primary)]";
@@ -46,23 +47,18 @@ function useSpeakerName(characterIds: string[]) {
 
 /** Bookmarked messages of the loaded transcript; clicking one jumps to it. */
 export function ChatBookmarksList({
-  chatId,
   messages,
   onJump,
 }: {
-  chatId: string;
   messages: Message[];
   onJump: (messageNumber: number) => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
-  // Game mode has no per-message anchors, so a jump would silently do nothing there.
-  const { data: chat } = useChat(chatId);
-  const canJump = chat?.mode !== "game";
   const bookmarks = useMemo(
     () =>
       messages.flatMap((message, index) => {
         const bookmark = readMessageBookmark(message.extra);
-        return bookmark ? [{ message, bookmark, messageNumber: index + 1 }] : [];
+        return bookmark && !isMessageHiddenFromUser(message) ? [{ message, bookmark, messageNumber: index + 1 }] : [];
       }),
     [messages],
   );
@@ -80,19 +76,13 @@ export function ChatBookmarksList({
   }
   return (
     <div className="divide-y divide-[var(--border)]">
-      {!canJump && (
-        <p className="px-3 py-2 text-[0.6875rem] leading-4 text-[var(--muted-foreground)]">
-          {localizeUi("ui.chat.messagemarks.jumpUnavailableGame")}
-        </p>
-      )}
       {bookmarks.map(({ message, bookmark, messageNumber }) => (
         <button
           key={message.id}
           type="button"
-          disabled={!canJump}
           onClick={() => onJump(messageNumber)}
-          className={cn(ROW_CLASS, "disabled:cursor-default disabled:hover:bg-transparent")}
-          title={canJump ? localizeUi("ui.chat.chatmessagesearch.jumpToMessage", { number: messageNumber }) : undefined}
+          className={ROW_CLASS}
+          title={localizeUi("ui.chat.chatmessagesearch.jumpToMessage", { number: messageNumber })}
         >
           <span className="flex items-baseline gap-2 text-xs">
             <span className="min-w-0 truncate font-semibold text-[var(--primary)]">{speakerName(message)}</span>
@@ -131,13 +121,15 @@ export function ChatTrashList({ chatId, enabled }: { chatId: string; enabled: bo
       items.map((entry) => entry.id),
       {
         onSuccess: (result) => {
-          const restored = localizeUi("ui.chat.messagetrash.restored", { count: result.restoredMessageIds.length });
-          if (result.conflictEntryIds.length === 0) toast.success(restored);
-          else
-            toast.error(localizeUi("ui.chat.messagetrash.restoreConflict"), {
-              // A partial restore still says how many made it back.
-              description: result.restoredMessageIds.length > 0 ? restored : undefined,
+          const restored =
+            result.restoredMessageIds.length > 0
+              ? localizeUi("ui.chat.messagetrash.restored", { count: result.restoredMessageIds.length })
+              : undefined;
+          if (result.error || result.conflictEntryIds.length > 0)
+            toast.warning(result.error ?? localizeUi("ui.chat.messagetrash.restoreConflict"), {
+              description: restored,
             });
+          else if (restored) toast.success(restored);
         },
         onError: (error) =>
           toast.error(error instanceof Error ? error.message : localizeUi("ui.chat.messagetrash.restoreFailed")),

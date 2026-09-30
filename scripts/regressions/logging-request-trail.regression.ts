@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { Writable } from "node:stream";
 import pino from "../../packages/server/node_modules/pino/pino.js";
 import Fastify from "../../packages/server/node_modules/fastify/fastify.js";
@@ -12,11 +11,26 @@ const { getLogContext, logContextMixin } = await import("../../packages/server/s
 const { genRequestId, registerRequestLogging, RequestLogController, sanitizeIncomingRequestId } =
   await import("../../packages/server/src/lib/request-logging.js");
 
-assert.equal(
-  Reflect.get(logger, pino.symbols.mixinSym),
-  logContextMixin,
-  "the shared logger copies the log context onto every line",
+const productionMixin = Reflect.get(logger, pino.symbols.mixinSym);
+assert.equal(typeof productionMixin, "function", "the shared logger installs a context mixin");
+const { runWithRootLogContext } = await import("../../packages/server/src/lib/log-context.js");
+const { withDiagnosticContext } = await import("../../packages/server/src/lib/diagnostics.js");
+const productionContext = runWithRootLogContext({ requestId: "trace-1234abcd", route: "/api/items/:id" }, () =>
+  withDiagnosticContext(
+    { operation: "fixture", operationId: "fixture-operation", stage: "mixin token=synthetic-secret" },
+    () =>
+      (productionMixin as (mergeObject: object, level: number, log: typeof logger) => Record<string, unknown>)(
+        {},
+        30,
+        logger,
+      ),
+  ),
 );
+assert.equal(productionContext.requestId, "trace-1234abcd", "the production mixin preserves request context");
+assert.equal(productionContext.route, "/api/items/:id", "the production mixin preserves route context");
+assert.equal(productionContext.operation, "fixture", "the production mixin keeps diagnostic fields");
+assert.equal(productionContext.operationId, "fixture-operation");
+assert.equal(productionContext.stage, "mixin token=[REDACTED]", "the production mixin sanitizes diagnostic values");
 
 assert.equal(sanitizeIncomingRequestId("trace-1234abcd"), "trace-1234abcd");
 assert.equal(sanitizeIncomingRequestId("short"), undefined, "ids under 8 characters are replaced");
@@ -158,8 +172,8 @@ await app.close();
   assert.equal(logger.listenerCount("level-change"), before, "the unsubscribe removes the listener");
 }
 
-// The dev pretty transport hides bootId (and pino-pretty's default hostname); JSON output keeps both.
-const loggerSource = readFileSync(new URL("../../packages/server/src/lib/logger.ts", import.meta.url), "utf8");
-assert.match(loggerSource, /ignore: "hostname,bootId"/u);
+// The shared JSON logger keeps the per-process boot identifier in its bindings.
+const bindings = logger.bindings();
+assert.match(String(bindings.bootId), /^[0-9a-f]{8}$/u);
 
 console.info("Logging request trail regression passed");

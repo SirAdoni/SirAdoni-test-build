@@ -107,6 +107,11 @@ export const slurpSimulationTuningSchema = z.object({
       audienceCommissionPrice: int(0, 99_999, 40),
       /** Share of a fan's weekly budget one tip is worth. A Whale tips like a Whale for free. */
       audienceTipShare: num(0, 1, 0.25),
+      /**
+       * How many people on the platform one real paying fan stands for (0.3.7): the shown subscriber
+       * count, the Creator's earnings in dollars, and the dollars per coin at payout all use it.
+       */
+      crowdWeight: int(1, 20, 5),
     })
     .default({}),
   prompts: z
@@ -202,7 +207,7 @@ const PRESETS: Record<Exclude<SlurpTuningPreset, "custom">, SlurpSimulationTunin
     },
     world: { ...scaleCurves(R.world, 2.5), maxActionsPerTick: 8, maxOpenRequests: 5 },
     funnel: { ...R.funnel, rollCadence: "hourly", ambientCanPay: true, conversionGrowth: 3 },
-    economy: { audienceCommissionPrice: 80, audienceTipShare: 0.4 },
+    economy: { ...R.economy, audienceCommissionPrice: 80, audienceTipShare: 0.4 },
   },
 };
 

@@ -33,6 +33,7 @@ import { describeSlurpMood } from "./slp-mood.js";
  *
  * Long enough to be a real consequence, short enough that a session is not ended by it. The fan is
  * told what happened and when it lifts, because a refusal that looks like a bug is a bug.
+ * The default of the `messagesCoolOffMinutes` setting (the player can shorten it or turn it off).
  */
 export const SLURP_COOL_OFF_HOURS = 6;
 
@@ -241,7 +242,10 @@ export function resolveSlurpStance(input: SlurpStanceInput): SlurpStance {
 
   // Hostile reactions are part of an ordinary relationship. The audience tone changes how often
   // the model chooses them, but it must not make an annoyed Creator unable to show annoyance.
-  const canSendImage = warmth === "warm" || warmth === "close" || warmth === "cold";
+  // A fan she barely knows (neutral) may get one too, as a paid picture (`resolveSlurpMediaOffer`):
+  // with pictures only from "warm" on, a week of chatting never produced a DM picture or a PPV.
+  // Only a guarded stranger gets none.
+  const canSendImage = warmth !== "guarded";
   const imageMode = canSendImage ? (warmth === "cold" ? "hostile" : "friendly") : "none";
   evidence.push({
     layer: "media latitude",
@@ -256,3 +260,31 @@ const WARMTH_ORDER: SlurpStanceWarmth[] = ["cold", "guarded", "neutral", "warm",
 /** Rapport's floor. History softens a bad mood; it never makes somebody warmer than the mood earned. */
 const atLeast = (value: SlurpStanceWarmth, floor: SlurpStanceWarmth): SlurpStanceWarmth =>
   WARMTH_ORDER[Math.max(WARMTH_ORDER.indexOf(value), WARMTH_ORDER.indexOf(floor))]!;
+
+/** Why a Creator will not send a picture in this chat right now, in the order the reply checks it. */
+export type SlurpDmPictureBlock =
+  "support" | "cooling_off" | "images_off" | "stance" | "energy" | "posture" | "comfort" | "respect";
+
+/**
+ * The Details panel's "Pictures" verdict, read off the same gates the reply passes before it draws
+ * (R1-012): Support's thread never gets one, the stance must allow one, the Creator's state must not
+ * hold it back, and the Creator's own Images switch must be on. Whether the model then wants a
+ * picture is its call; this says only whether one could come.
+ */
+export function slurpDmPictureVerdict(input: {
+  stance: Pick<SlurpStance, "latitude" | "canSendImage" | "imageMode">;
+  support: boolean;
+  imagesEnabled: boolean;
+  stateBlock: "energy" | "posture" | "comfort" | "respect" | null;
+}): { mode: SlurpStance["imageMode"]; blockedBy: SlurpDmPictureBlock | null } {
+  const blockedBy: SlurpDmPictureBlock | null = input.support
+    ? "support"
+    : input.stance.latitude === "cool_off"
+      ? "cooling_off"
+      : !input.imagesEnabled
+        ? "images_off"
+        : !input.stance.canSendImage
+          ? "stance"
+          : input.stateBlock;
+  return { mode: blockedBy ? "none" : input.stance.imageMode, blockedBy };
+}

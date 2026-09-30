@@ -269,7 +269,12 @@ try {
     };
     const modifier = (value: Record<string, unknown>) => (doc: Record<string, any>) =>
       addCondition(doc, { modifiers: [value] });
-    refuses(fiveEText, modifier({ to: "attacks" }), /by a flat amount, by dice or, for speed, by times/, "no amount");
+    refuses(
+      fiveEText,
+      modifier({ to: "attacks" }),
+      /by a flat amount, by dice, for speed by times, or for checks and saves by a mode/,
+      "no amount",
+    );
     refuses(fiveEText, modifier({ to: "attacks", flat: 0 }), /A flat change of 0 changes nothing/, "zero");
     refuses(fiveEText, modifier({ to: "defense", dice: "1d4" }), /Dice are rolled/, "dice on defense");
     refuses(fiveEText, modifier({ to: "speed", dice: "1d4" }), /Dice are rolled/, "dice on speed");
@@ -356,7 +361,7 @@ try {
     assert.ok(levelNode.properties.effects.items.enum.includes("own-checks-disadvantage"));
     const modifierNode = published.properties.combat.properties.conditions.items.properties.modifiers.items;
     assert.deepEqual(modifierNode.allOf[0], {
-      anyOf: [{ required: ["flat"] }, { required: ["dice"] }, { required: ["times"] }],
+      anyOf: [{ required: ["flat"] }, { required: ["dice"] }, { required: ["times"] }, { required: ["mode"] }],
     });
     assert.deepEqual(modifierNode.properties.flat.not, { const: 0 });
   }
@@ -376,10 +381,18 @@ try {
     const poisoned = reference.combat!.conditions!.find((entry) => entry.condition === "poisoned")!;
     assert.ok(poisoned.effects.includes("own-checks-disadvantage"));
     assert.deepEqual(
-      ember.combat!.levels!.map((level) => [level.track, level.at, level.modifiers]),
+      ember.combat!.levels!.map((level) => [level.track ?? level.derived, level.at, level.modifiers]),
       [
         ["heat", 3, [{ to: "attacks", flat: -1 }]],
         ["heat", 5, [{ to: "speed", times: 0.5 }]],
+        [
+          "bulk_carried",
+          10,
+          [
+            { to: "speed", flat: -2 },
+            { to: "checks", skills: ["sneak"], flat: -1 },
+          ],
+        ],
       ],
     );
   }

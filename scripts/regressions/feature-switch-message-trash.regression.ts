@@ -55,15 +55,19 @@ try {
   const del = (id: string) => app!.inject({ method: "DELETE", url: `/api/chats/chat-grove/messages/${id}` });
   const bulk = (ids: string[]) =>
     app!.inject({ method: "POST", url: "/api/chats/chat-grove/messages/bulk-delete", payload: { messageIds: ids } });
+  const assertDeleteResult = (response: Awaited<ReturnType<typeof del>>, trashedCount: number) => {
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), { trashed: trashedCount > 0, trashedCount });
+  };
 
   // ON = today
   resetFeatureSettingsForTests();
   const onSingle = await add("Tamsin waves.");
-  assert.equal((await del(onSingle)).statusCode, 204);
+  assertDeleteResult(await del(onSingle), 1);
   assert.equal(await storage.getMessage(onSingle), null);
   assert.equal(await trash.count("chat-grove"), 1, "ON: a delete moves the message to the Trash");
   const onBulk = [await add("one"), await add("two")];
-  assert.equal((await bulk(onBulk)).statusCode, 204);
+  assertDeleteResult(await bulk(onBulk), 2);
   assert.equal(await trash.count("chat-grove"), 3, "ON: bulk deletes go to the Trash too");
   const [entry] = await trash.list("chat-grove");
   const day = 24 * 60 * 60 * 1000;
@@ -75,10 +79,10 @@ try {
   // OFF = upstream permanent delete
   resetFeatureSettingsForTests({ messageTrash: false });
   const offSingle = await add("Ysolde leaves.");
-  assert.equal((await del(offSingle)).statusCode, 204);
+  assertDeleteResult(await del(offSingle), 0);
   assert.equal(await storage.getMessage(offSingle), null, "OFF: the message is gone");
   const offBulk = [await add("three"), await add("four")];
-  assert.equal((await bulk(offBulk)).statusCode, 204);
+  assertDeleteResult(await bulk(offBulk), 0);
   for (const id of offBulk) assert.equal(await storage.getMessage(id), null, "OFF: bulk delete is permanent");
   assert.equal(await trash.count("chat-grove"), 3, "OFF: nothing new reaches the Trash");
   assert.equal(

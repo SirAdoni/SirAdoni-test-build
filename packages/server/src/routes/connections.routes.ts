@@ -21,6 +21,8 @@ import {
   createDefaultVideoGenerationProfile,
   decisionTestTimeoutMs,
   generationParametersSchema,
+  type GenerationParameterKey,
+  type ModelParameterCapabilities,
   inferVideoSource,
   isLocalAuthProvider,
   isOpenAIGpt6Model,
@@ -28,8 +30,6 @@ import {
   normalizeVideoGenerationProfile,
   resolveImageReferenceLimits,
   type AtlasCloudVideoModelSchemaResponse,
-  type GenerationParameterKey,
-  type ModelParameterCapabilities,
 } from "@marinara-engine/shared";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
 import {

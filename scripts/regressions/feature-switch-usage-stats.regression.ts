@@ -18,6 +18,7 @@ try {
   const { createGenerationUsageStorage } =
     await import("../../packages/server/src/services/storage/generation-usage.storage.js");
   const stats = await import("../../packages/server/src/services/lorebook/activation-stats.js");
+  const { lorebookEntryActivationStats } = await import("../../packages/server/src/db/schema/index.js");
   const db = await createFileNativeDB();
   const usage = createGenerationUsageStorage(db);
   const { createLorebooksStorage } = await import("../../packages/server/src/services/storage/lorebooks.storage.js");
@@ -44,13 +45,13 @@ try {
   assert.equal((await all()).length, 1, "OFF: the ledger is untouched");
   stats.recordLorebookActivations(db, { entryIds: [entryOn, entryOff], chatId: "chat-grove" });
   await stats.flushLorebookActivationStats(db);
-  const after = await stats.listLorebookActivationStats(db, [entryOn, entryOff]);
+  assert.deepEqual(await stats.listLorebookActivationStats(db, [entryOn, entryOff]), [], "OFF: stats are hidden");
+  const persisted = await db.select().from(lorebookEntryActivationStats);
   assert.deepEqual(
-    after.map((stat) => [stat.entryId, stat.count]),
+    persisted.map((stat) => [stat.entryId, stat.count]),
     [[entryOn, 1]],
-    "OFF: no activation counts written",
+    "OFF: stored activation counts are preserved and no new counts are written",
   );
-
   // Queued while ON, switched OFF before the batch flushes: the queued batch is dropped too.
   resetFeatureSettingsForTests();
   stats.recordLorebookActivations(db, { entryIds: [entryOn, entryOff], chatId: "chat-grove" });

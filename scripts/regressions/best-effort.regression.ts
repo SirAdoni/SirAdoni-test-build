@@ -5,14 +5,45 @@ import assert from "node:assert/strict";
 process.env.LOG_LEVEL = "silent";
 const { bestEffort, logSuppressed, orFallback, suppressedLogLine } =
   await import("../../packages/server/src/lib/best-effort.js");
+const { logger } = await import("../../packages/server/src/lib/logger.js");
 const { takeRateLimitedSlot, resetRateLimitedLogs } = await import("../../packages/server/src/lib/log-rate-limit.js");
 
+// Assert the observable repeat-log contract; the old limiter has an independent map.
+const lines: Record<string, unknown>[] = [];
+const priorWarn = logger.warn;
+const priorNow = Date.now;
+let now = 10_000;
+logger.warn = ((fields: Record<string, unknown>) => lines.push(fields)) as typeof logger.warn;
+Date.now = () => now;
+try {
+  const fields = { event: "regression.cleanup", chatId: "chat-1" };
+  assert.doesNotThrow(() => logSuppressed(new Error("cleanup failed"), fields));
+  assert.equal(lines.length, 1, "the first swallowed failure is logged");
+  logSuppressed(new Error("cleanup failed again"), fields);
+  now += 59_999;
+  logSuppressed(new Error("cleanup still failed"), fields);
+  assert.equal(lines.length, 1, "repeats inside a minute are suppressed");
+  logSuppressed(new Error("other chat"), { ...fields, chatId: "chat-2" });
+  logSuppressed(new Error("other stage"), { ...fields, stage: "later" });
+  logSuppressed(new Error("other event"), { ...fields, event: "regression.other" });
+  assert.equal(lines.length, 4, "event, chat and stage each isolate their repeat key");
+  now += 1;
+  logSuppressed(new Error("cleanup failed after window"), fields);
+  assert.equal(lines.length, 6, "the next window writes a repeat summary and the current failure");
+  assert.equal(lines[4]?.suppressedCount, 2, "the summary preserves both suppressed failures");
+  assert.equal(lines[4]?.repeatKey, "regression.cleanup:chat-1:");
+  assert.equal(lines[5]?.outcome, "failed");
+  assert.equal(lines[5]?.suppressed, true);
+  assert.ok(lines[5]?.err instanceof Error);
+} finally {
+  logger.warn = priorWarn;
+  Date.now = priorNow;
+}
+
+// The standalone legacy limiter keeps its own window contract for its remaining callers.
 resetRateLimitedLogs();
-assert.doesNotThrow(() =>
-  logSuppressed(new Error("cleanup failed"), { event: "regression.cleanup", chatId: "chat-1" }),
-);
-// The first line for this key was written, so the same key is now inside its window.
-assert.equal(takeRateLimitedSlot("regression.cleanup:chat-1:"), null, "one line a minute per event, chat and stage");
+assert.equal(takeRateLimitedSlot("regression.cleanup:chat-1:"), 0);
+assert.equal(takeRateLimitedSlot("regression.cleanup:chat-1:"), null);
 assert.equal(takeRateLimitedSlot("regression.cleanup:chat-2:"), 0, "another chat has its own key");
 assert.doesNotThrow(() => logSuppressed("not an Error", { event: "regression.cleanup", level: "debug" }));
 

@@ -1,12 +1,15 @@
 import type { SlpIdentityDisclosure } from "../../../../shared/src/slp/slp-social.types.js";
 import type { SlurpManagedStageProfile, SlurpStageProfileInput } from "../base/state/slp-state-types";
 import { showConfirmDialog } from "../../lib/app-dialogs";
-import { type SlpCreatorPostSubmission, errorMessage, serializeCreatorPostGuide } from "./screens/SlpHomeHelpers";
+import { type SlpCreatorPostSubmission, errorMessage } from "./screens/SlpHomeHelpers";
 import type { ImagePromptOverride } from "../../components/ui/ImagePromptReviewModal";
 import { confirmSlurpAvatarReview } from "../features/creators/SlpStageProfileForm";
 import { ApiError } from "../../lib/api-client";
 import { toast } from "sonner";
-import { useSlurpHomeBaseState, type SlurpHomeBaseState, type SlurpHomeProps } from "./slp-home-state";
+import { startSlpTask } from "../base/state/slp-task-store";
+import { useCancelCreatorImagePrompts } from "../features/feed/slp-feed-post-hooks";
+import { useSlurpHomeBaseState, type SlurpHomeBaseState } from "./slp-home-state";
+import type { SlurpHomeProps } from "./slp-home.types";
 
 /**
  * What the Creator Hub does: open and close the profile editor, generate and save a stage
@@ -16,6 +19,7 @@ import { useSlurpHomeBaseState, type SlurpHomeBaseState, type SlurpHomeProps } f
  * halves joined and is what the host still calls.
  */
 function useSlurpHomeActions(state: SlurpHomeBaseState) {
+  const cancelImagePrompts = useCancelCreatorImagePrompts();
   const {
     navigation,
     onNavigate,
@@ -35,7 +39,6 @@ function useSlurpHomeActions(state: SlurpHomeBaseState) {
     draftSourceRevisionToken,
     draftSourceSnapshot,
     editingProfileId,
-    generatePost,
     generatePostImage,
     generateProfileDraft,
     imagePromptReview,
@@ -67,6 +70,7 @@ function useSlurpHomeActions(state: SlurpHomeBaseState) {
     toggleFollow,
     toggleSubscription,
     updateNoodlerPostDraft,
+    setComposerOpenSignal,
     updateProfile,
     updateProfileLocation,
     viewerPersonaId,
@@ -123,6 +127,9 @@ function useSlurpHomeActions(state: SlurpHomeBaseState) {
       handle: profile.handle,
       bio: profile.bio,
       stagePersonality: profile.stagePersonality,
+      appearance: profile.appearance,
+      wardrobe: profile.wardrobe,
+      locations: profile.locations,
       disclosureMode: profile.disclosureMode ?? "hinted",
       gender: profile.gender,
       tags: profile.tags,
@@ -198,6 +205,9 @@ function useSlurpHomeActions(state: SlurpHomeBaseState) {
         handle: profile.handle,
         bio: profile.bio,
         stagePersonality: profile.stagePersonality,
+        appearance: profile.appearance,
+        wardrobe: profile.wardrobe,
+        locations: profile.locations,
         disclosureMode: profile.disclosureMode ?? "hinted",
         gender: profile.gender,
         tags: profile.tags,
@@ -247,6 +257,15 @@ function useSlurpHomeActions(state: SlurpHomeBaseState) {
             count: profile.discardedPreparedPostCount,
           }),
         );
+      }
+      // A new character Creator is asked whether it should post on its own; the step was never
+      // reached (R1-075). Persona Creators post by hand, so they skip it.
+      const personaSource = (state.personas ?? []).some(
+        (persona: { id: string }) => persona.id === profile.sourceAccountId,
+      );
+      if (!editingProfileId && profile.sourceAccountId && !personaSource) {
+        setAutoPostSetupId(profile.id);
+        setCreationStep("automatic");
       }
     };
     const onError = async (error: unknown) => {
@@ -331,59 +350,43 @@ function useSlurpHomeActions(state: SlurpHomeBaseState) {
       postType,
       linkedPostId: linkedPostId ?? null,
     });
-    toast.success(localizeUi("ui.noodle.noodlerhome.noodlerPostPublished"));
-    if (wantsImage && created?.id) {
-      await generatePostImage.mutateAsync({ id: created.id, accountId: profileId }).catch((error: unknown) =>
-        toast.error(
-          errorMessage(
-            error,
-            localizeUi("ui.slurp.composer.aiImageFailed", {
-              defaultValue: "The post was published, but its image could not be created.",
-            }),
-          ),
-        ),
-      );
-    }
-  };
-
-  const submitGuidedPost = async ({
-    profileId,
-    title,
-    body,
-    access,
-    image,
-    poll,
-    format,
-    postType,
-    generateImage,
-  }: SlpCreatorPostSubmission) => {
-    if (!(await confirmProviderDisclosure())) return;
-    const guide = serializeCreatorPostGuide(title, body);
-    const result = await generatePost.mutateAsync({
-      mode: "noodler",
-      targetAccountId: profileId,
-      ...(guide ? { noodlerPostGuide: guide } : {}),
-      ...(generateImage ? { generateImage: true } : {}),
-      access,
-      image,
-      poll,
-      format,
-      postType,
+    const postId = created?.id;
+    toast.success(localizeUi("ui.noodle.noodlerhome.noodlerPostPublished"), {
+      description: wantsImage && postId ? localizeUi("ui.slurp.pulse.task.drawingLater") : undefined,
     });
-    if (result.imagePromptReview) {
-      setImagePromptReview({ accountId: profileId, items: [result.imagePromptReview] });
-      toast.success(localizeUi("ui.noodle.noodlerhome.noodlerPostGeneratedReviewTheImagePromptToRender"));
-      return;
-    }
-    toast.success(localizeUi("ui.noodle.noodlerhome.noodlerPostGenerated"));
+    // B: the picture is drawn as a Pulse task, so the composer closes as soon as the post is out.
+    if (wantsImage && postId)
+      void startSlpTask({
+        t: localizeUi,
+        kind: "generate-post-image",
+        label: localizeUi("ui.slurp.pulse.task.drawPost"),
+        accountIds: [profileId],
+        startedToast: false,
+        run: () => generatePostImage.mutateAsync({ id: created.id, accountId: profileId }),
+        done: () => ({
+          result: localizeUi("ui.slurp.pulse.result.drawn"),
+          target: { accountId: profileId, postId },
+        }),
+      });
   };
 
+  // B: a Pulse task; the player keeps going while the Creator writes (and draws) the post.
   const submitRunNow = async (accountId: string) => {
     if (!(await confirmProviderDisclosure())) return;
-    runAutoPostNow.mutate(accountId, {
-      onSuccess: () => toast.success(localizeUi("ui.noodle.noodlerhome.automaticPostGenerated")),
-      onError: (error) =>
-        toast.error(errorMessage(error, localizeUi("ui.noodle.noodlerhome.couldNotRunAnAutomaticPostNow"))),
+    const name = accountsQuery.data?.find((profile) => profile.id === accountId)?.displayName;
+    void startSlpTask({
+      t: localizeUi,
+      kind: "auto-post",
+      label: localizeUi("ui.slurp.pulse.task.postNow", { name: name ?? "" }),
+      accountIds: [accountId],
+      run: () =>
+        runAutoPostNow.mutateAsync(accountId).catch((error: unknown) => {
+          throw new Error(errorMessage(error, localizeUi("ui.noodle.noodlerhome.couldNotRunAnAutomaticPostNow")));
+        }),
+      done: (post) => ({
+        result: localizeUi("ui.noodle.noodlerhome.automaticPostGenerated"),
+        target: { accountId, postId: post?.id ?? null },
+      }),
     });
   };
 
@@ -404,6 +407,15 @@ function useSlurpHomeActions(state: SlurpHomeBaseState) {
           toast.error(errorMessage(error, localizeUi("ui.noodle.noodlerhome.couldNotGenerateTheReviewedImage"))),
       },
     );
+  };
+
+  const cancelReviewedImagePrompts = () => {
+    if (!imagePromptReview) return;
+    setImagePromptReview(null);
+    cancelImagePrompts.mutate({
+      targetAccountId: imagePromptReview.accountId,
+      ids: imagePromptReview.items.map((item) => item.id),
+    });
   };
 
   const toggleCreatorSubscription = (creatorAccountId: string, subscribed: boolean) => {
@@ -434,16 +446,20 @@ function useSlurpHomeActions(state: SlurpHomeBaseState) {
   const openPostComposer = () => {
     if (mainAuthorProfile) {
       onNavigate({ mode: "creator", view: "profile", accountId: mainAuthorProfile.id });
-    } else if (shellPersonaAccount) {
+    } else if (shellPersonaAccount && accountsQuery.isSuccess) {
+      // Only a loaded, empty list proves there is no Creator yet. While accounts load or failed, the
+      // profiles view shows the wait or Try again instead of inviting a second Creator.
       onNavigate({ mode: "creator", view: "create-profile", sourceAccountId: shellPersonaAccount.id });
     } else {
       onNavigate({ mode: "creator", view: "profiles" });
     }
     setMobileDrawerOpen(false);
   };
+  // The hub's "Add Story": the own profile, with the composer sheet open in Story mode.
   const openStoryComposer = () => {
     if (mainAuthorProfile) {
       updateNoodlerPostDraft(mainAuthorProfile.id, { postType: "story", poll: null, title: "" });
+      setComposerOpenSignal((tick) => tick + 1);
     }
     openPostComposer();
   };
@@ -451,16 +467,15 @@ function useSlurpHomeActions(state: SlurpHomeBaseState) {
   return {
     beginCreate,
     cancelCreateProfile,
-    beginEdit,
     closeProfileEditor,
     changeDisclosure,
     generateDraft,
     redraftFromSource,
     saveProfile,
     submitManualPost,
-    submitGuidedPost,
     submitRunNow,
     confirmReviewedImagePrompts,
+    cancelReviewedImagePrompts,
     toggleCreatorSubscription,
     toggleCreatorFollow,
     mainAuthorProfile,

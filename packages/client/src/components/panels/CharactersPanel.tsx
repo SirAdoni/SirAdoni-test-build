@@ -83,7 +83,6 @@ import { ChatResourceActionButton } from "../chat/ChatResourceActionButton";
 import { CharacterPhoto } from "../ui/CharacterPhoto";
 import { AvatarImage } from "../characters/AvatarImage";
 import { CharacterCategoryFilter } from "../characters/CharacterCategoryFilter";
-import { CharacterDuplicatesModal } from "../characters/CharacterDuplicatesModal";
 import { CharacterUnusedModal } from "../characters/CharacterUnusedModal";
 import { CircleSlash } from "lucide-react";
 import { PANEL_PHONE_FLOOR_CLASS, PANEL_ROW_NAME_WRAP_CLASS } from "./panel-phone-floor";
@@ -149,7 +148,7 @@ function parseCharacterRow(char: CharacterRow): ParsedCharacterRow {
       character_version: char.version,
       extensions: { fav: char.favorite, avatarCrop: char.avatarCrop, nameColor: char.nameColor },
     };
-    return { ...char, parsed: (parsed as unknown as ParsedCharacterRow["parsed"]) ?? {} };
+    return { ...char, parsed: parsed as unknown as ParsedCharacterRow["parsed"] };
   } catch {
     return { ...char, parsed: { name: "Unknown", description: "" } };
   }
@@ -277,9 +276,9 @@ export function CharactersPanel() {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedCharacterIds, setSelectedCharacterIds] = useState<Set<string>>(new Set());
   const [exportingSelected, setExportingSelected] = useState(false);
-  const [duplicatesOpen, setDuplicatesOpen] = useState(false);
   const [unusedOpen, setUnusedOpen] = useState(false);
   const [bulkTagsOpen, setBulkTagsOpen] = useState(false);
+  const setCharacterDuplicatesOpen = useUIStore((s) => s.setCharacterDuplicatesOpen);
 
   // Parse character data and filter by search
   const parsedCharacters = useMemo(() => {
@@ -307,18 +306,6 @@ export function CharactersPanel() {
     () => new Map(parsedCharacters.map((character) => [character.id, character])),
     [parsedCharacters],
   );
-  // Built only while the bulk tag dialog is open, and stable between renders.
-  const bulkTagCharacters = useMemo(
-    () =>
-      bulkTagsOpen
-        ? [...selectedCharacterIds].flatMap((id) => {
-            const character = parsedCharacterMap.get(id);
-            return character ? [{ id, tags: getCharacterTags(character) }] : [];
-          })
-        : [],
-    [bulkTagsOpen, parsedCharacterMap, selectedCharacterIds],
-  );
-
   // Search fields are normalized once per loaded list, not once per keystroke.
   const searchIndexById = useMemo(
     () => new Map(parsedCharacters.map((c) => [c.id, buildCharacterSearchIndex(c, getCharacterTags(c))])),
@@ -1672,6 +1659,7 @@ export function CharactersPanel() {
       <div className="flex flex-col gap-0.5">
         <div className="flex items-center gap-1">
           <button
+            type="button"
             onClick={() => handleCreateFolder()}
             className="mari-chrome-control mari-chrome-control--small flex-1 justify-start text-[0.6875rem]"
           >
@@ -1680,7 +1668,8 @@ export function CharactersPanel() {
           </button>
           <button
             type="button"
-            onClick={() => setDuplicatesOpen(true)}
+            data-character-duplicates-trigger
+            onClick={() => setCharacterDuplicatesOpen(true)}
             className="mari-chrome-control mari-chrome-control--small shrink-0 text-[0.6875rem]"
             title={localizeUi("characters.duplicates.action")}
           >
@@ -1932,14 +1921,6 @@ export function CharactersPanel() {
         />
       )}
 
-      <CharacterDuplicatesModal
-        open={duplicatesOpen}
-        onClose={() => setDuplicatesOpen(false)}
-        onOpenCharacter={(id) => {
-          setDuplicatesOpen(false);
-          openCharacterDetailFromPanel(id);
-        }}
-      />
       <CharacterUnusedModal
         open={unusedOpen}
         onClose={() => setUnusedOpen(false)}
@@ -1951,9 +1932,13 @@ export function CharactersPanel() {
       <CharacterBulkTagsModal
         open={bulkTagsOpen}
         onClose={() => setBulkTagsOpen(false)}
-        characters={bulkTagCharacters}
-        onApplied={() => {
+        selectedIds={selectedCharacterIds}
+        onApplied={(failedIds) => {
           setBulkTagsOpen(false);
+          if (failedIds.length > 0) {
+            setSelectedCharacterIds(new Set(failedIds));
+            return;
+          }
           exitSelectionMode();
         }}
       />

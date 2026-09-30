@@ -20,6 +20,21 @@ export function isClaudeOpus55Model(model: string): boolean {
   return /(?:^|\/)claude-opus-5[.-]5(?:$|[-:])/iu.test(model.trim());
 }
 
+/** Native Claude ID and the dotted ID used by OpenRouter/compatible gateways. */
+export function isClaudeSonnet55Model(model: string): boolean {
+  return /(?:^|\/)claude-sonnet-5[.-]5(?:$|[-:])/iu.test(model.trim());
+}
+
+/**
+ * Claude models that reject disabled thinking, forced tool choice, assistant prefill and
+ * non-default sampling. Sonnet 5.5 can still skip up-front thinking, but only with the native
+ * `between_tools` setting, which OpenAI-compatible gateways cannot send.
+ * https://platform.claude.com/docs/en/models/sonnet-5-5/whats-new-sonnet-5-5
+ */
+export function isClaudeStrictRequestModel(model: string): boolean {
+  return isClaudeOpus55Model(model) || isClaudeSonnet55Model(model);
+}
+
 export function isClaudeAdaptiveOnlyNoSamplingModel(model: string): boolean {
   const normalized = model.toLowerCase();
   return (
@@ -62,7 +77,15 @@ export function isOpenAIGpt6AstraModel(model: string): boolean {
 }
 
 export function isOpenAIGpt6Model(model: string): boolean {
-  return /^(?:openai\/)?gpt-6-(?:astra|sol|luna)(?:$|[-:])/i.test(model);
+  return /^(?:openai\/)?gpt-6(?:-(?:astra|sol|luna)|\.1-sol)(?:$|[-:])/i.test(model);
+}
+
+/**
+ * GPT-6 models that cannot turn reasoning off. GPT-6 only takes sampling with effort "none",
+ * so these never take it at all. https://developers.openai.com/api/docs/models/gpt-6.1-sol
+ */
+export function isOpenAIGpt6AlwaysReasoningModel(model: string): boolean {
+  return isOpenAIGpt6AstraModel(model) || /^(?:openai\/)?gpt-6\.1-sol(?:$|[-:])/i.test(model);
 }
 
 export function isOpenAIGpt56SolProAlias(model: string): boolean {
@@ -132,6 +155,7 @@ export const OPENAI_MODELS: KnownModel[] = [
   { id: "gpt-5.6-terra", name: "gpt-5.6-terra", context: 1050000, maxOutput: 128000 },
   { id: "gpt-5.6-luna", name: "gpt-5.6-luna", context: 1050000, maxOutput: 128000 },
   // GPT-6
+  { id: "gpt-6.1-sol", name: "gpt-6.1-sol", context: 1050000, maxOutput: 128000 },
   { id: "gpt-6-astra", name: "gpt-6-astra", context: 1050000, maxOutput: 128000 },
   { id: "gpt-6-sol", name: "gpt-6-sol", context: 1050000, maxOutput: 128000 },
   { id: "gpt-6-luna", name: "gpt-6-luna", context: 1050000, maxOutput: 128000 },
@@ -237,6 +261,7 @@ export const OPENAI_MODELS: KnownModel[] = [
 export const ANTHROPIC_MODELS: KnownModel[] = [
   { id: "claude-opus-5-5", name: "claude-opus-5-5", context: 1000000, maxOutput: 128000 },
   { id: "claude-opus-5", name: "claude-opus-5", context: 1000000, maxOutput: 128000 },
+  { id: "claude-sonnet-5-5", name: "claude-sonnet-5-5", context: 1000000, maxOutput: 128000 },
   { id: "claude-sonnet-5", name: "claude-sonnet-5", context: 1000000, maxOutput: 128000 },
   { id: "claude-fable-5-1", name: "claude-fable-5-1", context: 1000000, maxOutput: 128000 },
   { id: "claude-fable-5", name: "claude-fable-5", context: 1000000, maxOutput: 128000 },
@@ -278,6 +303,7 @@ export const ANTHROPIC_MODELS: KnownModel[] = [
 export const CLAUDE_SUBSCRIPTION_MODELS: KnownModel[] = [
   { id: "claude-opus-5-5", name: "Claude Opus 5.5", context: 1000000, maxOutput: 128000 },
   { id: "claude-opus-5", name: "Claude Opus 5", context: 1000000, maxOutput: 128000 },
+  { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", context: 1000000, maxOutput: 128000 },
   { id: "claude-sonnet-5", name: "Claude Sonnet 5", context: 1000000, maxOutput: 128000 },
   { id: "claude-fable-5-1", name: "Claude Fable 5.1", context: 1000000, maxOutput: 128000 },
   { id: "claude-fable-5", name: "Claude Fable 5", context: 1000000, maxOutput: 128000 },
@@ -996,6 +1022,10 @@ const AUDIO_GEN_MODELS: KnownModel[] = [
   { id: "grok-tts", name: "Grok TTS", context: 0, maxOutput: 0 },
 ];
 
+function isProviderHost(hostname: string, domain: string): boolean {
+  return hostname === domain || hostname.endsWith(`.${domain}`);
+}
+
 export function inferVideoSource(model: string, baseUrl: string): string {
   const m = model.toLowerCase();
   const u = baseUrl.toLowerCase();
@@ -1007,15 +1037,15 @@ export function inferVideoSource(model: string, baseUrl: string): string {
   }
   if (m === "swarmui" || u.includes(":7801") || u.includes("swarmui")) return "swarmui";
   if (m === "comfyui" || u.includes(":8188") || u.includes("comfyui")) return "comfyui";
-  if (m === "atlas" || u.includes("atlascloud.ai")) return "atlas";
-  if (m === "seedance" || m.startsWith("seedance-") || u.includes("seedance2.ai")) return "seedance";
-  if (m === "nanogpt" || hostname === "nano-gpt.com" || hostname.endsWith(".nano-gpt.com")) {
+  if (m === "atlas" || isProviderHost(hostname, "atlascloud.ai")) return "atlas";
+  if (m === "seedance" || m.startsWith("seedance-") || isProviderHost(hostname, "seedance2.ai")) return "seedance";
+  if (m === "nanogpt" || isProviderHost(hostname, "nano-gpt.com")) {
     return "nanogpt";
   }
-  if (m === "openrouter" || u.includes("openrouter.ai")) return "openrouter";
+  if (m === "openrouter" || isProviderHost(hostname, "openrouter.ai")) return "openrouter";
   if (m.includes("/") && (m.includes("veo") || m.includes("wan"))) return "openrouter";
   if (m === "google_veo" || m === "veo" || /^veo-[\d.]+/.test(m)) return "google_veo";
-  if (m === "xai" || u.includes("api.x.ai") || u.includes("x.ai")) return "xai";
+  if (m === "xai" || isProviderHost(hostname, "x.ai")) return "xai";
   if (m.includes("grok") && m.includes("imagine") && m.includes("video")) return "xai";
   return "gemini_omni";
 }
@@ -1059,30 +1089,28 @@ export function inferImageSource(model: string, baseUrl: string): string {
   }
   if (m === "drawthings") return "automatic1111";
   if (hostname === "fal.run") return "fal";
-  if (u.startsWith("openai-chatgpt:") || hostname === "chatgpt.com" || hostname.endsWith(".chatgpt.com")) {
-    return "openai_chatgpt";
-  }
-  if (hostname === "nano-gpt.com" || hostname.endsWith(".nano-gpt.com")) return "nanogpt";
-  if (u.includes("openrouter.ai")) return "openrouter";
-  if (u.includes("api.x.ai") || u.includes("x.ai")) return "xai";
-  if (u.includes("venice.ai")) return "venice";
-  if (u.includes("api.z.ai")) return "zai";
-  if (u.includes("atlascloud.ai")) return "atlas";
-  if (u.includes("arliai.com")) return "arli";
+  if (u.startsWith("openai-chatgpt:") || isProviderHost(hostname, "chatgpt.com")) return "openai_chatgpt";
+  if (isProviderHost(hostname, "nano-gpt.com")) return "nanogpt";
+  if (isProviderHost(hostname, "openrouter.ai")) return "openrouter";
+  if (isProviderHost(hostname, "x.ai")) return "xai";
+  if (isProviderHost(hostname, "venice.ai")) return "venice";
+  if (isProviderHost(hostname, "api.z.ai")) return "zai";
+  if (isProviderHost(hostname, "atlascloud.ai")) return "atlas";
+  if (isProviderHost(hostname, "arliai.com")) return "arli";
   if (m.startsWith("fal-ai/")) return "fal";
   if (m === "glm-image" || m.startsWith("cogview")) return "zai";
   if (m.startsWith("grok-") && m.includes("image")) return "xai";
   if (m.includes("grok") && m.includes("imagine")) return "xai";
-  if (m.startsWith("dall-e") || m.startsWith("gpt-image") || u.includes("openai.com")) return "openai";
-  if (m.startsWith("sd3") || u.includes("stability.ai")) return "stability";
-  if (m.includes("nai-diffusion") || u.includes("novelai.net")) return "novelai";
-  if (m === "pollinations" || u.includes("pollinations.ai")) return "pollinations";
-  if (m.includes("black-forest") || m.includes("flux") || u.includes("together.xyz")) return "togetherai";
-  if (u.includes("stablehorde.net")) return "horde";
-  if (u.includes("blockentropy")) return "blockentropy";
+  if (m.startsWith("dall-e") || m.startsWith("gpt-image") || isProviderHost(hostname, "openai.com")) return "openai";
+  if (m.startsWith("sd3") || isProviderHost(hostname, "stability.ai")) return "stability";
+  if (m.includes("nai-diffusion") || isProviderHost(hostname, "novelai.net")) return "novelai";
+  if (m === "pollinations" || isProviderHost(hostname, "pollinations.ai")) return "pollinations";
+  if (m.includes("black-forest") || m.includes("flux") || isProviderHost(hostname, "together.xyz")) return "togetherai";
+  if (isProviderHost(hostname, "stablehorde.net")) return "horde";
+  if (isProviderHost(hostname, "blockentropy.ai")) return "blockentropy";
   if (u.includes(":7801") || u.includes("swarmui")) return "swarmui";
   if (u.includes(":8188") || u.includes("comfyui")) return "comfyui";
-  if (u.includes("runpod.ai")) return "runpod_comfyui";
+  if (isProviderHost(hostname, "runpod.ai")) return "runpod_comfyui";
   if (u.includes(":7860") && !u.includes("drawthings")) return "automatic1111";
   // Gemini image models generate via chat completions (native or proxy)
   if (m.includes("gemini") && m.includes("image")) return "gemini_image";
@@ -1140,7 +1168,9 @@ export function findKnownModel(provider: APIProvider, modelId: string): KnownMod
   const normalizedId = modelId.trim().toLowerCase();
   const unqualifiedId = isClaudeOpus55Model(normalizedId)
     ? "claude-opus-5-5"
-    : (normalizedId.split("/").pop()?.split(":", 1)[0] ?? normalizedId);
+    : isClaudeSonnet55Model(normalizedId)
+      ? "claude-sonnet-5-5"
+      : (normalizedId.split("/").pop()?.split(":", 1)[0] ?? normalizedId);
   return OPENAI_COMPATIBLE_AGGREGATOR_MODELS.find((model) => model.id.toLowerCase() === unqualifiedId);
 }
 

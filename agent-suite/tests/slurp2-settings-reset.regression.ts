@@ -39,8 +39,18 @@ assert.deepEqual(slurpSettingsResetPatch(changed, defaults, "general"), { storyR
 assert.deepEqual(changedSlurpSettingKeys(changed, defaults, "audience"), [], "equal arrays are not a change");
 
 const settingsView = slurp2BackstageSource();
-assert.match(settingsView, /save\(slurpSettingsResetPatch\(settings, defaults, target\)\)/u);
+// Fix phase 1 (R1-133): the reset patch is saved, and staged edits of the same keys are dropped first.
+assert.match(
+  settingsView,
+  /const reset = slurpSettingsResetPatch\(settings, defaults, target\);[\s\S]{0,300}!\(key in reset\)[\s\S]{0,120}void save\(reset\);/u,
+);
 const routes = slurp2Source("packages/slurp2/src/engine/packages/server/src/routes/slurp.routes.ts");
-assert.match(routes, /app\.get\("\/settings\/defaults", async \(\) => DEFAULT_SLURP_SETTINGS\)/u);
+// R1-125: the defaults are normalized like stored settings, so a fresh install differs in nothing.
+// Merge F follow-up (on purpose): an untouched "Posts per day" reads sized for today's Creators, so the
+// defaults carry the same sizing; otherwise a fresh install differs in it and a reset fixes it at 4.
+assert.match(
+  routes,
+  /app\.get\("\/settings\/defaults", async \(\) => \(\{\s+\.\.\.normalizeSlurpSettings\(null\),\s+postsPerDay: slurpSizedPostsPerDay\(await countSlurpActiveCreators\(app\.db\)\),\s+\}\)\);/u,
+);
 
 console.log("slurp2 settings reset regression passed");

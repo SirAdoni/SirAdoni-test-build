@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { toast } from "sonner";
+import { startSlpTask } from "../base/state/slp-task-store";
+import { useGenerateCreatorPostImage } from "../features/feed/slp-feed-post-hooks";
 import type { SlpPollInput } from "../../../../shared/src/slp/slp-social-generation.schema.js";
 import type { SlpAccount, SlpInteraction } from "../../../../shared/src/slp/slp-social.types.js";
 import { showConfirmDialog } from "../../lib/app-dialogs";
 import { errorMessage } from "./screens/SlpHomeHelpers";
-import type { SlpPostCardModel, SlpPostImageUpdate } from "../modules/post/SlpPostCard";
+import type { SlpPostCardModel, SlpPostImageUpdate } from "../modules/post/SlpPostTypes";
 import type {
   useCreateCreatorInteraction,
   useDeleteCreatorInteraction,
@@ -52,6 +54,8 @@ export function useSlurpHomePostActions({
   updatePost: ReturnType<typeof useUpdateCreatorPost>;
   deletePost: ReturnType<typeof useDeleteCreatorPost>;
 }) {
+  const generatePostImage = useGenerateCreatorPostImage();
+  const [generatingPostImageIds, setGeneratingPostImageIds] = useState<readonly string[]>([]);
   const reactToPost = (post: SlpPostCardModel, type: "like", active = false) => {
     if (!viewerPersonaId) return;
     const onError = (error: unknown) =>
@@ -107,7 +111,9 @@ export function useSlurpHomePostActions({
     },
   ) => {
     if (!viewerPersonaId) return;
-    if (input.askForReply && !(await confirmProviderDisclosure())) return;
+    // Cancel on the AI cost note posts the comment without a reply request; it used to drop the
+    // comment the player had typed (R1-027).
+    const askForReply = input.askForReply && (await confirmProviderDisclosure());
     const viewerReply = await createInteraction.mutateAsync(
       {
         postId: post.id,
@@ -120,7 +126,7 @@ export function useSlurpHomePostActions({
         onError: (error) => toast.error(errorMessage(error, localizeUi("ui.noodle.noodlerhome.couldNotPostThisReply"))),
       },
     );
-    if (!input.askForReply) return;
+    if (!askForReply) return;
     try {
       await triggerCreatorReply.mutateAsync({
         postId: post.id,
@@ -147,6 +153,7 @@ export function useSlurpHomePostActions({
           accountId: post.authorAccountId,
           file: input.image.file,
           crop: input.image.crop,
+          ...(input.image.position > 0 && { imagePosition: input.image.position }),
           title: input.title,
           ...(input.content !== post.content.trim() && { content: input.content }),
           ...(input.poll !== undefined && { poll: input.poll }),
@@ -159,6 +166,7 @@ export function useSlurpHomePostActions({
           ...(input.content !== post.content.trim() && { content: input.content }),
           ...(input.poll !== undefined && { poll: input.poll }),
           ...(input.image?.kind === "crop" && { imageCrop: input.image.crop }),
+          ...(input.image?.kind === "crop" && input.image.position > 0 && { imagePosition: input.image.position }),
           ...(input.image?.kind === "remove" && { removeImage: true }),
         });
       }
@@ -166,6 +174,31 @@ export function useSlurpHomePostActions({
       toast.error(errorMessage(error, localizeUi("ui.noodle.noodlerhome.couldNotUpdateThisPost")));
       throw error;
     }
+  };
+  const handleGeneratePostImage = (
+    post: { id: string; authorAccountId: string },
+    imagePrompt?: string,
+    asWritten?: boolean,
+  ) => {
+    setGeneratingPostImageIds((current) => [...current, post.id]);
+    // B: a (re)draw is a Pulse task; the card keeps its own spinner, a toast opens the post when done.
+    void startSlpTask({
+      t: localizeUi,
+      kind: "generate-post-image",
+      label: localizeUi("ui.slurp.pulse.task.drawPost"),
+      accountIds: [post.authorAccountId],
+      startedToast: false,
+      run: () =>
+        generatePostImage
+          .mutateAsync({ id: post.id, accountId: post.authorAccountId, imagePrompt, asWritten })
+          .catch((error: unknown) => {
+            throw new Error(errorMessage(error, localizeUi("ui.slurp.image.generateFailed")));
+          }),
+      done: () => ({
+        result: localizeUi("ui.slurp.pulse.result.drawn"),
+        target: { accountId: post.authorAccountId, postId: post.id },
+      }),
+    }).finally(() => setGeneratingPostImageIds((current) => current.filter((id) => id !== post.id)));
   };
   const deleteNoodlePost = async (post: SlpPostCardModel) => {
     const confirmed = await showConfirmDialog({
@@ -243,5 +276,8 @@ export function useSlurpHomePostActions({
     setEditingReplyId,
     saveEditedReply,
     deleteNoodleReply,
+    generatePostImage,
+    generatingPostImageIds,
+    handleGeneratePostImage,
   };
 }

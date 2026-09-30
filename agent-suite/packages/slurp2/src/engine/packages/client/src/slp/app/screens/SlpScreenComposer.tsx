@@ -1,6 +1,7 @@
+import { useSlurpCreatorMessagingSettings } from "../../features/messages/slp-messages-hooks";
+import { useSlpViewerPersonaId } from "../../features/creators/slp-creators-hooks";
 import {
   SLP_CREATOR_POST_CONTENT_MAX_LENGTH,
-  SLP_CREATOR_POST_GUIDE_MAX_LENGTH,
   SLP_CREATOR_POST_TITLE_MAX_LENGTH,
   slpPollInputSchema,
 } from "../../../../../shared/src/slp/slp-social.schema.js";
@@ -13,7 +14,10 @@ import type {
 import type { SlurpManagedStageProfile } from "../../base/state/slp-state-types";
 import type { SlpCreatorContentFormat, SlurpProfilePost } from "../../features/feed/slp-feed-contract";
 import { useSlurpSettings } from "../../features/settings/slp-settings-hooks";
-import { SlpComposerShell, SlpComposerToolRow } from "../../modules/post/SlpPostCard";
+import { slurpIntentFitsAccess } from "../../../../../shared/src/slp/slp-content-axes.js";
+import { SlpComposerPurpose } from "../../modules/post/SlpComposerPurpose";
+import { SlpComposerAudience } from "../../modules/post/SlpComposerAudience";
+import { SlpOpenContinuityButton } from "../../base/navigation/SlpOpenContinuityButton";
 import { SlpAnchoredPopover } from "../../base/chrome/SlpAnchoredPopover";
 import { SlpImageComposer } from "../../base/media/SlpImageComposer";
 import { SlpPollComposer } from "../../modules/poll/SlpPollComposer";
@@ -23,15 +27,20 @@ import {
   type ConversationMediaPickerTabId,
 } from "../../../components/chat/ConversationMediaPickerPanel";
 import { useTranslation as useUiTranslation } from "react-i18next";
-import { ProfileInitial, SLURP_TOGGLE_ACTIVE_CLASS } from "../../base/chrome/SlpChrome";
-import { useEffect, useRef, useState } from "react";
-import { ChevronDown, Lock, Loader2, Pencil, Send, Sparkles, Trash2 } from "lucide-react";
+import { toast } from "sonner";
+import { Avatar, SLP_TYPE } from "../../base/chrome/SlpChrome";
+import { SlpAutoGrowTextarea } from "../../base/ui/SlpAutoGrowTextarea";
+import { SlpSheet } from "../../modules/chrome/SlpSheet";
+import { SlpButton, SlpChip, SlpPrimaryButton, SlpSegment } from "../../modules/chrome/SlpButton";
+import { useRef, useState } from "react";
+import { ChevronDown, Crop, ImagePlus, Link2, ListChecks, Loader2, Pencil, Send, Smile, Trash2 } from "lucide-react";
+import { SlpSparkleGlyph } from "../../base/chrome/SlpGlyphs";
+import { SlpPictureAssist, SlpTextAssist } from "../../features/assist/slp-assist-contract";
 import { cn } from "../../../lib/utils";
 import {
   errorMessage,
   isEmptyCreatorPostDraft,
   isSlurpStory,
-  serializeCreatorPostGuide,
   type SlpCreatorPostDraft,
   type SlpCreatorPostSubmission,
   type PendingCreatorImage,
@@ -39,43 +48,36 @@ import {
 } from "./SlpHomeHelpers";
 export type { PendingCreatorImage } from "./SlpHomeHelpers";
 
-// ---------------------------------------------------------------------------
-// Local types
-// ---------------------------------------------------------------------------
+export type SlpCreatorComposerTool = "image" | "poll" | "media" | "draw";
 
-export type SlpCreatorComposerTool = "image" | "poll" | "media" | "access";
-
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
-
+/**
+ * The one composer (design step 7): a full-screen glass sheet on phones, a centred modal on wide
+ * screens. Post | Story switch in the header, media first, then caption, access chips and the
+ * operator settings under "Advanced", with a sticky Post bar. The draft lives outside the sheet,
+ * so closing it keeps what was written.
+ */
 export function NoodlerPostComposer({
+  open,
+  onClose,
   profile,
   availablePosts,
-  collapsible = true,
-  openSignal = 0,
   draft,
   onDraftChange,
   onClearDraft,
   onDiscardDraft,
   onManualPost,
-  onGuidedPost,
   manualPending,
-  guidePending,
 }: {
+  open: boolean;
+  onClose: () => void;
   profile: SlurpManagedStageProfile;
   availablePosts: SlurpProfilePost[];
-  collapsible?: boolean;
-  /** Increments when something outside asks for the composer, so a collapsed one reopens. */
-  openSignal?: number;
   draft: SlpCreatorPostDraft;
   onDraftChange: (patch: Partial<SlpCreatorPostDraft>) => void;
   onClearDraft: () => void;
   onDiscardDraft: () => void;
   onManualPost: (input: SlpCreatorPostSubmission) => Promise<void>;
-  onGuidedPost: (input: SlpCreatorPostSubmission) => Promise<void>;
   manualPending: boolean;
-  guidePending: boolean;
 }) {
   const { t: localizeUi } = useUiTranslation();
   // The configured Story size, as a ratio, so an uploaded Story is cropped to the same shape an
@@ -85,27 +87,36 @@ export function NoodlerPostComposer({
     composerSettings && composerSettings.storyImageHeight > 0
       ? composerSettings.storyImageWidth / composerSettings.storyImageHeight
       : 4 / 5;
-  // Posting is the reason a creator opens their own profile, so the composer starts ready.
-  const [expanded, setExpanded] = useState(true);
-  useEffect(() => {
-    if (openSignal > 0) setExpanded(true);
-  }, [openSignal]);
+  // The Creator's own unlock price, the one the server stamps on a locked post (weekly dynamic
+  // pricing moves it); the Slurp-wide price only until it loads (R1-025).
+  const creatorPrices = useSlurpCreatorMessagingSettings(profile.id, useSlpViewerPersonaId()).data;
+  const usualUnlockPrice = creatorPrices?.messaging.unlockPrice ?? composerSettings?.walletUnlockCost ?? 25;
   const [postError, setPostError] = useState<string | null>(null);
-  const [guideError, setGuideError] = useState<string | null>(null);
   const [activeTool, setActiveTool] = useState<SlpCreatorComposerTool | null>(null);
   const [pollEditorValue, setPollEditorValue] = useState<SlpPollInput | null>(null);
   const [mediaPickerTab, setMediaPickerTab] = useState<ConversationMediaPickerTabId>("emoji");
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [pendingImage, setPendingImage] = useState<PendingCreatorImage | null>(null);
   const [imageUrlDraft, setImageUrlDraft] = useState("");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const imageFileRef = useRef<HTMLInputElement | null>(null);
-  const imageToolRef = useRef<HTMLDivElement | null>(null);
-  const pollToolRef = useRef<HTMLDivElement | null>(null);
-  const mediaToolRef = useRef<HTMLDivElement | null>(null);
-  const accessToolRef = useRef<HTMLDivElement | null>(null);
+  const mediaToolRef = useRef<HTMLButtonElement | null>(null);
   const composerBusyRef = useRef(false);
-  const { title, body, access, image, poll, postType, linkedPostId, unlockPrice, generateImage } = draft;
+  const {
+    title,
+    body,
+    access,
+    image,
+    poll,
+    postType,
+    linkedPostId,
+    unlockPrice,
+    generateImage,
+    contentIntent,
+    contentDelivery,
+  } = draft;
+  const story = postType === "story";
   const linkablePosts = availablePosts
     .map((entry) => ("managed" in entry ? entry.managed : entry.viewerPost))
     .filter((post): post is SlpCreatorManagedPost | SlpCreatorPostView => Boolean(post) && !isSlurpStory(post));
@@ -121,53 +132,50 @@ export function NoodlerPostComposer({
         ? "long_form"
         : "caption";
   const hasDraft = pendingImage !== null || !isEmptyCreatorPostDraft(draft);
-  const composerBusy = submitting || manualPending || guidePending;
+  const composerBusy = submitting || manualPending;
   composerBusyRef.current = composerBusy;
-  const guide = serializeCreatorPostGuide(title, body);
   const pollIsValid = poll ? slpPollInputSchema.safeParse(poll).success : false;
-
-  useEffect(() => {
-    if (composerBusy) {
-      setActiveTool(null);
-    }
-  }, [composerBusy]);
+  const canPost =
+    !composerBusy && !pendingImage && (story ? Boolean(image) : Boolean(body.trim() || image || pollIsValid));
 
   const updateDraft = (patch: Partial<SlpCreatorPostDraft>) => {
     if (composerBusyRef.current) return false;
     onDraftChange(patch);
     return true;
   };
-  const discardPendingImage = () => {
-    setPendingImage(null);
-  };
-
-  const clearDraft = () => {
-    onClearDraft();
+  const resetLocal = () => {
     setPostError(null);
-    setGuideError(null);
     setAttachmentError(null);
-    discardPendingImage();
+    setPendingImage(null);
     setImageUrlDraft("");
     setPollEditorValue(null);
     setActiveTool(null);
-    setExpanded(false);
+    setAdvancedOpen(false);
+  };
+  const close = () => {
+    if (composerBusyRef.current) return;
+    setActiveTool(null);
+    setPendingImage(null);
+    onClose();
   };
   const discardDraft = () => {
     if (composerBusyRef.current) return;
     onDiscardDraft();
-    setPostError(null);
-    setGuideError(null);
-    setAttachmentError(null);
-    discardPendingImage();
-    setImageUrlDraft("");
-    setPollEditorValue(null);
-    setActiveTool(null);
-    setExpanded(false);
+    resetLocal();
+    onClose();
   };
+  // Remove is one tap; the toast offers Undo (design step 7).
   const removeImage = () => {
     if (!image || composerBusyRef.current) return;
+    const removed = image;
     onDraftChange({ image: null });
     setPendingImage(null);
+    toast(localizeUi("ui.slurp.composer.imageRemoved", { defaultValue: "Picture removed" }), {
+      action: {
+        label: localizeUi("ui.slurp.wallet.undo", { defaultValue: "Undo" }),
+        onClick: () => onDraftChange({ image: removed }),
+      },
+    });
   };
   const handleImageFile = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -178,8 +186,8 @@ export function NoodlerPostComposer({
       return;
     }
     setAttachmentError(null);
-    discardPendingImage();
-    onDraftChange({ image: { source: file, crop: null } });
+    setPendingImage(null);
+    onDraftChange({ image: { source: file, crop: null }, generateImage: false });
     setActiveTool(null);
   };
   const handleImageUrl = () => {
@@ -190,11 +198,36 @@ export function NoodlerPostComposer({
       const parsed = new URL(imageUrl);
       if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("Use an HTTP or HTTPS image URL.");
       setImageUrlDraft("");
-      onDraftChange({ image: { source: parsed.toString(), crop: null } });
+      onDraftChange({ image: { source: parsed.toString(), crop: null }, generateImage: false });
       setActiveTool(null);
     } catch (error) {
       setAttachmentError(errorMessage(error, "Enter a valid image URL."));
     }
+  };
+  // What Write / Improve should know besides the text: the title, and the Purpose & Delivery picked
+  // under Advanced (a one-shot choice; it never changes the saved strategy).
+  const assistContext =
+    [
+      title.trim() && `Title: ${title.trim()}`,
+      contentIntent && `What this post is for: ${contentIntent.replaceAll("_", " ")}`,
+      contentDelivery && `How it is delivered: ${contentDelivery.replaceAll("_", " ")}`,
+    ]
+      .filter(Boolean)
+      .join(". ") || undefined;
+  // A drawn picture goes in like an upload, so Crop, Replace and Remove work on it as on any photo.
+  // The picture it replaced is kept for the assist's Undo.
+  const drawnOver = useRef<SlpCreatorPostDraft["image"]>(null);
+  // Decoded here: the Engine's content policy does not let fetch() read a data: URL.
+  const takeDrawnPicture = (picture: string) => {
+    const [head = "", base64 = ""] = picture.split(",", 2);
+    const type = /^data:([^;]+)/u.exec(head)?.[1] ?? "image/png";
+    const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+    drawnOver.current = image;
+    setPendingImage(null);
+    onDraftChange({
+      image: { source: new File([bytes], `slurp-${Date.now()}.${type.split("/")[1] ?? "png"}`, { type }), crop: null },
+      generateImage: false,
+    });
   };
   const applyImageCrop = async (crop: SlpPostImageCrop) => {
     if (composerBusyRef.current) return;
@@ -203,35 +236,30 @@ export function NoodlerPostComposer({
     setAttachmentError(null);
     onDraftChange({ image: { source: pending.source, crop } });
     setPendingImage(null);
-    setActiveTool(null);
   };
 
   const toggleTool = (tool: SlpCreatorComposerTool) => {
     if (composerBusyRef.current) return;
-    if (postType === "story" && tool === "poll") return;
+    if (story && tool === "poll") return;
     if (activeTool === tool) {
       setActiveTool(null);
       if (tool === "poll") setPollEditorValue(null);
       return;
     }
-    if (tool === "poll") {
-      setPollEditorValue(
-        poll ? { question: poll.question, options: [...poll.options] } : { question: "", options: ["", ""] },
-      );
-    } else {
-      setPollEditorValue(null);
-    }
+    setPollEditorValue(
+      tool === "poll"
+        ? poll
+          ? { question: poll.question, options: [...poll.options] }
+          : { question: "", options: ["", ""] }
+        : null,
+    );
     setActiveTool(tool);
   };
 
   const applyPollDraft = () => {
     const parsed = slpPollInputSchema.safeParse(pollEditorValue);
     if (!parsed.success) return;
-    if (
-      updateDraft({
-        poll: parsed.data,
-      })
-    ) {
+    if (updateDraft({ poll: parsed.data })) {
       setPollEditorValue(null);
       setActiveTool(null);
     }
@@ -240,7 +268,8 @@ export function NoodlerPostComposer({
   const submission = (): SlpCreatorPostSubmission => ({
     profileId: profile.id,
     title,
-    body: body.trim() || (image && !poll ? "Shared an image." : ""),
+    // A post needs text; an image-only post carries a camera, not an English sentence (R1-043).
+    body: body.trim() || (image && !poll ? "📸" : ""),
     access,
     image,
     poll: poll ? { question: poll.question.trim(), options: poll.options.map((option) => option.trim()) } : null,
@@ -249,6 +278,8 @@ export function NoodlerPostComposer({
     linkedPostId: linkedPostId ?? null,
     unlockPrice: access === "locked" ? (unlockPrice ?? null) : null,
     generateImage: generateImage && !image,
+    contentIntent,
+    contentDelivery,
   });
 
   const publish = async () => {
@@ -258,7 +289,7 @@ export function NoodlerPostComposer({
       setPostError("Apply or cancel the image crop before posting.");
       return;
     }
-    if (postType === "story" && !image) {
+    if (story && !image) {
       setPostError(localizeUi("ui.slurp.stories.imageRequired"));
       return;
     }
@@ -275,7 +306,9 @@ export function NoodlerPostComposer({
       setSubmitting(true);
       setActiveTool(null);
       await onManualPost(submission());
-      clearDraft();
+      onClearDraft();
+      resetLocal();
+      onClose();
     } catch (error) {
       setPostError(errorMessage(error, localizeUi("ui.noodle.noodlerpostcomposer.couldNotPublishThisPost")));
     } finally {
@@ -283,456 +316,414 @@ export function NoodlerPostComposer({
     }
   };
 
-  const guidePost = async () => {
-    if (composerBusyRef.current) return;
-    setGuideError(null);
-    if (pendingImage) {
-      setGuideError(localizeUi("ui.noodle.noodlerpostcomposer.finishImageCrop"));
-      return;
-    }
-    if (!body.trim() && !image && !poll) {
-      setGuideError(localizeUi("ui.noodle.noodlerpostcomposer.guidedPostNeedsContent"));
-      return;
-    }
-    if (poll && !pollIsValid) {
-      setGuideError(localizeUi("ui.noodle.noodlerpostcomposer.pollNeedsQuestionAndOptions"));
-      return;
-    }
-    if (guide.length > SLP_CREATOR_POST_GUIDE_MAX_LENGTH) {
-      setGuideError(localizeUi("ui.slurp.composer.guideTooLong", { count: SLP_CREATOR_POST_GUIDE_MAX_LENGTH }));
-      return;
-    }
-    try {
-      composerBusyRef.current = true;
-      setSubmitting(true);
-      setActiveTool(null);
-      await onGuidedPost(submission());
-      clearDraft();
-    } catch (error) {
-      setGuideError(errorMessage(error, localizeUi("ui.noodle.noodlerpostcomposer.couldNotGenerateThisPost")));
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  const errors = [
+    postError && `${localizeUi("ui.noodle.noodlerpostcomposer.post")} ${postError}`,
+    attachmentError && `${localizeUi("ui.noodle.noodlerpostcomposer.image")} ${attachmentError}`,
+  ].filter(Boolean);
+  const fieldClass =
+    "w-full border-0 bg-transparent text-[var(--slurp-text)] outline-none placeholder:text-[var(--slurp-muted)] disabled:opacity-60";
+  const selectClass =
+    "h-11 w-full rounded-xl bg-[var(--slurp-surface-raised)] px-3 text-[13px] text-[var(--slurp-text)] shadow-[var(--slurp-highlight)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--slurp-focus)]";
 
-  if (collapsible && !expanded) {
-    return (
-      <div className="border-b border-[var(--noodle-divider)] px-4 py-3">
-        <button
-          type="button"
-          onClick={() => setExpanded(true)}
+  const media = pendingImage ? (
+    <PostImageCropEditor
+      source={pendingImage.source}
+      crop={image?.source === pendingImage.source ? image.crop : null}
+      disabled={composerBusy}
+      // A Story is shown in one tall frame, so an uploaded one is cropped to the same ratio an
+      // automatic one is drawn at rather than offering square and landscape.
+      lockedRatio={story ? storyAspectRatio : undefined}
+      onCancel={() => setPendingImage(null)}
+      onApply={applyImageCrop}
+    />
+  ) : image ? (
+    <div className="space-y-2">
+      <SlpCreatorDraftImageFrame image={image} />
+      {/* Labelled actions, not a floating icon pill: Crop and Remove never sit one mis-tap apart. */}
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        <SlpButton
+          variant="quiet"
           disabled={composerBusy}
-          className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-[var(--noodle-divider)] px-3 text-left transition-colors hover:bg-[var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--noodle-accent)]"
-          aria-expanded="false"
+          onClick={() => setPendingImage({ source: image.source })}
+          className="min-h-10 px-4 text-[13px]"
         >
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-semibold">
-              {localizeUi("ui.noodle.noodlerpostcomposer.postAs")} {profile.displayName}
-            </span>
-            <span className="block text-xs text-[var(--muted-foreground)]">
-              {hasDraft
-                ? localizeUi("ui.noodle.noodlerpostcomposer.draftSaved")
-                : localizeUi("ui.noodle.noodlerpostcomposer.writeDirectlyOrGuideTheAi")}
-            </span>
-          </span>
-          <Pencil size={16} />
-        </button>
+          <Crop size={16} aria-hidden="true" />
+          {localizeUi("ui.slurp.composer.crop", { defaultValue: "Crop" })}
+        </SlpButton>
+        <SlpButton
+          variant="quiet"
+          disabled={composerBusy}
+          onClick={() => imageFileRef.current?.click()}
+          className="min-h-10 px-4 text-[13px]"
+        >
+          <ImagePlus size={16} aria-hidden="true" />
+          {localizeUi("ui.slurp.composer.replace", { defaultValue: "Replace" })}
+        </SlpButton>
+        <SlpButton variant="danger" disabled={composerBusy} onClick={removeImage} className="min-h-10 px-4 text-[13px]">
+          <Trash2 size={16} aria-hidden="true" />
+          {localizeUi("ui.slurp.composer.remove", { defaultValue: "Remove" })}
+        </SlpButton>
       </div>
-    );
-  }
+    </div>
+  ) : (
+    // Media first: the empty frame is the first thing to tap, in the shape it will be seen in.
+    <div
+      className={cn(
+        "relative flex w-full flex-col items-center justify-center gap-3 overflow-hidden rounded-2xl bg-[color-mix(in_srgb,var(--noodle-accent)_6%,var(--slurp-surface-raised))] p-4 text-center shadow-[var(--slurp-highlight)] ring-1 ring-inset ring-[var(--noodle-divider)]",
+        story ? "mx-auto aspect-[9/16] max-h-[22rem]" : "min-h-44",
+      )}
+    >
+      {generateImage && !story ? (
+        <>
+          <span className="grid size-12 place-items-center rounded-full bg-[var(--slurp-tint)] text-[var(--slurp-ink)] [&_svg]:!text-current">
+            <SlpSparkleGlyph size={22} aria-hidden="true" />
+          </span>
+          <p className={cn(SLP_TYPE.body, "max-w-60 text-[var(--slurp-muted)]")}>
+            {localizeUi("ui.slurp.composer.aiPictureOn", {
+              defaultValue: "A picture is drawn from your caption when you post.",
+            })}
+          </p>
+        </>
+      ) : (
+        <SlpButton
+          variant="secondary"
+          disabled={composerBusy}
+          onClick={() => imageFileRef.current?.click()}
+          className="px-5"
+        >
+          <ImagePlus size={18} aria-hidden="true" />
+          {localizeUi("ui.slurp.composer.addPhoto", { defaultValue: "Add a photo" })}
+        </SlpButton>
+      )}
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        {!generateImage && (
+          <SlpChip
+            selected={activeTool === "image"}
+            disabled={composerBusy}
+            onClick={() => toggleTool("image")}
+            className="min-h-9"
+          >
+            <Link2 size={15} aria-hidden="true" />
+            {localizeUi("ui.slurp.composer.pasteLink", { defaultValue: "Paste a link" })}
+          </SlpChip>
+        )}
+        <SlpChip
+          selected={activeTool === "draw"}
+          disabled={composerBusy}
+          onClick={() => {
+            // The old "draw it when I post" switch folds into drawing it now, with a look first.
+            if (generateImage) updateDraft({ generateImage: false });
+            toggleTool("draw");
+          }}
+          className="min-h-9"
+        >
+          <SlpSparkleGlyph size={14} aria-hidden="true" />
+          {localizeUi("ui.slurp.assist.drawPicture", { defaultValue: "Draw a picture" })}
+        </SlpChip>
+      </div>
+      {activeTool === "image" && (
+        <div className="w-full max-w-sm text-start">
+          <SlpImageComposer
+            imageUrl={imageUrlDraft}
+            onImageUrlChange={setImageUrlDraft}
+            onChooseFile={() => {
+              if (!composerBusyRef.current) imageFileRef.current?.click();
+            }}
+            onUseImageUrl={() => void handleImageUrl()}
+            onClose={() => setActiveTool(null)}
+            disabled={composerBusy}
+            hasImage={false}
+            urlActionLabel={localizeUi("ui.noodle.noodlerpostcomposer.importUrl")}
+          />
+        </div>
+      )}
+    </div>
+  );
 
   return (
-    <SlpComposerShell
-      dataComponent="SlurpHome.NoodlerPostComposer"
-      header={
-        <div className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-2">
-          {collapsible ? (
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTool(null);
-                setExpanded(false);
-              }}
-              disabled={composerBusy}
-              aria-expanded="true"
-              className="inline-flex min-h-8 min-w-0 items-center gap-1.5 rounded-lg px-1 text-xs font-bold text-[var(--noodle-accent)] hover:bg-[var(--accent)] disabled:opacity-50"
-            >
-              <ChevronDown size={14} />
-              <span className="truncate">
-                {localizeUi("ui.noodle.noodlerpostcomposer.postAs")} {profile.displayName}
-              </span>
-            </button>
-          ) : (
-            <span />
+    <SlpSheet
+      open={open}
+      onClose={close}
+      closeDisabled={composerBusy}
+      size="full"
+      width="max-w-xl"
+      title={
+        story
+          ? localizeUi("ui.slurp.composer.newStory", { defaultValue: "New Story" })
+          : localizeUi("ui.slurp.composer.newPost", { defaultValue: "New post" })
+      }
+      headerAccessory={
+        <SlpSegment
+          label={localizeUi("ui.slurp.stories.postType")}
+          value={postType}
+          onChange={(option) => {
+            if (composerBusyRef.current) return;
+            setActiveTool(null);
+            updateDraft({
+              postType: option,
+              ...(option === "story" ? { poll: null, title: "", generateImage: false } : { linkedPostId: null }),
+            });
+          }}
+          options={[
+            { value: "post", label: localizeUi("ui.slurp.stories.type.post") },
+            { value: "story", label: localizeUi("ui.slurp.stories.type.story") },
+          ]}
+        />
+      }
+      footer={
+        <div data-component="SlurpHome.NoodlerPostComposer.bar" className="space-y-2">
+          {errors.length > 0 && (
+            <div role="alert" className="space-y-0.5 text-xs text-[var(--slurp-danger)]">
+              {errors.map((error) => (
+                <p key={error as string}>{error}</p>
+              ))}
+            </div>
           )}
-          <div
-            className="grid grid-cols-2 rounded-lg bg-[var(--accent)] p-1 ring-1 ring-inset ring-[var(--noodle-divider)]"
-            aria-label={localizeUi("ui.slurp.stories.postType")}
-          >
-            {(["post", "story"] as const).map((option) => (
-              <button
-                key={option}
-                type="button"
-                aria-pressed={postType === option}
-                disabled={composerBusy}
-                onClick={() => {
-                  setActiveTool(null);
-                  updateDraft({
-                    postType: option,
-                    ...(option === "story" ? { poll: null, title: "" } : { linkedPostId: null }),
-                  });
-                }}
-                className={cn(
-                  "min-h-9 rounded-lg px-3 text-xs font-bold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--noodle-accent)] disabled:opacity-50",
-                  postType === option
-                    ? SLURP_TOGGLE_ACTIVE_CLASS
-                    : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
-                )}
-              >
-                {localizeUi(`ui.slurp.stories.type.${option}`)}
-              </button>
-            ))}
+          <div className="flex items-center gap-2">
+            <SlpPrimaryButton onClick={() => void publish()} disabled={!canPost} className="ms-auto px-6">
+              {manualPending ? (
+                <Loader2 size={16} className="animate-spin" aria-hidden="true" />
+              ) : (
+                <Send size={16} aria-hidden="true" />
+              )}
+              {manualPending
+                ? localizeUi("ui.noodle.noodlerpostcomposer.posting")
+                : story
+                  ? localizeUi("ui.slurp.composer.shareStory", { defaultValue: "Share Story" })
+                  : localizeUi("ui.slurp.composer.post", { defaultValue: "Post" })}
+            </SlpPrimaryButton>
           </div>
         </div>
       }
-      avatar={<ProfileInitial profile={profile} />}
-      tools={
-        <SlpComposerToolRow
-          image={{
-            ref: imageToolRef,
-            active: activeTool === "image" || Boolean(image),
-            disabled: composerBusy,
-            onClick: () => toggleTool("image"),
-          }}
-          poll={{
-            ref: pollToolRef,
-            active: activeTool === "poll" || Boolean(poll),
-            disabled: composerBusy || postType === "story",
-            onClick: () => toggleTool("poll"),
-          }}
-          media={{
-            ref: mediaToolRef,
-            active: activeTool === "media",
-            disabled: composerBusy,
-            onClick: () => toggleTool("media"),
-          }}
-          trailing={
-            <>
-              <button
-                type="button"
-                onClick={() => updateDraft({ generateImage: !generateImage })}
-                disabled={composerBusy || Boolean(image)}
-                aria-pressed={generateImage}
-                title={localizeUi("ui.slurp.composer.aiImageHint", {
-                  defaultValue: "Let the AI create an image for this post from your text.",
-                })}
-                className={cn(
-                  "inline-flex h-9 items-center gap-1.5 rounded-lg px-2 text-xs font-semibold disabled:opacity-50",
-                  generateImage
-                    ? "bg-[var(--noodle-accent)]/15 text-[var(--noodle-accent)]"
-                    : "text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
-                )}
-              >
-                <Sparkles size={13} />
-                {localizeUi("ui.slurp.composer.aiImage", { defaultValue: "AI image" })}
-              </button>
-              <div ref={accessToolRef} className="relative">
-                <button
-                  type="button"
-                  onClick={() => toggleTool("access")}
-                  disabled={composerBusy}
-                  className="inline-flex h-9 items-center gap-1.5 rounded-lg px-2 text-xs font-semibold text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:opacity-50"
-                  aria-label={localizeUi("ui.noodle.noodlerpostcomposer.postVisibilityValue", {
-                    value: localizeUi(`ui.noodle.postaccess.${access}`),
-                  })}
-                  title={localizeUi(`ui.noodle.postaccess.${access}.hint`)}
-                >
-                  <Lock size={13} />
-                  {localizeUi(`ui.noodle.postaccess.${access}`)}
-                </button>
-              </div>
-            </>
-          }
-        />
-      }
-      action={
-        <>
-          <button
-            type="button"
-            onClick={() => void guidePost()}
-            disabled={composerBusy || Boolean(pendingImage) || postType === "story"}
-            className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-[var(--noodle-divider)] px-3 text-xs font-bold hover:bg-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {guidePending ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
-            {guidePending
-              ? localizeUi("ui.noodle.noodlerpostcomposer.guiding")
-              : localizeUi("ui.noodle.noodlerpostcomposer.guide_bf073fa")}
-          </button>
-          {hasDraft && (
-            <button
-              type="button"
-              onClick={discardDraft}
-              disabled={composerBusy}
-              className="inline-flex h-9 items-center rounded-lg px-3 text-xs font-bold text-[var(--muted-foreground)] hover:bg-[var(--accent)] disabled:opacity-50"
-            >
-              {localizeUi("ui.agents.agenteditor.discard")}
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => void publish()}
-            disabled={composerBusy || Boolean(pendingImage) || (!body.trim() && !image && !pollIsValid)}
-            className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-[var(--noodle-accent)] px-4 text-xs font-bold text-zinc-950 transition-[opacity,scale] hover:opacity-90 active:scale-[0.96] [&_svg]:!text-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {manualPending ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />}
-            {manualPending
-              ? localizeUi("ui.noodle.noodlerpostcomposer.posting")
-              : postType === "story"
-                ? localizeUi("ui.slurp.stories.publish")
-                : localizeUi("ui.noodle.noodlerpostcomposer.publishPost")}
-          </button>
-        </>
-      }
-      popovers={
-        <>
-          {activeTool === "media" && !composerBusy && (
-            <SlpAnchoredPopover anchorRef={mediaToolRef} wide>
-              <ConversationMediaPickerPanel
-                tabs={[{ id: "emoji", label: localizeUi("ui.noodle.media.tabs.emoji") }]}
-                activeTab={mediaPickerTab}
-                onActiveTabChange={(tab) => {
-                  if (!composerBusyRef.current) setMediaPickerTab(tab);
-                }}
-                onClose={() => setActiveTool(null)}
-                onEmojiSelect={(emoji) => updateDraft({ body: body + emoji })}
-                onGifSelect={() => {}}
-                onStickerSelect={(name) => updateDraft({ body: `${body}sticker:${name}:` })}
-                className="w-full !border-[var(--marinara-chat-chrome-panel-border)] !bg-[var(--background)] !text-[var(--foreground)] shadow-2xl shadow-black/35"
-              />
-            </SlpAnchoredPopover>
-          )}
-          {activeTool === "image" && !composerBusy && (
-            <SlpAnchoredPopover anchorRef={imageToolRef} wide>
-              <SlpImageComposer
-                imageUrl={imageUrlDraft}
-                onImageUrlChange={setImageUrlDraft}
-                onChooseFile={() => {
-                  if (!composerBusyRef.current) imageFileRef.current?.click();
-                }}
-                onUseImageUrl={() => void handleImageUrl()}
-                onClose={() => setActiveTool(null)}
-                disabled={composerBusy}
-                hasImage={Boolean(image)}
-                urlActionLabel={localizeUi("ui.noodle.noodlerpostcomposer.importUrl")}
-              />
-            </SlpAnchoredPopover>
-          )}
-          {activeTool === "poll" && !composerBusy && (
-            <SlpAnchoredPopover anchorRef={pollToolRef} wide>
-              <SlpPollComposer
-                value={pollEditorValue}
-                onChange={setPollEditorValue}
-                onClose={() => {
-                  setPollEditorValue(null);
-                  setActiveTool(null);
-                }}
-                onSubmit={applyPollDraft}
-                submitLabel={
-                  poll
-                    ? localizeUi("ui.noodle.noodlerpostcomposer.updatePoll")
-                    : localizeUi("ui.noodle.noodlerpostcomposer.addPoll")
-                }
-                disabled={composerBusy}
-              />
-            </SlpAnchoredPopover>
-          )}
-          {activeTool === "access" && !composerBusy && (
-            <SlpAnchoredPopover anchorRef={accessToolRef}>
-              <div className="marinara-chat-popover space-y-3 rounded-xl border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--background)] p-3 text-[var(--foreground)] shadow-2xl shadow-black/35">
-                <p className="text-xs font-bold">{localizeUi("ui.noodle.noodlerpostcomposer.whoCanSeeThisPost")}</p>
-                <div className="grid grid-cols-2 gap-1 rounded-lg bg-[var(--accent)] p-1">
-                  {(["public", "locked"] as const).map((option) => (
-                    <button
-                      key={option}
-                      type="button"
-                      aria-pressed={access === option}
-                      disabled={composerBusy}
-                      onClick={() => updateDraft({ access: option })}
-                      title={localizeUi(`ui.noodle.postaccess.${option}.hint`)}
-                      className={cn(
-                        "min-h-8 rounded px-2 text-xs font-bold capitalize",
-                        access === option
-                          ? SLURP_TOGGLE_ACTIVE_CLASS
-                          : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
-                      )}
-                    >
-                      {localizeUi(`ui.noodle.postaccess.${option}`)}
-                    </button>
-                  ))}
-                </div>
-                {access === "locked" && (
-                  <label className="flex items-center justify-between gap-2 text-xs font-semibold">
-                    {localizeUi("ui.noodle.noodlerpostcomposer.unlockPrice", { defaultValue: "Price" })}
-                    <input
-                      type="number"
-                      min={0}
-                      max={9999}
-                      value={unlockPrice ?? ""}
-                      placeholder={localizeUi("ui.noodle.noodlerpostcomposer.unlockPriceDefault", {
-                        defaultValue: "Creator default",
-                      })}
-                      onChange={(event) =>
-                        updateDraft({
-                          unlockPrice:
-                            event.target.value === ""
-                              ? null
-                              : Math.min(9999, Math.max(0, Math.floor(Number(event.target.value) || 0))),
-                        })
-                      }
-                      className="h-9 w-28 rounded-lg bg-[var(--accent)] px-2 text-sm tabular-nums outline-none focus-visible:ring-2 focus-visible:ring-[var(--noodle-accent)]"
-                    />
-                  </label>
-                )}
-              </div>
-            </SlpAnchoredPopover>
-          )}
-        </>
-      }
-      footer={
-        (postError || guideError || attachmentError) && (
-          <div className="mt-2 space-y-1 text-xs text-[var(--destructive)] @min-[480px]:pl-14" role="alert">
-            {postError && (
-              <p>
-                {localizeUi("ui.noodle.noodlerpostcomposer.post")} {postError}
-              </p>
-            )}
-            {guideError && (
-              <p>
-                {localizeUi("ui.noodle.noodlerpostcomposer.guide")} {guideError}
-              </p>
-            )}
-            {attachmentError && (
-              <p>
-                {localizeUi("ui.noodle.noodlerpostcomposer.image")} {attachmentError}
-              </p>
-            )}
-          </div>
-        )
-      }
     >
-      <input ref={imageFileRef} type="file" accept="image/*" className="hidden" onChange={handleImageFile} />
-      {postType === "post" && (
-        <label className="block space-y-1">
-          <span className="sr-only">{localizeUi("ui.noodle.noodlerpostcomposer.postTitleOptional")}</span>
-          <input
-            value={title}
-            onChange={(event) => updateDraft({ title: event.target.value })}
-            maxLength={SLP_CREATOR_POST_TITLE_MAX_LENGTH}
-            disabled={composerBusy}
-            placeholder={localizeUi("ui.noodle.noodlerpostcomposer.postTitleOptional")}
-            className="h-9 w-full border-0 bg-transparent text-base font-bold text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]"
+      <div data-component="SlurpHome.NoodlerPostComposer" className="space-y-4 px-2 pb-2 pt-1">
+        <input ref={imageFileRef} type="file" accept="image/*" className="hidden" onChange={handleImageFile} />
+        <p className={cn(SLP_TYPE.meta, "flex items-center gap-2 text-[var(--slurp-muted)]")}>
+          <Avatar
+            account={{ displayName: profile.displayName, avatarUrl: profile.avatarUrl, avatarCrop: profile.avatarCrop }}
+            size="xs"
           />
-        </label>
-      )}
-      <textarea
-        value={body}
-        onChange={(event) => updateDraft({ body: event.target.value })}
-        maxLength={SLP_CREATOR_POST_CONTENT_MAX_LENGTH}
-        disabled={composerBusy}
-        aria-label={localizeUi("ui.noodle.noodlerpostcomposer.postBody")}
-        placeholder={localizeUi(
-          postType === "story" ? "ui.slurp.stories.captionPlaceholder" : "ui.noodle.noodlerpostcomposer.whatSSimmering",
-        )}
-        className="min-h-20 w-full resize-none border-0 bg-transparent py-2 text-[1rem] leading-6 text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]"
-      />
-      {postType === "story" && (
-        <label className="mb-3 block space-y-1">
-          <span className="text-xs font-bold text-[var(--muted-foreground)]">
-            {localizeUi("ui.slurp.stories.linkPost")}
+          <span className="truncate">
+            {localizeUi("ui.noodle.noodlerpostcomposer.postAs")} {profile.displayName}
           </span>
-          <select
-            value={linkedPostId ?? ""}
-            onChange={(event) => updateDraft({ linkedPostId: event.target.value || null })}
+        </p>
+
+        {media}
+        {activeTool === "draw" && (
+          <SlpPictureAssist
+            accountId={profile.id}
+            target={story ? "story" : "post"}
+            context={body.trim() || title.trim() || undefined}
+            onUse={takeDrawnPicture}
+            onUndo={() => {
+              onDraftChange({ image: drawnOver.current });
+              setPendingImage(null);
+            }}
+            onDone={() => setActiveTool(null)}
+          />
+        )}
+
+        <div className="space-y-1">
+          {!story && (
+            <label className="block">
+              <span className="sr-only">{localizeUi("ui.noodle.noodlerpostcomposer.postTitleOptional")}</span>
+              <input
+                value={title}
+                onChange={(event) => updateDraft({ title: event.target.value })}
+                maxLength={SLP_CREATOR_POST_TITLE_MAX_LENGTH}
+                disabled={composerBusy}
+                placeholder={localizeUi("ui.slurp.composer.titlePlaceholder", { defaultValue: "Title (optional)" })}
+                className={cn(fieldClass, "h-10 text-[15px] font-bold")}
+              />
+            </label>
+          )}
+          <SlpAutoGrowTextarea
+            value={body}
+            onChange={(event) => updateDraft({ body: event.target.value })}
+            maxLength={SLP_CREATOR_POST_CONTENT_MAX_LENGTH}
             disabled={composerBusy}
-            className="h-10 w-full rounded-lg border border-[var(--noodle-divider)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--noodle-accent)]"
-          >
-            <option value="">{localizeUi("ui.slurp.stories.noLinkedPost")}</option>
-            {linkablePosts.map((post) => (
-              <option key={post.id} value={post.id}>
-                {post.title || post.content.slice(0, 70) || post.id}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
-      {pendingImage && (
-        <PostImageCropEditor
-          source={pendingImage.source}
-          crop={image?.source === pendingImage.source ? image.crop : null}
-          disabled={composerBusy}
-          // A Story is shown in one tall frame, so an uploaded one is cropped to the same ratio an
-          // automatic one is drawn at rather than offering square and landscape.
-          lockedRatio={postType === "story" ? storyAspectRatio : undefined}
-          onCancel={discardPendingImage}
-          onApply={applyImageCrop}
-        />
-      )}
-      {image && !pendingImage && (
-        <div className="mb-3 overflow-hidden rounded-xl border border-[var(--noodle-divider)] bg-[var(--noodle-accent)]/10">
-          <SlpCreatorDraftImageFrame image={image} />
-          <div className="flex items-center justify-between gap-2 px-3 py-2 text-xs text-[var(--noodle-accent)]">
-            <span>{localizeUi("ui.noodle.noodlehome.attachedImage")}</span>
-            <div className="flex items-center gap-1">
+            aria-label={localizeUi("ui.noodle.noodlerpostcomposer.postBody")}
+            placeholder={localizeUi(
+              story ? "ui.slurp.stories.captionPlaceholder" : "ui.noodle.noodlerpostcomposer.whatSSimmering",
+            )}
+            className={cn(fieldClass, "min-h-20 resize-none py-1 text-base leading-6 sm:text-[15px]")}
+          />
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            {!story && (
+              <SlpChip
+                selected={activeTool === "poll" || Boolean(poll)}
+                disabled={composerBusy}
+                onClick={() => toggleTool("poll")}
+                className="min-h-9"
+              >
+                <ListChecks size={15} aria-hidden="true" />
+                {localizeUi("ui.slurp.composer.poll", { defaultValue: "Poll" })}
+              </SlpChip>
+            )}
+            <SlpChip
+              ref={mediaToolRef}
+              selected={activeTool === "media"}
+              disabled={composerBusy}
+              onClick={() => toggleTool("media")}
+              className="min-h-9"
+            >
+              <Smile size={15} aria-hidden="true" />
+              {localizeUi("ui.slurp.composer.emoji", { defaultValue: "Emoji" })}
+            </SlpChip>
+            <SlpTextAssist
+              field={story ? "story" : "caption"}
+              value={body}
+              accountId={profile.id}
+              context={assistContext}
+              disabled={composerBusy}
+              onApply={(text) => updateDraft({ body: text })}
+            />
+          </div>
+        </div>
+
+        {activeTool === "poll" && !composerBusy && (
+          <SlpPollComposer
+            value={pollEditorValue}
+            onChange={setPollEditorValue}
+            onClose={() => {
+              setPollEditorValue(null);
+              setActiveTool(null);
+            }}
+            onSubmit={applyPollDraft}
+            submitLabel={
+              poll
+                ? localizeUi("ui.noodle.noodlerpostcomposer.updatePoll")
+                : localizeUi("ui.noodle.noodlerpostcomposer.addPoll")
+            }
+            disabled={composerBusy}
+            modalOwned
+          />
+        )}
+        {poll && activeTool !== "poll" && (
+          <div className="flex items-start justify-between gap-3 rounded-2xl bg-[var(--slurp-surface-raised)] p-3 shadow-[var(--slurp-highlight)]">
+            <div className="min-w-0 flex-1">
+              <p className={cn(SLP_TYPE.body, "font-semibold")}>{poll.question}</p>
+              <p className={cn(SLP_TYPE.meta, "mt-1 truncate text-[var(--slurp-muted)]")}>{poll.options.join(" · ")}</p>
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
               <button
                 type="button"
-                onClick={() => setPendingImage({ source: image.source })}
+                onClick={() => toggleTool("poll")}
                 disabled={composerBusy}
-                className="min-h-8 px-2 font-bold disabled:opacity-50"
+                className="grid size-10 place-items-center rounded-full text-[var(--slurp-ink)] hover:bg-[var(--accent)] disabled:opacity-50 [&_svg]:!text-current"
+                aria-label={localizeUi("ui.noodle.noodlehome.editDraftPoll")}
+                title={localizeUi("ui.noodle.noodlehome.editPoll")}
               >
-                {localizeUi("ui.noodle.noodlerpostcomposer.adjust")}
+                <Pencil size={16} />
               </button>
               <button
                 type="button"
-                onClick={removeImage}
+                onClick={() => updateDraft({ poll: null })}
                 disabled={composerBusy}
-                className="min-h-8 px-2 font-bold disabled:opacity-50"
+                className="grid size-10 place-items-center rounded-full text-[var(--slurp-danger)] hover:bg-[var(--accent)] disabled:opacity-50 [&_svg]:!text-current"
+                aria-label={localizeUi("ui.noodle.noodlehome.removeDraftPoll")}
+                title={localizeUi("ui.noodle.noodlehome.removePoll")}
               >
-                {localizeUi("ui.noodle.noodlehome.removeAttachedImage")}
+                <Trash2 size={16} />
               </button>
             </div>
           </div>
-        </div>
-      )}
-      {poll && (
-        <div className="mb-3 flex items-start justify-between gap-3 rounded-xl border border-[var(--noodle-divider)] p-3">
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-bold">{poll.question}</p>
-            <p className="mt-1 truncate text-xs text-[var(--muted-foreground)]">{poll.options.join(" · ")}</p>
+        )}
+
+        <SlpComposerAudience
+          access={access}
+          unlockPrice={unlockPrice ?? null}
+          usualUnlockPrice={usualUnlockPrice}
+          disabled={composerBusy}
+          onChange={(patch) =>
+            updateDraft({
+              ...patch,
+              // A purpose that no longer fits the new audience goes back to automatic.
+              ...(contentIntent && !slurpIntentFitsAccess(contentIntent, patch.access ?? access)
+                ? { contentIntent: null, contentDelivery: null }
+                : {}),
+            })
+          }
+        />
+
+        {/* Operator settings stay one tap away, after everything a creator would touch. */}
+        <section className="rounded-2xl bg-[var(--slurp-surface-raised)] shadow-[var(--slurp-highlight)]">
+          <button
+            type="button"
+            onClick={() => setAdvancedOpen((value) => !value)}
+            aria-expanded={advancedOpen}
+            aria-controls="slurp-composer-advanced"
+            className="flex min-h-11 w-full items-center gap-2 rounded-2xl px-4 text-start text-[13px] font-semibold text-[var(--slurp-muted)] hover:text-[var(--slurp-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--slurp-focus)] [&_svg]:!text-current"
+          >
+            <span className="flex-1">{localizeUi("ui.slurp.composer.advanced", { defaultValue: "Advanced" })}</span>
+            <ChevronDown
+              size={16}
+              aria-hidden="true"
+              className={cn("transition-transform motion-reduce:transition-none", advancedOpen && "rotate-180")}
+            />
+          </button>
+          <div id="slurp-composer-advanced" hidden={!advancedOpen} className="space-y-3 px-4 pb-4">
+            {!story && (
+              <div className="grid gap-2 sm:grid-cols-2 [&_label]:w-full [&_select]:h-11 [&_select]:w-full [&_select]:max-w-none [&_select]:rounded-xl [&_select]:font-medium">
+                <SlpComposerPurpose
+                  access={access}
+                  contentIntent={contentIntent}
+                  contentDelivery={contentDelivery}
+                  disabled={composerBusy}
+                  onChange={updateDraft}
+                />
+              </div>
+            )}
+            {story && (
+              <label className="block space-y-1">
+                <span className={cn(SLP_TYPE.meta, "text-[var(--slurp-muted)]")}>
+                  {localizeUi("ui.slurp.stories.linkPost")}
+                </span>
+                <select
+                  value={linkedPostId ?? ""}
+                  onChange={(event) => updateDraft({ linkedPostId: event.target.value || null })}
+                  disabled={composerBusy}
+                  className={selectClass}
+                >
+                  <option value="">{localizeUi("ui.slurp.stories.noLinkedPost")}</option>
+                  {linkablePosts.map((post) => (
+                    <option key={post.id} value={post.id}>
+                      {post.title || post.content.slice(0, 70) || post.id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <div className="flex flex-wrap items-center gap-2">
+              <SlpOpenContinuityButton
+                creatorAccountId={profile.id}
+                className="inline-flex min-h-10 items-center rounded-full px-4 text-[13px] font-semibold text-[var(--slurp-text)] ring-1 ring-inset ring-[var(--noodle-divider)] hover:bg-[var(--accent)]"
+              />
+              {hasDraft && (
+                <SlpButton variant="tertiary" onClick={discardDraft} disabled={composerBusy} className="min-h-10">
+                  {localizeUi("ui.slurp.composer.discardDraft", { defaultValue: "Discard draft" })}
+                </SlpButton>
+              )}
+            </div>
           </div>
-          <div className="flex shrink-0 items-center gap-1">
-            <button
-              type="button"
-              onClick={() => toggleTool("poll")}
-              disabled={composerBusy}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[var(--noodle-accent)] hover:bg-[var(--noodle-accent)]/10 disabled:opacity-50"
-              aria-label={localizeUi("ui.noodle.noodlehome.editDraftPoll")}
-              title={localizeUi("ui.noodle.noodlehome.editPoll")}
-            >
-              <Pencil size={14} />
-            </button>
-            <button
-              type="button"
-              onClick={() => updateDraft({ poll: null })}
-              disabled={composerBusy}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[var(--destructive)] hover:bg-[var(--destructive)]/10 disabled:opacity-50"
-              aria-label={localizeUi("ui.noodle.noodlehome.removeDraftPoll")}
-              title={localizeUi("ui.noodle.noodlehome.removePoll")}
-            >
-              <Trash2 size={14} />
-            </button>
-          </div>
-        </div>
+        </section>
+      </div>
+      {activeTool === "media" && !composerBusy && (
+        <SlpAnchoredPopover anchorRef={mediaToolRef} wide modalOwned>
+          <ConversationMediaPickerPanel
+            tabs={[{ id: "emoji", label: localizeUi("ui.noodle.media.tabs.emoji") }]}
+            activeTab={mediaPickerTab}
+            onActiveTabChange={(tab) => {
+              if (!composerBusyRef.current) setMediaPickerTab(tab);
+            }}
+            onClose={() => setActiveTool(null)}
+            onEmojiSelect={(emoji) => updateDraft({ body: body + emoji })}
+            onGifSelect={() => {}}
+            onStickerSelect={(name) => updateDraft({ body: `${body}sticker:${name}:` })}
+            className="w-full !border-[var(--marinara-chat-chrome-panel-border)] !bg-[var(--background)] !text-[var(--foreground)] shadow-2xl shadow-black/35"
+          />
+        </SlpAnchoredPopover>
       )}
-    </SlpComposerShell>
+    </SlpSheet>
   );
 }

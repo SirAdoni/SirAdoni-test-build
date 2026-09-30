@@ -1565,7 +1565,7 @@ async function main() {
     })) as { currentLocationId: string };
     assert.equal(importedGameSpatial.currentLocationId, "existing_world");
 
-    await expectJson(
+    const bulkDeleteGameWorld = await expectJson(
       app,
       {
         method: "POST",
@@ -1575,7 +1575,15 @@ async function main() {
           messageIds: [gameWorldTurn.id, gameAssistantAtWorld.id],
         },
       },
-      204,
+      200,
+    );
+    assert.deepEqual(bulkDeleteGameWorld, { trashed: false, trashedCount: 0 });
+    const afterGameWorldDelete = (await expectJson(app, {
+      method: "GET",
+      url: `/api/chats/${existingGame.id}/messages`,
+    })) as Array<{ id: string }>;
+    assert.ok(
+      afterGameWorldDelete.every((message) => ![gameWorldTurn.id, gameAssistantAtWorld.id].includes(message.id)),
     );
     const verifySharedWorldLifecycle = async () => {
       const sharedWorldArtwork = await createGlobalGalleryStorage(app.db).createImage({
@@ -2788,7 +2796,7 @@ async function main() {
     })) as { currentLocationId: string };
     assert.equal(importedSpatial.currentLocationId, "lifecycle_world");
 
-    await expectJson(
+    const bulkDeleteWorld = await expectJson(
       app,
       {
         method: "POST",
@@ -2796,8 +2804,14 @@ async function main() {
         headers: csrfHeaders,
         payload: { messageIds: [worldTurn.message.id, assistantAtWorld.id] },
       },
-      204,
+      200,
     );
+    assert.deepEqual(bulkDeleteWorld, { trashed: true, trashedCount: 2 });
+    const afterWorldDelete = (await expectJson(app, {
+      method: "GET",
+      url: `/api/chats/${chatId}/messages`,
+    })) as Array<{ id: string }>;
+    assert.ok(afterWorldDelete.every((message) => ![worldTurn.message.id, assistantAtWorld.id].includes(message.id)));
     const rewoundSource = (await expectJson(app, {
       method: "GET",
       url: `/api/chats/${chatId}/spatial-context`,

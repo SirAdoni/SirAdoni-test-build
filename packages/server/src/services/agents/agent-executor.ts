@@ -1,3 +1,4 @@
+import { roomAgentAllowed } from "../multiplayer/generation-policy.js";
 // ──────────────────────────────────────────────
 // Agent Executor — Single & Batched LLM execution
 // ──────────────────────────────────────────────
@@ -795,6 +796,9 @@ export async function executeAgent(
   toolContext?: AgentToolContext,
 ): Promise<AgentResult> {
   const startTime = Date.now();
+  if (!roomAgentAllowed(config.type, config.settings)) {
+    return makeError(config, "Agent is not available in shared rooms.", startTime);
+  }
 
   try {
     if (getAgentContextSources(config).previousOutput) {
@@ -1440,6 +1444,7 @@ export async function executeAgentBatch(
   resolveAgentContext?: (config: AgentExecConfig, context: AgentContext) => AgentContext | Promise<AgentContext>,
   runWithProviderLimit?: <R>(job: () => Promise<R>) => Promise<R>,
 ): Promise<AgentResult[]> {
+  configs = configs.filter((config) => roomAgentAllowed(config.type, config.settings));
   if (configs.length === 0) return [];
   const runProviderJob = <R>(job: () => Promise<R>) => (runWithProviderLimit ? runWithProviderLimit(job) : job());
   const executeIndividualAgent = async (config: AgentExecConfig, agentContext: AgentContext) =>

@@ -95,7 +95,7 @@ export interface ActivationResult {
   /** The activation of the restored version, when this one rolled back. */
   rollbackResult?: ActivationResult;
 }
-type CapabilityActivationContext = {
+export type CapabilityActivationContext = {
   app: FastifyInstance;
   dataDir: string;
   package: InstalledCapabilityPackage;

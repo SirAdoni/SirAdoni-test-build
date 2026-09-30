@@ -18,9 +18,9 @@ export function useSlpAudienceBackstageState({
     section === "overview" || target === "audience" || target === "automation",
   );
   const refreshFans = useRefreshCreatorFanActivityNow();
-  // Unconditional before the split as well: the single-page host mounted these for every section.
-  const audienceCharactersQuery = useSlurpAudienceCharacters();
-  const audienceCharacterGroupsQuery = useSlurpAudienceCharacterGroups();
+  // Only the Audience page lists characters (0.3.6: every Backstage page used to load them).
+  const audienceCharactersQuery = useSlurpAudienceCharacters(target === "audience");
+  const audienceCharacterGroupsQuery = useSlurpAudienceCharacterGroups(target === "audience");
   const [audienceWizardOpen, setAudienceWizardOpen] = useState(false);
   const [audienceDraft, setAudienceDraft] = useState<{
     preset: (typeof SLURP_AUDIENCE_PRESETS)[number];

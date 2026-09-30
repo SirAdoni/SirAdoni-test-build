@@ -67,7 +67,7 @@ try {
 
   const markdown = renderTranscriptMarkdown({ title: "Moon *Road*", entries });
   assert.ok(markdown.startsWith("# Moon \\*Road\\*\n\n_2026-01-02 to 2026-01-05_\n\n---\n"), markdown);
-  assert.ok(markdown.includes("### Tamsin\n\nHello <b>there</b>\n"));
+  assert.ok(markdown.includes("### Tamsin\n\nHello &lt;b&gt;there&lt;/b&gt;\n"));
   assert.ok(markdown.includes("### Ayla\n\n*smiles*\n\nSecond paragraph\nwith a break.\n"));
   assert.ok(markdown.includes("<details><summary>Thinking</summary>\n\nShe is glad.\n\n</details>"));
   assert.ok(markdown.endsWith("\n") && !markdown.endsWith("\n\n"));
@@ -78,7 +78,7 @@ try {
     ],
   });
   assert.equal(spilled.match(/<\/details>/gu)?.length, 1, "reasoning cannot close the details block early");
-  assert.ok(spilled.includes("a &lt;/details&gt; b &lt;/SUMMARY&gt;"));
+  assert.ok(spilled.includes("a &lt;/details&gt; b &lt;/SUMMARY &gt;"));
 
   const pixel = "data:image/png;base64,iVBORw0KGgo=";
   const html = renderTranscriptHtml({
@@ -94,12 +94,20 @@ try {
   assert.ok(html.includes('<p class="range">2026-01-02 to 2026-01-05</p>'));
   assert.ok(html.includes("Hello &lt;b&gt;there&lt;/b&gt;"), "message HTML is escaped");
   assert.ok(html.includes("<p><em>smiles</em></p><p>Second paragraph<br>with a break.</p>"));
-  assert.ok(html.includes(`<img class="avatar" src="${pixel}" alt="">`), "small data URI avatars embed");
+  assert.ok(html.includes(`background-image:url("${pixel}")`), "small data URI avatars embed");
+  assert.ok(html.includes('<div class="avatar avatar-0" aria-hidden="true"></div>'));
   assert.ok(!html.includes("javascript:"), "non data-URI avatars fall back to an initial");
   assert.ok(html.includes(">T</div>"));
   assert.ok(html.includes("prefers-color-scheme:dark") && html.includes("@media print"));
   assert.ok(!/<script/iu.test(html), "the story page has no scripts");
   assert.ok(!html.includes("—"), "no em dashes in the template");
+  assert.ok(html.includes('<div class="thinking-print"><div>Thinking</div><p>She is glad.</p></div>'));
+  const repeatedAvatars = renderTranscriptHtml({
+    title: "Long story",
+    entries: Array.from({ length: 1000 }, (_, index) => entries[index % entries.length]!),
+    avatars: new Map(entries.map((entry) => [entry.speakerKey, pixel])),
+  });
+  assert.equal(repeatedAvatars.split(pixel).length - 1, 1, "a repeated avatar URI embeds once");
 
   // Avatar embedding reads only small files from the avatar folder.
   const avatarRoot = join(root, "avatars");
@@ -189,6 +197,46 @@ try {
   assert.ok(text.body.startsWith("Chat: Moon Road"), "existing text export is unchanged");
   assert.ok(text.body.includes("We ride at dawn."));
   assert.ok(!text.body.includes("HIDDEN TURN"), "text export leaves out turns hidden from the user");
+
+  const unsafeMarkdown = renderTranscriptMarkdown({
+    title: "T",
+    entries: [
+      {
+        speakerKey: "n",
+        speaker: "N",
+        role: "narrator",
+        content: '<img src=x onerror="x"><script>x</script> & **safe**',
+        thinking: '<img src=x onerror="y"><script>secret</script> & reason',
+      },
+    ],
+  });
+  assert.ok(!unsafeMarkdown.includes("<img") && !unsafeMarkdown.includes("<script"));
+  assert.ok(unsafeMarkdown.includes('&lt;img src=x onerror="x"&gt;&lt;script&gt;x&lt;/script&gt; &amp; **safe**'));
+  assert.ok(unsafeMarkdown.includes('&lt;img src=x onerror="y"&gt;&lt;script&gt;secret&lt;/script&gt; &amp; reason'));
+  await db.insert(chats).values({
+    id: "chat-game-story",
+    name: "Game Story",
+    mode: "game",
+    characterIds: JSON.stringify(["char-a"]),
+    createdAt: at(1),
+    updatedAt: at(2),
+  });
+  await db.insert(messages).values({
+    id: "game-assistant",
+    chatId: "chat-game-story",
+    role: "assistant",
+    characterId: "char-a",
+    content: "The gate opens.",
+    createdAt: at(2),
+  });
+  const gameMarkdown = await app.inject({ method: "GET", url: "/api/chats/chat-game-story/export?format=markdown" });
+  assert.equal(gameMarkdown.statusCode, 200);
+  assert.ok(gameMarkdown.body.includes("### Narrator\n\nThe gate opens."), "Game assistant turns use the narrator");
+  const gameHtml = await app.inject({ method: "GET", url: "/api/chats/chat-game-story/export?format=html" });
+  assert.equal(gameHtml.statusCode, 200);
+  assert.ok(gameHtml.body.includes('<span class="name">Narrator</span>'));
+  assert.ok(gameHtml.body.includes('<article class="turn narrator">'));
+  assert.ok(!gameHtml.body.includes('<span class="name">Ayla</span>'));
 
   await app.close();
   await db._fileStore.close();

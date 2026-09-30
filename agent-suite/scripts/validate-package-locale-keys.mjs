@@ -42,7 +42,11 @@ for (const entry of await readdir(packagesRoot, { withFileTypes: true })) {
   }
   const referenced = new Set([...bundle.matchAll(/"(ui\.[a-zA-Z0-9_.]+)"/gu)].map((match) => match[1]));
   const missing = [...referenced]
-    .filter((key) => !pluralSuffixes.some((suffix) => `${key}${suffix}` in catalog))
+    // Bundled non-English catalogs also contribute plural variants such as _few and _many.
+    .filter((key) => {
+      const baseKey = key.replace(/_(?:zero|one|two|few|many|other)$/u, "");
+      return !pluralSuffixes.some((suffix) => `${baseKey}${suffix}` in catalog);
+    })
     .sort();
   if (missing.length > 0) failures.push({ id: entry.name, missing });
 }

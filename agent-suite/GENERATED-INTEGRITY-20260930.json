@@ -1,0 +1,397 @@
+{
+  "schemaVersion": 1,
+  "packages": [
+    {
+      "id": "background",
+      "version": "1.0.3",
+      "artifact": "artifacts/background-1.0.3.zip",
+      "bytes": 2562,
+      "sha256": "b4e89bccd3c12cf7912e1c4562463669dbba7f2c5d21a86bc431b2de44d7afd1",
+      "manifestSha256": "f7e7856a0a428ebc43fa0806f2e38f7696b23c9163bf06e4c89e18f01c804269"
+    },
+    {
+      "id": "beholder",
+      "version": "1.3.11",
+      "artifact": "artifacts/beholder-1.3.11.zip",
+      "bytes": 461323,
+      "sha256": "8bb5a75dd11991399fcdf164c11cc3a91981de2971237055d5d983d693ea03a1",
+      "manifestSha256": "1ca39f01f2977b14340e7b68527faddb1afad7e01102f47a9833dea17ab759ba"
+    },
+    {
+      "id": "card-evolution-auditor",
+      "version": "1.0.3",
+      "artifact": "artifacts/card-evolution-auditor-1.0.3.zip",
+      "bytes": 3138,
+      "sha256": "34770bae686178281e894382ba762608bed774293556b95e6c33a6b8748dff14",
+      "manifestSha256": "69f20c01f2dfe3fc579bcbf0a350a1b3372da9c85b1a16cd382b762f162676b2"
+    },
+    {
+      "id": "character-tracker",
+      "version": "1.1.1",
+      "artifact": "artifacts/character-tracker-1.1.1.zip",
+      "bytes": 4712,
+      "sha256": "3c7f686449333ed154f903105e089b1cffae12f595df6dda1405a6af2f71e4b9",
+      "manifestSha256": "2747bc838aaf0f976c2523e74ed0ecfcf8b651b789917aed04c8ce976cc0e619"
+    },
+    {
+      "id": "chess",
+      "version": "1.0.5",
+      "artifact": "artifacts/chess-1.0.5.zip",
+      "bytes": 931686,
+      "sha256": "af0c8757b977d51646ed9e5cb2a30e000c3df848e784eef62053357afbf58bc6",
+      "manifestSha256": "b5255c42e9386806a1b2815d17d1401a18e59c409a5ea3e8cc7aa3b4e5aedac3"
+    },
+    {
+      "id": "combat",
+      "version": "1.0.3",
+      "artifact": "artifacts/combat-1.0.3.zip",
+      "bytes": 3106,
+      "sha256": "f92cf7202c90dae0239846fb29ba54f562823a9d8e30ce9b24143ffa505cd4ff",
+      "manifestSha256": "783a428e2340199131611895f2a214ee9a72c24a40abf7e6ae53d36ab0e64b49"
+    },
+    {
+      "id": "continuity",
+      "version": "1.0.3",
+      "artifact": "artifacts/continuity-1.0.3.zip",
+      "bytes": 3130,
+      "sha256": "d1f0ca5a575632bc5c8990a2714187ed1178b3ebc83a69ccf3437ce10e83ed60",
+      "manifestSha256": "b8dfb94749f478576ac45e50fe2b7c6e9aa5681c6447d38476850054462757c0"
+    },
+    {
+      "id": "conversation-calls",
+      "version": "1.0.17",
+      "artifact": "artifacts/conversation-calls-1.0.17.zip",
+      "bytes": 3455430,
+      "sha256": "902fec11af80448763cd40c7a29f26110e149e04fe38faa1e6c16ac8106ff14c",
+      "manifestSha256": "b004d65c3d9209dbf40fc282977b66e2f9a2c2b7d81a3f0e35bbff9f14e20252"
+    },
+    {
+      "id": "custom-tracker",
+      "version": "1.1.1",
+      "artifact": "artifacts/custom-tracker-1.1.1.zip",
+      "bytes": 3549,
+      "sha256": "4cac746b2a7cab15f680835007a4116354b9ba444de24ea9246f127f3d3029c2",
+      "manifestSha256": "fa78492c0bf527381a9b2050684e136dace9910a09851316742fa8e4ec64eced"
+    },
+    {
+      "id": "cyoa",
+      "version": "1.0.3",
+      "artifact": "artifacts/cyoa-1.0.3.zip",
+      "bytes": 2432,
+      "sha256": "37ffda35f54d5ebe35a4f57ec90b7bd3c81dda1a049f70ca843f1447e267914a",
+      "manifestSha256": "ad523b695dcab3e5a5188b453c99a938d8aea1ee07d99018e9c3dd17b0dbd67a"
+    },
+    {
+      "id": "director",
+      "version": "1.0.3",
+      "artifact": "artifacts/director-1.0.3.zip",
+      "bytes": 2815,
+      "sha256": "20a987e3bca5eaf7c5dfb89e825252518b6df854ea43495c02b7e7e10233b68f",
+      "manifestSha256": "8ecc18b1485cb55f5edcf98437f2507f7c7f1797ce5cb2720de3a115043648fd"
+    },
+    {
+      "id": "echo-chamber",
+      "version": "1.0.2",
+      "artifact": "artifacts/echo-chamber-1.0.2.zip",
+      "bytes": 8164,
+      "sha256": "cb401634109f145bb830456bc8eadad47eacc1c78e4b9e21ef9dd0fe461b017b",
+      "manifestSha256": "4d24103c1fe1bba7d861f7906a8490293cc083f36708c981b06bdb428c82e42e"
+    },
+    {
+      "id": "eightball",
+      "version": "1.0.5",
+      "artifact": "artifacts/eightball-1.0.5.zip",
+      "bytes": 919931,
+      "sha256": "aaff58f03015fd3ede50c7ad80ac1a86cc4c20e60ec3bf32f73ac21eead83245",
+      "manifestSha256": "eee6da9a90ff384b5e83929ae8086ed0d8700a3c034a7610b380de9843af80f6"
+    },
+    {
+      "id": "expression",
+      "version": "1.0.4",
+      "artifact": "artifacts/expression-1.0.4.zip",
+      "bytes": 2844,
+      "sha256": "e108ec220c1e2ed65c058bbd09b6ea425a5c2696541dba74f6ceca9b025bd170",
+      "manifestSha256": "da517bb7cc49ffae66330ab3606c52ee77cf076f673b1606e69722d95e95b1f8"
+    },
+    {
+      "id": "gacha-forge",
+      "version": "1.8.8",
+      "artifact": "artifacts/gacha-forge-1.8.8.zip",
+      "bytes": 7827496,
+      "sha256": "6ddd933cfb950d6983b4729d2327c1cb44bc26f486b877c500a14ca0c85e6d97",
+      "manifestSha256": "28344f8f5b6ea57421822e45d28e3c8f98d7c6804575aa494d595a30ec6c65d9"
+    },
+    {
+      "id": "haptic",
+      "version": "1.0.3",
+      "artifact": "artifacts/haptic-1.0.3.zip",
+      "bytes": 3724,
+      "sha256": "b2f0b03bd741874c03c24a3811c60a4a9b47e2bf39821fd53ce53549599bbc98",
+      "manifestSha256": "42539b613b19668a0a39e7f6e6bbf1e9cd93b371b0f6481939c1b4f237ca7785"
+    },
+    {
+      "id": "hierarchical-maps",
+      "version": "1.4.30",
+      "artifact": "artifacts/hierarchical-maps-1.4.30.zip",
+      "bytes": 9118346,
+      "sha256": "dce376b655f11731b6b1a45d6ab528302ef9ace84279637e7c45872d4ec0dadd",
+      "manifestSha256": "aab3838c7339ddd923f8f8af14f3da51d1c6e51e341d933a0df37451b3976bb2"
+    },
+    {
+      "id": "html",
+      "version": "1.0.2",
+      "artifact": "artifacts/html-1.0.2.zip",
+      "bytes": 2950,
+      "sha256": "78f9933ddec5a10c9d1496152e82f806b808e450f87580be6576295874e855d0",
+      "manifestSha256": "ed7018a43a6cf55c9a8a789dabe49dd9aee2a994edc4c8a663366f65c0f95e31"
+    },
+    {
+      "id": "illustrator",
+      "version": "1.0.4",
+      "artifact": "artifacts/illustrator-1.0.4.zip",
+      "bytes": 15874,
+      "sha256": "9cc8e4f264d3777c871dbaab79843cc1d9da10452ab466661e7eafde8948c88e",
+      "manifestSha256": "01db7e7ede9679262cdd1871dc90d10766ecccfefb04a7a1ba832a7fc012c2b8"
+    },
+    {
+      "id": "inventory-tracker",
+      "version": "1.2.1",
+      "artifact": "artifacts/inventory-tracker-1.2.1.zip",
+      "bytes": 4168,
+      "sha256": "2ffe5a69ddf3138fcb9f0f4025b92e2512107f2b252828932133bb03e9b1f8a7",
+      "manifestSha256": "01eef6f0c97c743d0519d144118b4e926f85040c1200450a123c06862d149602"
+    },
+    {
+      "id": "knowledge-retrieval",
+      "version": "1.0.3",
+      "artifact": "artifacts/knowledge-retrieval-1.0.3.zip",
+      "bytes": 2527,
+      "sha256": "e6d4bbee18b24d25d73feba04b14757fb268ff32db2df7623dd4efedb7f14cd0",
+      "manifestSha256": "183a65bd7836e05f8e81c556fdab45cc0ff21bc0273365cf91af3176d8d3228b"
+    },
+    {
+      "id": "knowledge-router",
+      "version": "1.0.3",
+      "artifact": "artifacts/knowledge-router-1.0.3.zip",
+      "bytes": 2787,
+      "sha256": "9ef3949251867151eebb54e1b765fce57233e5c4b618dc6916df8ed0cbc94633",
+      "manifestSha256": "350b84e76600456946ddafae6314c0dbe8cd9f5ffb022c2523eaaf3713c968ab"
+    },
+    {
+      "id": "long-term-memory",
+      "version": "1.3.34",
+      "artifact": "artifacts/long-term-memory-1.3.34.zip",
+      "bytes": 1400794,
+      "sha256": "310e2e105c83c94bd0e8c396d4b2fd3b784805dbed12f92d8edee96a43eb6773",
+      "manifestSha256": "07553e120808f2bc58d8b9fda00de99b137aae6b07d4db8adf8eb65b848cb262"
+    },
+    {
+      "id": "lorebook-keeper",
+      "version": "1.0.6",
+      "artifact": "artifacts/lorebook-keeper-1.0.6.zip",
+      "bytes": 4858,
+      "sha256": "e1ef31093f924bf4d39b552e78a71cfe2a79360f2d0b02c6bb116bffec2c01d4",
+      "manifestSha256": "e19f16861c44c2358c0fcee2ee39a8d8a56a6526c7cbbc7d83d08c070b4531e2"
+    },
+    {
+      "id": "memory-nag",
+      "version": "1.1.3",
+      "artifact": "artifacts/memory-nag-1.1.3.zip",
+      "bytes": 430869,
+      "sha256": "610a7978d266c1eceb3996490aff72788cd71f98b3534ceb03b98b3845e343f9",
+      "manifestSha256": "32041754d0e3ae21a502deed26578cf35ffb4553e52890c96cc3ca9c03f5332f"
+    },
+    {
+      "id": "modern-life-sim",
+      "version": "0.2.5",
+      "artifact": "artifacts/modern-life-sim-0.2.5.zip",
+      "bytes": 1750208,
+      "sha256": "f1684cb1c5c279635bb5d59d8ba70dd41502d8c583f00b031b97ea315feb0bf4",
+      "manifestSha256": "bc377a334b97df4e63543128fa6e0da8a861c76badd01625e16f8af17cfaec83"
+    },
+    {
+      "id": "noodle",
+      "version": "1.2.25",
+      "artifact": "artifacts/noodle-1.2.25.zip",
+      "bytes": 4974851,
+      "sha256": "7d701ed2d08ed9541310a8255d84cb3f8f9320920a4d6887973226057816df0f",
+      "manifestSha256": "78ed7f1e5a66dd81655734c67436aa1f00e634e64b8cd1a0b3dfd96c02032b83"
+    },
+    {
+      "id": "persona-stats",
+      "version": "1.0.3",
+      "artifact": "artifacts/persona-stats-1.0.3.zip",
+      "bytes": 3136,
+      "sha256": "bbc61a59f0c634660c38bd83a8401480bbfe5d4808fde44d2da0c992a9968911",
+      "manifestSha256": "a44e9914393efba7eced1f5f96d76026fbd5d7800a96ab4ed041426302534a31"
+    },
+    {
+      "id": "pixelforge",
+      "version": "0.16.8",
+      "artifact": "artifacts/pixelforge-0.16.8.zip",
+      "bytes": 1460805,
+      "sha256": "db90010d46768e461e23825b7cd1339a6b64b64022abf2bba89dfc0a9f3efca3",
+      "manifestSha256": "6f5f81cd0c8be7ec619ca3a59bf11a0d1d6245e10008cf23dda7b0550e717ee8"
+    },
+    {
+      "id": "poker",
+      "version": "1.0.5",
+      "artifact": "artifacts/poker-1.0.5.zip",
+      "bytes": 909928,
+      "sha256": "fae320809e47a4c114d7be9fa76320c3ce4a83944b27bcf7dd39436d2ff1cde2",
+      "manifestSha256": "2681be48b0d7fb1921eabb52163eded55bcead51c5815f3e9fc719ca204d4216"
+    },
+    {
+      "id": "prose-guardian",
+      "version": "1.0.3",
+      "artifact": "artifacts/prose-guardian-1.0.3.zip",
+      "bytes": 3069,
+      "sha256": "8706f608d64aabe03412c63beadb38936698da5b6f21a846d61a623e3bf550e1",
+      "manifestSha256": "10273775d3259b6e9d28fdaffa03ab4371b63b7fa713114b3d6ec8b8c0494780"
+    },
+    {
+      "id": "quartermaster",
+      "version": "0.1.22",
+      "artifact": "artifacts/quartermaster-0.1.22.zip",
+      "bytes": 451234,
+      "sha256": "974f0dfe66cc737fc73fb00978c27cb47746c5f35724300ada4b42130b3758a9",
+      "manifestSha256": "df9d5b895d63fed03aa504191b03c5fb7e9caff0192783b44b99cc3e069a663e"
+    },
+    {
+      "id": "quest",
+      "version": "1.0.5",
+      "artifact": "artifacts/quest-1.0.5.zip",
+      "bytes": 11899,
+      "sha256": "81f05fc6c366c0bbdca3a03d47f0b3d5710ebc926fe9b542abbd79a27545b519",
+      "manifestSha256": "613beb84799c280a70a179d6b20d9d1c88c514a5d109f1f7086eb52cf8556f59"
+    },
+    {
+      "id": "relationship-tracker",
+      "version": "0.6.0",
+      "artifact": "artifacts/relationship-tracker-0.6.0.zip",
+      "bytes": 191673,
+      "sha256": "87d5239fdd6caab24e70b930548a71ae391c9b4f3a8437f04e4a683363188b80",
+      "manifestSha256": "7ef2e29fcf15d549ea7ec8482e4902d0977b59336e64b9f0e55b1ccb46c7560e"
+    },
+    {
+      "id": "rock-paper-scissors",
+      "version": "1.0.5",
+      "artifact": "artifacts/rock-paper-scissors-1.0.5.zip",
+      "bytes": 889208,
+      "sha256": "db22aedcf12f8b123b8c557bda7d2e43594a36879b613d39fc34c554a2ae9204",
+      "manifestSha256": "9944b8618166f71796f7d2f7bd03dea242276c0f9d6476b34250b6423f86ffbb"
+    },
+    {
+      "id": "ruleset-5e-2014",
+      "version": "0.9.0",
+      "artifact": "artifacts/ruleset-5e-2014-0.9.0.zip",
+      "bytes": 1390937,
+      "sha256": "16b3ece0c82cd8ed900bdc0b9a810a84dd4efa8041d1a0b5d2d832001b1c6210",
+      "manifestSha256": "0c32fbfe9e71658d6684efc615f33f3623fdf8432775e2cc8439853b4e5d7bb2"
+    },
+    {
+      "id": "slurp2",
+      "version": "0.3.7",
+      "artifact": "artifacts/slurp2-0.3.7.zip",
+      "bytes": 8917238,
+      "sha256": "427819c62a4a40e1c5a70ee06cb3cca6f92cf4173d47d838d4a04698a4bb2c7b",
+      "manifestSha256": "859192143380c1f60611c235f0e8f89db35cfcc615aeb8be85f9e6a40bbff5fd"
+    },
+    {
+      "id": "spotify",
+      "version": "1.0.2",
+      "artifact": "artifacts/spotify-1.0.2.zip",
+      "bytes": 8342,
+      "sha256": "5599d079555f7a6e7a2fe346c3c3529f38a2250ed7b10d05227fc8a44a01c1aa",
+      "manifestSha256": "9492e430e3f780ec398b76daa7418205af12c85e16fb22a37527f42d9f8294bc"
+    },
+    {
+      "id": "storyboard",
+      "version": "1.1.5",
+      "artifact": "artifacts/storyboard-1.1.5.zip",
+      "bytes": 83986,
+      "sha256": "688eb3ece554cb36364527f3e143420ad961746362151c7b5dc8365215e19b2b",
+      "manifestSha256": "ac18f081adb3cb65696ad1a49df266195f0e976848fe947dca8dcc8533847bf3"
+    },
+    {
+      "id": "tic-tac-toe",
+      "version": "1.0.5",
+      "artifact": "artifacts/tic-tac-toe-1.0.5.zip",
+      "bytes": 884728,
+      "sha256": "b2fde895ca6a51e8ed8b0a324edf5be46fd987df2c56726a7553cc938906f586",
+      "manifestSha256": "7ebbaf1db52b1b3b7b3d5dd628214e26330681045031ac8ae57d3d534440350e"
+    },
+    {
+      "id": "uno",
+      "version": "1.0.5",
+      "artifact": "artifacts/uno-1.0.5.zip",
+      "bytes": 908283,
+      "sha256": "24e56d226527277b1e26e6a960f8c107c44e12dbfe07d280ee35c25791ff3f94",
+      "manifestSha256": "8a059e15633d5953bc79e22f27e20a5401e993ce70836d524ac2ba38b07dafe2"
+    },
+    {
+      "id": "world-state",
+      "version": "1.1.1",
+      "artifact": "artifacts/world-state-1.1.1.zip",
+      "bytes": 4211,
+      "sha256": "fae2c5fe01a2c5c42ef1d2f09635ae50b282ad79cb990893bbf531225c3ad6df",
+      "manifestSha256": "42f81dcb28e7a14e43dbd43e1cb914111d5f9a486b1ea2c574c93cb1989369a7"
+    }
+  ],
+  "catalogs": [
+    {
+      "path": "catalog/catalog.json",
+      "sha256": "e318f37c3c79d06f5af1d06eb04323adb452b57bd4f970421c2e044d1f7b4c15"
+    },
+    {
+      "path": "catalog/notes.json",
+      "sha256": "0d4996b977241ce46bd841ec08b20590953f70a4c0acc23349cb0313c5915e9f"
+    },
+    {
+      "path": "catalog/preview/catalog.json",
+      "sha256": "6e6932031ed313a79c34758d2c407b1fa71c1bfeb790a5888e85de71b0f7445f"
+    },
+    {
+      "path": "catalog/preview/notes.json",
+      "sha256": "db34f73caad7b80fdf787d71cb131bcdadb71a3c13b25293cb00459c6cb24fed"
+    },
+    {
+      "path": "catalog/preview/v2/catalog.json",
+      "sha256": "6e6932031ed313a79c34758d2c407b1fa71c1bfeb790a5888e85de71b0f7445f"
+    },
+    {
+      "path": "catalog/preview/v2/notes.json",
+      "sha256": "db34f73caad7b80fdf787d71cb131bcdadb71a3c13b25293cb00459c6cb24fed"
+    },
+    {
+      "path": "catalog/preview/v3/catalog.json",
+      "sha256": "6e6932031ed313a79c34758d2c407b1fa71c1bfeb790a5888e85de71b0f7445f"
+    },
+    {
+      "path": "catalog/preview/v3/notes.json",
+      "sha256": "db34f73caad7b80fdf787d71cb131bcdadb71a3c13b25293cb00459c6cb24fed"
+    },
+    {
+      "path": "catalog/v2/catalog.json",
+      "sha256": "e318f37c3c79d06f5af1d06eb04323adb452b57bd4f970421c2e044d1f7b4c15"
+    },
+    {
+      "path": "catalog/v2/notes.json",
+      "sha256": "0d4996b977241ce46bd841ec08b20590953f70a4c0acc23349cb0313c5915e9f"
+    },
+    {
+      "path": "catalog/v3/catalog.json",
+      "sha256": "e318f37c3c79d06f5af1d06eb04323adb452b57bd4f970421c2e044d1f7b4c15"
+    },
+    {
+      "path": "catalog/v3/notes.json",
+      "sha256": "0d4996b977241ce46bd841ec08b20590953f70a4c0acc23349cb0313c5915e9f"
+    }
+  ],
+  "hostShared": {
+    "root": "..",
+    "sourceGameSha256": "f965811278ddefc3edb31caad14362944f7dc6a6d7497099bcbcf57683067fd4",
+    "distIndexSha256": "6a7df152166432409ed5e4ad91d51eece47327189441c94d12f9047c57535bec",
+    "distGameDeclarationSha256": "e1e4b4af823df72a3146f618464857b9b1cf898cc84d7685252b61d093bba0c8"
+  }
+}

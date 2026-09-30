@@ -8,6 +8,7 @@ import {
   normalizeSlurpDiscoveryTags,
 } from "../../modules/discovery/slp-discovery-profile.js";
 import { SLURP_ARC_LIBRARY_SEED } from "../../modules/projects/slp-arc-library.js";
+import { isSlurpPreferenceSettingKey } from "../../modules/maintenance/slp-backup.js";
 import {
   slpAccounts,
   slpAccountSubscriptions,
@@ -56,6 +57,7 @@ import { isSlurpViewerActorAccount, normalizeSlurpSettings } from "../../modules
 import type { SlurpSettings, SlurpSettingsUpdateInput } from "../../modules/settings/slp-settings.js";
 import { mapViewer, sourceAccountFromEntity } from "../host/slp-storage-mappers.js";
 import type { SlurpStorageContext } from "../host/slp-storage-context.js";
+import { countSlurpActiveCreators, slurpSizedPostsPerDay } from "../../base/model/slp-model-worker.js";
 
 export function createCreatorsStorage1(context: SlurpStorageContext) {
   const {
@@ -168,7 +170,10 @@ export function createCreatorsStorage1(context: SlurpStorageContext) {
     },
     async getSettings(): Promise<SlurpSettings> {
       const raw = await settingsStore.get(SLURP_SETTINGS_KEY);
-      return normalizeSlurpSettings(raw);
+      const settings = normalizeSlurpSettings(raw);
+      // F: an untouched "Posts per day" grows with the active Creators; every reader sees the sized number.
+      if (!settings.postsPerDayCustom) settings.postsPerDay = slurpSizedPostsPerDay(await countSlurpActiveCreators(db));
+      return settings;
     },
     async getCreatorState(creatorAccountId: string): Promise<SlurpCreatorState> {
       const raw = await settingsStore.get(`${SLURP_CREATOR_STATE_KEY}.${creatorAccountId}`);
@@ -182,6 +187,24 @@ export function createCreatorsStorage1(context: SlurpStorageContext) {
       const recovered = decaySlurpCreatorState(state, elapsedHours, fallback);
       await settingsStore.set(`${SLURP_CREATOR_STATE_KEY}.${creatorAccountId}`, JSON.stringify(recovered));
       return recovered;
+    },
+    async setCreatorDetails(creatorAccountId: string, patch: Partial<SlurpCreatorState>): Promise<void> {
+      const current = await this.getCreatorState(creatorAccountId);
+      // A chosen feeling must clear the settling band or the next read immediately erases it.
+      const emotionIntensity =
+        patch.emotionIntensity ??
+        ((patch.emotion && patch.emotion !== "content") || (patch.intent && patch.intent !== "none")
+          ? Math.max(50, current.emotionIntensity)
+          : current.emotionIntensity);
+      await settingsStore.set(
+        `${SLURP_CREATOR_STATE_KEY}.${creatorAccountId}`,
+        JSON.stringify({
+          ...current,
+          ...patch,
+          emotionIntensity,
+          updatedAt: patch.updatedAt ?? new Date().toISOString(),
+        }),
+      );
     },
     /**
      * Move one Creator's shared state by a bounded delta.
@@ -270,9 +293,10 @@ export function createCreatorsStorage1(context: SlurpStorageContext) {
       importSettings?: boolean;
     }): Promise<{ tables: Record<string, number>; settings: number; skipped: string[] }> {
       const skipped: string[] = [];
-      const replaceSettings =
-        backup.importSettings === true &&
-        Object.keys(backup.settings ?? {}).some((key) => key.startsWith(SLURP_SETTINGS_NAMESPACE));
+      const carriesKeys = Object.keys(backup.settings ?? {}).some((key) => key.startsWith(SLURP_SETTINGS_NAMESPACE));
+      const replaceSettings = backup.importSettings === true && carriesKeys;
+      // Data keys (wallets, earnings, storylines…) come back with the tables; preferences only on opt-in.
+      const restoresKey = (key: string) => replaceSettings || !isSlurpPreferenceSettingKey(key);
       const written: Record<string, number> = {};
       const incoming = backup.tables ?? {};
       for (const name of Object.keys(incoming)) {
@@ -294,26 +318,28 @@ export function createCreatorsStorage1(context: SlurpStorageContext) {
           for (const value of values) await tx.insert(table).values(value);
           written[name] = values.length;
         }
-        if (replaceSettings) {
+        if (carriesKeys) {
           const settingsTx = createAppSettingsStorage(tx);
           const stale = await tx
             .select()
             .from(appSettings)
             .where(like(appSettings.key, `${SLURP_SETTINGS_NAMESPACE}%`));
-          for (const row of stale) await settingsTx.remove(String(row.key));
+          for (const row of stale) if (restoresKey(String(row.key))) await settingsTx.remove(String(row.key));
           for (const [key, value] of Object.entries(backup.settings ?? {})) {
             // A backup must never reach outside this package's own settings namespace.
             if (!key.startsWith(SLURP_SETTINGS_NAMESPACE)) {
               skipped.push(key);
               continue;
             }
-            await settingsTx.set(key, value);
+            if (restoresKey(key)) await settingsTx.set(key, value);
           }
         }
         await tx._fileStore.flush();
       });
       const settingsCount = replaceSettings
-        ? Object.keys(backup.settings ?? {}).filter((key) => key.startsWith(SLURP_SETTINGS_NAMESPACE)).length
+        ? Object.keys(backup.settings ?? {}).filter(
+            (key) => key.startsWith(SLURP_SETTINGS_NAMESPACE) && isSlurpPreferenceSettingKey(key),
+          ).length
         : 0;
       return { tables: written, settings: settingsCount, skipped };
     },

@@ -40,10 +40,12 @@ const home = read("packages/slurp2/src/engine/packages/client/src/components/slu
 assert.match(home, /ui\.slurp\.profile\.subscribeBenefits/u, "The inline subscription offer must explain its benefits");
 assert.match(
   home,
-  /slurpSubscriptionPriceOf\(profile\)\} \/ week/u,
-  "The subscription action must show its weekly price",
+  // Step 0c: the price is a number (so it gets separators) and "/ week" is the coin amount's suffix.
+  /amount=\{slurpSubscriptionPriceOf\(viewerCreator\)\}\s+suffix=\{localizeUi\("ui\.slurp\.unlocksheet\.perWeek"/u,
+  "The subscription action must show its weekly price, read from the viewer scope (the Creator record has none)",
 );
-assert.match(home, /ui\.slurp\.profile\.cancelSubscriptionConfirm/u);
+// Step 6.5: cancelling is one tap + an Undo toast (no confirm dialog), like the Wallet.
+assert.match(home, /showSlpSubscriptionCancelledToast\(/u);
 const messages = read("packages/slurp2/src/engine/packages/client/src/components/slurp/SlurpMessages.tsx");
 assert.match(messages, /ui\.slurp\.messages\.requestFeeHint/u);
 assert.match(messages, /ui\.slurp\.messages\.commissionRefundHint/u);

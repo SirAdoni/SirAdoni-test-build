@@ -1,3 +1,4 @@
+import { slpOverrideRapport } from "../../../../../shared/src/slp/slp-message-details.js";
 // ──────────────────────────────────────────────
 // Storage: Slurp direct messages
 // ──────────────────────────────────────────────
@@ -6,7 +7,7 @@
 // lines. It composes that storage for accounts, subscriptions, and the wallet instead of
 // reimplementing them, so a DM tip and a profile tip move coins through exactly one code path.
 import { tolerateMissingTables } from "../../base/host/slp-host-tables.js";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, or } from "../../../db/file-query.js";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, ne, or } from "../../../db/file-query.js";
 import { newId } from "../../../utils/id-generator.js";
 import type { DB } from "../../../db/connection.js";
 import { logger } from "../../../lib/logger.js";
@@ -21,6 +22,7 @@ import {
 } from "../../../db/schema/slurp.js";
 import { isSlurpFileUniqueConstraintError } from "../../base/host/slp-file-errors.js";
 import { applySlurpMood, type SlurpMoodShift } from "../../modules/world/slp-mood.js";
+import { slurpIsCouplePage } from "../../modules/projects/slp-creator-couples.js";
 import {
   applySlurpThreadNotes,
   readStoredNotes,
@@ -69,6 +71,7 @@ import type {
 } from "./slp-messages-storage-types.js";
 import { createSlurpReplyMethods } from "./slp-reply-storage-methods.js";
 import type { SlurpMessagesContext } from "./slp-messages-storage-context.js";
+import { countSlurpUnreadThreads } from "../../modules/messages/slp-unread-count.js";
 
 export function createMessagesStorageBase(context: SlurpMessagesContext) {
   const {
@@ -125,6 +128,10 @@ export function createMessagesStorageBase(context: SlurpMessagesContext) {
       return rows[0] ? context.storage.withFollowUps(mapThread(rows[0])) : null;
     },
     async withFollowUps(thread: SlurpThread): Promise<SlurpThread> {
+      thread = {
+        ...thread,
+        rapport: slpOverrideRapport(thread.rapport, await context.storage.getDetailsOverrides(thread.id)),
+      };
       const rows = await db.select().from(slurpFollowUps).where(eq(slurpFollowUps.threadId, thread.id));
       if (rows.length === 0 && thread.scheduledFollowUps.length > 0) {
         await context.storage.addScheduledFollowUps(thread.id, thread.scheduledFollowUps);
@@ -161,6 +168,9 @@ export function createMessagesStorageBase(context: SlurpMessagesContext) {
           ),
         );
       for (let row of rows) {
+        // A fresh `charged` row is a payment still between debit and its message write. Compensating
+        // it refunded the fan while the tip or unlock went on to land anyway.
+        if (row.status === "charged" && Date.parse(String(row.updatedAt)) > Date.now() - 5 * 60 * 1000) continue;
         if (row.status === "settled") {
           await applySlurpTipEffects(slurp, String(row.id)).catch((error) =>
             logger.warn(error, "[slurp] Durable tip-effect recovery failed for %s", row.id),
@@ -224,7 +234,10 @@ export function createMessagesStorageBase(context: SlurpMessagesContext) {
             senderAccountId: commission.viewerAccountId,
             role: "viewer",
             kind: "system",
-            content: "The fan cancelled this commission. The payment was refunded.",
+            // `:accept` marks a payment that failed during accept, not a fan who changed their mind.
+            content: commission.cancellationId.endsWith(":accept")
+              ? "The payment for this commission failed and was refunded."
+              : "The fan cancelled this commission. The payment was refunded.",
             metadata: { commissionId: commission.id },
           });
           await db
@@ -258,30 +271,47 @@ export function createMessagesStorageBase(context: SlurpMessagesContext) {
       threadId: string,
       limit = 120,
       cursor?: { createdAt: string; id: string } | null,
+      search?: string,
     ): Promise<{ messages: SlurpMessage[]; nextCursor: { createdAt: string; id: string } | null }> {
       const bounded = Math.max(1, Math.min(120, Math.trunc(limit)));
-      const rows = await db
-        .select()
-        .from(slurpMessages)
-        .where(
-          and(
-            eq(slurpMessages.threadId, threadId),
-            cursor
-              ? or(
-                  lt(slurpMessages.createdAt, cursor.createdAt),
-                  and(eq(slurpMessages.createdAt, cursor.createdAt), lt(slurpMessages.id, cursor.id)),
-                )
-              : undefined,
-          ),
-        )
-        .orderBy(desc(slurpMessages.createdAt), desc(slurpMessages.id))
-        .limit(bounded + 1);
-      const page = rows.slice(0, bounded);
+      const needle = search?.trim().toLocaleLowerCase();
+      const readRows = (pageCursor: { createdAt: string; id: string } | null, pageLimit: number) =>
+        db
+          .select()
+          .from(slurpMessages)
+          .where(
+            and(
+              eq(slurpMessages.threadId, threadId),
+              pageCursor
+                ? or(
+                    lt(slurpMessages.createdAt, pageCursor.createdAt),
+                    and(eq(slurpMessages.createdAt, pageCursor.createdAt), lt(slurpMessages.id, pageCursor.id)),
+                  )
+                : undefined,
+            ),
+          )
+          .orderBy(desc(slurpMessages.createdAt), desc(slurpMessages.id))
+          .limit(pageLimit);
+      const rows = needle ? [] : await readRows(cursor ?? null, bounded + 1);
+      let scanCursor = cursor ?? null;
+      let exhausted = false;
+      while (needle && rows.length < bounded + 1 && !exhausted) {
+        const batch = await readRows(scanCursor, Math.max(bounded, 120));
+        if (batch.length === 0) break;
+        scanCursor = { createdAt: String(batch.at(-1)!.createdAt), id: String(batch.at(-1)!.id) };
+        for (const row of batch) {
+          if (String(row.content).toLocaleLowerCase().includes(needle)) rows.push(row);
+          if (rows.length >= bounded + 1) break;
+        }
+        exhausted = batch.length < 120;
+      }
+      const filtered = rows;
+      const page = filtered.slice(0, bounded);
       const oldest = page[page.length - 1];
       return {
         messages: page.map(mapMessage).reverse(),
         nextCursor:
-          rows.length > bounded && oldest ? { createdAt: String(oldest.createdAt), id: String(oldest.id) } : null,
+          filtered.length > bounded && oldest ? { createdAt: String(oldest.createdAt), id: String(oldest.id) } : null,
       };
     },
     /**
@@ -355,6 +385,35 @@ export function createMessagesStorageBase(context: SlurpMessagesContext) {
       }
       return views;
     },
+    /** Badge counts avoid the joins and follow-up hydration the full inbox needs. */
+    async countUnread(
+      viewerAccountId: string,
+      operatedCreatorAccountIds: readonly string[],
+      availableCreatorAccountIds: readonly string[],
+    ) {
+      const creatorScope = operatedCreatorAccountIds.length
+        ? or(
+            eq(slurpThreads.viewerAccountId, viewerAccountId),
+            inArray(slurpThreads.creatorAccountId, [...operatedCreatorAccountIds]),
+          )
+        : eq(slurpThreads.viewerAccountId, viewerAccountId);
+      const rows = await db
+        .select({
+          viewerAccountId: slurpThreads.viewerAccountId,
+          creatorAccountId: slurpThreads.creatorAccountId,
+          state: slurpThreads.state,
+          viewerUnread: slurpThreads.viewerUnread,
+          creatorUnread: slurpThreads.creatorUnread,
+        })
+        .from(slurpThreads)
+        .where(and(creatorScope, ne(slurpThreads.state, "declined")));
+      const existingCreatorIds = new Set(availableCreatorAccountIds);
+      return countSlurpUnreadThreads(
+        rows.map((row) => ({ ...row, creatorExists: existingCreatorIds.has(String(row.creatorAccountId)) })),
+        viewerAccountId,
+        operatedCreatorAccountIds,
+      );
+    },
     /**
      * Rebuild the rapport for one pair from the audience tie and the thread itself.
      *
@@ -367,7 +426,9 @@ export function createMessagesStorageBase(context: SlurpMessagesContext) {
       // Apply subscriber boost: subscribers gain rapport 1.5x faster from conversation and effort
       // Arc stat effects on fan loyalty scale here, the one place rapport is scored.
       const gain = await slurp.arcEffectMultiplier(creatorAccountId, "loyalty");
-      return scoreSlurpRapport(facts, messaging.rapportWeights, { subscriberBoost: true, gain });
+      const computed = scoreSlurpRapport(facts, messaging.rapportWeights, { subscriberBoost: true, gain });
+      const thread = await context.storage.getThread(viewerAccountId, creatorAccountId);
+      return thread ? slpOverrideRapport(computed, await context.storage.getDetailsOverrides(thread.id)) : computed;
     },
     /**
      * The facts behind one pair's rapport.
@@ -399,7 +460,15 @@ export function createMessagesStorageBase(context: SlurpMessagesContext) {
       const thread = await context.storage.getThread(viewerAccountId, creatorAccountId);
       if (thread) {
         const messages = await context.storage.listMessages(thread.id, 500);
-        const fromViewer = messages.filter((message) => message.role === "viewer" && message.kind !== "tip");
+        // Payment markers and shared post cards are not things the fan wrote; counting them inflated
+        // rapport and double-counted unlocks that are already scored above.
+        const fromViewer = messages.filter(
+          (message) =>
+            message.role === "viewer" &&
+            message.kind !== "tip" &&
+            message.kind !== "post_preview" &&
+            !message.metadata?.paymentReaction,
+        );
         facts.viewerMessages = fromViewer.length;
         // A broadcast went to everybody, so counting it here let a mass send buy the reciprocity
         // score, which exists to measure whether this creator answers *you*.
@@ -427,15 +496,26 @@ export function createMessagesStorageBase(context: SlurpMessagesContext) {
       viewerAccountId: string,
       creatorAccountId: string,
       openedBy: "viewer" | "creator" = "viewer",
+      /**
+       * The paid-DM request fee on a new thread. "waive": a tip or commission is already a payment to
+       * this Creator. "refuse": the caller shows no price (a shared post), so it asks for a message first.
+       */
+      requestFee: "charge" | "waive" | "refuse" = "charge",
     ): Promise<
       | { status: "ok"; thread: SlurpThread }
-      | { status: "closed" }
+      | { status: "closed"; reason?: "couple_page" }
       | { status: "insufficient_funds"; required: number }
+      | { status: "fee_required"; required: number }
       | { status: "not_found" }
     > {
-      if (viewerAccountId === creatorAccountId) return { status: "not_found" };
       const creator = await slurp.getNoodlerAccountById(creatorAccountId);
       if (!creator) return { status: "not_found" };
+      // The viewer id is a persona id, so comparing it with the account id never matched. Checking the
+      // account's source persona is what keeps a persona from messaging or tipping its own Creator.
+      if (creator.sourceKind === "persona" && creator.sourceEntityId === viewerAccountId)
+        return { status: "not_found" };
+      // A shared couple page has no one behind it to answer: fans write to either partner (7c M-002).
+      if (slurpIsCouplePage(creator)) return { status: "closed", reason: "couple_page" };
       const existing = await context.storage.getThread(viewerAccountId, creatorAccountId);
       // A creator writing first always gets through: it is their own inbox, and a welcome message
       // that the creator's own policy blocked would be an absurdity.
@@ -455,11 +535,13 @@ export function createMessagesStorageBase(context: SlurpMessagesContext) {
       if (!admission.allowed) return { status: "closed" };
 
       const settings = await slurp.getSettings();
+      if (requestFee === "refuse" && settings.walletEnabled && admission.fee > 0)
+        return { status: "fee_required", required: admission.fee };
       let feePaid = 0;
       let chargedByThisCall = false;
       const messageRequestId = `message-request:${viewerAccountId}:${creatorAccountId}`;
       const messageRequestCreditId = `${messageRequestId}:credit`;
-      if (settings.walletEnabled && admission.fee > 0) {
+      if (settings.walletEnabled && admission.fee > 0 && requestFee === "charge") {
         const paymentIntent = await createSlurpPaymentIntent(
           slurp,
           {

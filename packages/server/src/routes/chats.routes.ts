@@ -5,6 +5,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import AdmZip from "adm-zip";
 import { logger } from "../lib/logger.js";
+import { getMariDbService } from "../services/mari-db/mari-db.service.js";
 import { cardPromptText } from "../services/prompt/card-text.js";
 import {
   DECISION_PROMPT_QUESTION_LIMIT_SETTINGS_KEY,
@@ -89,11 +90,12 @@ import {
   withChatMetadataPatchQueue,
   withChatSwipeSelectionQueue,
 } from "../services/storage/chats.storage.js";
-import { createMessageTrashStorage, sweepExpiredMessageTrash } from "../services/storage/message-trash.storage.js";
+import { createMessageTrashStorage, MessageTrashPinnedLimitError } from "../services/storage/message-trash.storage.js";
 import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
 import { createContinuityChangeNotifier } from "../services/game/continuity-change-notifier.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
 import { resolveChatUserIdentity } from "../services/chat-user-identity.js";
+import { isFeatureEnabled } from "../services/features/feature-settings.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
 import { createAgentsStorage } from "../services/storage/agents.storage.js";
 import { createLorebooksStorage } from "../services/storage/lorebooks.storage.js";
@@ -237,7 +239,6 @@ import {
   hasRoleplayDmThreadMarkers,
 } from "../services/conversation/autonomous-candidates.js";
 import { lorebookGroupPickRandom } from "../services/lorebook/group-pick-policy.js";
-import { isFeatureEnabled } from "../services/features/feature-settings.js";
 
 type TrackerWrapFormat = "xml" | "markdown" | "none";
 type EntryStateOverrides = Record<string, { ephemeral?: number | null; enabled?: boolean }>;
@@ -905,20 +906,6 @@ function resolveEntryStateOverrides(value: unknown): EntryStateOverrides | undef
 export async function chatsRoutes(app: FastifyInstance) {
   const storage = createChatsStorage(app.db);
   const messageTrashStore = createMessageTrashStorage(app.db);
-  // Expired trash is purged when a chat's trash is read or written; this background sweep
-  // covers chats nobody reopens. Unref'd so it never holds the process open.
-  const sweepMessageTrash = () =>
-    void sweepExpiredMessageTrash(app.db).catch((error) =>
-      logger.warn(error, "[message-trash] Expired trash sweep failed"),
-    );
-  const messageTrashStartupSweep = setTimeout(sweepMessageTrash, 2 * 60 * 1000);
-  messageTrashStartupSweep.unref();
-  const messageTrashSweepInterval = setInterval(sweepMessageTrash, 6 * 60 * 60 * 1000);
-  messageTrashSweepInterval.unref();
-  app.addHook("onClose", async () => {
-    clearTimeout(messageTrashStartupSweep);
-    clearInterval(messageTrashSweepInterval);
-  });
   // Message edits, deletes, swipes and AI-visibility changes alter continuity
   // sources; schedule a debounced reconcile + summary re-evaluation off the
   // request path so game chats mark stale work without waiting for a generation.
@@ -1245,6 +1232,8 @@ export async function chatsRoutes(app: FastifyInstance) {
     if (!target) return reply.status(404).send({ error: "Professor Mari chat not found" });
     const wasActive = isActiveHomeProfessorMariChat(target);
     await storage.remove(target.id);
+    // #6842: the chat's Keep/Restore cards go with it. Its changes stay applied.
+    await getMariDbService(app.db).keepReviewsForChat(target.id);
     if (wasActive) {
       const remaining = sortProfessorMariChats((await storage.list()).filter(isHomeProfessorMariChat));
       const next = remaining[0];
@@ -1650,65 +1639,75 @@ export async function chatsRoutes(app: FastifyInstance) {
       Object.prototype.hasOwnProperty.call(incoming, "hideSummarisedMessages") &&
       typeof incoming.hideSummarisedMessages === "boolean"
     ) {
-      const updated = await storage.patchMetadata(req.params.id, async (freshMeta) => {
-        const previousHideEnabled = freshMeta.hideSummarisedMessages === true;
-        if (previousHideEnabled === incoming.hideSummarisedMessages) {
-          return incoming;
-        }
-
-        const allMessages = await storage.listMessages(req.params.id);
-        const currentEntries = normalizeChatSummaryEntries(freshMeta.summaryEntries, {
-          legacySummary: typeof freshMeta.summary === "string" ? freshMeta.summary : null,
-        });
-        const now = new Date().toISOString();
-        let nextEntries: ChatSummaryEntry[];
-
-        if (incoming.hideSummarisedMessages) {
-          const tail = resolveRoleplaySummaryTail(freshMeta.summaryTailMessages);
-          nextEntries = [];
-          for (const entry of currentEntries) {
-            if (!entry.enabled || !entry.messageIds?.length) {
-              nextEntries.push(entry);
-              continue;
-            }
-
-            const eligibleToHide = computeSummaryHideIds({
-              messages: allMessages,
-              entryMessageIds: entry.messageIds,
-              tail,
-            });
-            const hiddenMessageIds =
-              eligibleToHide.length > 0 ? await storage.bulkSetHiddenFromAI(req.params.id, eligibleToHide, true) : [];
-            const ownedHiddenMessageIds = Array.from(new Set([...(entry.hiddenMessageIds ?? []), ...hiddenMessageIds]));
-            nextEntries.push(
-              ownedHiddenMessageIds.length > 0
-                ? { ...entry, hiddenMessageIds: ownedHiddenMessageIds, updatedAt: now }
-                : entry,
-            );
+      const updated = await storage.patchMetadata(
+        req.params.id,
+        async (freshMeta) => {
+          const previousHideEnabled = freshMeta.hideSummarisedMessages === true;
+          if (previousHideEnabled === incoming.hideSummarisedMessages) {
+            return incoming;
           }
-        } else {
-          const summaryOwnedHiddenIds = Array.from(
-            new Set(currentEntries.flatMap((entry) => entry.hiddenMessageIds ?? [])),
-          );
-          if (summaryOwnedHiddenIds.length > 0) {
-            await storage.bulkSetHiddenFromAI(req.params.id, summaryOwnedHiddenIds, false);
-          }
-          nextEntries = currentEntries.map((entry) => {
-            if (!entry.hiddenMessageIds?.length) return entry;
-            const { hiddenMessageIds: _hiddenMessageIds, ...rest } = entry;
-            return { ...rest, updatedAt: now };
+
+          const allMessages = await storage.listMessages(req.params.id);
+          const currentEntries = normalizeChatSummaryEntries(freshMeta.summaryEntries, {
+            legacySummary: typeof freshMeta.summary === "string" ? freshMeta.summary : null,
           });
-        }
+          const now = new Date().toISOString();
+          let nextEntries: ChatSummaryEntry[];
 
-        return {
-          ...incoming,
-          summaryEntries: nextEntries,
-          summary: compileChatSummaryEntries(nextEntries),
-        };
-      });
+          if (incoming.hideSummarisedMessages) {
+            const tail = resolveRoleplaySummaryTail(freshMeta.summaryTailMessages);
+            nextEntries = [];
+            for (const entry of currentEntries) {
+              if (!entry.enabled || !entry.messageIds?.length) {
+                nextEntries.push(entry);
+                continue;
+              }
+
+              const eligibleToHide = computeSummaryHideIds({
+                messages: allMessages,
+                entryMessageIds: entry.messageIds,
+                tail,
+              });
+              const hiddenMessageIds =
+                eligibleToHide.length > 0 ? await storage.bulkSetHiddenFromAI(req.params.id, eligibleToHide, true) : [];
+              const ownedHiddenMessageIds = Array.from(
+                new Set([...(entry.hiddenMessageIds ?? []), ...hiddenMessageIds]),
+              );
+              nextEntries.push(
+                ownedHiddenMessageIds.length > 0
+                  ? { ...entry, hiddenMessageIds: ownedHiddenMessageIds, updatedAt: now }
+                  : entry,
+              );
+            }
+          } else {
+            const summaryOwnedHiddenIds = Array.from(
+              new Set(currentEntries.flatMap((entry) => entry.hiddenMessageIds ?? [])),
+            );
+            if (summaryOwnedHiddenIds.length > 0) {
+              await storage.bulkSetHiddenFromAI(req.params.id, summaryOwnedHiddenIds, false);
+            }
+            nextEntries = currentEntries.map((entry) => {
+              if (!entry.hiddenMessageIds?.length) return entry;
+              const { hiddenMessageIds: _hiddenMessageIds, ...rest } = entry;
+              return { ...rest, updatedAt: now };
+            });
+          }
+
+          return {
+            ...incoming,
+            summaryEntries: nextEntries,
+            summary: compileChatSummaryEntries(nextEntries),
+          };
+        },
+        {
+          ...(Array.isArray(incoming.gameNpcs) ? { npcAvatarWriteIntents: "replace" as const } : {}),
+        },
+      );
       return updated ? normalizeChatForResponse(updated) : updated;
     }
-    const updated = await storage.patchMetadata(req.params.id, incoming);
+    const updated = await storage.patchMetadata(req.params.id, incoming, {
+      ...(Array.isArray(incoming.gameNpcs) ? { npcAvatarWriteIntents: "replace" as const } : {}),
+    });
     return updated ? normalizeChatForResponse(updated) : updated;
   });
 
@@ -2602,27 +2601,25 @@ export async function chatsRoutes(app: FastifyInstance) {
     return created;
   });
 
-  // Game turns carry state snapshots a restore cannot bring back, and Game mode has no Trash
-  // view, so its deletes stay permanent as before. With Settings > Features "Message trash" off
-  // every delete is permanent, as upstream.
+  // Game state is not restorable through the message-only trash, so retain permanent Game deletes.
+  // The feature switch also keeps the pre-trash permanent-delete behavior.
   const chatUsesMessageTrash = async (chatId: string) =>
     isFeatureEnabled("messageTrash") && (await storage.getById(chatId))?.mode !== "game";
 
-  // Delete message (moves it to the chat's trash)
-  app.delete<{ Params: { chatId: string; messageId: string }; Querystring: { trash?: string } }>(
-    "/:chatId/messages/:messageId",
-    async (req, reply) => {
-      // `trash=false` is for rollbacks of rows the user never saw (failed sends, regenerate-by-delete).
-      const trashed =
-        req.query.trash === "false" || !(await chatUsesMessageTrash(req.params.chatId))
-          ? []
-          : await messageTrashStore.trashMessages(req.params.chatId, [req.params.messageId]);
-      // A message addressed through another chat id keeps the old untrashed delete behavior.
-      if (trashed.length === 0) await storage.removeMessage(req.params.messageId);
-      continuityChanges.notify(req.params.chatId, [req.params.messageId]);
-      return reply.status(204).send();
-    },
-  );
+  app.delete<{
+    Params: { chatId: string; messageId: string };
+    Querystring: { trash?: string };
+  }>("/:chatId/messages/:messageId", async (req, reply) => {
+    const message = await storage.getMessage(req.params.messageId);
+    if (!message || message.chatId !== req.params.chatId) return reply.status(404).send({ error: "Message not found" });
+    const trashed =
+      req.query.trash === "false" || !(await chatUsesMessageTrash(req.params.chatId))
+        ? []
+        : await messageTrashStore.trashMessages(req.params.chatId, [req.params.messageId]);
+    if (trashed.length === 0) await storage.removeMessage(req.params.messageId);
+    continuityChanges.notify(req.params.chatId, [req.params.messageId]);
+    return reply.send({ trashed: trashed.length > 0, trashedCount: trashed.length });
+  });
 
   // Bulk delete messages (moves them to the chat's trash)
   app.post<{ Params: { chatId: string } }>("/:chatId/messages/bulk-delete", async (req, reply) => {
@@ -2631,10 +2628,12 @@ export async function chatsRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "messageIds array is required" });
     }
     const ids = messageIds.filter((id): id is string => typeof id === "string");
-    if (await chatUsesMessageTrash(req.params.chatId)) await messageTrashStore.trashMessages(req.params.chatId, ids);
-    else await storage.removeMessages(ids, req.params.chatId);
-    continuityChanges.notify(req.params.chatId, messageIds);
-    return reply.status(204).send();
+    const trashed = (await chatUsesMessageTrash(req.params.chatId))
+      ? await messageTrashStore.trashMessages(req.params.chatId, ids)
+      : [];
+    if (trashed.length === 0) await storage.removeMessages(ids, req.params.chatId);
+    continuityChanges.notify(req.params.chatId, ids);
+    return reply.send({ trashed: trashed.length > 0, trashedCount: trashed.length });
   });
 
   // ── Chapters: user-marked chapter starts, in reading order ──
@@ -2662,12 +2661,22 @@ export async function chatsRoutes(app: FastifyInstance) {
     if (!body.success) return reply.status(400).send({ error: "entryIds array is required" });
     const chat = await storage.getById(req.params.chatId);
     if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    // Trash stores message snapshots only; restoring them cannot restore Game state.
+    if (chat.mode === "game") return reply.status(409).send({ error: "Messages cannot be restored in Game Mode." });
     const active = (app as unknown as { activeGenerations?: Map<string, unknown> }).activeGenerations;
     if (active?.has(req.params.chatId))
       return reply.status(409).send({ error: "Wait for the current generation to finish before restoring messages." });
-    const result = await messageTrashStore.restore(req.params.chatId, body.data.entryIds);
-    if (result.restoredMessageIds.length > 0) continuityChanges.notify(req.params.chatId, result.restoredMessageIds);
-    return result;
+    return withChatMetadataPatchQueue(req.params.chatId, async () => {
+      try {
+        const result = await messageTrashStore.restore(req.params.chatId, body.data.entryIds);
+        if (result.restoredMessageIds.length > 0)
+          continuityChanges.notify(req.params.chatId, result.restoredMessageIds);
+        return result;
+      } catch (error) {
+        if (error instanceof MessageTrashPinnedLimitError) return reply.status(409).send({ error: error.message });
+        throw error;
+      }
+    });
   });
 
   app.post<{ Params: { chatId: string } }>("/:chatId/trash/delete", async (req, reply) => {
@@ -2723,96 +2732,105 @@ export async function chatsRoutes(app: FastifyInstance) {
   // Update message extra (partial merge) — also syncs to the active swipe
   app.patch<{ Params: { chatId: string; messageId: string }; Querystring: { swipeIndex?: string } }>(
     "/:chatId/messages/:messageId/extra",
-    async (req, reply) => {
-      const message = await storage.getMessage(req.params.messageId);
-      if (!message || message.chatId !== req.params.chatId)
-        return reply.status(404).send({ error: "Message not found" });
-      const swipeIndex = req.query.swipeIndex === undefined ? undefined : Number(req.query.swipeIndex);
-      if (swipeIndex !== undefined && (!Number.isSafeInteger(swipeIndex) || swipeIndex < 0))
-        return reply.status(400).send({ error: "Invalid swipe index" });
-      const markPatch = normalizeMessageMarkPatch({ ...(req.body as Record<string, unknown>) });
-      if ("error" in markPatch) return reply.status(400).send({ error: markPatch.error });
-      const partial = markPatch.patch;
-      if (partial.pinnedToContext === true && !isMessagePinnedToContext(message.extra)) {
-        const chatRows = await storage.listMessages(req.params.chatId);
-        const pinnedCount = chatRows.filter((row) => isMessagePinnedToContext(row.extra)).length;
-        if (pinnedCount >= MAX_PINNED_CONTEXT_MESSAGES) {
-          return reply.status(409).send({
-            error: `A chat can pin at most ${MAX_PINNED_CONTEXT_MESSAGES} messages. Unpin one first.`,
-          });
+    async (req, reply) =>
+      withChatMetadataPatchQueue(req.params.chatId, async () => {
+        const message = await storage.getMessage(req.params.messageId);
+        if (!message || message.chatId !== req.params.chatId)
+          return reply.status(404).send({ error: "Message not found" });
+        const swipeIndex = req.query.swipeIndex === undefined ? undefined : Number(req.query.swipeIndex);
+        if (swipeIndex !== undefined && (!Number.isSafeInteger(swipeIndex) || swipeIndex < 0))
+          return reply.status(400).send({ error: "Invalid swipe index" });
+        const markPatch = normalizeMessageMarkPatch({ ...(req.body as Record<string, unknown>) });
+        if ("error" in markPatch) return reply.status(400).send({ error: markPatch.error });
+        const partial = markPatch.patch;
+        if (partial.pinnedToContext === true && !isMessagePinnedToContext(message.extra)) {
+          const chatRows = await storage.listMessages(req.params.chatId);
+          if (chatRows.filter((row) => isMessagePinnedToContext(row.extra)).length >= MAX_PINNED_CONTEXT_MESSAGES) {
+            return reply.status(409).send({
+              error: `A chat can pin at most ${MAX_PINNED_CONTEXT_MESSAGES} messages. Unpin one first.`,
+            });
+          }
         }
-      }
-      if (
-        Object.prototype.hasOwnProperty.call(partial, "isConversationStart") &&
-        typeof partial.isConversationStart !== "boolean"
-      )
-        return reply.status(400).send({ error: "isConversationStart must be a boolean" });
-      for (const key of ["hiddenFromAICharacterIds", "conversationStartForCharacterIds"] as const) {
-        if (Object.prototype.hasOwnProperty.call(partial, key)) {
-          partial[key] = normalizeMessageCharacterIds(partial[key]);
+        if (
+          Object.prototype.hasOwnProperty.call(partial, "isConversationStart") &&
+          typeof partial.isConversationStart !== "boolean"
+        )
+          return reply.status(400).send({ error: "isConversationStart must be a boolean" });
+        for (const key of ["hiddenFromAICharacterIds", "conversationStartForCharacterIds"] as const) {
+          if (Object.prototype.hasOwnProperty.call(partial, key)) {
+            partial[key] = normalizeMessageCharacterIds(partial[key]);
+          }
         }
-      }
-      const syncAllSwipeExtra: Record<string, unknown> = {};
-      if (Object.prototype.hasOwnProperty.call(partial, "hiddenFromAI")) {
-        syncAllSwipeExtra.hiddenFromAI = partial.hiddenFromAI;
-      }
-      if (Object.prototype.hasOwnProperty.call(partial, "hiddenFromAICharacterIds")) {
-        syncAllSwipeExtra.hiddenFromAICharacterIds = partial.hiddenFromAICharacterIds;
-      }
-      if (Object.prototype.hasOwnProperty.call(partial, "isConversationStart")) {
-        syncAllSwipeExtra.isConversationStart = partial.isConversationStart;
-      }
-      if (Object.prototype.hasOwnProperty.call(partial, "conversationStartForCharacterIds")) {
-        syncAllSwipeExtra.conversationStartForCharacterIds = partial.conversationStartForCharacterIds;
-      }
-      if (Object.prototype.hasOwnProperty.call(partial, "reactions")) {
-        syncAllSwipeExtra.reactions = partial.reactions;
-      }
-      // Bookmarks, context pins and private notes belong to the message, not one swipe.
-      for (const key of MESSAGE_MARK_EXTRA_KEYS) {
-        if (Object.prototype.hasOwnProperty.call(partial, key)) syncAllSwipeExtra[key] = partial[key];
-      }
-
-      const contextFlagChanged =
-        Object.prototype.hasOwnProperty.call(partial, "isConversationStart") ||
-        Object.prototype.hasOwnProperty.call(partial, "conversationStartForCharacterIds");
-      const updated = contextFlagChanged
-        ? await storage.updateMessageExtraWithContextStart(req.params.messageId, partial, syncAllSwipeExtra, swipeIndex)
-        : swipeIndex === undefined
-          ? await storage.updateMessageExtra(req.params.messageId, partial)
-          : await storage.updateMessageExtraForSwipe(req.params.messageId, swipeIndex, partial);
-      if (!updated) return reply.status(404).send({ error: "Message not found" });
-      // A lone user reaction (no text after it) is a valid turn: feed it to the
-      // autonomous-messaging cadence so a character may notice and respond,
-      // time-gated. Only when this update leaves the user with a reaction here
-      // (so removing one's last reaction doesn't count as fresh activity).
-      if (Object.prototype.hasOwnProperty.call(partial, "reactions")) {
-        const next = partial.reactions;
-        const userReacted =
-          Array.isArray(next) &&
-          next.some(
-            (r) =>
-              !!r &&
-              typeof r === "object" &&
-              Array.isArray((r as { by?: unknown }).by) &&
-              (r as { by: unknown[] }).by.includes("user"),
-          );
-        if (userReacted) recordUserReaction(req.params.chatId);
-      }
-
-      if (!contextFlagChanged && Object.keys(syncAllSwipeExtra).length > 0) {
-        // Message-level fields stay stable across swipe changes.
-        const swipes = await storage.getSwipes(req.params.messageId);
-        for (const swipe of swipes) {
-          await storage.updateSwipeExtra(req.params.messageId, swipe.index, syncAllSwipeExtra);
+        const syncAllSwipeExtra: Record<string, unknown> = {};
+        if (Object.prototype.hasOwnProperty.call(partial, "hiddenFromAI")) {
+          syncAllSwipeExtra.hiddenFromAI = partial.hiddenFromAI;
         }
-      }
-      if ("hiddenFromAI" in syncAllSwipeExtra || "hiddenFromAICharacterIds" in syncAllSwipeExtra) {
-        continuityChanges.notify(req.params.chatId, [req.params.messageId]);
-      }
+        if (Object.prototype.hasOwnProperty.call(partial, "hiddenFromAICharacterIds")) {
+          syncAllSwipeExtra.hiddenFromAICharacterIds = partial.hiddenFromAICharacterIds;
+        }
+        if (Object.prototype.hasOwnProperty.call(partial, "isConversationStart")) {
+          syncAllSwipeExtra.isConversationStart = partial.isConversationStart;
+        }
+        if (Object.prototype.hasOwnProperty.call(partial, "conversationStartForCharacterIds")) {
+          syncAllSwipeExtra.conversationStartForCharacterIds = partial.conversationStartForCharacterIds;
+        }
+        if (Object.prototype.hasOwnProperty.call(partial, "reactions")) {
+          syncAllSwipeExtra.reactions = partial.reactions;
+        }
+        // Bookmarks, context pins and private notes belong to the message, not one swipe.
+        for (const key of MESSAGE_MARK_EXTRA_KEYS) {
+          if (Object.prototype.hasOwnProperty.call(partial, key)) syncAllSwipeExtra[key] = partial[key];
+        }
 
-      return updated;
-    },
+        const contextFlagChanged =
+          Object.prototype.hasOwnProperty.call(partial, "isConversationStart") ||
+          Object.prototype.hasOwnProperty.call(partial, "conversationStartForCharacterIds");
+        const syncSharedExtraAtomically =
+          contextFlagChanged ||
+          MESSAGE_MARK_EXTRA_KEYS.some((key) => Object.prototype.hasOwnProperty.call(partial, key));
+        const updated = syncSharedExtraAtomically
+          ? await storage.updateMessageExtraWithContextStart(
+              req.params.messageId,
+              partial,
+              syncAllSwipeExtra,
+              swipeIndex,
+              { metadataQueueHeld: true },
+            )
+          : swipeIndex === undefined
+            ? await storage.updateMessageExtra(req.params.messageId, partial)
+            : await storage.updateMessageExtraForSwipe(req.params.messageId, swipeIndex, partial);
+        if (!updated) return reply.status(404).send({ error: "Message not found" });
+        // A lone user reaction (no text after it) is a valid turn: feed it to the
+        // autonomous-messaging cadence so a character may notice and respond,
+        // time-gated. Only when this update leaves the user with a reaction here
+        // (so removing one's last reaction doesn't count as fresh activity).
+        if (Object.prototype.hasOwnProperty.call(partial, "reactions")) {
+          const next = partial.reactions;
+          const userReacted =
+            Array.isArray(next) &&
+            next.some(
+              (r) =>
+                !!r &&
+                typeof r === "object" &&
+                Array.isArray((r as { by?: unknown }).by) &&
+                (r as { by: unknown[] }).by.includes("user"),
+            );
+          if (userReacted) recordUserReaction(req.params.chatId);
+        }
+
+        if (!syncSharedExtraAtomically && Object.keys(syncAllSwipeExtra).length > 0) {
+          // Message-level fields stay stable across swipe changes.
+          const swipes = await storage.getSwipes(req.params.messageId);
+          for (const swipe of swipes) {
+            await storage.updateSwipeExtra(req.params.messageId, swipe.index, syncAllSwipeExtra);
+          }
+        }
+        if ("hiddenFromAI" in syncAllSwipeExtra || "hiddenFromAICharacterIds" in syncAllSwipeExtra) {
+          continuityChanges.notify(req.params.chatId, [req.params.messageId]);
+        }
+
+        return updated;
+      }),
   );
 
   // Bulk-set hiddenFromAI on many messages (iterates per message through the storage layer)
@@ -4751,11 +4769,11 @@ export async function chatsRoutes(app: FastifyInstance) {
           msg.role === "user" && isExportRecord(extra.personaSnapshot)
             ? readExportName(extra.personaSnapshot.name)
             : null;
-        const isCharacterTurn = msg.role === "assistant" && displayName !== "Narrator";
+        const isCharacterTurn = msg.role === "assistant" && chat.mode !== "game" && displayName !== "Narrator";
         entries.push({
           speakerKey:
             msg.role === "user" ? "user" : isCharacterTurn ? `character:${msg.characterId ?? "primary"}` : "narrator",
-          speaker: msg.role === "user" ? (snapshotName ?? userName) : displayName,
+          speaker: msg.role === "user" ? (snapshotName ?? userName) : isCharacterTurn ? displayName : "Narrator",
           role: isCharacterTurn || msg.role === "user" ? msg.role : "narrator",
           content,
           createdAt: msg.createdAt,
@@ -5010,6 +5028,7 @@ export async function chatsRoutes(app: FastifyInstance) {
             exportedAt: new Date().toISOString(),
             format,
             includeReasoning,
+            includePrivateNotes,
             scope,
             count: chatsToExport.length,
             chats: manifest,
@@ -5853,7 +5872,7 @@ export async function chatsRoutes(app: FastifyInstance) {
         selectedRangeEndIndex = selectedRange.endIndex;
       }
     }
-    const chatLog = formatRoleplaySummaryChatLog(selectedMessages);
+    const chatLog = formatRoleplaySummaryChatLog(selectedMessages, chat.mode);
 
     const previousSummary = chatMeta.summary ?? null;
     const requestedPromptTemplateId =
