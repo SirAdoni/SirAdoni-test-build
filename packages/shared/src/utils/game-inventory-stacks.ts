@@ -27,13 +27,14 @@
 import { normalizeCharacterLookupName } from "./character-lookup-name.js";
 
 export interface GameInventoryStack {
+  /** Identity of this stack, independent from which item it holds. */
   id: string;
-  /** The item's own name, as it was made. A rename never changes it. */
+  /** The item's canonical name. A rename never changes it. */
   name: string;
   /** What this stack is called instead, when the player renamed it. Never the own name again. */
   nickname?: string;
-  /** The ruleset item it is, "<catalog>/<entry>". Absent for a plain item. */
-  item?: string;
+  /** Semantic item identity: `plain:…` or the ruleset's `<catalog>/<entry>` reference. */
+  item: string;
   quantity: number;
   /** The party member who carries it. Absent for the player's own character. */
   holder?: string;
@@ -241,6 +242,7 @@ export function gameInventoryPlainItemId(name: string): string {
 /** Which item a stack is: the ruleset item it names, or the plain item its own name makes. Every
  *  stack of an item agrees, whatever its nickname. */
 export function gameInventoryItemId(stack: { name: string; item?: string }): string {
+  // Legacy in-memory callers may omit item; normalization and every emitted stack persist it.
   return stack.item ?? gameInventoryPlainItemId(stack.name);
 }
 
@@ -333,7 +335,7 @@ function makeStack(stack: {
     id,
     name,
     ...named,
-    ...(item ? { item } : {}),
+    item: item ?? gameInventoryPlainItemId(name),
     quantity,
     ...(holder ? { holder } : {}),
     ...(equipped ? { equipped: true as const } : {}),
@@ -360,6 +362,11 @@ function readItemRef(raw: unknown): string | undefined {
     GAME_INVENTORY_ITEM_REF_PATTERN.test(raw)
     ? raw
     : undefined;
+}
+
+function readItemId(raw: unknown, name: string): string {
+  if (typeof raw === "string" && raw.startsWith("plain:") && raw.length <= 80) return raw;
+  return readItemRef(raw) ?? gameInventoryPlainItemId(name);
 }
 
 function clampQuantity(quantity: number): number {
@@ -415,7 +422,7 @@ export function normalizeGameInventoryStacks(raw: unknown): GameInventoryStack[]
       {
         name,
         nickname,
-        item: readItemRef(source.item),
+        item: readItemId(source.item, name),
         // Worn and bound are one item each, so a stack saved with more is read as a plain stack.
         equipped: source.equipped === true && quantity === 1,
         bound: source.bound === true && quantity === 1,
@@ -538,7 +545,7 @@ export function gameInventoryTotals(
           name: gameInventoryStackLabel(stack),
           quantity: 0,
           ...(stack.nickname ? { ownName: stack.name } : {}),
-          ...(stack.item ? { item: stack.item } : {}),
+          item,
         })
         .get(item)!;
     line.quantity += stack.quantity;
@@ -1389,15 +1396,26 @@ export function carryGameInventory(
     // read off the id and the entry's name kept as the nickname, rather than as whatever that name
     // finds. Only an own name that makes that same id again is trusted: one cut short and
     // fingerprinted cannot be read back, and comes back by name.
-    const own =
-      typeof item === "string" && item.startsWith("plain:") ? item.slice("plain:".length).replace(/-/g, " ") : "";
-    if (own && gameInventoryPlainItemId(own) === item && gameInventoryPlainItemId(entry.name) !== item) {
+    const own = typeof item === "string" && item.startsWith("plain:") ? item : undefined;
+    if (own && rules?.plain !== "refuse") {
       const makeId = () => newGameInventoryStackId(stacks);
-      stacks =
-        addLike(stacks, { name: own, nickname: entry.name }, entry.quantity, undefined, makeId)?.stacks ?? stacks;
+      // Plain IDs encode common names losslessly. Recover that canonical name only when re-encoding
+      // proves the mapping is exact; otherwise the saved display name is the only name we can trust.
+      const recovered = own.slice("plain:".length).replace(/-/g, " ");
+      const recoverable = Boolean(recovered) && gameInventoryPlainItemId(recovered) === own;
+      const name = recoverable && gameInventoryPlainItemId(entry.name) !== own ? recovered : entry.name;
+      const savedNickname = (raw as { nickname?: unknown }).nickname;
+      const nickname =
+        typeof savedNickname === "string"
+          ? savedNickname
+          : recoverable && gameInventoryPlainItemId(entry.name) !== own
+            ? entry.name
+            : undefined;
+      stacks = addLike(stacks, { name, nickname, item: own }, entry.quantity, undefined, makeId)?.stacks ?? stacks;
       continue;
     }
-    stacks = addToGameInventory(stacks, entry.name, entry.quantity, undefined, undefined, rules);
+    if (rules?.plain !== "refuse")
+      stacks = addToGameInventory(stacks, entry.name, entry.quantity, undefined, undefined, rules);
   }
   return stacks;
 }

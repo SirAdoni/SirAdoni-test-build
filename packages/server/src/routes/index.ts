@@ -49,11 +49,22 @@ import { docsRoutes } from "./docs.routes.js";
 import { uiLanguagesRoutes } from "./ui-languages.routes.js";
 import { themesRoutes } from "./themes.routes.js";
 import { appSettingsRoutes } from "./app-settings.routes.js";
+import { privateNotebookRoutes } from "./private-notebook.routes.js";
 import { achievementsRoutes } from "./achievements.routes.js";
 import { gameRoutes } from "./game.routes.js";
+import { gameContinuityRoutes } from "./game-continuity.routes.js";
+import { gameContinuityBackfillRoutes } from "./game-continuity-backfill.routes.js";
+import { campaignIndexRoutes } from "./campaign-index.routes.js";
+import { campaignMemoryRoutes } from "./campaign-memory.routes.js";
+import { campaignMemoryWriteRoutes } from "./campaign-memory-write.routes.js";
+import { gameCalendarRoutes } from "./game-calendar.routes.js";
+import { familyTreeRoutes } from "./family-tree.routes.js";
 import { combatDirectorRoutes } from "./combat-director.routes.js";
 import { gameInventoryRoutes } from "./game-inventory.routes.js";
 import { gameAssetsRoutes } from "./game-assets.routes.js";
+import { gamePrepBoardRoutes } from "./game-prep-board.routes.js";
+import { randomTablesRoutes } from "./random-tables.routes.js";
+import { gameToolsRoutes } from "./game-tools.routes.js";
 import { gameRulesetsRoutes } from "./game-rulesets.routes.js";
 import { turnGamesRoutes } from "./turn-games.routes.js";
 import { sidecarRoutes } from "./sidecar.routes.js";
@@ -66,6 +77,7 @@ import { customAgentRepositoriesRoutes } from "./custom-agent-repositories.route
 import { personalExtensionsRoutes } from "./personal-extensions.routes.js";
 import { notificationSoundRoutes } from "./notification-sound.routes.js";
 import { libraryFoldersRoutes } from "./library-folders.routes.js";
+import { libraryCampaignsRoutes } from "./library-campaigns.routes.js";
 import { androidLocalAuthRoutes } from "../middleware/android-local-auth.js";
 import { multiplayerRoutes } from "./multiplayer.routes.js";
 import { MultiplayerService, type MultiplayerGameRuntime } from "../services/multiplayer/service.js";
@@ -104,6 +116,7 @@ export async function registerRoutes(app: FastifyInstance) {
   await app.register(decisionRoutes, { prefix: "/api/decision" });
   await app.register(connectionFoldersRoutes, { prefix: "/api/connection-folders" });
   await app.register(libraryFoldersRoutes, { prefix: "/api/library-folders" });
+  await app.register(libraryCampaignsRoutes, { prefix: "/api/library" });
   await app.register(agentsRoutes, { prefix: "/api/agents" });
   await app.register(utilitySidecarRoutes, { prefix: "/api/utility-sidecar" });
   await app.register(customToolsRoutes, { prefix: "/api/custom-tools" });
@@ -143,15 +156,26 @@ export async function registerRoutes(app: FastifyInstance) {
   await app.register(uiLanguagesRoutes, { prefix: "/api/ui-languages" });
   await app.register(themesRoutes, { prefix: "/api/themes" });
   await app.register(appSettingsRoutes, { prefix: "/api/app-settings" });
+  await app.register(privateNotebookRoutes, { prefix: "/api/private-notebook" });
   await app.register(achievementsRoutes, { prefix: "/api/achievements" });
   await app.register(gameRoutes, {
     prefix: "/api/game",
     onRoomRuntimeReady: (runtime: MultiplayerGameRuntime) => multiplayer.setGameRuntime(runtime),
   });
+  await app.register(gameContinuityRoutes, { prefix: "/api/game" });
+  await app.register(gameContinuityBackfillRoutes, { prefix: "/api/game" });
+  await app.register(campaignIndexRoutes, { prefix: "/api/game" });
+  await app.register(gameCalendarRoutes, { prefix: "/api/game-calendar" });
   await app.register(multiplayerRoutes, { prefix: "/api/multiplayer", service: multiplayer });
   await app.register(combatDirectorRoutes, { prefix: "/api/game/combat/director" });
   await app.register(gameInventoryRoutes, { prefix: "/api/game/inventory" });
+  await app.register(campaignMemoryRoutes, { prefix: "/api/game" });
+  await app.register(campaignMemoryWriteRoutes, { prefix: "/api/game" });
+  await app.register(familyTreeRoutes, { prefix: "/api/family-tree" });
   await app.register(gameAssetsRoutes, { prefix: "/api/game-assets" });
+  await app.register(gamePrepBoardRoutes, { prefix: "/api/prep-board" });
+  await app.register(randomTablesRoutes, { prefix: "/api/random-tables" });
+  await app.register(gameToolsRoutes, { prefix: "/api/game-tools" });
   await app.register(gameRulesetsRoutes, { prefix: "/api/game-rulesets" });
   await app.register(turnGamesRoutes, { prefix: "/api/turn-games" });
   await app.register(ttsRoutes, { prefix: "/api/tts" });

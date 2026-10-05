@@ -157,14 +157,26 @@ export interface GameCharacterCard {
 
 // ── NPCs ──
 
+/** Server-owned portrait revision marker used to reject stale NPC avatar writes. */
+export interface GameNpcAvatarState {
+  revision: number;
+  removed: boolean;
+}
+
 /** A tracked NPC in the game world. */
 export interface GameNpc {
   id: string;
+  /** Optional exact link to the library Character card that owns this NPC's portrait. */
+  characterId?: string | null;
   name: string;
   emoji: string;
   description: string;
   /** Origin of the description. "model", "library", and "user" descriptions are canonical profile text. */
   descriptionSource?: "model" | "library" | "narration" | "user";
+  /** Optional appearance observed in narration, separate from the canonical portrait description. */
+  observedAppearance?: string;
+  /** Optional descriptive details observed in narration, separate from the canonical profile description. */
+  observedDescription?: string;
   /** Optional presentation hint used for systems like NPC voice matching. */
   gender?: string | null;
   /** Optional pronoun hint used for systems like NPC voice matching. */
@@ -176,6 +188,8 @@ export interface GameNpc {
   notes: string[];
   /** Optional avatar URL (generated or uploaded) */
   avatarUrl?: string | null;
+  /** Server-owned portrait mutation marker; model and import data cannot establish authority. */
+  avatarState?: GameNpcAvatarState;
 }
 
 // ── Sessions ──
@@ -510,6 +524,54 @@ export interface SkillCheckResult {
   automatic?: boolean;
 }
 
+/** Roll-history values returned by the local Game Tools API. */
+export type DiceRollLogSource = "player" | "gm" | "skill_check" | "table" | "initiative";
+
+export interface DiceRollLogRecord {
+  id: string;
+  chatId: string;
+  gameId: string;
+  messageId: string | null;
+  source: DiceRollLogSource;
+  actor: string | null;
+  label: string | null;
+  notation: string;
+  rolls: number[];
+  modifier: number;
+  total: number;
+  critical: boolean;
+  fumble: boolean;
+  createdAt: string;
+}
+
+export interface DiceFaceStats {
+  sides: number;
+  dice: number;
+  average: number;
+  expected: number;
+  counts: number[];
+}
+
+export interface DiceRollStats {
+  rolls: number;
+  dice: number;
+  averageTotal: number | null;
+  expectedTotal: number | null;
+  natural20s: number;
+  natural1s: number;
+  criticals: number;
+  fumbles: number;
+  bySides: DiceFaceStats[];
+}
+
+export interface DiceRollLogResponse {
+  scope: "session" | "game";
+  gameId: string;
+  total: number;
+  stats: DiceRollStats;
+  recent: DiceRollLogRecord[];
+}
+
 // ── The sighted dice pool (opt-in, last) ──
 
 /** The seven sizes the engine pre-throws. Anything else is an overflow, not a pool miss. */
@@ -812,7 +874,33 @@ export interface DirectionCommand {
 
 /** Available widget types the model can use for custom HUD elements. */
 export type HudWidgetType =
-  "progress_bar" | "gauge" | "relationship_meter" | "counter" | "stat_block" | "list" | "inventory_grid" | "timer";
+  | "progress_bar"
+  | "gauge"
+  | "relationship_meter"
+  | "counter"
+  | "stat_block"
+  | "list"
+  | "inventory_grid"
+  | "timer"
+  | "checklist"
+  | "schedule"
+  | "note"
+  | "clock"
+  | "pips"
+  | "countdown"
+  | "tug_of_war"
+  | "tier_track"
+  | "stages"
+  | "tags"
+  | "ledger"
+  | "log"
+  | "rumor_board"
+  | "obligations"
+  | "turn_order"
+  | "scoreboard"
+  | "bars"
+  | "charges"
+  | "calendar";
 
 /** Milestone marker on a progress/relationship bar. */
 export interface WidgetMilestone {
@@ -833,6 +921,10 @@ export interface HudWidget {
 
 /** Type-specific widget config. */
 export interface HudWidgetConfig {
+  /** Fit the panel to its visible labels instead of keeping the default fixed width. */
+  autoSize?: boolean;
+  /** Grow to show all content: "auto" (absent) follows the game's widget auto expand default. */
+  autoExpand?: "auto" | "expand" | "fixed";
   // progress_bar / gauge / relationship_meter
   /** Initial value used when the widget is created for a new session. */
   startingValue?: number;
@@ -860,6 +952,33 @@ export interface HudWidgetConfig {
   seconds?: number;
   running?: boolean;
 
+  // checklist: tasks with a done flag
+  tasks?: Array<{ text: string; done: boolean }>;
+
+  // schedule / calendar: dated entries ("Day 21, dusk" / "Oriel strike"), kept in day order.
+  // calendar also uses value (today's day number), max (days per week) and text (date label).
+  entries?: Array<{ when: string; text: string }>;
+
+  // note: one short free-text status; also the caption of countdown, the "Left | Right" sides of tug_of_war and
+  // the unit of ledger
+  text?: string;
+
+  // tier_track / stages: ordered levels; current is a 0-based index (also turn_order's current turn)
+  levels?: string[];
+  current?: number;
+
+  // tags: short state chips
+  tags?: string[];
+
+  // ledger: value is the balance; recent transactions
+  transactions?: Array<{ amount: number; text: string }>;
+
+  // rumor_board
+  rumors?: Array<{ text: string; status: "unverified" | "confirmed" | "false" }>;
+
+  // bars / charges: named meters
+  meters?: Array<{ name: string; value: number; max: number }>;
+
   // GM-defined value hints for the scene model (e.g. "alpha | omega | beta" for a class stat)
   valueHints?: Record<string, string>;
 }
@@ -869,10 +988,20 @@ export interface WidgetUpdate {
   widgetId: string;
   /** Partial config / value changes to merge. */
   changes: Omit<Partial<HudWidgetConfig>, "value"> & {
+    action?: "create" | "delete";
+    type?: HudWidgetType;
+    label?: string;
+    icon?: string;
+    position?: "hud_left" | "hud_right";
     value?: number | string;
     add?: string;
     remove?: string;
     statName?: string;
+    /** checklist: mark a task done (added done when missing) / not done. */
+    check?: string;
+    uncheck?: string;
+    /** note: replace the text. */
+    text?: string;
   };
 }
 

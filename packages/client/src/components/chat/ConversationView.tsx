@@ -17,6 +17,7 @@ import {
 import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
 import { Loader2, ChevronUp, Settings2, Image as ImageIcon, ArrowRightLeft } from "lucide-react";
 import { ConversationMessage } from "./ConversationMessage";
+import { PrivateNotebookToolbarButton } from "./PrivateNotebookPanel";
 import { ConversationInput } from "./ConversationInput";
 import { ConversationGamesPicker } from "./ConversationGamesPicker";
 import { SceneBanner, EndSceneBar } from "./SceneBanner";
@@ -100,6 +101,8 @@ interface ConversationViewProps {
   onGenerateSelfie?: (characterId?: string) => void | Promise<void>;
   lastAssistantMessageId: string | null;
   onOpenSettings: (event?: ReactMouseEvent<HTMLElement>, options?: { initialSection?: "autonomous" | null }) => void;
+  privateNotebookOpen: boolean;
+  onOpenPrivateNotebook: (event?: ReactMouseEvent<HTMLElement>) => void;
   onOpenScheduleEditor?: (characterId: string, options?: { initialDay?: string | null }) => void;
   onOpenGallery: (event?: ReactMouseEvent<HTMLElement>) => void;
   onBranch?: (messageId: string) => void;
@@ -345,6 +348,8 @@ export function ConversationView({
   onGenerateSelfie,
   lastAssistantMessageId,
   onOpenSettings,
+  privateNotebookOpen,
+  onOpenPrivateNotebook,
   onOpenScheduleEditor,
   onOpenGallery,
   onBranch,
@@ -525,6 +530,7 @@ export function ConversationView({
         compact={compact}
       />
       <ActiveLorebookEntriesButton chatId={chatId} />
+      <PrivateNotebookToolbarButton open={privateNotebookOpen} compact={compact} onClick={onOpenPrivateNotebook} />
       <ChatToolbarButton
         icon={<ImageIcon size="0.875rem" />}
         title={t("chat.toolbar.gallery")}

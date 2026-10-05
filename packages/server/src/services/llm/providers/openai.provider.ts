@@ -31,6 +31,7 @@ import {
 } from "@marinara-engine/shared";
 import { logger } from "../../../lib/logger.js";
 import { isLocalInferenceBaseUrl } from "../../../middleware/ip-allowlist.js";
+import { resolveOpenAIChatGPTCacheIdentity } from "./openai-chatgpt-cache.js";
 import {
   applyGlmThinkingParameters,
   glm53CustomGatewayReasoningEffort,
@@ -2139,6 +2140,8 @@ export class OpenAIProvider extends BaseLLMProvider {
       ),
       store: false, // don't persist responses on OpenAI side
     };
+    const cacheIdentity = isOpenAIChatGPT ? resolveOpenAIChatGPTCacheIdentity(messages) : undefined;
+    if (cacheIdentity) body.prompt_cache_key = `me-chat-${cacheIdentity}`;
     const shouldStreamResponses =
       !this.isResponsesStreamingUnsupportedModel(options.model) && (isOpenAIChatGPT || (options.stream ?? true));
 

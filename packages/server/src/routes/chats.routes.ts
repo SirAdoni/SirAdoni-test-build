@@ -2,6 +2,8 @@
 // Routes: Chats
 // ──────────────────────────────────────────────
 import type { FastifyInstance, FastifyReply } from "fastify";
+import { isDeepStrictEqual } from "node:util";
+
 import { z } from "zod";
 import AdmZip from "adm-zip";
 import { logger } from "../lib/logger.js";
@@ -58,6 +60,8 @@ import {
   MESSAGE_MARK_EXTRA_KEYS,
   MAX_PINNED_CONTEXT_MESSAGES,
   semanticSummaryRetrievalSettingsSchema,
+  isExtendedHudWidgetType,
+  isGameExtendedWidgetsEnabled,
 } from "@marinara-engine/shared";
 import type {
   CharacterData,
@@ -87,11 +91,18 @@ import {
   withChatMetadataPatchQueue,
   withChatSwipeSelectionQueue,
 } from "../services/storage/chats.storage.js";
+import { reconcileNpcAvatarState, readGameNpcAvatarState } from "../services/game/npc-avatar-state.js";
 import { createMessageTrashStorage, MessageTrashPinnedLimitError } from "../services/storage/message-trash.storage.js";
 import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
 import { resolveChatUserIdentity } from "../services/chat-user-identity.js";
 import { isFeatureEnabled } from "../services/features/feature-settings.js";
+import { continuityOwnershipSchema } from "../services/game/continuity-ownership.js";
+import { requireCampaignOptIn } from "../services/features/campaign-opt-in.js";
+import {
+  assertGameFeatureMetadataWriteAllowed,
+  disabledGameFeatureMetadataWriteError,
+} from "../services/game/game-prompt-direct-edits.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
 import { createAgentsStorage } from "../services/storage/agents.storage.js";
 import { createLorebooksStorage } from "../services/storage/lorebooks.storage.js";
@@ -127,6 +138,8 @@ import {
 } from "../services/spatial-context/projection.js";
 import { createSpatialContextStorage } from "../services/storage/spatial-context.storage.js";
 import { restoreBranchHudLists, trimJournalForBranch } from "../services/game/branch-state.js";
+import { projectCampaignMemoryBranch } from "../services/game/campaign-memory-branch.js";
+import { formatCampaignMemoryMessageOrder } from "../services/game/campaign-memory-order.js";
 import { removeGameInventoryTelling, switchGameInventoryTelling } from "../services/game/game-inventory.service.js";
 import { applyAllSegmentEdits, applyMessageSegmentEdits } from "../services/game/segment-edits.js";
 import type { Journal } from "../services/game/journal.service.js";
@@ -146,6 +159,7 @@ import { forwardPromptPreview } from "./generate/prompt-preview.js";
 import { wrapContent } from "../services/prompt/format-engine.js";
 import { chatSummaryFingerprintMatches, fingerprintChatSummary } from "../services/prompt/chat-summary-fingerprint.js";
 import { newId } from "../utils/id-generator.js";
+import { parseGamePromptDirectEdits } from "../services/game/game-prompt-direct-edits.js";
 import {
   isStoryTranscriptMessage,
   renderTranscriptHtml,
@@ -310,6 +324,116 @@ function parseChatMetadata(raw: unknown): Record<string, unknown> {
     }
   }
   return isRecord(raw) ? raw : {};
+}
+
+function guardExtendedHudWidgetMetadataPatch(
+  incoming: Record<string, unknown>,
+  freshMeta: Record<string, unknown>,
+): { patch: Record<string, unknown>; rejected: boolean } {
+  const widgetPatchKeys = ["gameWidgetState", "gameWidgetInitialState", "gameBlueprint", "gameSetupConfig"];
+  if (
+    Object.prototype.hasOwnProperty.call(incoming, "gameWidgetInitialState") &&
+    !isDeepStrictEqual(incoming.gameWidgetInitialState, freshMeta.gameWidgetInitialState)
+  ) {
+    return { patch: {}, rejected: true };
+  }
+
+  const hasWidgetPatch = widgetPatchKeys.some((key) => Object.prototype.hasOwnProperty.call(incoming, key));
+  const next = { ...incoming };
+  if (!hasWidgetPatch || (isFeatureEnabled("extendedHudWidgets") && isGameExtendedWidgetsEnabled(freshMeta))) {
+    return { patch: next, rejected: false };
+  }
+
+  const freshBlueprint =
+    freshMeta.gameBlueprint && typeof freshMeta.gameBlueprint === "object" && !Array.isArray(freshMeta.gameBlueprint)
+      ? (freshMeta.gameBlueprint as Record<string, unknown>)
+      : {};
+  const freshSetup =
+    freshMeta.gameSetupConfig &&
+    typeof freshMeta.gameSetupConfig === "object" &&
+    !Array.isArray(freshMeta.gameSetupConfig)
+      ? (freshMeta.gameSetupConfig as Record<string, unknown>)
+      : {};
+  const isWidgetRecord = (widget: unknown): widget is Record<string, unknown> =>
+    !!widget && typeof widget === "object" && !Array.isArray(widget);
+  const currentWidgets = (
+    Array.isArray(freshMeta.gameWidgetState)
+      ? freshMeta.gameWidgetState
+      : Array.isArray(freshBlueprint.hudWidgets)
+        ? freshBlueprint.hudWidgets
+        : Array.isArray(freshSetup.customHudWidgets)
+          ? freshSetup.customHudWidgets
+          : []
+  ).filter(isWidgetRecord);
+  const extended = currentWidgets.filter((widget) => isExtendedHudWidgetType(widget.type));
+  const extendedById = new Map(extended.map((widget) => [widget.id, widget]));
+  const maxBaselineWidgetCount = Math.max(
+    4,
+    currentWidgets.filter((widget) => !isExtendedHudWidgetType(widget.type)).length,
+  );
+  let rejected = false;
+
+  const guardWidgets = (candidate: unknown): unknown => {
+    if (!Array.isArray(candidate)) {
+      if (extended.length > 0) rejected = true;
+      return candidate;
+    }
+    if (!candidate.every(isWidgetRecord)) {
+      rejected = true;
+      return candidate;
+    }
+
+    const requested = candidate as Array<Record<string, unknown>>;
+    const requestedExtended = requested.filter((widget) => isExtendedHudWidgetType(widget.type));
+    if (
+      requestedExtended.some(
+        (widget) =>
+          typeof widget.id !== "string" ||
+          !extendedById.has(widget.id) ||
+          !isDeepStrictEqual(extendedById.get(widget.id), widget),
+      )
+    ) {
+      rejected = true;
+      return candidate;
+    }
+    const baseline = requested.filter((widget) => !isExtendedHudWidgetType(widget.type));
+    if (baseline.length > maxBaselineWidgetCount) {
+      rejected = true;
+      return candidate;
+    }
+    const extendedIds = new Set(extended.map((widget) => widget.id));
+    if (baseline.some((widget) => typeof widget.id === "string" && extendedIds.has(widget.id))) {
+      rejected = true;
+      return candidate;
+    }
+    return [...baseline, ...extended];
+  };
+
+  if (Object.prototype.hasOwnProperty.call(next, "gameWidgetState")) {
+    next.gameWidgetState = guardWidgets(next.gameWidgetState);
+  }
+  if (Object.prototype.hasOwnProperty.call(next, "gameBlueprint")) {
+    if (!next.gameBlueprint || typeof next.gameBlueprint !== "object" || Array.isArray(next.gameBlueprint)) {
+      if (extended.length > 0) rejected = true;
+    } else {
+      const blueprint = { ...(next.gameBlueprint as Record<string, unknown>) };
+      const prior = Array.isArray(freshBlueprint.hudWidgets) ? freshBlueprint.hudWidgets : currentWidgets;
+      blueprint.hudWidgets = guardWidgets(Array.isArray(blueprint.hudWidgets) ? blueprint.hudWidgets : prior);
+      next.gameBlueprint = blueprint;
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(next, "gameSetupConfig")) {
+    if (!next.gameSetupConfig || typeof next.gameSetupConfig !== "object" || Array.isArray(next.gameSetupConfig)) {
+      if (extended.length > 0) rejected = true;
+    } else {
+      const setup = { ...(next.gameSetupConfig as Record<string, unknown>) };
+      const prior = Array.isArray(freshSetup.customHudWidgets) ? freshSetup.customHudWidgets : currentWidgets;
+      setup.customHudWidgets = guardWidgets(Array.isArray(setup.customHudWidgets) ? setup.customHudWidgets : prior);
+      next.gameSetupConfig = setup;
+    }
+  }
+
+  return rejected ? { patch: {}, rejected: true } : { patch: next, rejected: false };
 }
 
 function isHomeProfessorMariChat(chat: { metadata?: unknown }) {
@@ -1293,6 +1417,89 @@ export async function chatsRoutes(app: FastifyInstance) {
     const chat = await storage.getById(req.params.id);
     if (!chat) return reply.status(404).send({ error: "Chat not found" });
     const incoming = req.body as Record<string, unknown>;
+    let continuityUpdate = incoming.gameContinuity;
+    if (typeof continuityUpdate === "string") {
+      try {
+        continuityUpdate = JSON.parse(continuityUpdate);
+      } catch {
+        continuityUpdate = undefined;
+      }
+    }
+    const ownershipWasWritten =
+      continuityUpdate && typeof continuityUpdate === "object" && !Array.isArray(continuityUpdate)
+        ? Object.prototype.hasOwnProperty.call(continuityUpdate, "ownership")
+        : false;
+    if (ownershipWasWritten) {
+      const ownership = (continuityUpdate as Record<string, unknown>).ownership;
+      if (ownership !== null && !continuityOwnershipSchema.safeParse(ownership).success) {
+        return reply.status(400).send({ error: "Invalid continuity ownership update" });
+      }
+      if (!isFeatureEnabled("gameContinuity")) {
+        return reply.status(403).send({
+          error: {
+            code: "FEATURE_DISABLED",
+            feature: "gameContinuity",
+            message: "This feature is disabled in Settings.",
+          },
+        });
+      }
+      if (!isFeatureEnabled("gameMemoryControls")) {
+        return reply.status(403).send({
+          error: {
+            code: "FEATURE_DISABLED",
+            feature: "gameMemoryControls",
+            message: "This feature is disabled in Settings.",
+          },
+        });
+      }
+    }
+    const memoryControlFields = [
+      "gamePromptRecentSessionLimit",
+      "gameCampaignMemoryScope",
+      "gameCampaignMemoryMaxCharacters",
+    ];
+    if (
+      !isFeatureEnabled("gameMemoryControls") &&
+      memoryControlFields.some((field) => Object.prototype.hasOwnProperty.call(incoming, field))
+    ) {
+      return reply.status(403).send({
+        error: {
+          code: "FEATURE_DISABLED",
+          feature: "gameMemoryControls",
+          message: "This feature is disabled in Settings.",
+        },
+      });
+    }
+    const assertMemoryControlsWritable = () => {
+      if (ownershipWasWritten) requireCampaignOptIn("gameContinuity");
+      if (
+        ownershipWasWritten ||
+        memoryControlFields.some((field) => Object.prototype.hasOwnProperty.call(incoming, field))
+      ) {
+        requireCampaignOptIn("gameMemoryControls");
+      }
+    };
+    const disabledFeatureError = disabledGameFeatureMetadataWriteError(
+      incoming,
+      isFeatureEnabled("gamePromptEditing"),
+      isFeatureEnabled("gmNarrationReasoning"),
+    );
+    if (disabledFeatureError) return reply.status(403).send({ error: disabledFeatureError });
+    const assertOptionalMetadataStillEnabled = () =>
+      assertGameFeatureMetadataWriteAllowed(
+        incoming,
+        isFeatureEnabled("gamePromptEditing"),
+        isFeatureEnabled("gmNarrationReasoning"),
+      );
+    if (Object.prototype.hasOwnProperty.call(incoming, "gamePromptDirectEdits")) {
+      if (chat.mode !== "game") {
+        return reply.status(400).send({ error: "Game prompt edits are only available in Game Mode chats" });
+      }
+      const edits = parseGamePromptDirectEdits(incoming.gamePromptDirectEdits);
+      if (!edits) return reply.status(400).send({ error: "Invalid Game prompt direct edits" });
+      incoming.gamePromptDirectEdits = edits;
+      incoming.gamePromptDirectEditsRevision = newId();
+    }
     const summaryRetrievalFieldSchemas = {
       semanticSummaryRecentCount: semanticSummaryRetrievalSettingsSchema.shape.semanticSummaryRecentCount,
       semanticSummaryOlderCount: semanticSummaryRetrievalSettingsSchema.shape.semanticSummaryOlderCount,
@@ -1379,24 +1586,28 @@ export async function chatsRoutes(app: FastifyInstance) {
       const { normalizeChatMacroVariables } = await import("../services/prompt/index.js");
       let overflowed = false;
       let invalidName: string | undefined;
-      const updated = await storage.patchMetadata(req.params.id, (freshMeta) => {
-        const saved = normalizeChatMacroVariables(freshMeta.macroVariables);
-        // Only names that still exist may use legacy setvar spelling.
-        invalidName = Object.keys(changedValues).find(
-          (name) => !Object.hasOwn(saved, name) && validateChatVariableName(name) !== null,
-        );
-        if (invalidName !== undefined) return {};
-        const merged = { ...saved, ...changedValues };
-        for (const name of removedNames) delete merged[name];
-        // normalizeChatMacroVariables keeps only the first MAX_CHAT_VARIABLES
-        // entries, so without this a name past the cap would be dropped while
-        // the request reported success.
-        if (Object.keys(merged).length > MAX_CHAT_VARIABLES) {
-          overflowed = true;
-          return {}; // change nothing; `incoming` still holds the unvalidated map
-        }
-        return { macroVariables: normalizeChatMacroVariables(merged) };
-      });
+      const updated = await storage.patchMetadata(
+        req.params.id,
+        (freshMeta) => {
+          const saved = normalizeChatMacroVariables(freshMeta.macroVariables);
+          // Only names that still exist may use legacy setvar spelling.
+          invalidName = Object.keys(changedValues).find(
+            (name) => !Object.hasOwn(saved, name) && validateChatVariableName(name) !== null,
+          );
+          if (invalidName !== undefined) return {};
+          const merged = { ...saved, ...changedValues };
+          for (const name of removedNames) delete merged[name];
+          // normalizeChatMacroVariables keeps only the first MAX_CHAT_VARIABLES
+          // entries, so without this a name past the cap would be dropped while
+          // the request reported success.
+          if (Object.keys(merged).length > MAX_CHAT_VARIABLES) {
+            overflowed = true;
+            return {}; // change nothing; `incoming` still holds the unvalidated map
+          }
+          return { macroVariables: normalizeChatMacroVariables(merged) };
+        },
+        { beforeWrite: assertOptionalMetadataStillEnabled },
+      );
       if (invalidName !== undefined) {
         return reply.status(400).send({ error: `Invalid chat variable name: ${invalidName}` });
       }
@@ -1436,65 +1647,95 @@ export async function chatsRoutes(app: FastifyInstance) {
       Object.prototype.hasOwnProperty.call(incoming, "hideSummarisedMessages") &&
       typeof incoming.hideSummarisedMessages === "boolean"
     ) {
-      const updated = await storage.patchMetadata(req.params.id, async (freshMeta) => {
-        const previousHideEnabled = freshMeta.hideSummarisedMessages === true;
-        if (previousHideEnabled === incoming.hideSummarisedMessages) {
-          return incoming;
-        }
-
-        const allMessages = await storage.listMessages(req.params.id);
-        const currentEntries = normalizeChatSummaryEntries(freshMeta.summaryEntries, {
-          legacySummary: typeof freshMeta.summary === "string" ? freshMeta.summary : null,
-        });
-        const now = new Date().toISOString();
-        let nextEntries: ChatSummaryEntry[];
-
-        if (incoming.hideSummarisedMessages) {
-          const tail = resolveRoleplaySummaryTail(freshMeta.summaryTailMessages);
-          nextEntries = [];
-          for (const entry of currentEntries) {
-            if (!entry.enabled || !entry.messageIds?.length) {
-              nextEntries.push(entry);
-              continue;
-            }
-
-            const eligibleToHide = computeSummaryHideIds({
-              messages: allMessages,
-              entryMessageIds: entry.messageIds,
-              tail,
-            });
-            const hiddenMessageIds =
-              eligibleToHide.length > 0 ? await storage.bulkSetHiddenFromAI(req.params.id, eligibleToHide, true) : [];
-            const ownedHiddenMessageIds = Array.from(new Set([...(entry.hiddenMessageIds ?? []), ...hiddenMessageIds]));
-            nextEntries.push(
-              ownedHiddenMessageIds.length > 0
-                ? { ...entry, hiddenMessageIds: ownedHiddenMessageIds, updatedAt: now }
-                : entry,
-            );
+      let rejectedWidgetPatch = false;
+      const updated = await storage.patchMetadata(
+        req.params.id,
+        async (freshMeta) => {
+          const guarded = guardExtendedHudWidgetMetadataPatch(incoming, freshMeta);
+          rejectedWidgetPatch = guarded.rejected;
+          if (rejectedWidgetPatch) return {};
+          const patch = guarded.patch;
+          const previousHideEnabled = freshMeta.hideSummarisedMessages === true;
+          if (previousHideEnabled === patch.hideSummarisedMessages) {
+            return patch;
           }
-        } else {
-          const summaryOwnedHiddenIds = Array.from(
-            new Set(currentEntries.flatMap((entry) => entry.hiddenMessageIds ?? [])),
-          );
-          if (summaryOwnedHiddenIds.length > 0) {
-            await storage.bulkSetHiddenFromAI(req.params.id, summaryOwnedHiddenIds, false);
-          }
-          nextEntries = currentEntries.map((entry) => {
-            if (!entry.hiddenMessageIds?.length) return entry;
-            const { hiddenMessageIds: _hiddenMessageIds, ...rest } = entry;
-            return { ...rest, updatedAt: now };
+
+          const allMessages = await storage.listMessages(req.params.id);
+          const currentEntries = normalizeChatSummaryEntries(freshMeta.summaryEntries, {
+            legacySummary: typeof freshMeta.summary === "string" ? freshMeta.summary : null,
           });
-        }
+          const now = new Date().toISOString();
+          let nextEntries: ChatSummaryEntry[];
 
-        return {
-          ...incoming,
-          summaryEntries: nextEntries,
-          summary: compileChatSummaryEntries(nextEntries),
-        };
-      });
+          if (patch.hideSummarisedMessages) {
+            const tail = resolveRoleplaySummaryTail(freshMeta.summaryTailMessages);
+            nextEntries = [];
+            for (const entry of currentEntries) {
+              if (!entry.enabled || !entry.messageIds?.length) {
+                nextEntries.push(entry);
+                continue;
+              }
+
+              const eligibleToHide = computeSummaryHideIds({
+                messages: allMessages,
+                entryMessageIds: entry.messageIds,
+                tail,
+              });
+              const hiddenMessageIds =
+                eligibleToHide.length > 0 ? await storage.bulkSetHiddenFromAI(req.params.id, eligibleToHide, true) : [];
+              const ownedHiddenMessageIds = Array.from(
+                new Set([...(entry.hiddenMessageIds ?? []), ...hiddenMessageIds]),
+              );
+              nextEntries.push(
+                ownedHiddenMessageIds.length > 0
+                  ? { ...entry, hiddenMessageIds: ownedHiddenMessageIds, updatedAt: now }
+                  : entry,
+              );
+            }
+          } else {
+            const summaryOwnedHiddenIds = Array.from(
+              new Set(currentEntries.flatMap((entry) => entry.hiddenMessageIds ?? [])),
+            );
+            if (summaryOwnedHiddenIds.length > 0) {
+              await storage.bulkSetHiddenFromAI(req.params.id, summaryOwnedHiddenIds, false);
+            }
+            nextEntries = currentEntries.map((entry) => {
+              if (!entry.hiddenMessageIds?.length) return entry;
+              const { hiddenMessageIds: _hiddenMessageIds, ...rest } = entry;
+              return { ...rest, updatedAt: now };
+            });
+          }
+
+          return {
+            ...patch,
+            summaryEntries: nextEntries,
+            summary: compileChatSummaryEntries(nextEntries),
+          };
+        },
+        { assertWritable: assertMemoryControlsWritable, beforeWrite: assertOptionalMetadataStillEnabled },
+      );
+      if (rejectedWidgetPatch) {
+        return reply.status(409).send({ error: "Extended HUD widget content is locked while the feature is disabled" });
+      }
       return updated ? normalizeChatForResponse(updated) : updated;
     }
-    const updated = await storage.patchMetadata(req.params.id, incoming);
+    let rejectedWidgetPatch = false;
+    const updated = await storage.patchMetadata(
+      req.params.id,
+      (freshMeta) => {
+        const guarded = guardExtendedHudWidgetMetadataPatch(incoming, freshMeta);
+        rejectedWidgetPatch = guarded.rejected;
+        return guarded.patch;
+      },
+      {
+        assertWritable: assertMemoryControlsWritable,
+        ...(Array.isArray(incoming.gameNpcs) ? { npcAvatarWriteIntents: "replace" as const } : {}),
+        beforeWrite: assertOptionalMetadataStillEnabled,
+      },
+    );
+    if (rejectedWidgetPatch) {
+      return reply.status(409).send({ error: "Extended HUD widget content is locked while the feature is disabled" });
+    }
     return updated ? normalizeChatForResponse(updated) : updated;
   });
 
@@ -2376,6 +2617,7 @@ export async function chatsRoutes(app: FastifyInstance) {
         ? []
         : await messageTrashStore.trashMessages(req.params.chatId, [req.params.messageId]);
     if (trashed.length === 0) await storage.removeMessage(req.params.messageId);
+    app.continuityChanges.notify(req.params.chatId, [req.params.messageId]);
     return reply.send({ trashed: trashed.length > 0, trashedCount: trashed.length });
   });
 
@@ -2390,6 +2632,7 @@ export async function chatsRoutes(app: FastifyInstance) {
       ? await messageTrashStore.trashMessages(req.params.chatId, ids)
       : [];
     if (trashed.length === 0) await storage.removeMessages(ids, req.params.chatId);
+    app.continuityChanges.notify(req.params.chatId, ids);
     return reply.send({ trashed: trashed.length > 0, trashedCount: trashed.length });
   });
 
@@ -2438,6 +2681,7 @@ export async function chatsRoutes(app: FastifyInstance) {
     if (typeof content !== "string") return reply.status(400).send({ error: "content is required" });
     const updated = await storage.updateMessageContent(req.params.messageId, content, { authored: true });
     if (!updated) return reply.status(404).send({ error: "Message not found" });
+    app.continuityChanges.notify(req.params.chatId, [req.params.messageId]);
     return updated;
   });
 
@@ -2536,6 +2780,12 @@ export async function chatsRoutes(app: FastifyInstance) {
             ? await storage.updateMessageExtra(req.params.messageId, partial)
             : await storage.updateMessageExtraForSwipe(req.params.messageId, swipeIndex, partial);
         if (!updated) return reply.status(404).send({ error: "Message not found" });
+        if (
+          Object.prototype.hasOwnProperty.call(partial, "hiddenFromAI") ||
+          Object.prototype.hasOwnProperty.call(partial, "hiddenFromAICharacterIds")
+        ) {
+          app.continuityChanges.notify(req.params.chatId, [req.params.messageId]);
+        }
         // A lone user reaction (no text after it) is a valid turn: feed it to the
         // autonomous-messaging cadence so a character may notice and respond,
         // time-gated. Only when this update leaves the user with a reaction here
@@ -2578,6 +2828,7 @@ export async function chatsRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "hidden must be a boolean" });
       }
       const updated = (await storage.bulkSetHiddenFromAI(req.params.chatId, messageIds, hidden)).length;
+      if (updated > 0) app.continuityChanges.notify(req.params.chatId, messageIds);
       return { updated };
     },
   );
@@ -2719,6 +2970,24 @@ export async function chatsRoutes(app: FastifyInstance) {
     );
     const row = projectGameSnapshotLocation(rawRow, ownerSpatialProjection)!;
     const presentCharacters = JSON.parse((row.presentCharacters as string) ?? "[]") as Array<Record<string, unknown>>;
+    const chatMetadata = parseChatMetadata(chat.metadata);
+    const currentGameNpcs = Array.isArray(chatMetadata.gameNpcs) ? chatMetadata.gameNpcs : [];
+    const projectedGameNpcs = (await reconcileNpcAvatarState(app.db, currentGameNpcs, currentGameNpcs)) as Array<
+      Record<string, unknown>
+    >;
+    const linkedNpcByCharacterId = new Map(
+      projectedGameNpcs.flatMap((npc) =>
+        typeof npc.characterId === "string" && npc.characterId ? [[npc.characterId, npc] as const] : [],
+      ),
+    );
+    for (const character of presentCharacters) {
+      const npc =
+        typeof character.characterId === "string" ? linkedNpcByCharacterId.get(character.characterId) : undefined;
+      const avatarState = readGameNpcAvatarState(npc?.avatarState);
+      if (!avatarState) continue;
+      character.avatarState = avatarState;
+      character.avatarPath = avatarState.removed ? null : typeof npc?.avatarUrl === "string" ? npc.avatarUrl : null;
+    }
     const playerStats = row.playerStats ? JSON.parse(row.playerStats as string) : null;
     const personaStats = row.personaStats ? JSON.parse(row.personaStats as string) : null;
     const storedManualOverrides = row.manualOverrides
@@ -2734,7 +3003,11 @@ export async function chatsRoutes(app: FastifyInstance) {
     // ── Enrich present characters with avatar paths ──
     // Match NPC names against the chat's known character cards, then fall back to stored NPC avatars on disk.
     const charsNeedingAvatar = presentCharacters.filter(
-      (c) => !c.avatarPath && c.name && !isManualTrackerCharacterId(c.characterId),
+      (c) =>
+        !c.avatarPath &&
+        readGameNpcAvatarState(c.avatarState)?.removed !== true &&
+        c.name &&
+        !isManualTrackerCharacterId(c.characterId),
     );
     if (charsNeedingAvatar.length > 0) {
       const chatCharIds: string[] = (() => {
@@ -2985,503 +3258,553 @@ export async function chatsRoutes(app: FastifyInstance) {
 
   // Peek prompt — return an exact saved turn prompt when available, otherwise
   // assemble the prompt for this chat as if generating right now.
-  app.post<{ Params: { id: string }; Body: { messageId?: unknown } }>("/:id/peek-prompt", async (req, reply) => {
-    const chat = await storage.getById(req.params.id);
-    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+  app.post<{ Params: { id: string }; Body: { messageId?: unknown; freshPreview?: unknown } }>(
+    "/:id/peek-prompt",
+    async (req, reply) => {
+      const chat = await storage.getById(req.params.id);
+      if (!chat) return reply.status(404).send({ error: "Chat not found" });
 
-    const chatMessages = await storage.listMessages(req.params.id);
-    const requestedMessageId = typeof req.body?.messageId === "string" ? req.body.messageId.trim() : "";
-    const requestedMessage = requestedMessageId
-      ? (chatMessages.find((message) => message.id === requestedMessageId) ?? null)
-      : null;
-    if (requestedMessageId && !requestedMessage) {
-      return reply.status(404).send({ error: "Message not found in this chat" });
-    }
-    const chatMeta = typeof chat.metadata === "string" ? JSON.parse(chat.metadata) : (chat.metadata ?? {});
-    const chatMode = (chat.mode as string) ?? "roleplay";
-    const advancedMemoryEnabled =
-      chatMode === "roleplay" && normalizeAdvancedMemorySettings(chatMeta.advancedMemory).enabled;
-    const chatSummaryFingerprint = fingerprintChatSummary(chatMeta.summary);
-    const visibleGameStateAnchor = resolveVisibleGameStateAnchor(chatMessages);
-    const supportsHiddenFromAI = chatMode === "conversation" || chatMode === "roleplay";
+      const chatMessages = await storage.listMessages(req.params.id);
+      const requestedMessageId = typeof req.body?.messageId === "string" ? req.body.messageId.trim() : "";
+      const requestedMessage = requestedMessageId
+        ? (chatMessages.find((message) => message.id === requestedMessageId) ?? null)
+        : null;
+      if (requestedMessageId && !requestedMessage) {
+        return reply.status(404).send({ error: "Message not found in this chat" });
+      }
+      const chatMeta = typeof chat.metadata === "string" ? JSON.parse(chat.metadata) : (chat.metadata ?? {});
+      const chatMode = (chat.mode as string) ?? "roleplay";
+      const advancedMemoryEnabled =
+        chatMode === "roleplay" && normalizeAdvancedMemorySettings(chatMeta.advancedMemory).enabled;
+      const chatSummaryFingerprint = fingerprintChatSummary(chatMeta.summary);
+      const visibleGameStateAnchor = resolveVisibleGameStateAnchor(chatMessages);
+      const supportsHiddenFromAI = chatMode === "conversation" || chatMode === "roleplay";
 
-    const readCachedPrompt = async (
-      extra: Record<string, unknown>,
-      allowHistoricalCache = false,
-    ): Promise<{
-      messages: Array<{ role: string; content: string }>;
-      generationInfo?: Record<string, unknown>;
-      gameToolPlanning?: GameToolPlanningInfo;
-    } | null> => {
-      const cachedPrompt = Array.isArray(extra.cachedPrompt)
-        ? extra.cachedPrompt
-            .map((entry) => {
-              if (!isRecord(entry) || typeof entry.role !== "string" || typeof entry.content !== "string") {
-                return null;
-              }
-              return { role: entry.role, content: entry.content };
-            })
-            .filter((entry): entry is { role: string; content: string } => entry !== null)
-        : [];
-      if (cachedPrompt.length === 0) return null;
-      // A selected turn is a historical request, not memory being reused for a
-      // new generation. Later images, summaries and policy edits cannot alter it.
-      if (advancedMemoryEnabled && !allowHistoricalCache) {
-        const receipt = extra.advancedMemoryReceipt;
-        if (!isRecord(receipt) || !Object.prototype.hasOwnProperty.call(receipt, "sourceEndMessageId")) return null;
-        const end =
-          receipt.sourceEndMessageId === null
-            ? -1
-            : chatMessages.findIndex((message) => message.id === receipt.sourceEndMessageId);
-        if (receipt.sourceEndMessageId !== null && end < 0) return null;
-        try {
-          await createAdvancedMemoryService(app.db).validatePrepared(
-            chat.id,
-            chatMessages.slice(0, end + 1),
-            receipt as unknown as AdvancedMemoryReceipt,
-          );
-        } catch {
+      const readCachedPrompt = async (
+        extra: Record<string, unknown>,
+        allowHistoricalCache = false,
+      ): Promise<{
+        messages: Array<{ role: string; content: string }>;
+
+        gamePromptDirectEditsRevision: string | null;
+
+        generationInfo?: Record<string, unknown>;
+        gameToolPlanning?: GameToolPlanningInfo;
+      } | null> => {
+        const cachedPrompt = Array.isArray(extra.cachedPrompt)
+          ? extra.cachedPrompt
+              .map((entry) => {
+                if (!isRecord(entry) || typeof entry.role !== "string" || typeof entry.content !== "string") {
+                  return null;
+                }
+                return { role: entry.role, content: entry.content };
+              })
+              .filter((entry): entry is { role: string; content: string } => entry !== null)
+          : [];
+        if (cachedPrompt.length === 0) return null;
+        // A selected turn is a historical request, not memory being reused for a
+        // new generation. Later images, summaries and policy edits cannot alter it.
+        if (advancedMemoryEnabled && !allowHistoricalCache) {
+          const receipt = extra.advancedMemoryReceipt;
+          if (!isRecord(receipt) || !Object.prototype.hasOwnProperty.call(receipt, "sourceEndMessageId")) return null;
+          const end =
+            receipt.sourceEndMessageId === null
+              ? -1
+              : chatMessages.findIndex((message) => message.id === receipt.sourceEndMessageId);
+          if (receipt.sourceEndMessageId !== null && end < 0) return null;
+          try {
+            await createAdvancedMemoryService(app.db).validatePrepared(
+              chat.id,
+              chatMessages.slice(0, end + 1),
+              receipt as unknown as AdvancedMemoryReceipt,
+            );
+          } catch {
+            return null;
+          }
+        }
+
+        // Newer prompt caches record the summary fingerprint used at generation time.
+        // Older v1.6.1-era caches did not; those are still exact debug-log prompts,
+        // so prefer them over the live best-effort fallback.
+        if (
+          !allowHistoricalCache &&
+          Object.prototype.hasOwnProperty.call(extra, "chatSummaryFingerprint") &&
+          !chatSummaryFingerprintMatches(extra, chatSummaryFingerprint)
+        ) {
           return null;
         }
-      }
 
-      // Newer prompt caches record the summary fingerprint used at generation time.
-      // Older v1.6.1-era caches did not; those are still exact debug-log prompts,
-      // so prefer them over the live best-effort fallback.
-      if (
-        !allowHistoricalCache &&
-        Object.prototype.hasOwnProperty.call(extra, "chatSummaryFingerprint") &&
-        !chatSummaryFingerprintMatches(extra, chatSummaryFingerprint)
-      ) {
+        const planner = extra.gameToolPlanning;
+        const plannerUsage = isRecord(planner) && isRecord(planner.usage) ? planner.usage : null;
+        const readPlannerTokens = (key: string) => {
+          const value = plannerUsage?.[key];
+          return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+        };
+        return {
+          messages: cachedPrompt,
+          gamePromptDirectEditsRevision:
+            typeof extra.gamePromptDirectEditsRevision === "string" ? extra.gamePromptDirectEditsRevision : null,
+          generationInfo: isRecord(extra.generationInfo) ? extra.generationInfo : undefined,
+          gameToolPlanning:
+            isRecord(planner) && typeof planner.model === "string" && typeof planner.provider === "string"
+              ? {
+                  model: planner.model,
+                  provider: planner.provider,
+                  usage: plannerUsage
+                    ? {
+                        promptTokens: readPlannerTokens("promptTokens"),
+                        completionTokens: readPlannerTokens("completionTokens"),
+                      }
+                    : null,
+                }
+              : undefined,
+        };
+      };
+
+      // ── Primary: return the cached prompt from the last generation ──
+      // This is an exact copy of what was actually sent to the model,
+      // including all runtime injections (lorebooks, game state, scene context, etc.).
+      const latestVisibleMessage = (() => {
+        for (let i = chatMessages.length - 1; i >= 0; i--) {
+          const message = chatMessages[i]!;
+          if (supportsHiddenFromAI && isMessageHiddenFromAI(message)) continue;
+          return message as any;
+        }
         return null;
-      }
+      })();
+      const promptSourceMessage = requestedMessage ?? latestVisibleMessage;
 
-      const planner = extra.gameToolPlanning;
-      const plannerUsage = isRecord(planner) && isRecord(planner.usage) ? planner.usage : null;
-      const readPlannerTokens = (key: string) => {
-        const value = plannerUsage?.[key];
-        return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
-      };
-      return {
-        messages: cachedPrompt,
-        generationInfo: isRecord(extra.generationInfo) ? extra.generationInfo : undefined,
-        gameToolPlanning:
-          isRecord(planner) && typeof planner.model === "string" && typeof planner.provider === "string"
-            ? {
-                model: planner.model,
-                provider: planner.provider,
-                usage: plannerUsage
-                  ? {
-                      promptTokens: readPlannerTokens("promptTokens"),
-                      completionTokens: readPlannerTokens("completionTokens"),
-                    }
-                  : null,
-              }
-            : undefined,
-      };
-    };
+      if (req.body?.freshPreview !== true && promptSourceMessage?.role === "assistant") {
+        const extra = parseExtra(promptSourceMessage.extra) as Record<string, unknown>;
+        let cached = await readCachedPrompt(extra, Boolean(requestedMessage));
 
-    // ── Primary: return the cached prompt from the last generation ──
-    // This is an exact copy of what was actually sent to the model,
-    // including all runtime injections (lorebooks, game state, scene context, etc.).
-    const latestVisibleMessage = (() => {
-      for (let i = chatMessages.length - 1; i >= 0; i--) {
-        const message = chatMessages[i]!;
-        if (supportsHiddenFromAI && isMessageHiddenFromAI(message)) continue;
-        return message as any;
-      }
-      return null;
-    })();
-    const promptSourceMessage = requestedMessage ?? latestVisibleMessage;
+        // If message-level extra doesn't have it (swipe overwrite), check swipes.
+        if (!cached && promptSourceMessage.id) {
+          const swipes = await storage.getSwipes(promptSourceMessage.id);
+          const activeSwipe = swipes.find((s: any) => s.index === promptSourceMessage.activeSwipeIndex);
+          if (activeSwipe) {
+            cached = await readCachedPrompt(
+              parseExtra(activeSwipe.extra) as Record<string, unknown>,
+              Boolean(requestedMessage),
+            );
+          }
+        }
 
-    if (promptSourceMessage?.role === "assistant") {
-      const extra = parseExtra(promptSourceMessage.extra) as Record<string, unknown>;
-      let cached = await readCachedPrompt(extra, Boolean(requestedMessage));
-
-      // If message-level extra doesn't have it (swipe overwrite), check swipes.
-      if (!cached && promptSourceMessage.id) {
-        const swipes = await storage.getSwipes(promptSourceMessage.id);
-        const activeSwipe = swipes.find((s: any) => s.index === promptSourceMessage.activeSwipeIndex);
-        if (activeSwipe) {
-          cached = await readCachedPrompt(
-            parseExtra(activeSwipe.extra) as Record<string, unknown>,
-            Boolean(requestedMessage),
-          );
+        if (cached) {
+          return {
+            messages: cached.messages,
+            chatMode,
+            parameters: null,
+            source: "cached",
+            exact: true,
+            gamePromptDirectEditsRevision: cached.gamePromptDirectEditsRevision,
+            generationInfo: cached.generationInfo ?? null,
+            gameToolPlanning: cached.gameToolPlanning ?? null,
+            agentNote: requestedMessage
+              ? "This is the exact cached text prompt sent for the selected turn."
+              : "This is the cached text prompt saved after provider preparation for the active assistant swipe.",
+          };
         }
       }
 
-      if (cached) {
+      if (requestedMessage) {
+        return reply.status(404).send({ error: "No exact saved prompt is available for this turn" });
+      }
+
+      if (advancedMemoryEnabled) {
+        const preview = await forwardPromptPreview(app, req, { chatId: chat.id });
+        if (preview.statusCode >= 400) return reply.status(preview.statusCode).send(preview.body);
         return {
-          messages: cached.messages,
+          messages: preview.body.prompt?.messages ?? [],
+          parameters: preview.body.parameters ?? null,
+          advancedMemory: preview.body.prompt?.advancedMemory,
           chatMode,
-          parameters: null,
-          source: "cached",
-          exact: true,
-          generationInfo: cached.generationInfo ?? null,
-          gameToolPlanning: cached.gameToolPlanning ?? null,
-          agentNote: requestedMessage
-            ? "This is the exact cached text prompt sent for the selected turn."
-            : "This is the cached text prompt saved after provider preparation for the active assistant swipe.",
+          source: "assembled",
+          exact: false,
+          generationInfo: null,
+          agentNote: "This is a read-only preview using the current character knowledge and memory settings.",
         };
       }
-    }
 
-    if (requestedMessage) {
-      return reply.status(404).send({ error: "No exact saved prompt is available for this turn" });
-    }
+      const ownerSpatialProjection = await resolveOwnerSpatialProjection(req.params.id, {}, chatMeta);
 
-    if (advancedMemoryEnabled) {
-      const preview = await forwardPromptPreview(app, req, { chatId: chat.id });
-      if (preview.statusCode >= 400) return reply.status(preview.statusCode).send(preview.body);
-      return {
-        messages: preview.body.prompt?.messages ?? [],
-        parameters: preview.body.parameters ?? null,
-        advancedMemory: preview.body.prompt?.advancedMemory,
-        chatMode,
-        source: "assembled",
-        exact: false,
-        generationInfo: null,
-        agentNote: "This is a read-only preview using the current character knowledge and memory settings.",
-      };
-    }
+      // ── Fallback: live assembly preview (no generation has happened yet) ──
+      // This is a best-effort approximation; it won't include runtime-only
+      // injections like cached game state, scene context, semantic memory, etc.
+      const presetId =
+        typeof chat.promptPresetId === "string" && chat.promptPresetId
+          ? chat.promptPresetId
+          : typeof chatMeta.presetId === "string" && chatMeta.presetId
+            ? chatMeta.presetId
+            : null;
+      if (presetId || chatMode === "conversation" || chatMode === "game" || chatMode === "roleplay") {
+        try {
+          const { createPromptsStorage } = await import("../services/storage/prompts.storage.js");
+          const { createCharactersStorage } = await import("../services/storage/characters.storage.js");
+          const { assemblePrompt, buildPromptMacroContext, resolvePromptIdleDuration, setLorebookEntryCounts } =
+            await import("../services/prompt/index.js");
+          const presetStore = createPromptsStorage(app.db);
+          const charStore = createCharactersStorage(app.db);
 
-    const ownerSpatialProjection = await resolveOwnerSpatialProjection(req.params.id, {}, chatMeta);
-
-    // ── Fallback: live assembly preview (no generation has happened yet) ──
-    // This is a best-effort approximation; it won't include runtime-only
-    // injections like cached game state, scene context, semantic memory, etc.
-    const presetId =
-      typeof chat.promptPresetId === "string" && chat.promptPresetId
-        ? chat.promptPresetId
-        : typeof chatMeta.presetId === "string" && chatMeta.presetId
-          ? chatMeta.presetId
-          : null;
-    if (presetId || chatMode === "conversation" || chatMode === "game" || chatMode === "roleplay") {
-      try {
-        const { createPromptsStorage } = await import("../services/storage/prompts.storage.js");
-        const { createCharactersStorage } = await import("../services/storage/characters.storage.js");
-        const { assemblePrompt, buildPromptMacroContext, resolvePromptIdleDuration, setLorebookEntryCounts } =
-          await import("../services/prompt/index.js");
-        const presetStore = createPromptsStorage(app.db);
-        const charStore = createCharactersStorage(app.db);
-
-        const preset = presetId ? await presetStore.getById(presetId) : null;
-        const chatMode = (chat.mode as string) ?? "roleplay";
-        if (preset || chatMode === "conversation" || chatMode === "game" || chatMode === "roleplay") {
-          // Apply conversation-start filter
-          let scopedMessages = chatMessages;
-          for (let i = chatMessages.length - 1; i >= 0; i--) {
-            const extra =
-              typeof chatMessages[i]!.extra === "string"
-                ? JSON.parse(chatMessages[i]!.extra as string)
-                : (chatMessages[i]!.extra ?? {});
-            if (extra.isConversationStart) {
-              scopedMessages = chatMessages.slice(i);
-              break;
-            }
-          }
-          let filteredMessages = supportsHiddenFromAI
-            ? scopedMessages.filter((message: any) => !isMessageHiddenFromAI(message))
-            : scopedMessages;
-          const promptIdleDuration = resolvePromptIdleDuration(filteredMessages);
-
-          // Apply context message limit
-          const contextLimit = chatMeta.contextMessageLimit as number | null;
-          if (contextLimit && contextLimit > 0 && filteredMessages.length > contextLimit) {
-            filteredMessages = applyContextMessageLimitWithPins(filteredMessages, contextLimit);
-          }
-
-          const mappedMessages = filteredMessages.map((m: any) => ({
-            id: typeof m.id === "string" ? m.id : null,
-            role: m.role === "narrator" ? "system" : m.role,
-            content: m.content as string,
-            characterId: typeof m.characterId === "string" && m.characterId ? m.characterId : null,
-          }));
-
-          // Strip trailing assistant messages — peek should show only what we SEND to the model
-          while (mappedMessages.length > 0 && mappedMessages[mappedMessages.length - 1]!.role === "assistant") {
-            mappedMessages.pop();
-          }
-
-          const [sections, groups, choiceBlocks] = preset
-            ? await Promise.all([
-                presetStore.listSections(preset.id),
-                presetStore.listGroups(preset.id),
-                presetStore.listChoiceBlocksForPreset(preset.id),
-              ])
-            : [[], [], []];
-
-          const allCharacterIds = resolveChatCharacterIds(chat.characterIds);
-          const assistantCharacterIds = resolveActiveCharacterIds(allCharacterIds, chatMeta, {
-            mode: (chat.mode as string) ?? "roleplay",
-            allowEmpty: true,
-          });
-          let lorebookCharacterIds = assistantCharacterIds;
-
-          let personaName = "User";
-          let personaId: string | null = null;
-          let personaDescription = "";
-          let personaFields: Record<string, string> = {};
-          const identity = await resolveChatUserIdentity(charStore, chat);
-          if (identity) {
-            if (identity.source === "character") {
-              if (!lorebookCharacterIds.includes(identity.id)) {
-                lorebookCharacterIds = [...lorebookCharacterIds, identity.id];
+          const preset = presetId ? await presetStore.getById(presetId) : null;
+          const chatMode = (chat.mode as string) ?? "roleplay";
+          if (preset || chatMode === "conversation" || chatMode === "game" || chatMode === "roleplay") {
+            // Apply conversation-start filter
+            let scopedMessages = chatMessages;
+            for (let i = chatMessages.length - 1; i >= 0; i--) {
+              const extra =
+                typeof chatMessages[i]!.extra === "string"
+                  ? JSON.parse(chatMessages[i]!.extra as string)
+                  : (chatMessages[i]!.extra ?? {});
+              if (extra.isConversationStart) {
+                scopedMessages = chatMessages.slice(i);
+                break;
               }
-            } else {
-              personaId = identity.id;
             }
-            personaName = identity.name;
-            personaDescription = cardPromptText(identity.description);
+            let filteredMessages = supportsHiddenFromAI
+              ? scopedMessages.filter((message: any) => !isMessageHiddenFromAI(message))
+              : scopedMessages;
+            const promptIdleDuration = resolvePromptIdleDuration(filteredMessages);
 
-            personaFields = {
-              personality: cardPromptText(identity.personality),
-              scenario: cardPromptText(identity.scenario),
-              backstory: cardPromptText(identity.backstory),
-              appearance: cardPromptText(identity.appearance),
-            };
-          }
-
-          const personaStats = (() => {
-            if (!identity?.personaStats) return undefined;
-            if (typeof identity.personaStats !== "string") return identity.personaStats;
-            try {
-              return JSON.parse(identity.personaStats as string);
-            } catch {
-              return undefined;
+            // Apply context message limit
+            const contextLimit = chatMeta.contextMessageLimit as number | null;
+            if (contextLimit && contextLimit > 0 && filteredMessages.length > contextLimit) {
+              filteredMessages = applyContextMessageLimitWithPins(filteredMessages, contextLimit);
             }
-          })();
 
-          const chatChoices = (chatMeta.presetChoices ?? {}) as Record<string, string | string[]>;
-          const connections = createConnectionsStorage(app.db);
-          const connection = chat.connectionId
-            ? await connections.getById(chat.connectionId)
-            : await connections.getDefault();
-          const promptMacroContext = await buildPromptMacroContext({
-            db: app.db,
-            model: connection?.model,
-            characterIds: assistantCharacterIds,
-            groupCharacterIds: assistantCharacterIds,
-            personaName,
-            personaDescription,
-            personaFields,
-            variables: {},
-            groupScenarioOverrideText:
-              typeof chatMeta.groupScenarioText === "string" && (chatMeta.groupScenarioText as string).trim()
-                ? (chatMeta.groupScenarioText as string).trim()
-                : null,
-            lastInput: [...mappedMessages].reverse().find((message) => message.role === "user")?.content,
-            chatId: req.params.id,
-            lastGenerationType: "preview",
-            idleDuration: promptIdleDuration,
-            macroSources: [
-              ...sections.map((section) => section.content),
-              ...mappedMessages.map((message) => message.content),
-              // Author's notes, a chat's own system or Game prompt, and the preset's mode prompts.
-              JSON.stringify(chatMeta),
-              preset ? JSON.stringify(preset) : "",
-            ],
-            nameCharacterReferences: !(preset && chatMode !== "conversation" && chatMode !== "game"),
-          });
-          const resolvePromptMacros = (value: string, lorebookEntryCounts?: Readonly<Record<string, number>>) => {
-            setLorebookEntryCounts(promptMacroContext, lorebookEntryCounts);
-            return resolveMacros(value, promptMacroContext);
-          };
-          // Apply regex scripts to prompt context (mirrors generate.routes.ts).
-          const regexStore = createRegexScriptsStorage(app.db);
-          applyRegexScriptsToPromptMessages(mappedMessages, await regexStore.list(), {
-            resolveMacros: (value, randomSeed) =>
-              resolveMacros(value, promptMacroContext, { trimResult: false, randomSeed }),
-            targetPromptPresetId: presetId,
-          });
-          promptMacroContext.lastInput = [...mappedMessages]
-            .reverse()
-            .find((message) => message.role === "user")?.content;
-          const lorebookScopeExclusions = resolveLorebookScopeExclusions(chatMode, chatMeta);
-          const activeLorebookIds = Array.isArray(chatMeta.activeLorebookIds)
-            ? (chatMeta.activeLorebookIds as string[])
-            : [];
-          // Decision statements (#6569): the preview shows what this turn has already
-          // answered and never asks the model; anything unanswered reads as no, and the
-          // preview says so.
-          const decisionUnanswered = new Set<string>();
-          // Statements past the per-turn limit, which generation would not ask either.
-          const decisionDropped = new Set<string>();
-          const decisionLocalSetting = await appSettings.get(DECISION_SETTINGS_KEYS.localDefault);
-          const decisionConnectionId = (await connections.getDefaultForDecision())?.id ?? null;
-          // The cache key uses the setting as generation does; the report says whether it can serve.
-          const decisionModelId = decisionLocalSetting ?? decisionConnectionId;
-          const decisionModelSet = decisionModelUsable(decisionLocalSetting, decisionConnectionId);
-          // Every live preview below reports the statements it had no answer for.
-          const decisionReport = () =>
-            decisionUnanswered.size > 0 || decisionDropped.size > 0
-              ? {
-                  decisions: {
-                    unanswered: [...decisionUnanswered].filter((statement) => !decisionDropped.has(statement)),
-                    ...(decisionDropped.size > 0 ? { dropped: [...decisionDropped] } : {}),
-                    decisionModelSet,
-                  },
-                }
-              : {};
-          const decisionLimit = parseDecisionPromptQuestionLimit(
-            await appSettings.get(DECISION_PROMPT_QUESTION_LIMIT_SETTINGS_KEY),
-          );
-          let decisionPlanKeys: string[] = [];
-          let decisionSlotsUsed = 0;
-          // Sticky and cooldown (#6582): the timers as they stand this turn, read and never saved.
-          const previewDecisionTimers = readDecisionTimers(chatMeta[DECISION_TIMERS_METADATA_KEY]);
-          const previewDecisionTurn = decisionTurnFor(previewDecisionTimers, latestTurnDecisionId(filteredMessages));
-          const heldDecisions: HeldDecisions = (kind, key, modifiers) =>
-            heldDecision(previewDecisionTimers, previewDecisionTurn, kind, key, modifiers?.every, modifiers?.lasts);
-          {
-            const texts = collectTurnDecisionTexts({
-              // The same sources generation plans from: preset sections only outside
-              // Conversation and Game, where the conversation prompt takes their place.
-              preset:
-                preset && chatMode !== "conversation" && chatMode !== "game"
-                  ? { sections, groups, choiceBlocks, choices: chatChoices }
-                  : undefined,
-              ctx: promptMacroContext,
-              extra: [
-                personaDescription,
-                resolveRoleplayChatSummary(chatMode, chatMeta),
-                chatMeta.groupScenarioText,
-                ...(chatMode === "conversation"
-                  ? [
-                      typeof chatMeta.customSystemPrompt === "string" && chatMeta.customSystemPrompt.trim()
-                        ? chatMeta.customSystemPrompt
-                        : presetStringField(preset as Record<string, unknown> | null, "conversationPrompt"),
-                    ]
-                  : []),
-                // Resolved in the same macro pass as the prompt.
-                chatMeta.authorNotes,
-                ...(chatMode === "game"
-                  ? gameGmPromptDecisionTexts(
-                      chatMeta,
-                      presetStringField(preset as Record<string, unknown> | null, "gamePrompt"),
-                    )
-                  : []),
-              ],
+            const mappedMessages = filteredMessages.map((m: any) => ({
+              id: typeof m.id === "string" ? m.id : null,
+              role: m.role === "narrator" ? "system" : m.role,
+              content: m.content as string,
+              characterId: typeof m.characterId === "string" && m.characterId ? m.characterId : null,
+            }));
+
+            // Strip trailing assistant messages — peek should show only what we SEND to the model
+            while (mappedMessages.length > 0 && mappedMessages[mappedMessages.length - 1]!.role === "assistant") {
+              mappedMessages.pop();
+            }
+
+            const [sections, groups, choiceBlocks] = preset
+              ? await Promise.all([
+                  presetStore.listSections(preset.id),
+                  presetStore.listGroups(preset.id),
+                  presetStore.listChoiceBlocksForPreset(preset.id),
+                ])
+              : [[], [], []];
+
+            const allCharacterIds = resolveChatCharacterIds(chat.characterIds);
+            const assistantCharacterIds = resolveActiveCharacterIds(allCharacterIds, chatMeta, {
+              mode: (chat.mode as string) ?? "roleplay",
+              allowEmpty: true,
             });
-            const plan = planPromptDecisions(
-              [{ texts, ctx: promptMacroContext, reachable: reachableDecisionStatements(texts, promptMacroContext) }],
-              decisionLimit,
-              { held: heldDecisions },
-            );
-            for (const statement of plan.dropped) decisionDropped.add(statement);
-            decisionPlanKeys = plan.decisions.map((decision) => decision.key);
-            decisionSlotsUsed = plan.decisions.filter((decision) => !decision.held).length;
-            // Always an object, so answers for activating lorebook entries merge into it.
-            promptMacroContext.decisions = {
-              ...(plan.decisions.length > 0
-                ? cachedPromptDecisionAnswers(
-                    plan,
-                    promptDecisionCacheKey(req.params.id, latestTurnDecisionId(filteredMessages), decisionModelId),
-                  )
-                : {}),
-              unanswered: decisionUnanswered,
+            let lorebookCharacterIds = assistantCharacterIds;
+
+            let personaName = "User";
+            let personaId: string | null = null;
+            let personaDescription = "";
+            let personaFields: Record<string, string> = {};
+            const identity = await resolveChatUserIdentity(charStore, chat);
+            if (identity) {
+              if (identity.source === "character") {
+                if (!lorebookCharacterIds.includes(identity.id)) {
+                  lorebookCharacterIds = [...lorebookCharacterIds, identity.id];
+                }
+              } else {
+                personaId = identity.id;
+              }
+              personaName = identity.name;
+              personaDescription = cardPromptText(identity.description);
+
+              personaFields = {
+                personality: cardPromptText(identity.personality),
+                scenario: cardPromptText(identity.scenario),
+                backstory: cardPromptText(identity.backstory),
+                appearance: cardPromptText(identity.appearance),
+              };
+            }
+
+            const personaStats = (() => {
+              if (!identity?.personaStats) return undefined;
+              if (typeof identity.personaStats !== "string") return identity.personaStats;
+              try {
+                return JSON.parse(identity.personaStats as string);
+              } catch {
+                return undefined;
+              }
+            })();
+
+            const chatChoices = (chatMeta.presetChoices ?? {}) as Record<string, string | string[]>;
+            const connections = createConnectionsStorage(app.db);
+            const connection = chat.connectionId
+              ? await connections.getById(chat.connectionId)
+              : await connections.getDefault();
+            const promptMacroContext = await buildPromptMacroContext({
+              db: app.db,
+              model: connection?.model,
+              characterIds: assistantCharacterIds,
+              groupCharacterIds: assistantCharacterIds,
+              personaName,
+              personaDescription,
+              personaFields,
+              variables: {},
+              groupScenarioOverrideText:
+                typeof chatMeta.groupScenarioText === "string" && (chatMeta.groupScenarioText as string).trim()
+                  ? (chatMeta.groupScenarioText as string).trim()
+                  : null,
+              lastInput: [...mappedMessages].reverse().find((message) => message.role === "user")?.content,
+              chatId: req.params.id,
+              lastGenerationType: "preview",
+              idleDuration: promptIdleDuration,
+              macroSources: [
+                ...sections.map((section) => section.content),
+                ...mappedMessages.map((message) => message.content),
+                // Author's notes, a chat's own system or Game prompt, and the preset's mode prompts.
+                JSON.stringify(chatMeta),
+                preset ? JSON.stringify(preset) : "",
+              ],
+              nameCharacterReferences: !(preset && chatMode !== "conversation" && chatMode !== "game"),
+            });
+            const resolvePromptMacros = (value: string, lorebookEntryCounts?: Readonly<Record<string, number>>) => {
+              setLorebookEntryCounts(promptMacroContext, lorebookEntryCounts);
+              return resolveMacros(value, promptMacroContext);
             };
-          }
-          // Lorebook entries activated by a decision (#6570) read the answers this turn
-          // already has. The preview never asks, and reports the statements it had none for.
-          const lorebookDecisions = createLorebookDecisionResolver({
-            macroContext: promptMacroContext,
-            // Spent as generation spends it, so the preview drops what generation would.
-            limit: Math.max(0, decisionLimit - decisionSlotsUsed),
-            freeKeys: new Set(decisionPlanKeys),
-            answer: async (plan) =>
-              cachedPromptDecisionAnswers(
-                plan,
-                promptDecisionCacheKey(req.params.id, latestTurnDecisionId(filteredMessages), decisionModelId),
-              ),
-            onUnanswered: (statement) => decisionUnanswered.add(statement),
-            onDropped: (statement) => decisionDropped.add(statement),
-            held: heldDecisions,
-          });
-          const entryStateOverrides = resolveEntryStateOverrides(
-            chatMeta.entryStateOverrides ?? chatMeta.lorebookEntryStateOverrides,
-          );
-          const entryTimingStates =
-            (chatMeta.entryTimingStates ?? chatMeta.lorebookEntryTimingStates) &&
-            typeof (chatMeta.entryTimingStates ?? chatMeta.lorebookEntryTimingStates) === "object"
-              ? ((chatMeta.entryTimingStates ?? chatMeta.lorebookEntryTimingStates) as Record<
-                  string,
-                  LorebookEntryTimingState
-                >)
-              : undefined;
-          const generationTriggers = Array.from(new Set([chatMode, "chat"]));
-          const lorebookTokenBudget = resolveLorebookTokenBudget(chatMeta);
-          const forcedLorebookEntryIds =
-            ownerSpatialProjection && ownerSpatialProjection.ownerMode === chatMode
-              ? ownerSpatialProjection.lorebookEntryIds
+            // Apply regex scripts to prompt context (mirrors generate.routes.ts).
+            const regexStore = createRegexScriptsStorage(app.db);
+            applyRegexScriptsToPromptMessages(mappedMessages, await regexStore.list(), {
+              resolveMacros: (value, randomSeed) =>
+                resolveMacros(value, promptMacroContext, { trimResult: false, randomSeed }),
+              targetPromptPresetId: presetId,
+            });
+            promptMacroContext.lastInput = [...mappedMessages]
+              .reverse()
+              .find((message) => message.role === "user")?.content;
+            const lorebookScopeExclusions = resolveLorebookScopeExclusions(chatMode, chatMeta);
+            const activeLorebookIds = Array.isArray(chatMeta.activeLorebookIds)
+              ? (chatMeta.activeLorebookIds as string[])
               : [];
-          if (chatMode === "conversation") {
-            const customPrompt =
-              typeof chatMeta.customSystemPrompt === "string" && chatMeta.customSystemPrompt.trim()
-                ? (chatMeta.customSystemPrompt as string).trim()
-                : null;
-            const selectedConversationPrompt = presetStringField(
-              preset as Record<string, unknown> | null,
-              "conversationPrompt",
+            // Decision statements (#6569): the preview shows what this turn has already
+            // answered and never asks the model; anything unanswered reads as no, and the
+            // preview says so.
+            const decisionUnanswered = new Set<string>();
+            // Statements past the per-turn limit, which generation would not ask either.
+            const decisionDropped = new Set<string>();
+            const decisionLocalSetting = await appSettings.get(DECISION_SETTINGS_KEYS.localDefault);
+            const decisionConnectionId = (await connections.getDefaultForDecision())?.id ?? null;
+            // The cache key uses the setting as generation does; the report says whether it can serve.
+            const decisionModelId = decisionLocalSetting ?? decisionConnectionId;
+            const decisionModelSet = decisionModelUsable(decisionLocalSetting, decisionConnectionId);
+            // Every live preview below reports the statements it had no answer for.
+            const decisionReport = () =>
+              decisionUnanswered.size > 0 || decisionDropped.size > 0
+                ? {
+                    decisions: {
+                      unanswered: [...decisionUnanswered].filter((statement) => !decisionDropped.has(statement)),
+                      ...(decisionDropped.size > 0 ? { dropped: [...decisionDropped] } : {}),
+                      decisionModelSet,
+                    },
+                  }
+                : {};
+            const decisionLimit = parseDecisionPromptQuestionLimit(
+              await appSettings.get(DECISION_PROMPT_QUESTION_LIMIT_SETTINGS_KEY),
             );
-            const conversationPromptTemplate =
-              customPrompt ?? (selectedConversationPrompt || DEFAULT_CONVERSATION_PROMPT);
-            const charNameList = promptMacroContext.characters.join(", ") || "Character";
-            const renderedConversationPrompt = resolveMacros(
-              conversationPromptTemplate
-                .replace(/\{\{charName\}\}/g, charNameList)
-                .replace(/\{\{userName\}\}/g, personaName),
-              promptMacroContext,
+            let decisionPlanKeys: string[] = [];
+            let decisionSlotsUsed = 0;
+            // Sticky and cooldown (#6582): the timers as they stand this turn, read and never saved.
+            const previewDecisionTimers = readDecisionTimers(chatMeta[DECISION_TIMERS_METADATA_KEY]);
+            const previewDecisionTurn = decisionTurnFor(previewDecisionTimers, latestTurnDecisionId(filteredMessages));
+            const heldDecisions: HeldDecisions = (kind, key, modifiers) =>
+              heldDecision(previewDecisionTimers, previewDecisionTurn, kind, key, modifiers?.every, modifiers?.lasts);
+            {
+              const texts = collectTurnDecisionTexts({
+                // The same sources generation plans from: preset sections only outside
+                // Conversation and Game, where the conversation prompt takes their place.
+                preset:
+                  preset && chatMode !== "conversation" && chatMode !== "game"
+                    ? { sections, groups, choiceBlocks, choices: chatChoices }
+                    : undefined,
+                ctx: promptMacroContext,
+                extra: [
+                  personaDescription,
+                  resolveRoleplayChatSummary(chatMode, chatMeta),
+                  chatMeta.groupScenarioText,
+                  ...(chatMode === "conversation"
+                    ? [
+                        typeof chatMeta.customSystemPrompt === "string" && chatMeta.customSystemPrompt.trim()
+                          ? chatMeta.customSystemPrompt
+                          : presetStringField(preset as Record<string, unknown> | null, "conversationPrompt"),
+                      ]
+                    : []),
+                  // Resolved in the same macro pass as the prompt.
+                  chatMeta.authorNotes,
+                  ...(chatMode === "game"
+                    ? gameGmPromptDecisionTexts(
+                        chatMeta,
+                        presetStringField(preset as Record<string, unknown> | null, "gamePrompt"),
+                      )
+                    : []),
+                ],
+              });
+              const plan = planPromptDecisions(
+                [{ texts, ctx: promptMacroContext, reachable: reachableDecisionStatements(texts, promptMacroContext) }],
+                decisionLimit,
+                { held: heldDecisions },
+              );
+              for (const statement of plan.dropped) decisionDropped.add(statement);
+              decisionPlanKeys = plan.decisions.map((decision) => decision.key);
+              decisionSlotsUsed = plan.decisions.filter((decision) => !decision.held).length;
+              // Always an object, so answers for activating lorebook entries merge into it.
+              promptMacroContext.decisions = {
+                ...(plan.decisions.length > 0
+                  ? cachedPromptDecisionAnswers(
+                      plan,
+                      promptDecisionCacheKey(req.params.id, latestTurnDecisionId(filteredMessages), decisionModelId),
+                    )
+                  : {}),
+                unanswered: decisionUnanswered,
+              };
+            }
+            // Lorebook entries activated by a decision (#6570) read the answers this turn
+            // already has. The preview never asks, and reports the statements it had none for.
+            const lorebookDecisions = createLorebookDecisionResolver({
+              macroContext: promptMacroContext,
+              // Spent as generation spends it, so the preview drops what generation would.
+              limit: Math.max(0, decisionLimit - decisionSlotsUsed),
+              freeKeys: new Set(decisionPlanKeys),
+              answer: async (plan) =>
+                cachedPromptDecisionAnswers(
+                  plan,
+                  promptDecisionCacheKey(req.params.id, latestTurnDecisionId(filteredMessages), decisionModelId),
+                ),
+              onUnanswered: (statement) => decisionUnanswered.add(statement),
+              onDropped: (statement) => decisionDropped.add(statement),
+              held: heldDecisions,
+            });
+            const entryStateOverrides = resolveEntryStateOverrides(
+              chatMeta.entryStateOverrides ?? chatMeta.lorebookEntryStateOverrides,
             );
-            const wrapFormat = normalizePromptWrapFormat((preset as Record<string, unknown> | null)?.wrapFormat);
-            const messages = [
-              {
-                role: "system" as const,
-                content: formatConversationInstructionsForWrap(renderedConversationPrompt, wrapFormat),
-              },
-              ...mappedMessages,
-            ];
-            return {
-              messages: toPeekPromptMessages(messages),
-              chatMode,
-              parameters: null,
-              source: "live_preview",
-              exact: false,
-              generationInfo: null,
-              ...decisionReport(),
-              agentNote:
-                "No saved model request was available, so this is a live best-effort preview assembled without sending.",
-            };
-          }
-          if (chatMode === "game") {
-            const setupConfig =
-              chatMeta.gameSetupConfig &&
-              typeof chatMeta.gameSetupConfig === "object" &&
-              !Array.isArray(chatMeta.gameSetupConfig)
-                ? (chatMeta.gameSetupConfig as Record<string, unknown>)
-                : null;
-            const customPrompt = resolveGameGmPromptTemplate(chatMeta, setupConfig);
-            const selectedGamePrompt = presetStringField(preset as Record<string, unknown> | null, "gamePrompt");
-            const gamePromptTemplate = customPrompt ?? (selectedGamePrompt || DEFAULT_GAME_SYSTEM_PROMPT);
-            const renderedGamePrompt = resolveMacros(gamePromptTemplate, promptMacroContext);
-            let messages: Parameters<typeof toPeekPromptMessages>[0] = [
-              {
-                role: "system" as const,
-                content: renderedGamePrompt,
-              },
-              ...mappedMessages,
-            ];
-            const latestGameState = projectGameSnapshotLocation(
-              await loadLatestChatGameSnapshot(app, req.params.id, visibleGameStateAnchor),
-              ownerSpatialProjection,
-            );
-            const lorebookResult = await processLorebooks(
-              app.db,
-              mappedMessages,
-              latestGameState
-                ? (parseGameStateRow(latestGameState as Record<string, unknown>) as unknown as Record<string, unknown>)
-                : null,
-              {
+            const entryTimingStates =
+              (chatMeta.entryTimingStates ?? chatMeta.lorebookEntryTimingStates) &&
+              typeof (chatMeta.entryTimingStates ?? chatMeta.lorebookEntryTimingStates) === "object"
+                ? ((chatMeta.entryTimingStates ?? chatMeta.lorebookEntryTimingStates) as Record<
+                    string,
+                    LorebookEntryTimingState
+                  >)
+                : undefined;
+            const generationTriggers = Array.from(new Set([chatMode, "chat"]));
+            const lorebookTokenBudget = resolveLorebookTokenBudget(chatMeta);
+            const forcedLorebookEntryIds =
+              ownerSpatialProjection && ownerSpatialProjection.ownerMode === chatMode
+                ? ownerSpatialProjection.lorebookEntryIds
+                : [];
+            if (chatMode === "conversation") {
+              const customPrompt =
+                typeof chatMeta.customSystemPrompt === "string" && chatMeta.customSystemPrompt.trim()
+                  ? (chatMeta.customSystemPrompt as string).trim()
+                  : null;
+              const selectedConversationPrompt = presetStringField(
+                preset as Record<string, unknown> | null,
+                "conversationPrompt",
+              );
+              const conversationPromptTemplate =
+                customPrompt ?? (selectedConversationPrompt || DEFAULT_CONVERSATION_PROMPT);
+              const charNameList = promptMacroContext.characters.join(", ") || "Character";
+              const renderedConversationPrompt = resolveMacros(
+                conversationPromptTemplate
+                  .replace(/\{\{charName\}\}/g, charNameList)
+                  .replace(/\{\{userName\}\}/g, personaName),
+                promptMacroContext,
+              );
+              const wrapFormat = normalizePromptWrapFormat((preset as Record<string, unknown> | null)?.wrapFormat);
+              const messages = [
+                {
+                  role: "system" as const,
+                  content: formatConversationInstructionsForWrap(renderedConversationPrompt, wrapFormat),
+                },
+                ...mappedMessages,
+              ];
+              return {
+                messages: toPeekPromptMessages(messages),
+                chatMode,
+                parameters: null,
+                source: "live_preview",
+                exact: false,
+                generationInfo: null,
+                ...decisionReport(),
+                agentNote:
+                  "No saved model request was available, so this is a live best-effort preview assembled without sending.",
+              };
+            }
+            if (chatMode === "game") {
+              const setupConfig =
+                chatMeta.gameSetupConfig &&
+                typeof chatMeta.gameSetupConfig === "object" &&
+                !Array.isArray(chatMeta.gameSetupConfig)
+                  ? (chatMeta.gameSetupConfig as Record<string, unknown>)
+                  : null;
+              const customPrompt = resolveGameGmPromptTemplate(chatMeta, setupConfig);
+              const selectedGamePrompt = presetStringField(preset as Record<string, unknown> | null, "gamePrompt");
+              const gamePromptTemplate = customPrompt ?? (selectedGamePrompt || DEFAULT_GAME_SYSTEM_PROMPT);
+              const renderedGamePrompt = resolveMacros(gamePromptTemplate, promptMacroContext);
+              let messages: Parameters<typeof toPeekPromptMessages>[0] = [
+                {
+                  role: "system" as const,
+                  content: renderedGamePrompt,
+                },
+                ...mappedMessages,
+              ];
+              const latestGameState = projectGameSnapshotLocation(
+                await loadLatestChatGameSnapshot(app, req.params.id, visibleGameStateAnchor),
+                ownerSpatialProjection,
+              );
+              const lorebookResult = await processLorebooks(
+                app.db,
+                mappedMessages,
+                latestGameState
+                  ? (parseGameStateRow(latestGameState as Record<string, unknown>) as unknown as Record<
+                      string,
+                      unknown
+                    >)
+                  : null,
+                {
+                  chatId: req.params.id,
+                  characterIds: lorebookCharacterIds,
+                  personaId,
+                  activeLorebookIds,
+                  forcedEntryIds: forcedLorebookEntryIds,
+                  excludedLorebookIds: lorebookScopeExclusions.excludedLorebookIds,
+                  excludedSourceAgentIds: lorebookScopeExclusions.excludedSourceAgentIds,
+                  tokenBudget: lorebookTokenBudget,
+                  entryStateOverrides,
+                  entryTimingStates,
+                  generationTriggers,
+                  previewOnly: true,
+                  resolveContent: resolvePromptMacros,
+                  resolveDecisions: lorebookDecisions,
+                },
+              );
+              const loreContent = [lorebookResult.worldInfoBefore, lorebookResult.worldInfoAfter]
+                .filter(Boolean)
+                .join("\n");
+              if (loreContent) {
+                messages[0]!.content += `\n\n<lore>\n${loreContent}\n</lore>`;
+              }
+              if (lorebookResult.depthEntries.length > 0) {
+                messages = injectAtDepth(messages, lorebookResult.depthEntries);
+              }
+              return {
+                messages: toPeekPromptMessages(injectOwnerSpatialPrompt(messages, ownerSpatialProjection)),
+                chatMode,
+                parameters: null,
+                source: "live_preview",
+                exact: false,
+                generationInfo: null,
+                ...decisionReport(),
+                agentNote:
+                  "No saved model request was available, so this is a live best-effort preview assembled without sending.",
+              };
+            }
+            if (!preset && chatMode === "roleplay") {
+              const lorebookResult = await processLorebooks(app.db, mappedMessages, null, {
                 chatId: req.params.id,
                 characterIds: lorebookCharacterIds,
                 personaId,
@@ -3496,67 +3819,316 @@ export async function chatsRoutes(app: FastifyInstance) {
                 previewOnly: true,
                 resolveContent: resolvePromptMacros,
                 resolveDecisions: lorebookDecisions,
-              },
-            );
-            const loreContent = [lorebookResult.worldInfoBefore, lorebookResult.worldInfoAfter]
-              .filter(Boolean)
-              .join("\n");
-            if (loreContent) {
-              messages[0]!.content += `\n\n<lore>\n${loreContent}\n</lore>`;
+              });
+              let messages: Parameters<typeof toPeekPromptMessages>[0] = [...mappedMessages];
+              const loreContent = [lorebookResult.worldInfoBefore, lorebookResult.worldInfoAfter]
+                .filter(Boolean)
+                .join("\n");
+              if (loreContent) {
+                const loreBlock = `<lore>\n${loreContent}\n</lore>`;
+                const firstHistoryIndex = messages.findIndex(
+                  (message) => message.role === "user" || message.role === "assistant",
+                );
+                messages.splice(firstHistoryIndex >= 0 ? firstHistoryIndex : messages.length, 0, {
+                  role: "system",
+                  content: loreBlock,
+                });
+              }
+              if (lorebookResult.depthEntries.length > 0) {
+                messages = injectAtDepth(messages, lorebookResult.depthEntries);
+              }
+              return {
+                messages: toPeekPromptMessages(injectOwnerSpatialPrompt(messages, ownerSpatialProjection)),
+                chatMode,
+                parameters: null,
+                source: "live_preview",
+                exact: false,
+                generationInfo: null,
+                ...decisionReport(),
+                agentNote:
+                  "No saved model request was available, so this is a live best-effort preview assembled without sending.",
+              };
             }
-            if (lorebookResult.depthEntries.length > 0) {
-              messages = injectAtDepth(messages, lorebookResult.depthEntries);
-            }
-            return {
-              messages: toPeekPromptMessages(injectOwnerSpatialPrompt(messages, ownerSpatialProjection)),
-              chatMode,
-              parameters: null,
-              source: "live_preview",
-              exact: false,
-              generationInfo: null,
-              ...decisionReport(),
-              agentNote:
-                "No saved model request was available, so this is a live best-effort preview assembled without sending.",
-            };
-          }
-          if (!preset && chatMode === "roleplay") {
-            const lorebookResult = await processLorebooks(app.db, mappedMessages, null, {
+            if (!preset) throw new Error(`Prompt preset ${presetId ?? "(none)"} is unavailable`);
+            const promptActiveAgentIds = Array.isArray(chatMeta.activeAgentIds)
+              ? (chatMeta.activeAgentIds as string[])
+              : [];
+            const activePromptAgentIds = filterGameInternalAgentIds(chatMode, promptActiveAgentIds);
+            const activeChatSummary = resolveRoleplayChatSummary(chatMode, chatMeta);
+
+            const assembled = await assemblePrompt({
+              db: app.db,
+              model: connection?.model,
+              preset: preset as any,
+              sections: sections as any,
+              groups: groups as any,
+              choiceBlocks: choiceBlocks as any,
+              chatChoices,
               chatId: req.params.id,
-              characterIds: lorebookCharacterIds,
+              characterIds: assistantCharacterIds,
+              lorebookCharacterIds,
+              decisions: promptMacroContext.decisions,
+              lorebookDecisions,
+              groupCharacterIds: assistantCharacterIds,
               personaId,
-              activeLorebookIds,
-              forcedEntryIds: forcedLorebookEntryIds,
+              personaName,
+              personaDescription,
+              personaFields,
+              personaStats,
+              chatMessages: mappedMessages,
+              chatSummary: activeChatSummary,
+              enableAgents: chatMeta.enableAgents === true,
+              activeAgentIds: activePromptAgentIds,
+              activeLorebookIds: Array.isArray(chatMeta.activeLorebookIds)
+                ? (chatMeta.activeLorebookIds as string[])
+                : [],
+              forcedLorebookEntryIds,
               excludedLorebookIds: lorebookScopeExclusions.excludedLorebookIds,
-              excludedSourceAgentIds: lorebookScopeExclusions.excludedSourceAgentIds,
-              tokenBudget: lorebookTokenBudget,
-              entryStateOverrides,
-              entryTimingStates,
+              excludedLorebookSourceAgentIds: lorebookScopeExclusions.excludedSourceAgentIds,
+              entryStateOverrides:
+                (chatMeta.entryStateOverrides ?? chatMeta.lorebookEntryStateOverrides) &&
+                typeof (chatMeta.entryStateOverrides ?? chatMeta.lorebookEntryStateOverrides) === "object"
+                  ? ((chatMeta.entryStateOverrides ?? chatMeta.lorebookEntryStateOverrides) as Record<
+                      string,
+                      { ephemeral?: number | null; enabled?: boolean }
+                    >)
+                  : undefined,
+              entryTimingStates:
+                (chatMeta.entryTimingStates ?? chatMeta.lorebookEntryTimingStates) &&
+                typeof (chatMeta.entryTimingStates ?? chatMeta.lorebookEntryTimingStates) === "object"
+                  ? ((chatMeta.entryTimingStates ?? chatMeta.lorebookEntryTimingStates) as Record<
+                      string,
+                      LorebookEntryTimingState
+                    >)
+                  : undefined,
+              lorebookTokenBudget,
               generationTriggers,
               previewOnly: true,
-              resolveContent: resolvePromptMacros,
-              resolveDecisions: lorebookDecisions,
+              groupScenarioOverrideText:
+                typeof chatMeta.groupScenarioText === "string" && (chatMeta.groupScenarioText as string).trim()
+                  ? (chatMeta.groupScenarioText as string).trim()
+                  : null,
+              lastGenerationType: "preview",
+              idleDuration: promptIdleDuration,
             });
-            let messages: Parameters<typeof toPeekPromptMessages>[0] = [...mappedMessages];
-            const loreContent = [lorebookResult.worldInfoBefore, lorebookResult.worldInfoAfter]
-              .filter(Boolean)
-              .join("\n");
-            if (loreContent) {
-              const loreBlock = `<lore>\n${loreContent}\n</lore>`;
-              const firstHistoryIndex = messages.findIndex(
-                (message) => message.role === "user" || message.role === "assistant",
-              );
-              messages.splice(firstHistoryIndex >= 0 ? firstHistoryIndex : messages.length, 0, {
-                role: "system",
-                content: loreBlock,
+
+            // ── Strip <speaker> tags from chat history to save tokens (game already returned above, so this is Roleplay) ──
+            const isGroupChat = assistantCharacterIds.length > 1;
+            if (isGroupChat && chatMode !== "conversation") {
+              stripSpeakerTagsExceptLastAssistant(assembled.messages);
+            }
+
+            // ── Inject group chat speaker tag instructions ──
+            const groupChatMode = normalizeGroupChatMode(chatMeta.groupChatMode);
+            const groupSpeakerColors =
+              chatMeta.groupSpeakerColors === true || (chatMode === "conversation" && isGroupChat);
+
+            if (isGroupChat && groupChatMode === "merged" && groupSpeakerColors && chatMode !== "conversation") {
+              // Fetch character names for the example
+              const charNames: string[] = [];
+              for (const cid of assistantCharacterIds) {
+                const charRow = await charStore.getById(cid);
+                if (charRow) {
+                  const charData = JSON.parse(charRow.data as string);
+                  charNames.push(charData.name ?? "Unknown");
+                }
+              }
+              const speakerInstruction = `- Since this is a group chat, wrap each character's dialogue in <speaker="name"> tags. Tags can appear inline with narration, they don't need to be on separate lines. Example: <speaker="${charNames[0] ?? "John"}">"Hello there,"</speaker> [action beat/dialogue tag]. Available characters: ${charNames.join(", ")}. Use their exact names.`;
+              const wrapFmt = (preset as any).wrapFormat || "xml";
+              const instructionBlock =
+                wrapFmt === "markdown" ? `\n## Group Chat\n${speakerInstruction}` : speakerInstruction;
+
+              // Keep prompt preview placement identical to live generation.
+              injectIntoOutputFormatOrLastUser(assembled.messages, instructionBlock, { indent: true });
+            }
+
+            // ── Fallback: inject character & persona info if the preset didn't include them ──
+            const wrapFormat = ((preset as any).wrapFormat as "xml" | "markdown" | "none") || "xml";
+            const allContent = assembled.messages.map((m) => m.content).join("\n");
+
+            // Character info fallback
+            for (const cid of assistantCharacterIds) {
+              const charRow = await charStore.getById(cid);
+              if (!charRow) continue;
+              const charData = JSON.parse(charRow.data as string);
+              const charName = charData.name ?? "Unknown";
+              const charDesc = cardPromptText(charData.description);
+              const xmlTag = nameToXmlTag(charName);
+              const hasCharInfo =
+                (charDesc && allContent.includes(charDesc.split("\n")[0]!.trim().slice(0, 80))) ||
+                allContent.includes(`<${xmlTag}>`) ||
+                allContent.includes(`<${charName}>`) ||
+                new RegExp(`^#{1,6} ${charName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "m").test(allContent);
+              if (!hasCharInfo && charDesc) {
+                const hasGroupOverride =
+                  typeof chatMeta.groupScenarioText === "string" && (chatMeta.groupScenarioText as string).trim();
+                const characterMacroContext = {
+                  ...promptMacroContext,
+                  char: charName,
+                  characterFields: {
+                    description: charDesc,
+                    personality: cardPromptText(charData.personality),
+                    scenario: cardPromptText(charData.scenario),
+                    backstory: cardPromptText(charData.extensions?.backstory),
+                    appearance: cardPromptText(charData.extensions?.appearance),
+                    example: cardPromptText(charData.mes_example),
+                    systemPrompt: cardPromptText(charData.system_prompt),
+                  },
+                };
+                const resolveCharacterMacros = (value: string) => resolveMacros(value, characterMacroContext);
+                const parts: string[] = [];
+                if (charDesc) parts.push(wrapContent(resolveCharacterMacros(charDesc), "description", wrapFormat, 2));
+                if (characterMacroContext.characterFields.personality)
+                  parts.push(
+                    wrapContent(
+                      resolveCharacterMacros(characterMacroContext.characterFields.personality),
+                      "personality",
+                      wrapFormat,
+                      2,
+                    ),
+                  );
+                if (characterMacroContext.characterFields.backstory)
+                  parts.push(
+                    wrapContent(
+                      resolveCharacterMacros(characterMacroContext.characterFields.backstory),
+                      "backstory",
+                      wrapFormat,
+                      2,
+                    ),
+                  );
+                if (characterMacroContext.characterFields.appearance)
+                  parts.push(
+                    wrapContent(
+                      resolveCharacterMacros(characterMacroContext.characterFields.appearance),
+                      "appearance",
+                      wrapFormat,
+                      2,
+                    ),
+                  );
+                if (characterMacroContext.characterFields.scenario && !hasGroupOverride)
+                  parts.push(
+                    wrapContent(
+                      resolveCharacterMacros(characterMacroContext.characterFields.scenario),
+                      "scenario",
+                      wrapFormat,
+                      2,
+                    ),
+                  );
+                if (characterMacroContext.characterFields.systemPrompt)
+                  parts.push(
+                    wrapContent(
+                      resolveCharacterMacros(characterMacroContext.characterFields.systemPrompt),
+                      "system_prompt",
+                      wrapFormat,
+                      2,
+                    ),
+                  );
+                if (characterMacroContext.characterFields.example)
+                  parts.push(
+                    wrapContent(
+                      resolveCharacterMacros(characterMacroContext.characterFields.example),
+                      "example_dialogue",
+                      wrapFormat,
+                      2,
+                    ),
+                  );
+                if (parts.length > 0) {
+                  const block = wrapContent(parts.join("\n"), charName, wrapFormat, 1);
+                  const firstSysIdx = assembled.messages.findIndex((m) => m.role === "system");
+                  const insertAt = firstSysIdx >= 0 ? firstSysIdx + 1 : 0;
+                  assembled.messages.splice(insertAt, 0, { role: "system", content: block });
+                }
+              }
+            }
+
+            // Persona info fallback
+            const hasPersonaFallbackData =
+              !!personaDescription ||
+              Object.values(personaFields).some(Boolean) ||
+              personaStats?.rpgStats?.enabled === true;
+            if (hasPersonaFallbackData) {
+              const personaXmlTag = nameToXmlTag(personaName);
+              const hasCompletePersonaWrapper =
+                allContent.includes(`<${personaXmlTag}>`) && allContent.includes(`</${personaXmlTag}>`);
+              if (!hasCompletePersonaWrapper) {
+                const fieldParts: string[] = [];
+                // Skip any field the preset already emitted so a partially
+                // covered persona is not injected twice. [PR #5583]
+                const alreadyInPrompt = (text: string) =>
+                  !!text.trim() && allContent.includes(text.split("\n")[0]!.trim().slice(0, 80));
+                if (personaDescription && !alreadyInPrompt(personaDescription))
+                  fieldParts.push(wrapContent(resolvePromptMacros(personaDescription), "description", wrapFormat, 2));
+                if (personaFields.personality && !alreadyInPrompt(personaFields.personality))
+                  fieldParts.push(
+                    wrapContent(resolvePromptMacros(personaFields.personality), "personality", wrapFormat, 2),
+                  );
+                if (personaFields.backstory && !alreadyInPrompt(personaFields.backstory))
+                  fieldParts.push(
+                    wrapContent(resolvePromptMacros(personaFields.backstory), "backstory", wrapFormat, 2),
+                  );
+                if (personaFields.appearance && !alreadyInPrompt(personaFields.appearance))
+                  fieldParts.push(
+                    wrapContent(resolvePromptMacros(personaFields.appearance), "appearance", wrapFormat, 2),
+                  );
+                if (personaFields.scenario && !alreadyInPrompt(personaFields.scenario))
+                  fieldParts.push(wrapContent(resolvePromptMacros(personaFields.scenario), "scenario", wrapFormat, 2));
+                // Include enabled RPG attributes
+                if (personaStats?.rpgStats?.enabled) {
+                  fieldParts.push(
+                    wrapContent(
+                      formatRpgStatsForPrompt(personaStats.rpgStats as RPGStatsConfig),
+                      "rpg_attributes",
+                      wrapFormat,
+                      2,
+                    ),
+                  );
+                }
+                if (fieldParts.length > 0) {
+                  const block = wrapContent(fieldParts.join("\n"), personaName, wrapFormat, 1);
+                  const firstUserIdx = assembled.messages.findIndex((m) => m.role === "user" || m.role === "assistant");
+                  const insertAt = firstUserIdx >= 0 ? firstUserIdx : assembled.messages.length;
+                  assembled.messages.splice(insertAt, 0, { role: "system", content: block });
+                }
+              }
+            }
+
+            // ── Tracker context fallback: mirror the read-only snapshot injection from /api/generate ──
+            const activeAgentIds = Array.isArray(chatMeta.activeAgentIds) ? (chatMeta.activeAgentIds as string[]) : [];
+            const chatEnableAgents = shouldEnableAgentsForGeneration({
+              chatEnableAgents: chatMeta.enableAgents === true,
+              impersonate: false,
+              impersonateBlockAgents: false,
+            });
+            if (chatEnableAgents && activeAgentIds.length > 0) {
+              const [gameSnapshot, beholderRun] = await Promise.all([
+                loadLatestChatGameSnapshot(app, req.params.id, visibleGameStateAnchor),
+                activeAgentIds.includes("beholder")
+                  ? createAgentsStorage(app.db).getLastSuccessfulRunByType("beholder", req.params.id)
+                  : Promise.resolve(null),
+              ]);
+              const snap = projectGameSnapshotLocation(gameSnapshot, ownerSpatialProjection);
+              const contextBlock = formatPeekTrackerContextBlock({
+                wrapFormat,
+                snap,
+                beholderState: normalizeBeholderState(beholderRun?.resultData),
+                chatMeta,
+                chatEnableAgents,
+                activeAgentIds,
               });
+
+              if (contextBlock) {
+                assembled.messages.splice(findTrackerContextInsertIndex(assembled.messages), 0, {
+                  role: "user",
+                  content: contextBlock,
+                  contextKind: "injection",
+                });
+              }
             }
-            if (lorebookResult.depthEntries.length > 0) {
-              messages = injectAtDepth(messages, lorebookResult.depthEntries);
-            }
+
             return {
-              messages: toPeekPromptMessages(injectOwnerSpatialPrompt(messages, ownerSpatialProjection)),
+              messages: toPeekPromptMessages(injectOwnerSpatialPrompt(assembled.messages, ownerSpatialProjection)),
               chatMode,
-              parameters: null,
+              parameters: assembled.parameters,
               source: "live_preview",
               exact: false,
               generationInfo: null,
@@ -3565,318 +4137,33 @@ export async function chatsRoutes(app: FastifyInstance) {
                 "No saved model request was available, so this is a live best-effort preview assembled without sending.",
             };
           }
-          if (!preset) throw new Error(`Prompt preset ${presetId ?? "(none)"} is unavailable`);
-          const promptActiveAgentIds = Array.isArray(chatMeta.activeAgentIds)
-            ? (chatMeta.activeAgentIds as string[])
-            : [];
-          const activePromptAgentIds = filterGameInternalAgentIds(chatMode, promptActiveAgentIds);
-          const activeChatSummary = resolveRoleplayChatSummary(chatMode, chatMeta);
-
-          const assembled = await assemblePrompt({
-            db: app.db,
-            model: connection?.model,
-            preset: preset as any,
-            sections: sections as any,
-            groups: groups as any,
-            choiceBlocks: choiceBlocks as any,
-            chatChoices,
-            chatId: req.params.id,
-            characterIds: assistantCharacterIds,
-            lorebookCharacterIds,
-            decisions: promptMacroContext.decisions,
-            lorebookDecisions,
-            groupCharacterIds: assistantCharacterIds,
-            personaId,
-            personaName,
-            personaDescription,
-            personaFields,
-            personaStats,
-            chatMessages: mappedMessages,
-            chatSummary: activeChatSummary,
-            enableAgents: chatMeta.enableAgents === true,
-            activeAgentIds: activePromptAgentIds,
-            activeLorebookIds: Array.isArray(chatMeta.activeLorebookIds)
-              ? (chatMeta.activeLorebookIds as string[])
-              : [],
-            forcedLorebookEntryIds,
-            excludedLorebookIds: lorebookScopeExclusions.excludedLorebookIds,
-            excludedLorebookSourceAgentIds: lorebookScopeExclusions.excludedSourceAgentIds,
-            entryStateOverrides:
-              (chatMeta.entryStateOverrides ?? chatMeta.lorebookEntryStateOverrides) &&
-              typeof (chatMeta.entryStateOverrides ?? chatMeta.lorebookEntryStateOverrides) === "object"
-                ? ((chatMeta.entryStateOverrides ?? chatMeta.lorebookEntryStateOverrides) as Record<
-                    string,
-                    { ephemeral?: number | null; enabled?: boolean }
-                  >)
-                : undefined,
-            entryTimingStates:
-              (chatMeta.entryTimingStates ?? chatMeta.lorebookEntryTimingStates) &&
-              typeof (chatMeta.entryTimingStates ?? chatMeta.lorebookEntryTimingStates) === "object"
-                ? ((chatMeta.entryTimingStates ?? chatMeta.lorebookEntryTimingStates) as Record<
-                    string,
-                    LorebookEntryTimingState
-                  >)
-                : undefined,
-            lorebookTokenBudget,
-            generationTriggers,
-            previewOnly: true,
-            groupScenarioOverrideText:
-              typeof chatMeta.groupScenarioText === "string" && (chatMeta.groupScenarioText as string).trim()
-                ? (chatMeta.groupScenarioText as string).trim()
-                : null,
-            lastGenerationType: "preview",
-            idleDuration: promptIdleDuration,
-          });
-
-          // ── Strip <speaker> tags from chat history to save tokens (game already returned above, so this is Roleplay) ──
-          const isGroupChat = assistantCharacterIds.length > 1;
-          if (isGroupChat && chatMode !== "conversation") {
-            stripSpeakerTagsExceptLastAssistant(assembled.messages);
-          }
-
-          // ── Inject group chat speaker tag instructions ──
-          const groupChatMode = normalizeGroupChatMode(chatMeta.groupChatMode);
-          const groupSpeakerColors =
-            chatMeta.groupSpeakerColors === true || (chatMode === "conversation" && isGroupChat);
-
-          if (isGroupChat && groupChatMode === "merged" && groupSpeakerColors && chatMode !== "conversation") {
-            // Fetch character names for the example
-            const charNames: string[] = [];
-            for (const cid of assistantCharacterIds) {
-              const charRow = await charStore.getById(cid);
-              if (charRow) {
-                const charData = JSON.parse(charRow.data as string);
-                charNames.push(charData.name ?? "Unknown");
-              }
-            }
-            const speakerInstruction = `- Since this is a group chat, wrap each character's dialogue in <speaker="name"> tags. Tags can appear inline with narration, they don't need to be on separate lines. Example: <speaker="${charNames[0] ?? "John"}">"Hello there,"</speaker> [action beat/dialogue tag]. Available characters: ${charNames.join(", ")}. Use their exact names.`;
-            const wrapFmt = (preset as any).wrapFormat || "xml";
-            const instructionBlock =
-              wrapFmt === "markdown" ? `\n## Group Chat\n${speakerInstruction}` : speakerInstruction;
-
-            // Keep prompt preview placement identical to live generation.
-            injectIntoOutputFormatOrLastUser(assembled.messages, instructionBlock, { indent: true });
-          }
-
-          // ── Fallback: inject character & persona info if the preset didn't include them ──
-          const wrapFormat = ((preset as any).wrapFormat as "xml" | "markdown" | "none") || "xml";
-          const allContent = assembled.messages.map((m) => m.content).join("\n");
-
-          // Character info fallback
-          for (const cid of assistantCharacterIds) {
-            const charRow = await charStore.getById(cid);
-            if (!charRow) continue;
-            const charData = JSON.parse(charRow.data as string);
-            const charName = charData.name ?? "Unknown";
-            const charDesc = cardPromptText(charData.description);
-            const xmlTag = nameToXmlTag(charName);
-            const hasCharInfo =
-              (charDesc && allContent.includes(charDesc.split("\n")[0]!.trim().slice(0, 80))) ||
-              allContent.includes(`<${xmlTag}>`) ||
-              allContent.includes(`<${charName}>`) ||
-              new RegExp(`^#{1,6} ${charName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "m").test(allContent);
-            if (!hasCharInfo && charDesc) {
-              const hasGroupOverride =
-                typeof chatMeta.groupScenarioText === "string" && (chatMeta.groupScenarioText as string).trim();
-              const characterMacroContext = {
-                ...promptMacroContext,
-                char: charName,
-                characterFields: {
-                  description: charDesc,
-                  personality: cardPromptText(charData.personality),
-                  scenario: cardPromptText(charData.scenario),
-                  backstory: cardPromptText(charData.extensions?.backstory),
-                  appearance: cardPromptText(charData.extensions?.appearance),
-                  example: cardPromptText(charData.mes_example),
-                  systemPrompt: cardPromptText(charData.system_prompt),
-                },
-              };
-              const resolveCharacterMacros = (value: string) => resolveMacros(value, characterMacroContext);
-              const parts: string[] = [];
-              if (charDesc) parts.push(wrapContent(resolveCharacterMacros(charDesc), "description", wrapFormat, 2));
-              if (characterMacroContext.characterFields.personality)
-                parts.push(
-                  wrapContent(
-                    resolveCharacterMacros(characterMacroContext.characterFields.personality),
-                    "personality",
-                    wrapFormat,
-                    2,
-                  ),
-                );
-              if (characterMacroContext.characterFields.backstory)
-                parts.push(
-                  wrapContent(
-                    resolveCharacterMacros(characterMacroContext.characterFields.backstory),
-                    "backstory",
-                    wrapFormat,
-                    2,
-                  ),
-                );
-              if (characterMacroContext.characterFields.appearance)
-                parts.push(
-                  wrapContent(
-                    resolveCharacterMacros(characterMacroContext.characterFields.appearance),
-                    "appearance",
-                    wrapFormat,
-                    2,
-                  ),
-                );
-              if (characterMacroContext.characterFields.scenario && !hasGroupOverride)
-                parts.push(
-                  wrapContent(
-                    resolveCharacterMacros(characterMacroContext.characterFields.scenario),
-                    "scenario",
-                    wrapFormat,
-                    2,
-                  ),
-                );
-              if (characterMacroContext.characterFields.systemPrompt)
-                parts.push(
-                  wrapContent(
-                    resolveCharacterMacros(characterMacroContext.characterFields.systemPrompt),
-                    "system_prompt",
-                    wrapFormat,
-                    2,
-                  ),
-                );
-              if (characterMacroContext.characterFields.example)
-                parts.push(
-                  wrapContent(
-                    resolveCharacterMacros(characterMacroContext.characterFields.example),
-                    "example_dialogue",
-                    wrapFormat,
-                    2,
-                  ),
-                );
-              if (parts.length > 0) {
-                const block = wrapContent(parts.join("\n"), charName, wrapFormat, 1);
-                const firstSysIdx = assembled.messages.findIndex((m) => m.role === "system");
-                const insertAt = firstSysIdx >= 0 ? firstSysIdx + 1 : 0;
-                assembled.messages.splice(insertAt, 0, { role: "system", content: block });
-              }
-            }
-          }
-
-          // Persona info fallback
-          const hasPersonaFallbackData =
-            !!personaDescription ||
-            Object.values(personaFields).some(Boolean) ||
-            personaStats?.rpgStats?.enabled === true;
-          if (hasPersonaFallbackData) {
-            const personaXmlTag = nameToXmlTag(personaName);
-            const hasCompletePersonaWrapper =
-              allContent.includes(`<${personaXmlTag}>`) && allContent.includes(`</${personaXmlTag}>`);
-            if (!hasCompletePersonaWrapper) {
-              const fieldParts: string[] = [];
-              // Skip any field the preset already emitted so a partially
-              // covered persona is not injected twice. [PR #5583]
-              const alreadyInPrompt = (text: string) =>
-                !!text.trim() && allContent.includes(text.split("\n")[0]!.trim().slice(0, 80));
-              if (personaDescription && !alreadyInPrompt(personaDescription))
-                fieldParts.push(wrapContent(resolvePromptMacros(personaDescription), "description", wrapFormat, 2));
-              if (personaFields.personality && !alreadyInPrompt(personaFields.personality))
-                fieldParts.push(
-                  wrapContent(resolvePromptMacros(personaFields.personality), "personality", wrapFormat, 2),
-                );
-              if (personaFields.backstory && !alreadyInPrompt(personaFields.backstory))
-                fieldParts.push(wrapContent(resolvePromptMacros(personaFields.backstory), "backstory", wrapFormat, 2));
-              if (personaFields.appearance && !alreadyInPrompt(personaFields.appearance))
-                fieldParts.push(
-                  wrapContent(resolvePromptMacros(personaFields.appearance), "appearance", wrapFormat, 2),
-                );
-              if (personaFields.scenario && !alreadyInPrompt(personaFields.scenario))
-                fieldParts.push(wrapContent(resolvePromptMacros(personaFields.scenario), "scenario", wrapFormat, 2));
-              // Include enabled RPG attributes
-              if (personaStats?.rpgStats?.enabled) {
-                fieldParts.push(
-                  wrapContent(
-                    formatRpgStatsForPrompt(personaStats.rpgStats as RPGStatsConfig),
-                    "rpg_attributes",
-                    wrapFormat,
-                    2,
-                  ),
-                );
-              }
-              if (fieldParts.length > 0) {
-                const block = wrapContent(fieldParts.join("\n"), personaName, wrapFormat, 1);
-                const firstUserIdx = assembled.messages.findIndex((m) => m.role === "user" || m.role === "assistant");
-                const insertAt = firstUserIdx >= 0 ? firstUserIdx : assembled.messages.length;
-                assembled.messages.splice(insertAt, 0, { role: "system", content: block });
-              }
-            }
-          }
-
-          // ── Tracker context fallback: mirror the read-only snapshot injection from /api/generate ──
-          const activeAgentIds = Array.isArray(chatMeta.activeAgentIds) ? (chatMeta.activeAgentIds as string[]) : [];
-          const chatEnableAgents = shouldEnableAgentsForGeneration({
-            chatEnableAgents: chatMeta.enableAgents === true,
-            impersonate: false,
-            impersonateBlockAgents: false,
-          });
-          if (chatEnableAgents && activeAgentIds.length > 0) {
-            const [gameSnapshot, beholderRun] = await Promise.all([
-              loadLatestChatGameSnapshot(app, req.params.id, visibleGameStateAnchor),
-              activeAgentIds.includes("beholder")
-                ? createAgentsStorage(app.db).getLastSuccessfulRunByType("beholder", req.params.id)
-                : Promise.resolve(null),
-            ]);
-            const snap = projectGameSnapshotLocation(gameSnapshot, ownerSpatialProjection);
-            const contextBlock = formatPeekTrackerContextBlock({
-              wrapFormat,
-              snap,
-              beholderState: normalizeBeholderState(beholderRun?.resultData),
-              chatMeta,
-              chatEnableAgents,
-              activeAgentIds,
-            });
-
-            if (contextBlock) {
-              assembled.messages.splice(findTrackerContextInsertIndex(assembled.messages), 0, {
-                role: "user",
-                content: contextBlock,
-                contextKind: "injection",
-              });
-            }
-          }
-
-          return {
-            messages: toPeekPromptMessages(injectOwnerSpatialPrompt(assembled.messages, ownerSpatialProjection)),
-            chatMode,
-            parameters: assembled.parameters,
-            source: "live_preview",
-            exact: false,
-            generationInfo: null,
-            ...decisionReport(),
-            agentNote:
-              "No saved model request was available, so this is a live best-effort preview assembled without sending.",
-          };
+        } catch (e) {
+          logger.error(e, "[peek-prompt] Assembler failed, falling through to cached/raw messages");
         }
-      } catch (e) {
-        logger.error(e, "[peek-prompt] Assembler failed, falling through to cached/raw messages");
       }
-    }
 
-    // ── Last resort: return raw chat messages ──
-    const mappedMessages = chatMessages.map((m: any) => ({
-      id: typeof m.id === "string" ? m.id : null,
-      role: m.role === "narrator" ? "system" : m.role,
-      content: m.content as string,
-      characterId: typeof m.characterId === "string" && m.characterId ? m.characterId : null,
-    }));
-    while (mappedMessages.length > 0 && mappedMessages[mappedMessages.length - 1]!.role === "assistant") {
-      mappedMessages.pop();
-    }
+      // ── Last resort: return raw chat messages ──
+      const mappedMessages = chatMessages.map((m: any) => ({
+        id: typeof m.id === "string" ? m.id : null,
+        role: m.role === "narrator" ? "system" : m.role,
+        content: m.content as string,
+        characterId: typeof m.characterId === "string" && m.characterId ? m.characterId : null,
+      }));
+      while (mappedMessages.length > 0 && mappedMessages[mappedMessages.length - 1]!.role === "assistant") {
+        mappedMessages.pop();
+      }
 
-    return {
-      messages: injectOwnerSpatialPrompt(mappedMessages, ownerSpatialProjection),
-      chatMode,
-      parameters: null,
-      source: "raw_messages",
-      exact: false,
-      generationInfo: null,
-      agentNote: "Prompt assembly was unavailable, so only visible raw chat messages are shown.",
-    };
-  });
+      return {
+        messages: injectOwnerSpatialPrompt(mappedMessages, ownerSpatialProjection),
+        chatMode,
+        parameters: null,
+        source: "raw_messages",
+        exact: false,
+        generationInfo: null,
+        agentNote: "Prompt assembly was unavailable, so only visible raw chat messages are shown.",
+      };
+    },
+  );
 
   // ── Swipes ──
 
@@ -3888,7 +4175,9 @@ export async function chatsRoutes(app: FastifyInstance) {
   // Add a swipe
   app.post<{ Params: { chatId: string; messageId: string } }>("/:chatId/messages/:messageId/swipes", async (req) => {
     const { content, silent } = req.body as { content: string; silent?: boolean };
-    return storage.addSwipe(req.params.messageId, content, silent);
+    const swipe = await storage.addSwipe(req.params.messageId, content, silent);
+    app.continuityChanges.notify(req.params.chatId, [req.params.messageId]);
+    return swipe;
   });
 
   // Add multiple swipes in one round trip. Used for alternate greetings during chat setup.
@@ -3913,6 +4202,7 @@ export async function chatsRoutes(app: FastifyInstance) {
       for (const content of normalized) {
         created.push(await storage.addSwipe(req.params.messageId, content, silent ?? true));
       }
+      app.continuityChanges.notify(req.params.chatId, [req.params.messageId]);
       return { swipes: created };
     },
   );
@@ -3973,6 +4263,7 @@ export async function chatsRoutes(app: FastifyInstance) {
           (previous?.activeSwipeIndex ?? 0) === index,
           updated.activeSwipeIndex ?? 0,
         );
+        app.continuityChanges.notify(req.params.chatId, [req.params.messageId]);
         return updated;
       });
     },
@@ -4008,6 +4299,7 @@ export async function chatsRoutes(app: FastifyInstance) {
           shown = updated.activeSwipeIndex ?? 0;
           await forgetInventoryTelling(req.params.chatId, req.params.messageId, swipe.index, wasShown, shown);
         }
+        app.continuityChanges.notify(req.params.chatId, [req.params.messageId]);
         return storage.getMessage(req.params.messageId);
       });
     },
@@ -4024,6 +4316,7 @@ export async function chatsRoutes(app: FastifyInstance) {
         // A Game Mode inventory follows the telling that is shown, as long as nothing changed it since
         // the telling left it (#6774). Only a game that remembers a turn has anything to switch.
         if (updated && previous && (previous.activeSwipeIndex ?? 0) !== index) {
+          app.continuityChanges.notify(req.params.chatId, [req.params.messageId]);
           try {
             const chat = await storage.getById(req.params.chatId);
             let meta: Record<string, unknown> = {};
@@ -4239,6 +4532,10 @@ export async function chatsRoutes(app: FastifyInstance) {
     delete sanitized.branchParentChatId;
     delete sanitized.branchParentMessageId;
     delete sanitized.branchMessageId;
+    delete sanitized.branchLineageVersion;
+    delete sanitized.branchCopyMode;
+    delete sanitized.branchCopiedMessageCount;
+    delete sanitized.gameSessionParentChatId;
     for (const key of Object.keys(sanitized)) {
       if (key.startsWith("segmentEdit:") || key.startsWith("segmentDelete:")) delete sanitized[key];
     }
@@ -4725,6 +5022,7 @@ export async function chatsRoutes(app: FastifyInstance) {
     for (const key of ["summary", "summaryEntries", "lastAutomaticSummaryMessageId", "daySummaries", "weekSummaries"]) {
       delete settingsToKeep[key];
     }
+    delete settingsToKeep.campaignMemoryBranchHistoryHolds;
     delete settingsToKeep.gameNarrationIndex;
     delete settingsToKeep.gameNarrationMessageId;
     const sourceCutoffIndex = upToMessageId ? msgs.findIndex((msg) => msg.id === upToMessageId) : msgs.length - 1;
@@ -4903,6 +5201,9 @@ export async function chatsRoutes(app: FastifyInstance) {
       branchParentChatId: sourceChat.id,
       branchParentMessageId: forkSourceMessage?.id ?? null,
       branchMessageId: forkSourceMessage ? (sourceToBranchedMessageId.get(forkSourceMessage.id) ?? null) : null,
+      branchLineageVersion: 1,
+      branchCopyMode: upToMessageId ? "through-message" : "full-prefix",
+      branchCopiedMessageCount: copiedSourceMessages.length,
       summary: compileChatSummaryEntries(inheritedEntries),
       summaryEntries: inheritedEntries,
       ...(inheritedLastAutomaticSummaryMessageId
@@ -5096,6 +5397,25 @@ export async function chatsRoutes(app: FastifyInstance) {
       // the branch's first allocation can collide with a row copied after the earlier snapshot
       // was taken, handing the same ordinal to two rows in one counter space.
       await storage.raiseWriteOrdinalFloor(newChat.id, maxCopiedWriteOrdinal);
+
+      // Campaign-scoped memory excludes its same-session parent during normal
+      // projection, so preserve the branch point explicitly while message IDs
+      // and the exact copied prefix are still available.
+      if (sourceChat.mode === "game" && forkSourceMessage) {
+        const historyBranch = await projectCampaignMemoryBranch(app.db, {
+          sourceChatId: sourceChat.id,
+          targetChatId: newChat.id,
+          cutoffOrder: formatCampaignMemoryMessageOrder(forkSourceMessage.id, forkSourceMessage.createdAt as string),
+          messageIdMap: Object.fromEntries(sourceToBranchedMessageId),
+          operationId: `branch:${newChat.id}`,
+        });
+        if (historyBranch.held.length > 0) {
+          await storage.patchMetadata(newChat.id, (metadata) => ({
+            ...metadata,
+            campaignMemoryBranchHistoryHolds: historyBranch.held,
+          }));
+        }
+      }
     } catch (err) {
       try {
         await storage.remove(newChat.id);

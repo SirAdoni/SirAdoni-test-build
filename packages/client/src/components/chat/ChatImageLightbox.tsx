@@ -1,7 +1,9 @@
+import { useQueryClient } from "@tanstack/react-query";
+import { useFeatureEnabled, isGalleryBrowsingEnabled } from "../../hooks/use-feature-settings";
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useBackdropDismiss } from "../../hooks/use-backdrop-dismiss";
-import { Download, Pin, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, Pin, X } from "lucide-react";
 import type { GeneratedSceneVideo } from "@marinara-engine/shared";
 import type { ChatImage } from "../../hooks/use-gallery";
 import { useGalleryStore } from "../../stores/gallery.store";
@@ -47,6 +49,8 @@ interface ChatImageLightboxProps {
   alt?: string;
   pinEnabled?: boolean;
   downloadEnabled?: boolean;
+  onPrevious?: () => void;
+  onNext?: () => void;
   onPin?: (image: ChatImage) => void;
   onClose: () => void;
 }
@@ -56,9 +60,13 @@ export function ChatImageLightbox({
   alt,
   pinEnabled = true,
   downloadEnabled = true,
+  onPrevious,
+  onNext,
   onPin,
   onClose,
 }: ChatImageLightboxProps) {
+  const queryClient = useQueryClient();
+  const browsingEnabled = useFeatureEnabled("galleryBrowsing");
   const { t: localizeUi } = useUiTranslation();
   const backdropDismiss = useBackdropDismiss(onClose);
   const pinImage = useGalleryStore((s) => s.pinImage);
@@ -83,6 +91,18 @@ export function ChatImageLightbox({
       tabIndex={-1}
       {...backdropDismiss}
       onKeyDown={(event) => {
+        if (
+          (onPrevious || onNext) &&
+          (event.key === "ArrowLeft" || event.key === "ArrowRight") &&
+          isGalleryBrowsingEnabled(queryClient)
+        ) {
+          if ((event.target as HTMLElement).closest("input, textarea, select, [contenteditable=true]")) return;
+          event.preventDefault();
+          event.stopPropagation();
+          if (event.key === "ArrowLeft") onPrevious?.();
+          else onNext?.();
+          return;
+        }
         if (event.key === "Escape") {
           event.stopPropagation();
           onClose();
@@ -104,6 +124,32 @@ export function ChatImageLightbox({
                 : "max-h-[85vh] max-w-full rounded-lg object-contain shadow-2xl"
             }
           />
+          {browsingEnabled && (onPrevious || onNext) && (
+            <div className="absolute bottom-2 left-1/2 flex -translate-x-1/2 gap-2">
+              <button
+                type="button"
+                aria-label={localizeUi("ui.chat.chatimagelightbox.previousImage")}
+                disabled={!onPrevious}
+                onClick={() => {
+                  if (isGalleryBrowsingEnabled(queryClient)) onPrevious?.();
+                }}
+                className="rounded-full bg-[var(--background)] p-3 text-[var(--foreground)] shadow-lg disabled:opacity-40"
+              >
+                <ChevronLeft size={20} />
+              </button>
+              <button
+                type="button"
+                aria-label={localizeUi("ui.chat.chatimagelightbox.nextImage")}
+                disabled={!onNext}
+                onClick={() => {
+                  if (isGalleryBrowsingEnabled(queryClient)) onNext?.();
+                }}
+                className="rounded-full bg-[var(--background)] p-3 text-[var(--foreground)] shadow-lg disabled:opacity-40"
+              >
+                <ChevronRight size={20} />
+              </button>
+            </div>
+          )}
           <div className="absolute right-2 top-2 flex gap-2">
             {pinEnabled && (
               <button

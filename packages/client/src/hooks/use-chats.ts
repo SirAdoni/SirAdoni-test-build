@@ -1642,15 +1642,22 @@ function applyCachedSwipeToMessage(message: Message, swipe: MessageSwipe): Messa
 /** Peek at the assembled prompt for a chat */
 export function usePeekPrompt() {
   return useMutation({
-    mutationFn: (request: string | { chatId: string; messageId: string }) => {
+    mutationFn: (request: string | { chatId: string; messageId?: string; freshPreview?: boolean }) => {
       const chatId = typeof request === "string" ? request : request.chatId;
-      const messageId = typeof request === "string" ? undefined : request.messageId;
+      const body =
+        typeof request === "string"
+          ? {}
+          : {
+              ...(request.messageId ? { messageId: request.messageId } : {}),
+              ...(request.freshPreview ? { freshPreview: true } : {}),
+            };
       return api.post<{
         messages: Array<{ role: string; content: string }>;
         chatMode?: string;
         parameters: unknown;
-        source?: "cached" | "live_preview" | "raw_messages";
+        source?: "cached" | "assembled" | "live_preview" | "raw_messages";
         exact?: boolean;
+        gamePromptDirectEditsRevision?: string | null;
         generationInfo: {
           model?: string;
           provider?: string;
@@ -1673,7 +1680,7 @@ export function usePeekPrompt() {
         gameToolPlanning?: GameToolPlanningInfo | null;
         agentNote?: string;
         decisions?: { unanswered: string[]; dropped?: string[]; decisionModelSet: boolean };
-      }>(`/chats/${chatId}/peek-prompt`, messageId ? { messageId } : {});
+      }>(`/chats/${chatId}/peek-prompt`, body);
     },
   });
 }

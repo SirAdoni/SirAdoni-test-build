@@ -4,6 +4,7 @@ import {
   GENERATION_PARAMETER_SEND_KEYS,
   SUMMARY_TAIL_MESSAGES,
   applyTrackerFieldLocksToGameStatePatch,
+  excludeInventoryTrackerCarriedDuplicates,
   characterTrackerLockPrefix,
   customTrackerFieldLockPrefix,
   generationParametersSchema,
@@ -189,11 +190,12 @@ export function resolveTrackerGroupUpdate(
   return resolveTrackerRowsUpdate(
     value,
     previous,
-    group === "presentCharacters" ? "characterId" : "name",
+    group === "presentCharacters" ? "characterId" : group === "customTrackerFields" ? "name" : "itemId",
     (row, index) => {
       if (group === "customTrackerFields" && row.locked === true) return false;
       const identity = {
         name: typeof row.name === "string" ? row.name : "",
+        itemId: typeof row.itemId === "string" ? row.itemId : "",
         characterId: typeof row.characterId === "string" ? row.characterId : "",
       };
       const prefix =
@@ -310,6 +312,16 @@ export function buildLockedInventoryTrackerPatch({
     const rows = existingPlayerStats[field];
     return Array.isArray(rows) ? (rows as InventoryTrackerRow[]) : [];
   };
+  const trustedItemIds = new Set<string>();
+  for (const row of [
+    ...(existingPlayerStats.inventory ?? []),
+    ...existingRows("inventoryTrackerCurrencies"),
+    ...existingRows("inventoryTrackerEquipped"),
+    ...existingRows("inventoryTrackerInventory"),
+  ]) {
+    const itemId = typeof row.itemId === "string" ? row.itemId.trim() : "";
+    if (itemId) trustedItemIds.add(itemId);
+  }
 
   // Only a group the agent actually emitted may rewrite that group. Treating an
   // absent key as an empty array wipes state the model simply did not mention
@@ -337,17 +349,16 @@ export function buildLockedInventoryTrackerPatch({
   const emittedInventory = inventoryUpdate !== undefined;
 
   const currencies = emittedCurrencies
-    ? normalizeInventoryTrackerRows(currencyUpdate)
+    ? normalizeInventoryTrackerRows(currencyUpdate, { trustedItemIds })
     : existingRows("inventoryTrackerCurrencies");
   const equipped = emittedEquipped
-    ? normalizeInventoryTrackerRows(equippedUpdate)
+    ? normalizeInventoryTrackerRows(equippedUpdate, { trustedItemIds })
     : existingRows("inventoryTrackerEquipped");
   const carried = emittedInventory
-    ? normalizeInventoryTrackerRows(inventoryUpdate)
+    ? normalizeInventoryTrackerRows(inventoryUpdate, { trustedItemIds })
     : existingRows("inventoryTrackerInventory");
 
-  const excludedNames = new Set([...currencies, ...equipped].map((row) => normalizeTextForMatch(row.name)));
-  const inventory = carried.filter((row) => !excludedNames.has(normalizeTextForMatch(row.name)));
+  const inventory = excludeInventoryTrackerCarriedDuplicates(carried, currencies, equipped);
 
   const rawPlayerStatsPatch: Partial<Record<InventoryTrackerPlayerStatsField, InventoryTrackerRow[]>> = {};
   if (emittedCurrencies) rawPlayerStatsPatch.inventoryTrackerCurrencies = currencies;

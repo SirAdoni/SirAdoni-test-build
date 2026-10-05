@@ -15,6 +15,8 @@ type CatalogOptions = {
   search?: string;
   sort?: string;
   favoriteFilter?: string;
+  /** Restrict the catalog to campaign items, or exclude items in any campaign. */
+  ids?: { include?: string[]; exclude?: string[] };
   limit: number;
   offset: number;
 };
@@ -137,6 +139,14 @@ export function createCharacterCatalog(db: DB) {
       if (query) entries = entries.filter((item) => item.searchText.includes(query));
       if (options.favoriteFilter === "favorites") entries = entries.filter((item) => item.favorite);
       if (options.favoriteFilter === "non-favorites") entries = entries.filter((item) => !item.favorite);
+      if (options.ids?.include) {
+        const include = new Set(options.ids.include);
+        entries = entries.filter((item) => include.has(item.id));
+      }
+      if (options.ids?.exclude?.length) {
+        const exclude = new Set(options.ids.exclude);
+        entries = entries.filter((item) => !exclude.has(item.id));
+      }
       entries = sortEntries(entries, options.sort ?? "");
       const page = entries.slice(options.offset, options.offset + options.limit + 1);
       return {

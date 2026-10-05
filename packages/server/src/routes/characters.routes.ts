@@ -29,6 +29,7 @@ import {
 } from "@marinara-engine/shared";
 import type { CharacterData, ConversationCallCharacterVideoClipKind, ExportEnvelope } from "@marinara-engine/shared";
 import { createCharactersStorage, type PersonaStorageRow } from "../services/storage/characters.storage.js";
+import { readCharacterAvatarState, withoutCharacterAvatarState } from "../services/game/npc-avatar-state.js";
 import { createCharacterCatalog } from "../services/storage/character-catalog.js";
 import { encodePersonaCreate, encodePersonaUpdate, projectPersona } from "../services/personas/persona-projector.js";
 import { createCharacterGalleryStorage } from "../services/storage/character-gallery.storage.js";
@@ -78,6 +79,7 @@ import {
 import { logger, logDebugOverride } from "../lib/logger.js";
 import { isDebugAgentsEnabled } from "../config/runtime-config.js";
 import { parseLibraryPageQuery } from "../utils/list-pagination.js";
+import { resolveLibraryCampaignFilter } from "./library-campaigns.routes.js";
 import {
   resolveChatSummaryConnection,
   resolveChatSummaryTemperatureOptions,
@@ -135,6 +137,16 @@ const CALL_VIDEO_CLIP_UPLOAD_MAX_BYTES = 250 * 1024 * 1024;
 const ALLOWED_CALL_VIDEO_CLIP_UPLOAD_EXTS = new Set([".mp4"]);
 const renameCardVersionSchema = z.object({ version: z.string().trim().min(1).max(100) });
 type UploadedMultipartFile = NonNullable<Awaited<ReturnType<FastifyRequest["file"]>>>;
+
+function projectCharacterAvatarMutation<
+  T extends { data?: unknown; avatarPath?: string | null; affectedChatIds?: string[] },
+>(row: T) {
+  return {
+    ...row,
+    avatarState: readCharacterAvatarState(row.data),
+    affectedChatIds: row.affectedChatIds ?? [],
+  };
+}
 
 function applyTrackerCardPaint(currentValue: unknown, paint: Record<string, unknown>, preserveStatIcons = true) {
   const current = parseCharacterDataRecord(currentValue);
@@ -685,11 +697,12 @@ async function readGalleryForOwner(
   return result;
 }
 
-async function buildNativeCharacterEnvelope(
+export async function buildNativeCharacterEnvelope(
   char: { id: string; createdAt: string; updatedAt: string; comment?: string | null; avatarPath?: string | null },
   data: any,
   galleryStorage: { listByCharacterId: (id: string) => Promise<any[]> },
 ) {
+  data = withoutCharacterAvatarState(data);
   const extensions = parseCharacterDataRecord(data?.extensions);
   const characterSheetImageId =
     typeof extensions.characterSheetImageId === "string" ? extensions.characterSheetImageId : null;
@@ -722,6 +735,7 @@ async function buildNativeCharacterEnvelope(
 }
 
 export function buildCompatibleCharacterExport(data: any, sprites: Array<{ filename: string; data: string }> = []) {
+  data = withoutCharacterAvatarState(data);
   const extensions = { ...parseCharacterDataRecord(data?.extensions) };
   const description = [typeof data?.description === "string" ? data.description : ""];
   for (const [key, label] of [
@@ -949,6 +963,7 @@ export async function charactersRoutes(app: FastifyInstance) {
       search?: string;
       sort?: string;
       favoriteFilter?: string;
+      campaign?: string;
     };
   }>("/catalog", async (req) => {
     const page = parseLibraryPageQuery(req.query);
@@ -959,6 +974,7 @@ export async function charactersRoutes(app: FastifyInstance) {
       search: page.search,
       sort: page.sort,
       favoriteFilter: page.favoriteFilter,
+      ids: await resolveLibraryCampaignFilter(app.db, "character", req.query.campaign),
     });
   });
 
@@ -1418,7 +1434,7 @@ export async function charactersRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string; versionId: string } }>("/:id/versions/:versionId/restore", async (req, reply) => {
     const restored = await storage.restoreVersion(req.params.id, req.params.versionId);
     if (!restored) return reply.status(404).send({ error: "Character version not found" });
-    return restored;
+    return projectCharacterAvatarMutation(restored);
   });
 
   app.delete<{ Params: { id: string; versionId: string } }>("/:id/versions/:versionId", async (req, reply) => {
@@ -1480,6 +1496,7 @@ export async function charactersRoutes(app: FastifyInstance) {
         (imageId) => characterGallery.getById(imageId),
       );
       return storage.update(req.params.id, validatedDataUpdate, avatarPath, {
+        ...(avatarPath !== undefined ? { avatarIntent: true } : {}),
         comment,
         versionSource,
         versionReason,
@@ -1487,7 +1504,9 @@ export async function charactersRoutes(app: FastifyInstance) {
       });
     });
     if (result === "summary-exists") return reply.status(409).send({ error: "Character already has a summary" });
-    return result;
+    return avatarPath !== undefined && result && typeof result === "object"
+      ? projectCharacterAvatarMutation(result as { data?: unknown; avatarPath?: string | null })
+      : result;
   });
 
   app.patch<{ Params: { id: string }; Body: { paint?: unknown } }>("/:id/tracker-card-colors", async (req, reply) => {
@@ -2049,7 +2068,7 @@ export async function charactersRoutes(app: FastifyInstance) {
         await removeUnattachedAvatarFile({ avatarPath });
         return reply.status(404).send({ error: "Character not found" });
       }
-      return updated;
+      return projectCharacterAvatarMutation(updated);
     } catch (error) {
       if (avatarPath) await removeUnattachedAvatarFile({ avatarPath });
       logger.warn(error, "Failed to set character %s avatar from gallery image %s", id, imageId);
@@ -2388,6 +2407,7 @@ export async function charactersRoutes(app: FastifyInstance) {
           characterGallery.getById(imageId),
         );
         return storage.update(id, validatedData, avatarPath, {
+          avatarIntent: true,
           versionReason: body.data === undefined ? "Avatar update" : "Character card and avatar update",
         });
       });
@@ -2395,7 +2415,7 @@ export async function charactersRoutes(app: FastifyInstance) {
         await removeUnattachedAvatarFile({ avatarPath });
         return reply.status(404).send({ error: "Character not found" });
       }
-      return updated;
+      return projectCharacterAvatarMutation(updated);
     } catch (error) {
       await removeUnattachedAvatarFile({ filePath: filepath });
       throw error;
@@ -2408,7 +2428,7 @@ export async function charactersRoutes(app: FastifyInstance) {
     if (!char) return reply.status(404).send({ error: "Character not found" });
 
     const updated = await storage.updateAvatar(id, null);
-    return updated ?? reply.status(404).send({ error: "Character not found" });
+    return updated ? projectCharacterAvatarMutation(updated) : reply.status(404).send({ error: "Character not found" });
   });
 
   // ── Personas ──

@@ -1,3 +1,6 @@
+import { featureSettingsKeys, useFeatureSettings } from "../../hooks/use-feature-settings";
+import { resolveFeatureEnabled, type FeatureSettingsResponse } from "@marinara-engine/shared";
+
 // ──────────────────────────────────────────────
 // Panel: Settings (polished)
 // ──────────────────────────────────────────────
@@ -7791,6 +7794,9 @@ function ManualUpdateCommand({ command }: { command: string }) {
 }
 
 function AdvancedSettings() {
+  const backupFeatures = useFeatureSettings();
+  const backupModesEnabled =
+    backupFeatures.isSuccess && resolveFeatureEnabled(backupFeatures.data?.settings, "backupModes");
   const { t: localizeUi } = useUiTranslation();
   const { t } = useTranslation();
   const activeChatId = useChatStore((state) => state.activeChatId);
@@ -8013,16 +8019,29 @@ function AdvancedSettings() {
 
   const qc = useQueryClient();
   const [creatingBackup, setCreatingBackup] = useState(false);
+  const backupModesEnabledNow = () =>
+    qc.getQueryState(featureSettingsKeys.all)?.status === "success" &&
+    resolveFeatureEnabled(qc.getQueryData<FeatureSettingsResponse>(featureSettingsKeys.all)?.settings, "backupModes");
+  const backupModeNow = (): BackupMode => {
+    if (!backupModesEnabledNow()) return "full";
+    const current = qc.getQueryState<AutomaticBackupSettings>(["backups", "automatic"]);
+    if (current?.status !== "success" || !current.data) {
+      throw new Error(localizeUi("ui.panels.advancedsettings.failedToCreateBackup"));
+    }
+    return current.data.mode;
+  };
 
   /**
    * Prepare a full backup, then hand its finished stream directly to the browser.
    * Keeping the archive out of a page-held Blob lets Safari and memory-limited
    * mobile browsers save large backups through their normal download handling.
    */
+  type BackupMode = "full" | "data" | "incremental";
   const handleCreateBackup = async () => {
     setCreatingBackup(true);
     try {
-      const started = await api.post<{ jobId: string; status: "preparing" }>("/backup/download/start");
+      const mode = backupModeNow();
+      const started = await api.post<{ jobId: string; status: "preparing" }>("/backup/download/start", { mode });
       const deadline = Date.now() + 60 * 60 * 1_000;
       let status: {
         status: "preparing" | "ready" | "failed";
@@ -8061,6 +8080,7 @@ function AdvancedSettings() {
   type AutomaticBackupSettings = {
     enabled: boolean;
     frequency: AutomaticBackupFrequency;
+    mode: BackupMode;
     retentionCount: number;
     lastBackupAt: string | null;
     lastError: string | null;
@@ -8073,8 +8093,9 @@ function AdvancedSettings() {
     refetchInterval: (query) => (query.state.data?.enabled ? 30_000 : false),
   });
   const automaticBackupMutation = useMutation({
-    mutationFn: (settings: Pick<AutomaticBackupSettings, "enabled" | "frequency" | "retentionCount">) =>
-      api.put<AutomaticBackupSettings>("/backup/automatic", settings),
+    mutationFn: (
+      settings: Pick<AutomaticBackupSettings, "enabled" | "frequency" | "retentionCount"> & { mode?: BackupMode },
+    ) => api.put<AutomaticBackupSettings>("/backup/automatic", settings),
     onSuccess: (settings) => {
       qc.setQueryData(["backups", "automatic"], settings);
       toast.success(localizeUi("ui.panels.advancedsettings.automaticBackupSettingsSaved"));
@@ -8088,7 +8109,7 @@ function AdvancedSettings() {
     },
   });
   const updateAutomaticBackup = (
-    patch: Partial<Pick<AutomaticBackupSettings, "enabled" | "frequency" | "retentionCount">>,
+    patch: Partial<Pick<AutomaticBackupSettings, "enabled" | "frequency" | "retentionCount" | "mode">>,
   ) => {
     const current = automaticBackupQuery.data;
     if (!current) return;
@@ -8096,6 +8117,7 @@ function AdvancedSettings() {
       enabled: patch.enabled ?? current.enabled,
       frequency: patch.frequency ?? current.frequency,
       retentionCount: patch.retentionCount ?? current.retentionCount,
+      ...(backupModesEnabledNow() ? { mode: patch.mode ?? current.mode } : {}),
     });
   };
 
@@ -8831,6 +8853,38 @@ function AdvancedSettings() {
         <div className="flex flex-col gap-2">
           {automaticBackupQuery.data && (
             <div className="rounded-lg border border-[var(--border)]/70 bg-[var(--secondary)]/35 p-2.5">
+              {backupModesEnabled && (
+                <>
+                  <label
+                    htmlFor="automatic-backup-mode"
+                    className="text-[0.6875rem] font-medium text-[var(--foreground)]"
+                  >
+                    {localizeUi("ui.panels.advancedsettings.backupModeLabel")}
+                  </label>
+                  <select
+                    id="automatic-backup-mode"
+                    value={automaticBackupQuery.data.mode ?? "full"}
+                    onChange={(event) => updateAutomaticBackup({ mode: event.target.value as BackupMode })}
+                    disabled={automaticBackupMutation.isPending}
+                    className="mari-chrome-field mt-1 h-9 w-full px-2 text-xs"
+                  >
+                    <option value="full">{localizeUi("ui.panels.advancedsettings.backupModeFull")}</option>
+                    <option value="data">{localizeUi("ui.panels.advancedsettings.backupModeData")}</option>
+                    <option value="incremental">
+                      {localizeUi("ui.panels.advancedsettings.backupModeIncremental")}
+                    </option>
+                  </select>
+                  <p className="mt-1 text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">
+                    {localizeUi(
+                      automaticBackupQuery.data.mode === "data"
+                        ? "ui.panels.advancedsettings.backupModeDataDescription"
+                        : automaticBackupQuery.data.mode === "incremental"
+                          ? "ui.panels.advancedsettings.backupModeIncrementalDescription"
+                          : "ui.panels.advancedsettings.backupModeFullDescription",
+                    )}
+                  </p>
+                </>
+              )}
               <ToggleSetting
                 anchorId={getSettingsControlAnchorId("automatic-backups")}
                 label={localizeUi("ui.panels.advancedsettings.automaticBackups")}

@@ -39,6 +39,10 @@ import { cn } from "../../lib/utils";
 import { useUIStore } from "../../stores/ui.store";
 import { MusicSourceButton } from "../music/MusicSourceButton";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import type { FeatureSwitchName } from "@marinara-engine/shared";
+import { useFeatureEnabled } from "../../hooks/use-feature-settings";
+import { placeFloatingWidget, type FloatingWidgetRect } from "../../lib/floating-widget-avoid";
+import { useFloatingWidgetAvoid, useMeasuredFloatingWidgetSize } from "../../hooks/use-floating-widget-avoid";
 
 type SpotifyRepeatState = "off" | "track" | "context";
 
@@ -173,6 +177,9 @@ const MOBILE_WIDGET_EXPANDED_MAX_WIDTH = 320;
 const MOBILE_WIDGET_EXPANDED_HORIZONTAL_GUTTER = 24;
 const MOBILE_WIDGET_EXPANDED_HEIGHT = 132;
 const MOBILE_WIDGET_VIEWPORT_PADDING = 8;
+/** Room kept free at the bottom for the chat composer so the collapsed bubble never covers Send. */
+const MOBILE_WIDGET_COMPOSER_RESERVE = 88;
+const FLOATING_MEDIA_PLACEMENT_FEATURE = "floatingMediaPlacement" as FeatureSwitchName;
 const SPOTIFY_VOLUME_UNSUPPORTED_MESSAGE =
   "This Spotify device does not allow remote volume control. Use the device volume buttons instead.";
 
@@ -223,12 +230,12 @@ function isPersonalMobileSpotifyDeviceType(type: string | null | undefined): boo
   return normalized === "smartphone" || normalized === "tablet";
 }
 
-function clampMobilePosition(x: number, y: number, collapsed: boolean) {
+function clampMobilePosition(x: number, y: number, collapsed: boolean, collapsedSize = MOBILE_WIDGET_COLLAPSED_SIZE) {
   if (typeof window === "undefined") return { x, y };
   const width = collapsed
-    ? MOBILE_WIDGET_COLLAPSED_SIZE
+    ? collapsedSize
     : Math.min(MOBILE_WIDGET_EXPANDED_MAX_WIDTH, window.innerWidth - MOBILE_WIDGET_EXPANDED_HORIZONTAL_GUTTER);
-  const height = collapsed ? MOBILE_WIDGET_COLLAPSED_SIZE : MOBILE_WIDGET_EXPANDED_HEIGHT;
+  const height = collapsed ? collapsedSize : MOBILE_WIDGET_EXPANDED_HEIGHT;
   return {
     x: Math.max(
       MOBILE_WIDGET_VIEWPORT_PADDING,
@@ -244,8 +251,15 @@ function clampMobilePosition(x: number, y: number, collapsed: boolean) {
 function getMobileWidgetStyle(
   position: { x: number; y: number },
   collapsed: boolean,
+  placementEnabled: boolean,
   viewportWidth?: number,
   viewportHeight?: number,
+  viewportLeft = 0,
+  viewportTop = 0,
+  obstacles: readonly FloatingWidgetRect[] = [],
+  visibleViewportWidth?: number,
+  visibleViewportHeight?: number,
+  collapsedSize = MOBILE_WIDGET_COLLAPSED_SIZE,
 ): Pick<CSSProperties, "left" | "top"> {
   if (typeof window === "undefined") {
     return { left: position.x, top: position.y };
@@ -253,32 +267,58 @@ function getMobileWidgetStyle(
   const width = viewportWidth ?? window.innerWidth;
   const height = viewportHeight ?? window.innerHeight;
 
+  if (collapsed && placementEnabled) {
+    const placement = placeFloatingWidget({
+      x: position.x,
+      y: position.y,
+      size: collapsedSize,
+      viewportWidth: visibleViewportWidth ?? width,
+      viewportHeight: visibleViewportHeight ?? height,
+      viewportLeft,
+      viewportTop,
+      padding: MOBILE_WIDGET_VIEWPORT_PADDING,
+      bottomReserve: MOBILE_WIDGET_COMPOSER_RESERVE,
+      obstacles,
+    });
+    return { left: placement.x, top: placement.y };
+  }
+
   return {
     left: Math.max(
       MOBILE_WIDGET_VIEWPORT_PADDING,
-      Math.min(width - MOBILE_WIDGET_COLLAPSED_SIZE - MOBILE_WIDGET_VIEWPORT_PADDING, position.x),
+      Math.min(width - collapsedSize - MOBILE_WIDGET_VIEWPORT_PADDING, position.x),
     ),
     top: Math.max(
       MOBILE_WIDGET_VIEWPORT_PADDING,
       Math.min(
-        height -
-          (collapsed ? MOBILE_WIDGET_COLLAPSED_SIZE : MOBILE_WIDGET_EXPANDED_HEIGHT) -
-          MOBILE_WIDGET_VIEWPORT_PADDING,
+        height - (collapsed ? collapsedSize : MOBILE_WIDGET_EXPANDED_HEIGHT) - MOBILE_WIDGET_VIEWPORT_PADDING,
         position.y,
       ),
     ),
   };
 }
 
-function getMobileExpandedPanelStyle(position: { x: number; y: number }, viewportWidth?: number): CSSProperties {
+/** Where the collapsed widget actually sits; stored x may be a right-edge sentinel. */
+function resolveMobileWidgetX(x: number, viewportWidth?: number, collapsedSize = MOBILE_WIDGET_COLLAPSED_SIZE): number {
+  if (typeof window === "undefined") return x;
+  const width = viewportWidth ?? window.innerWidth;
+  return Math.max(MOBILE_WIDGET_VIEWPORT_PADDING, Math.min(width - collapsedSize - MOBILE_WIDGET_VIEWPORT_PADDING, x));
+}
+
+function getMobileExpandedPanelStyle(
+  position: { x: number; y: number },
+  placementEnabled: boolean,
+  viewportWidth?: number,
+  collapsedSize = MOBILE_WIDGET_COLLAPSED_SIZE,
+): CSSProperties {
   if (typeof window === "undefined") return {};
   const availableWidth = viewportWidth ?? window.innerWidth;
+  const left = placementEnabled ? resolveMobileWidgetX(position.x, availableWidth, collapsedSize) : position.x;
 
   const width = Math.min(MOBILE_WIDGET_EXPANDED_MAX_WIDTH, availableWidth - MOBILE_WIDGET_EXPANDED_HORIZONTAL_GUTTER);
   const opensLeft =
-    position.x + width > availableWidth - MOBILE_WIDGET_VIEWPORT_PADDING ||
-    position.x + MOBILE_WIDGET_COLLAPSED_SIZE / 2 > availableWidth / 2;
-  const preferredLeft = opensLeft ? position.x + MOBILE_WIDGET_COLLAPSED_SIZE - width : position.x;
+    left + width > availableWidth - MOBILE_WIDGET_VIEWPORT_PADDING || left + collapsedSize / 2 > availableWidth / 2;
+  const preferredLeft = opensLeft ? left + collapsedSize - width : left;
   const clampedLeft = Math.max(
     MOBILE_WIDGET_VIEWPORT_PADDING,
     Math.min(availableWidth - width - MOBILE_WIDGET_VIEWPORT_PADDING, preferredLeft),
@@ -286,7 +326,7 @@ function getMobileExpandedPanelStyle(position: { x: number; y: number }, viewpor
 
   return {
     width,
-    transform: `translateX(${Math.round(clampedLeft - position.x)}px)`,
+    transform: `translateX(${Math.round(clampedLeft - left)}px)`,
   };
 }
 
@@ -313,12 +353,17 @@ export function SpotifyMiniPlayer({
   mobile?: boolean;
   forceFloating?: boolean;
 }) {
+  const floatingMediaPlacementEnabled = useFeatureEnabled(FLOATING_MEDIA_PLACEMENT_FEATURE);
   const { t: localizeUi } = useUiTranslation();
   const qc = useQueryClient();
   const enabled = useUIStore((s) => s.musicPlayerEnabled && s.musicPlayerSource === "spotify");
   const openRightPanel = useUIStore((s) => s.openRightPanel);
   const openAgentDetail = useUIStore((s) => s.openAgentDetail);
   const collapsed = useUIStore((s) => s.spotifyMobileWidgetCollapsed);
+  const [collapsedWidgetRef, collapsedWidgetSize] = useMeasuredFloatingWidgetSize(
+    collapsed && (mobile || forceFloating) && floatingMediaPlacementEnabled,
+    MOBILE_WIDGET_COLLAPSED_SIZE,
+  );
   const setCollapsed = useUIStore((s) => s.setSpotifyMobileWidgetCollapsed);
   const mobilePosition = useUIStore((s) => s.spotifyMobileWidgetPosition);
   const setMobilePosition = useUIStore((s) => s.setSpotifyMobileWidgetPosition);
@@ -807,12 +852,13 @@ export function SpotifyMiniPlayer({
         return;
       }
       event.preventDefault();
+      const rendered = floatingMediaPlacementEnabled ? event.currentTarget.getBoundingClientRect() : null;
       dragRef.current = {
         pointerId: event.pointerId,
         startX: event.clientX,
         startY: event.clientY,
-        originX: mobilePosition.x,
-        originY: mobilePosition.y,
+        originX: rendered?.left ?? mobilePosition.x,
+        originY: rendered?.top ?? mobilePosition.y,
       };
       try {
         event.currentTarget.setPointerCapture(event.pointerId);
@@ -820,7 +866,7 @@ export function SpotifyMiniPlayer({
         // Some mobile browsers can deny capture if the pointer was already cancelled.
       }
     },
-    [floating, mobilePosition.x, mobilePosition.y],
+    [floating, floatingMediaPlacementEnabled, mobilePosition.x, mobilePosition.y],
   );
 
   const moveDrag = useCallback(
@@ -832,10 +878,11 @@ export function SpotifyMiniPlayer({
         drag.originX + event.clientX - drag.startX,
         drag.originY + event.clientY - drag.startY,
         collapsed,
+        collapsedWidgetSize,
       );
       setMobilePosition(next);
     },
-    [collapsed, setMobilePosition],
+    [collapsed, collapsedWidgetSize, setMobilePosition],
   );
 
   const endDrag = useCallback(
@@ -895,13 +942,40 @@ export function SpotifyMiniPlayer({
   );
   const viewportWidth = viewport.w;
   const viewportHeight = viewport.h;
+  const floatingAvoid = useFloatingWidgetAvoid(floating && floatingMediaPlacementEnabled);
   const mobileWidgetStyle = useMemo(
-    () => getMobileWidgetStyle(mobilePosition, collapsed, viewportWidth, viewportHeight),
-    [collapsed, mobilePosition, viewportHeight, viewportWidth],
+    () =>
+      getMobileWidgetStyle(
+        mobilePosition,
+        collapsed,
+        floatingMediaPlacementEnabled,
+        viewportWidth,
+        viewportHeight,
+        floatingAvoid.viewportLeft,
+        floatingAvoid.viewportTop,
+        floatingAvoid.obstacles,
+        floatingAvoid.viewportWidth,
+        floatingAvoid.viewportHeight,
+        collapsedWidgetSize,
+      ),
+    [
+      collapsed,
+      collapsedWidgetSize,
+      floatingMediaPlacementEnabled,
+      floatingAvoid.obstacles,
+      floatingAvoid.viewportLeft,
+      floatingAvoid.viewportTop,
+      floatingAvoid.viewportWidth,
+      floatingAvoid.viewportHeight,
+      mobilePosition,
+      viewportHeight,
+      viewportWidth,
+    ],
   );
   const mobileExpandedPanelStyle = useMemo(
-    () => getMobileExpandedPanelStyle(mobilePosition, viewportWidth),
-    [mobilePosition, viewportWidth],
+    () =>
+      getMobileExpandedPanelStyle(mobilePosition, floatingMediaPlacementEnabled, viewportWidth, collapsedWidgetSize),
+    [collapsedWidgetSize, floatingMediaPlacementEnabled, mobilePosition, viewportWidth],
   );
   const volumeControls = useMemo(() => {
     const stopPointer = (event: ReactPointerEvent<HTMLElement>) => event.stopPropagation();
@@ -1183,6 +1257,7 @@ export function SpotifyMiniPlayer({
       >
         {collapsed ? (
           <div
+            ref={collapsedWidgetRef}
             className={cn(
               "flex h-12 w-12 items-center justify-center rounded-full border shadow-lg backdrop-blur-xl",
               MUSIC_PLAYER_SHELL_BORDER_CLASS,

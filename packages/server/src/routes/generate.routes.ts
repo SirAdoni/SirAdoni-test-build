@@ -1,3 +1,4 @@
+import { isFeatureEnabled } from "../services/features/feature-settings.js";
 import {
   currentRoomGeneration,
   resolveRoomGenerationPolicy,
@@ -50,6 +51,12 @@ import {
 } from "../services/generation/agent-activation-questions.js";
 import { registerSequentialGameTasks } from "../services/game/sequential-tasks.js";
 import {
+  assertGamePromptRequestFits,
+  applyGamePromptDirectEditsWithIssues,
+  dispatchWithGameGenerationFeatures,
+  gamePromptDirectEditsForMode,
+} from "../services/game/game-prompt-direct-edits.js";
+import {
   createAdvancedMemoryService,
   selectAdvancedMemoryMessages,
   type AdvancedMemorySceneCheck,
@@ -58,7 +65,7 @@ import {
   prepareAdvancedMemoryContext,
   type AdvancedMemorySnapshot,
 } from "../services/generation/advanced-memory-context.js";
-import { measureContextBudget } from "../services/llm/base-provider.js";
+import { LLMHttpError, measureContextBudget } from "../services/llm/base-provider.js";
 import {
   resolveAdvancedMemoryPrompt,
   createAdvancedMemoryPlacement,
@@ -66,11 +73,14 @@ import {
   type AdvancedMemoryPlacement,
 } from "../services/prompt/advanced-memory-prompt.js";
 import { registerParameterPreviewRoute } from "./generate/parameter-preview-route.js";
+import { queueSceneTimeline } from "../services/game/scene-timeline.service.js";
+import { isGameSceneTimelineEnabled } from "@marinara-engine/shared";
 // ──────────────────────────────────────────────
 // Routes: Generation (SSE Streaming with Tool Use + Agent Pipeline)
 // ──────────────────────────────────────────────
 import type { FastifyInstance } from "fastify";
 import type { input as SchemaInput } from "zod";
+import { prepareOpenAIChatGPTCacheAffinityMessages } from "../services/llm/providers/openai-chatgpt-cache.js";
 import { translateGeneratedMessage } from "../services/translation.service.js";
 import { randomInt, randomUUID } from "crypto";
 import { existsSync, mkdirSync, writeFileSync } from "fs";
@@ -151,6 +161,7 @@ import type {
   ChatSummaryEntry,
   ChatMode,
   DiceRollResult,
+  SkillCheckResult,
   ResolvedSpatialTravel,
   ThinkingTagPair,
 } from "@marinara-engine/shared";
@@ -159,6 +170,8 @@ import {
   RoleplayInterruptionConflictError,
   withChatMetadataPatchQueue,
 } from "../services/storage/chats.storage.js";
+import { gmTurnDiceLogEntries } from "../services/game/dice-roll-log.js";
+import { recordGameDiceRollsSafely } from "../services/storage/game-dice-rolls.storage.js";
 import { updateInterruptedPromptHistory } from "../services/generation/roleplay-interrupt-context.js";
 import {
   commitSpatialOwnerTurn,
@@ -751,6 +764,10 @@ import {
 } from "../services/generation/generation-parameters.js";
 import { clampGenerationMaxOutputTokens } from "../services/generation/output-token-limits.js";
 import { createLLMProvider } from "../services/llm/provider-registry.js";
+import {
+  isCampaignMemoryRecallEnabled,
+  wasOptionalMemoryPromptDisabled,
+} from "../services/features/campaign-opt-in.js";
 import { withConnectionFallbackProvider } from "../services/llm/connection-fallback-provider.js";
 import {
   fitMessagesForModelAccess,
@@ -785,7 +802,17 @@ import {
 } from "../services/generation/scene-context-runtime.js";
 import { injectCommittedTrackerContext } from "../services/generation/committed-tracker-context.js";
 import { loadPriorBeholderState } from "../services/agents/beholder-state.js";
-import { gameGmPromptDecisionTexts, injectGameGmPromptRuntime } from "../services/generation/game-gm-prompt-runtime.js";
+import {
+  appendGameGmCampaignMemoryIfEnabled,
+  assertExtendedWidgetDispatchAllowed,
+  gameGmPromptDecisionTexts,
+  injectGameGmPromptRuntime,
+} from "../services/generation/game-gm-prompt-runtime.js";
+import {
+  buildCampaignMemoryContextFromStorage,
+  normalizeCampaignMemoryMaxCharacters,
+} from "../services/game/campaign-memory-context.js";
+import { formatCampaignMemoryMessageOrder } from "../services/game/campaign-memory-order.js";
 import { mergeConversationCharacterMemories } from "../services/generation/conversation-memory-context.js";
 import { injectMemoryRecallContext } from "../services/generation/memory-recall-context.js";
 import { shouldSkipAgentByMessageInterval } from "../services/generation/agent-cadence.js";
@@ -1024,6 +1051,7 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
   const isDebug = logger.isLevelEnabled("debug");
 
   const chats = createChatsStorage(app.db);
+  const continuityChanges = app.continuityChanges;
   const advancedMemory = createAdvancedMemoryService(app.db);
   const connections = createConnectionsStorage(app.db);
   const presets = createPromptsStorage(app.db);
@@ -1299,6 +1327,7 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
       // Find the last assistant message's active swipe and commit its game state.
       // This ensures swipes/regens always use the state from the user's accepted turn.
       let spatialGameStateSnapshotId: string | null = null;
+      let acceptedAssistantMessageId: string | null = null;
       const preMessages = await chats.listMessages(input.chatId).catch(releaseActiveGenerationAndRethrow);
       if (requestChatMode === "roleplay") {
         const messagesById = new Map(preMessages.map((message) => [message.id, message]));
@@ -1318,6 +1347,7 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
       for (let i = preMessages.length - 1; i >= 0; i--) {
         if (preMessages[i]!.role === "assistant") {
           const lastAsstMsg = preMessages[i]!;
+          acceptedAssistantMessageId = lastAsstMsg.id;
           const gs = await gameStateStore
             .getByChatAndMessage(input.chatId, lastAsstMsg.id, lastAsstMsg.activeSwipeIndex)
             .catch(releaseActiveGenerationAndRethrow);
@@ -1395,6 +1425,35 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
           })
           .catch(releaseActiveGenerationAndRethrow);
         if (updatedUserMsg) userMsg = updatedUserMsg;
+      }
+
+      if (requestChatMode === "game" && acceptedAssistantMessageId) {
+        try {
+          const sessionNumber = earlyMeta.gameSessionNumber;
+          if (typeof sessionNumber === "number" && Number.isInteger(sessionNumber) && sessionNumber > 0) {
+            await app.gameContinuity.enqueueCommittedTurn({
+              chatId: input.chatId,
+              assistantMessageId: acceptedAssistantMessageId,
+              sessionNumber,
+            });
+          }
+        } catch (error) {
+          app.log.warn(
+            { err: error, chatId: input.chatId, assistantMessageId: acceptedAssistantMessageId },
+            "[game-continuity] immediate turn enqueue failed; scheduling reconciliation recovery",
+          );
+        } finally {
+          // The accepted message is already durable. Reconciliation can recover a failed enqueue,
+          // so memory availability must not prevent the normal provider request from proceeding.
+          try {
+            continuityChanges.notify(input.chatId);
+          } catch (error) {
+            app.log.warn(
+              { err: error, chatId: input.chatId, assistantMessageId: acceptedAssistantMessageId },
+              "[game-continuity] could not schedule reconciliation recovery",
+            );
+          }
+        }
       }
 
       // Snapshot Persona info for per-message tracking. Only Conversation may
@@ -4059,6 +4118,8 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
           chatMode,
           isSceneChat,
           chatParameters: chatMeta.chatParameters,
+          gameGmReasoningEffort: chatMeta.gameGmReasoningEffort,
+          gameGmReasoningEnabled: isFeatureEnabled("gmNarrationReasoning"),
           managedParameterDefinitions,
           modelAccessPolicy,
           initial: {
@@ -4086,6 +4147,7 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
           connectionParams,
           resolvedEffort,
           providerReasoningEffort,
+          gameGmReasoningApplied,
           enableThinking,
           isClaudeNoSampling,
           providerTopK,
@@ -4335,6 +4397,9 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
         }
 
         let canonicalGamePartyNames: string[] = [];
+        let extendedWidgetPromptApplied = false;
+        const assertCurrentWidgetPermission = () =>
+          assertExtendedWidgetDispatchAllowed(extendedWidgetPromptApplied, () => chats.getById(input.chatId));
 
         // ── One-request dice: the roll_dice split (#6215) ──
         // Resolved here, above the GM format reminder, because the reminder has to describe the
@@ -4397,6 +4462,8 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
             gameDiceToolAutoAttached && nativeToolsAvailableForTurn ? GAME_MODE_AUTO_ATTACH_TOOL_NAMES : [],
         });
 
+        let memoryControlsPromptApplied = false;
+        let campaignMemoryPromptApplied = false;
         if (chatMode === "game") {
           const selectedGamePrompt =
             resolvedPreset && presetId
@@ -4408,21 +4475,98 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
             !(typeof chatMeta.gameGmPromptTemplateId === "string" && chatMeta.gameGmPromptTemplateId.trim().length > 0)
               ? { ...chatMeta, gameSystemPrompt: selectedGamePrompt }
               : chatMeta;
-          const { gmCtx, gameActiveState, sessionNumber, gameTurnNumber, gameTime, gameMap, hasSceneModel } =
-            await injectGameGmPromptRuntime({
-              messages: finalMessages,
-              chatId: input.chatId,
-              chat,
-              chatMetadata: gamePromptMetadata,
-              characterIds,
-              chars,
-              chats,
-              selectedGameStateSnapshotPromise,
-              mappedMessages,
-              personaName,
-              resolvePromptMacros,
-            });
+          const {
+            gmCtx,
+            gameActiveState,
+            sessionNumber,
+            gameTurnNumber,
+            gameTime,
+            gameMap,
+            hasSceneModel,
+            memoryControlsApplied,
+            campaignMemoryApplied,
+          } = await injectGameGmPromptRuntime({
+            db: app.db,
+            campaignMemoryRequestMode:
+              !input.regenerateMessageId && !input.continueMessageId ? "live-current" : undefined,
+            messages: finalMessages,
+            chatId: input.chatId,
+            chat,
+            chatMetadata: gamePromptMetadata,
+            characterIds,
+            chars,
+            chats,
+            selectedGameStateSnapshotPromise,
+            mappedMessages,
+            personaName,
+            resolvePromptMacros,
+          });
+          memoryControlsPromptApplied = memoryControlsApplied;
+          campaignMemoryPromptApplied = campaignMemoryApplied;
+          const memoryTargetId = input.regenerateMessageId ?? input.continueMessageId;
+          if (memoryTargetId && isCampaignMemoryRecallEnabled()) {
+            const targetIndex = scopedMessages.findIndex((message: any) => message.id === memoryTargetId);
+            const predecessor = input.continueMessageId
+              ? scopedMessages[targetIndex]
+              : targetIndex > 0
+                ? scopedMessages[targetIndex - 1]
+                : null;
+            let cutoffOrder: string;
+            try {
+              cutoffOrder =
+                predecessor?.id && typeof predecessor.createdAt === "string"
+                  ? formatCampaignMemoryMessageOrder(predecessor.id, predecessor.createdAt)
+                  : formatCampaignMemoryMessageOrder("__before_conversation__", "1970-01-01T00:00:00.000Z");
+            } catch {
+              cutoffOrder = formatCampaignMemoryMessageOrder("__before_conversation__", "1970-01-01T00:00:00.000Z");
+            }
+            try {
+              const regeneratedIndex = input.regenerateMessageId
+                ? scopedMessages.findIndex((message: any) => message.id === input.regenerateMessageId)
+                : -1;
+              const continuityThroughMessageId = input.regenerateMessageId
+                ? (scopedMessages[regeneratedIndex - 1]?.id ?? "__before_conversation__")
+                : (input.continueMessageId ?? scopedMessages.at(-1)?.id);
+              const historicalMemory = await buildCampaignMemoryContextFromStorage(app.db, {
+                chatId: input.chatId,
+                audience: { kind: "gm" },
+                maxCharacters: normalizeCampaignMemoryMaxCharacters(chatMeta.gameCampaignMemoryMaxCharacters),
+                cutoffOrder,
+                dedupeContinuityReceipts: true,
+                ...(continuityThroughMessageId ? { continuityThroughMessageId } : {}),
+                focusTexts: mappedMessages
+                  .filter((message) => message.contextKind === undefined || message.contextKind === "history")
+                  .slice(-4)
+                  .map((message) => (typeof message.content === "string" ? message.content : "")),
+              });
+              campaignMemoryPromptApplied =
+                appendGameGmCampaignMemoryIfEnabled(finalMessages, historicalMemory, cutoffOrder) ||
+                campaignMemoryPromptApplied;
+            } catch (err) {
+              logger.error(
+                {
+                  err,
+                  errorCode: "CAMPAIGN_MEMORY_PROJECTION_UNAVAILABLE",
+                  event: "campaign_memory.projection_unavailable",
+                  chatId: input.chatId,
+                },
+                "Historical campaign memory projection unavailable; preserving the existing GM prompt",
+              );
+              campaignMemoryPromptApplied =
+                appendGameGmCampaignMemoryIfEnabled(
+                  finalMessages,
+                  {
+                    text: "[Campaign memory unavailable: canonical campaign memory was not validated for this historical request. Do not treat absent campaign memory as proof that no memory exists.]",
+                    includedIds: [],
+                    exclusions: [{ id: "campaign-memory", reason: "projection unavailable" }],
+                    degraded: true,
+                  },
+                  cutoffOrder,
+                ) || campaignMemoryPromptApplied;
+            }
+          }
           canonicalGamePartyNames = gmCtx.partyNames;
+          extendedWidgetPromptApplied = gmCtx.enableExtendedWidgets === true && gmCtx.enableCustomWidgets !== false;
 
           // ── Lorebook injection for game mode ──
           if (!presetHandledLorebooks) {
@@ -4688,6 +4832,9 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
             buildGmFormatReminder({
               hasSceneModel,
               hudWidgets: gmCtx.hudWidgets,
+              enableCustomWidgets: gmCtx.enableCustomWidgets,
+              enableExtendedWidgets: gmCtx.enableExtendedWidgets,
+
               turnNumber: gameTurnNumber,
               gameActiveState: gameActiveState as import("@marinara-engine/shared").GameActiveState,
               sessionNumber,
@@ -7952,9 +8099,46 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
             return fit.messages;
           };
 
-          const initialProviderMessages = advancedPreparedProviderMessages
+          let initialProviderMessages = advancedPreparedProviderMessages
             ? await fitPromptForSend(advancedPreparedProviderMessages)
             : prepareProviderMessages(await fitPromptForSend(toProviderMessages(preparedMessagesForGen)));
+          const directEdits = isFeatureEnabled("gamePromptEditing")
+            ? gamePromptDirectEditsForMode(chatMode, chatMeta.gamePromptDirectEdits)
+            : [];
+          const directEditApplication = applyGamePromptDirectEditsWithIssues(
+            initialProviderMessages,
+            directEdits ?? [],
+          );
+          const gamePromptEditsApplied = directEditApplication.messages.some(
+            (message, index) => message.content !== initialProviderMessages[index]?.content,
+          );
+          initialProviderMessages = directEditApplication.messages;
+          const dispatchWithCurrentGameFeatureSnapshot = <T>(dispatch: () => Promise<T> | T) =>
+            dispatchWithGameGenerationFeatures(
+              {
+                promptEditsApplied: gamePromptEditsApplied,
+                gmReasoningApplied: gameGmReasoningApplied,
+                promptEditingEnabled: isFeatureEnabled("gamePromptEditing"),
+                gmReasoningEnabled: isFeatureEnabled("gmNarrationReasoning"),
+              },
+              dispatch,
+            );
+          if (directEdits?.length) {
+            assertGamePromptRequestFits(initialProviderMessages, {
+              maxContext: effectiveMaxContext!,
+              maxTokens: effectiveMaxTokensForSend,
+              tools: gameToolConnection ? undefined : responderToolDefs,
+            });
+          }
+          if (directEdits === null && chatMeta.gamePromptDirectEdits !== undefined) {
+            logger.warn("Ignoring invalid saved Game prompt edits for chat %s", input.chatId);
+          }
+          if (directEditApplication.issues.length > 0) {
+            sendSseEvent(reply, {
+              type: "game_prompt_edits_warning",
+              data: { count: directEditApplication.issues.length },
+            });
+          }
           finalPromptSent = initialProviderMessages;
           rememberMainPromptPreviewForAgents(initialProviderMessages);
 
@@ -7978,6 +8162,7 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
           let geminiResponseParts: unknown[] | null = null;
           // Each generation attempt owns its rolls; swipes never inherit this list.
           const toolDiceRollResults: DiceRollResult[] = [];
+          const diceLogChecks: SkillCheckResult[] = [];
           let chatCompletionsReasoning: Record<string, unknown> | null = null;
           const rememberChatCompletionsReasoning = (metadata: Record<string, unknown>) => {
             chatCompletionsReasoning = readChatCompletionsReasoningMetadata(metadata) ?? metadata;
@@ -8121,21 +8306,39 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
             onChatCompletionsReasoning: rememberChatCompletionsReasoning,
           };
 
+          const cancelIfOptionalMemoryWasDisabled = (): boolean => {
+            const disabledAfterPromptBuild = wasOptionalMemoryPromptDisabled({
+              memoryControlsApplied: memoryControlsPromptApplied,
+              campaignMemoryApplied: campaignMemoryPromptApplied,
+            });
+            if (disabledAfterPromptBuild && !abortController.signal.aborted) {
+              sendSseEvent(reply, {
+                type: "error",
+                data: "Memory features changed during generation. Please retry with the current settings.",
+              });
+              abortController.abort();
+            }
+            return disabledAfterPromptBuild;
+          };
           let narratorMessages = initialProviderMessages;
+          if (cancelIfOptionalMemoryWasDisabled()) return null;
+          await assertCurrentWidgetPermission();
           const gameToolPlan =
             gameToolConnection && !input.continueMessageId && toolsAttached && toolDefs?.length
-              ? await withLlmRequestTimeout(chatGenerationTimeoutMs, () =>
-                  planGameToolCalls({
-                    connection: gameToolConnection,
-                    baseUrl: resolveBaseUrl(gameToolConnection),
-                    messages: initialProviderMessages,
-                    tools: toolDefs,
-                    forceToolCall: enableChatTools && chatMeta.forceToolCall === true,
-                    signal: generationSignal,
-                    debugMode: requestDebug,
-                    debugLog,
-                  }),
-                )
+              ? await withLlmRequestTimeout(chatGenerationTimeoutMs, () => {
+                  return dispatchWithCurrentGameFeatureSnapshot(() =>
+                    planGameToolCalls({
+                      connection: gameToolConnection,
+                      baseUrl: resolveBaseUrl(gameToolConnection),
+                      messages: initialProviderMessages,
+                      tools: toolDefs,
+                      forceToolCall: enableChatTools && chatMeta.forceToolCall === true,
+                      signal: generationSignal,
+                      debugMode: requestDebug,
+                      debugLog,
+                    }),
+                  );
+                })
               : null;
           if (generationSignal.aborted) return null;
           if (responderToolsAttached && (gameToolPlan || (!gameToolConnection && provider.chatComplete))) {
@@ -8179,55 +8382,59 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
                   result = { content: null, toolCalls: gameToolPlan.toolCalls, finishReason: "tool_calls" };
                 } else {
                   loopMessages = await fitPromptForSend(loopMessages);
+                  if (cancelIfOptionalMemoryWasDisabled()) return null;
                   rememberMainPromptPreviewForAgents(loopMessages);
                   logPromptSentToModel(
                     loopMessages,
                     round === 0 ? "Prompt sent to model" : `Prompt sent to model (tool round ${round + 1})`,
                   );
-                  result = await withLlmRequestTimeout(chatGenerationTimeoutMs, () =>
-                    provider.chatComplete!(loopMessages, {
-                      model: conn.model,
-                      preserveContext: advancedMemoryEnabled,
-                      temperature,
-                      maxTokens: effectiveMaxTokensForSend,
-                      maxContext: effectiveMaxContext,
-                      topP,
-                      topK: providerTopK,
-                      frequencyPenalty: frequencyPenalty || undefined,
-                      presencePenalty: presencePenalty || undefined,
-                      minP: minP || undefined,
-                      stop: stopSequences.length ? stopSequences : undefined,
-                      tools: supportsNativeToolCalls(conn.provider) ? responderToolDefs : undefined,
-                      toolChoice: supportsNativeToolCalls(conn.provider)
-                        ? resolveMainGenerationToolChoice({ chatMetadata: chatMeta, enableChatTools, round })
-                        : undefined,
-                      debugMode: requestDebug,
-                      enableCaching: conn.enableCaching === "true",
-                      anthropicExtendedCacheTtl: conn.anthropicExtendedCacheTtl === "true",
-                      cachingAtDepth: conn.cachingAtDepth ?? 5,
-                      enableThinking,
-                      captureReasoning,
-                      reasoningEffort: providerReasoningEffort,
-                      excludePastReasoning,
-                      verbosity: verbosity ?? undefined,
-                      serviceTier,
-                      customParameters,
-                      enabledParameters,
-                      suppressModelParameters,
-                      onThinking,
-                      onToken: input.streaming ? onToken : undefined,
-                      openrouterProvider: conn.openrouterProvider ?? undefined,
-                      signal: rollRequestAbort
-                        ? AbortSignal.any([generationSignal, rollRequestAbort.signal])
-                        : generationSignal,
-                      encryptedReasoningItems: excludePastReasoning ? undefined : encryptedReasoningItems,
-                      onEncryptedReasoning: excludePastReasoning
-                        ? undefined
-                        : (items) => {
-                            encryptedReasoningItems = items;
-                          },
-                      onChatCompletionsReasoning: rememberChatCompletionsReasoning,
-                    }),
+                  await assertCurrentWidgetPermission();
+                  result = await dispatchWithCurrentGameFeatureSnapshot(() =>
+                    withLlmRequestTimeout(chatGenerationTimeoutMs, () =>
+                      provider.chatComplete!(loopMessages, {
+                        model: conn.model,
+                        preserveContext: advancedMemoryEnabled,
+                        temperature,
+                        maxTokens: effectiveMaxTokensForSend,
+                        maxContext: effectiveMaxContext,
+                        topP,
+                        topK: providerTopK,
+                        frequencyPenalty: frequencyPenalty || undefined,
+                        presencePenalty: presencePenalty || undefined,
+                        minP: minP || undefined,
+                        stop: stopSequences.length ? stopSequences : undefined,
+                        tools: supportsNativeToolCalls(conn.provider) ? responderToolDefs : undefined,
+                        toolChoice: supportsNativeToolCalls(conn.provider)
+                          ? resolveMainGenerationToolChoice({ chatMetadata: chatMeta, enableChatTools, round })
+                          : undefined,
+                        debugMode: requestDebug,
+                        enableCaching: conn.enableCaching === "true",
+                        anthropicExtendedCacheTtl: conn.anthropicExtendedCacheTtl === "true",
+                        cachingAtDepth: conn.cachingAtDepth ?? 5,
+                        enableThinking,
+                        captureReasoning,
+                        reasoningEffort: providerReasoningEffort,
+                        excludePastReasoning,
+                        verbosity: verbosity ?? undefined,
+                        serviceTier,
+                        customParameters,
+                        enabledParameters,
+                        suppressModelParameters,
+                        onThinking,
+                        onToken: input.streaming ? onToken : undefined,
+                        openrouterProvider: conn.openrouterProvider ?? undefined,
+                        signal: rollRequestAbort
+                          ? AbortSignal.any([generationSignal, rollRequestAbort.signal])
+                          : generationSignal,
+                        encryptedReasoningItems: excludePastReasoning ? undefined : encryptedReasoningItems,
+                        onEncryptedReasoning: excludePastReasoning
+                          ? undefined
+                          : (items) => {
+                              encryptedReasoningItems = items;
+                            },
+                        onChatCompletionsReasoning: rememberChatCompletionsReasoning,
+                      }),
+                    ),
                   );
                   await recordAcceptedLongTermMemoryPrompt(loopMessages);
                 }
@@ -8519,43 +8726,47 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
                 loopMessages = await fitPromptForSend(loopMessages);
                 rememberMainPromptPreviewForAgents(loopMessages);
                 logPromptSentToModel(loopMessages, "Prompt sent to model (final tool follow-up)");
-                const finalResult = await withLlmRequestTimeout(chatGenerationTimeoutMs, () =>
-                  provider.chatComplete!(loopMessages, {
-                    model: conn.model,
-                    preserveContext: advancedMemoryEnabled,
-                    temperature,
-                    maxTokens: effectiveMaxTokensForSend,
-                    maxContext: effectiveMaxContext,
-                    topP,
-                    topK: providerTopK,
-                    frequencyPenalty: frequencyPenalty || undefined,
-                    presencePenalty: presencePenalty || undefined,
-                    minP: minP || undefined,
-                    stop: stopSequences.length ? stopSequences : undefined,
-                    enableCaching: conn.enableCaching === "true",
-                    anthropicExtendedCacheTtl: conn.anthropicExtendedCacheTtl === "true",
-                    cachingAtDepth: conn.cachingAtDepth ?? 5,
-                    enableThinking,
-                    captureReasoning,
-                    reasoningEffort: providerReasoningEffort,
-                    excludePastReasoning,
-                    verbosity: verbosity ?? undefined,
-                    serviceTier,
-                    customParameters,
-                    enabledParameters,
-                    suppressModelParameters,
-                    onThinking,
-                    onToken: input.streaming ? onToken : undefined,
-                    openrouterProvider: conn.openrouterProvider ?? undefined,
-                    signal: generationSignal,
-                    encryptedReasoningItems: excludePastReasoning ? undefined : encryptedReasoningItems,
-                    onEncryptedReasoning: excludePastReasoning
-                      ? undefined
-                      : (items) => {
-                          encryptedReasoningItems = items;
-                        },
-                    onChatCompletionsReasoning: rememberChatCompletionsReasoning,
-                  }),
+                await assertCurrentWidgetPermission();
+                if (cancelIfOptionalMemoryWasDisabled()) return null;
+                const finalResult = await dispatchWithCurrentGameFeatureSnapshot(() =>
+                  withLlmRequestTimeout(chatGenerationTimeoutMs, () =>
+                    provider.chatComplete!(loopMessages, {
+                      model: conn.model,
+                      preserveContext: advancedMemoryEnabled,
+                      temperature,
+                      maxTokens: effectiveMaxTokensForSend,
+                      maxContext: effectiveMaxContext,
+                      topP,
+                      topK: providerTopK,
+                      frequencyPenalty: frequencyPenalty || undefined,
+                      presencePenalty: presencePenalty || undefined,
+                      minP: minP || undefined,
+                      stop: stopSequences.length ? stopSequences : undefined,
+                      enableCaching: conn.enableCaching === "true",
+                      anthropicExtendedCacheTtl: conn.anthropicExtendedCacheTtl === "true",
+                      cachingAtDepth: conn.cachingAtDepth ?? 5,
+                      enableThinking,
+                      captureReasoning,
+                      reasoningEffort: providerReasoningEffort,
+                      excludePastReasoning,
+                      verbosity: verbosity ?? undefined,
+                      serviceTier,
+                      customParameters,
+                      enabledParameters,
+                      suppressModelParameters,
+                      onThinking,
+                      onToken: input.streaming ? onToken : undefined,
+                      openrouterProvider: conn.openrouterProvider ?? undefined,
+                      signal: generationSignal,
+                      encryptedReasoningItems: excludePastReasoning ? undefined : encryptedReasoningItems,
+                      onEncryptedReasoning: excludePastReasoning
+                        ? undefined
+                        : (items) => {
+                            encryptedReasoningItems = items;
+                          },
+                      onChatCompletionsReasoning: rememberChatCompletionsReasoning,
+                    }),
+                  ),
                 );
                 const pendingRoll = roleplayRollEnabled
                   ? parseRoleplayCommands(finalResult.content ?? "").roll
@@ -8581,9 +8792,18 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
             finishReason = undefined;
             rememberMainPromptPreviewForAgents(narratorMessages);
             logPromptSentToModel(narratorMessages);
-            const gen = provider.chat(narratorMessages, textChatOptions);
+            await assertCurrentWidgetPermission();
+            if (cancelIfOptionalMemoryWasDisabled()) return null;
+            const gen = await dispatchWithCurrentGameFeatureSnapshot(() =>
+              provider.chat(
+                prepareOpenAIChatGPTCacheAffinityMessages(narratorMessages, conn.provider, input.chatId),
+                textChatOptions,
+              ),
+            );
             try {
-              let result = await withLlmRequestTimeout(chatGenerationTimeoutMs, () => gen.next());
+              let result = await dispatchWithCurrentGameFeatureSnapshot(() =>
+                withLlmRequestTimeout(chatGenerationTimeoutMs, () => gen.next()),
+              );
               await recordAcceptedLongTermMemoryPrompt(narratorMessages);
               while (!result.done) {
                 if (generationSignal.aborted) {
@@ -9257,6 +9477,8 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
               // A ruleset game's checks were the pass above's alone, on the same terms as its pin.
               chatMeta.gameRuleset != null,
             );
+            if (isFeatureEnabled("diceLog"))
+              diceLogChecks.push(...(rolled.results ?? []), ...generalRolls.checkResults);
             if (generalRolls.content !== fullResponse) {
               fullResponse = generalRolls.content;
               contentReplaced = true;
@@ -9283,6 +9505,7 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
               // outcomes in context, including on providers without a tools API.
               const records = [...fullResponse.matchAll(createGameRollTagRegex())].map((match) => match[0]);
               const checks = [...(rolled.results ?? []), ...generalRolls.checkResults];
+
               const resolvedSummary = [
                 ...checks.map(formatSkillCheckResultSummary),
                 ...toolDiceRollResults.map((result) => `🎲 ${result.notation} = ${result.total}`),
@@ -9297,19 +9520,28 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
               ]);
               logPromptSentToModel(continuationMessages, "Game narration after engine rolls");
               rememberMainPromptPreviewForAgents(continuationMessages);
+              if (cancelIfOptionalMemoryWasDisabled()) return null;
               // The replacement is a new assistant response; old native parts
               // and reasoning envelopes cannot describe it.
               geminiResponseParts = null;
               chatCompletionsReasoning = null;
               encryptedReasoningItems = undefined;
               let narration = "";
-              const followup = provider.chat(continuationMessages, {
-                ...textChatOptions,
-                maxTokens: effectiveMaxTokensForSend,
-                encryptedReasoningItems: undefined,
-              });
+              await assertCurrentWidgetPermission();
+              const followup = await dispatchWithCurrentGameFeatureSnapshot(() =>
+                provider.chat(
+                  prepareOpenAIChatGPTCacheAffinityMessages(continuationMessages, conn.provider, input.chatId),
+                  {
+                    ...textChatOptions,
+                    maxTokens: effectiveMaxTokensForSend,
+                    encryptedReasoningItems: undefined,
+                  },
+                ),
+              );
               try {
-                let next = await withLlmRequestTimeout(chatGenerationTimeoutMs, () => followup.next());
+                let next = await dispatchWithCurrentGameFeatureSnapshot(() =>
+                  withLlmRequestTimeout(chatGenerationTimeoutMs, () => followup.next()),
+                );
                 while (!next.done) {
                   if (generationSignal.aborted) return null;
                   narration += next.value;
@@ -10323,6 +10555,14 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
                 .map((roll) => parseRollDiceToolResult(JSON.stringify(roll) ?? ""))
                 .filter((roll): roll is DiceRollResult => roll !== null);
               extraUpdate.diceRollResults = [...retainedRolls, ...toolDiceRollResults];
+              // History only: never awaited, and a failed write never touches the saved turn.
+              if (isFeatureEnabled("diceLog"))
+                void recordGameDiceRollsSafely(
+                  app.db,
+                  input.chatId,
+                  gmTurnDiceLogEntries(toolDiceRollResults, diceLogChecks),
+                  { messageId: savedMsg.id },
+                );
               // Message-extra updates are shallow: clear a legacy card on every new swipe.
               extraUpdate.diceRollResult = null;
               // A continuation writes into the same swipe through the same shallow merge,
@@ -10349,6 +10589,10 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
               content: m.content,
               ...(m.providerMetadata ? { providerMetadata: m.providerMetadata } : {}),
             }));
+            extraUpdate.gamePromptDirectEditsRevision =
+              typeof chatMeta.gamePromptDirectEditsRevision === "string"
+                ? chatMeta.gamePromptDirectEditsRevision
+                : null;
             // Cache the lorebook scan that produced the prompt so Active Context
             // reflects the last generation instead of a best-effort rescan.
             extraUpdate.lorebookScan = lorebookScanSnapshot;
@@ -13938,6 +14182,14 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
       // still arrive without holding the chat's generation lock hostage.
       sendSseEvent(reply, { type: "done", data: "" });
       releaseActiveGeneration();
+      if (
+        chatMode === "game" &&
+        !input.impersonate &&
+        !generationSignal.aborted &&
+        isGameSceneTimelineEnabled(chatMeta)
+      ) {
+        queueSceneTimeline(app.db, input.chatId, () => activeGenerations.has(input.chatId));
+      }
 
       // Start the independent scene-background tail after tracker persistence,
       // then keep the SSE stream open for visual jobs and Advanced Recall activity.
@@ -13956,7 +14208,25 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
         return;
       }
       // The one server line for a failed generation; the client gets the message over SSE.
-      logger.error({ err, chatId: input.chatId }, "[generate] Generation failed");
+      const providerError = err instanceof LLMHttpError ? err : undefined;
+      const providerDiagnostic = providerError?.diagnostic;
+      if (providerDiagnostic && isFeatureEnabled("providerDiagnostics")) {
+        logger.error(
+          { chatId: input.chatId, diagnosticRef: providerDiagnostic.diagnosticRef },
+          "[generate] Generation failed; provider details are available by diagnostic reference",
+        );
+      } else if (providerError) {
+        logger.error(
+          {
+            chatId: input.chatId,
+            providerStatus: providerError.status,
+            ...(typeof providerError.retryAfterMs === "number" ? { retryAfterMs: providerError.retryAfterMs } : {}),
+          },
+          "[generate] Provider request failed",
+        );
+      } else {
+        logger.error({ err, chatId: input.chatId }, "[generate] Generation failed");
+      }
       // A later error cancels remaining generation work, not an already saved reply's translation.
       translationAfterFailure = true;
       if (!generationSignal.aborted) {
@@ -13968,7 +14238,13 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
             ? `${err.message}: ${(err as { cause?: Error }).cause!.message}`
             : err.message
           : "Generation failed";
-      sendSseEvent(reply, { type: "error", data: message });
+      sendSseEvent(reply, {
+        type: "error",
+        data:
+          providerDiagnostic && isFeatureEnabled("providerDiagnostics")
+            ? `${message} (Diagnostic reference: ${providerDiagnostic.diagnosticRef})`
+            : message,
+      });
     } finally {
       dispatchAutomaticTranslations(translationAfterFailure);
       if (restoredRoleplayInterruption && input.regenerateMessageId) {

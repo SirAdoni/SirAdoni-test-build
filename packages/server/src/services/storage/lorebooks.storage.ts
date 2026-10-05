@@ -2,7 +2,7 @@ import { currentRoomGeneration } from "../multiplayer/generation-policy.js";
 // ──────────────────────────────────────────────
 // Storage: Lorebooks
 // ──────────────────────────────────────────────
-import { eq, desc, and, like, inArray, asc, or } from "../../db/file-query.js";
+import { eq, desc, and, like, inArray, notInArray, asc, or } from "../../db/file-query.js";
 import type { DB } from "../../db/connection.js";
 import {
   characters,
@@ -276,6 +276,8 @@ type LorebookListPageOptions = {
   search?: string;
   sort?: string;
   category?: string;
+  /** Restrict the page to campaign items, or exclude items in any campaign. */
+  ids?: { include?: string[]; exclude?: string[] };
   active?: {
     lorebookIds: string[];
     characterIds: string[];
@@ -443,6 +445,12 @@ export function createLorebooksStorage(db: DB) {
     async listPage(options: LorebookListPageOptions) {
       const clauses = [eq(lorebooks.hiddenFromLibrary, "false")];
       if (options.category) clauses.push(eq(lorebooks.category, options.category));
+      if (options.ids?.include) {
+        clauses.push(
+          options.ids.include.length > 0 ? inArray(lorebooks.id, options.ids.include) : eq(lorebooks.id, ""),
+        );
+      }
+      if (options.ids?.exclude?.length) clauses.push(notInArray(lorebooks.id, options.ids.exclude));
       const pattern = likePattern(options.search);
       if (pattern) {
         clauses.push(

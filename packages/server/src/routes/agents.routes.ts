@@ -1,3 +1,4 @@
+import { isFeatureEnabled } from "../services/features/feature-settings.js";
 // ──────────────────────────────────────────────
 // Routes: Agents
 // ──────────────────────────────────────────────
@@ -15,6 +16,7 @@ import {
   CUSTOM_AGENT_IMPORT_SOURCE_SETTING,
   CUSTOM_AGENT_PERMISSIONS_EXPLICIT_SETTING,
   DEFAULT_AGENT_TOOLS,
+  LOCAL_SIDECAR_CONNECTION_ID,
   PROVIDERS,
   createImportedAgentType,
   getDefaultBuiltInAgentSettings,
@@ -33,6 +35,15 @@ import { createAgentsStorage } from "../services/storage/agents.storage.js";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
 import { createLLMProvider } from "../services/llm/provider-registry.js";
+import { getLocalSidecarProvider } from "../services/llm/local-sidecar.js";
+import { createLocalSidecarGenerationConnection } from "../services/generation/local-sidecar-generation-connection.js";
+import {
+  escapeTextRewriteFrameDelimiter,
+  normalizeTextRewriteFrameLabel,
+  normalizeTextRewriteResponse,
+} from "../services/generation/text-rewrite-safety.js";
+import { isDebugAgentsEnabled } from "../config/runtime-config.js";
+import { logDebugOverride } from "../lib/logger.js";
 import { normalizeBeholderState } from "../services/agents/beholder-state.js";
 import { DATA_DIR } from "../utils/data-dir.js";
 import { assertInsideDir, extensionFromImageMime, isAllowedImageBuffer } from "../utils/security.js";
@@ -64,26 +75,17 @@ const updateAgentRunSchema = z.object({
   chatId: z.string().min(1).optional(),
 });
 
-const AGENT_SUITE_REWRITE_SYSTEM_PROMPT = [
-  "You are a precise text editor embedded in a roleplay application. You edit fragments of stored AI-agent data (memory, tracker state, generated notes). Rewrite ONLY the provided excerpt according to the user's instruction.",
+const TEXT_REWRITE_SYSTEM_PROMPT = [
+  "You are a precise text editor embedded in a roleplay application. You may edit chat prose, dialogue, memory, tracker state, or generated notes. Rewrite ONLY the provided excerpt according to the user's instruction.",
   "Rules:",
   "- Return ONLY the rewritten excerpt. No explanations, no preamble, no code fences.",
   "- The excerpt may be a fragment of a larger document; the surrounding document is provided for context but must NOT be included in your output.",
   "- Reference context blocks (character cards, lorebook entries) may be provided. Use them to ground names, facts, and details, but never copy them into the output beyond what the instruction requires.",
   "- If the excerpt is JSON or a fragment of JSON, keep the same structural shape so the result can be spliced back without breaking the document.",
-  "- Preserve everything the instruction does not ask to change. Do not invent new facts beyond what the instruction and provided context support.",
+  "- Preserve everything the instruction does not ask to change, including established facts, chronology, speaker and action ownership, explicit choices, consent, relationships, and unresolved ambiguity.",
+  "- Never invent dialogue, actions, thoughts, feelings, motives, moral judgments, habits, authority, or new facts unless the user's instruction explicitly requests them.",
+  "- Treat user-authored character decisions and interiority as intentional. Do not soften, sanitize, correct, or reinterpret them merely because they are forceful, profane, unusual, or morally complex.",
 ].join("\n");
-
-/** Strip a single markdown code fence when it wraps the entire response. */
-function stripWrappingCodeFence(text: string): string {
-  const match = text.match(/^```[a-zA-Z0-9_-]*\r?\n([\s\S]*?)\r?\n?```$/);
-  return match ? match[1]! : text;
-}
-
-function escapePromptFrameDelimiter(text: string, marker: string): string {
-  const pattern = new RegExp(`^${marker}`, "gm");
-  return text.replace(pattern, `${marker.slice(0, -1)} ${marker.slice(-1)}`);
-}
 
 const secretPlotArcSchema = z
   .object({
@@ -687,10 +689,36 @@ export async function agentsRoutes(app: FastifyInstance) {
    * Agent Suite AI-assisted edit: rewrite a fragment of stored agent data
    * with the user's instruction via a chosen connection. One-shot, non-streaming.
    */
-  app.post("/suite/rewrite", async (req) => {
-    const input = agentSuiteRewriteSchema.parse(req.body);
+  const rewriteText = async (body: unknown, draft: boolean) => {
+    if (draft && !isFeatureEnabled("draftRewrites"))
+      throw Object.assign(new Error("FEATURE_DISABLED"), { statusCode: 403 });
+    const parsedInput = agentSuiteRewriteSchema.safeParse(body);
+    if (!parsedInput.success) {
+      throw Object.assign(new Error(parsedInput.error.issues[0]?.message ?? "Invalid rewrite request"), {
+        statusCode: 400,
+      });
+    }
+    const input = parsedInput.data;
 
-    const conn = await connections.getWithKey(input.connectionId);
+    if (input.connectionId === "random") {
+      throw Object.assign(new Error("AI Rewrite requires a specific connection; choose one from the list"), {
+        statusCode: 400,
+      });
+    }
+
+    const useLocalSidecar = input.connectionId === LOCAL_SIDECAR_CONNECTION_ID;
+    const assertEnabled = () => {
+      if (
+        (draft && !isFeatureEnabled("draftRewrites")) ||
+        (useLocalSidecar && !isFeatureEnabled("localRewriteConnection"))
+      ) {
+        throw Object.assign(new Error("FEATURE_DISABLED"), { statusCode: 403 });
+      }
+    };
+    assertEnabled();
+    const conn = useLocalSidecar
+      ? createLocalSidecarGenerationConnection()
+      : await connections.getWithKey(input.connectionId);
     if (!conn) {
       throw Object.assign(new Error("API connection not found"), { statusCode: 400 });
     }
@@ -706,38 +734,40 @@ export async function agentsRoutes(app: FastifyInstance) {
       throw Object.assign(new Error("No base URL configured for this connection"), { statusCode: 400 });
     }
 
-    const provider = createLLMProvider(
-      conn.provider,
-      baseUrl,
-      conn.apiKey,
-      conn.maxContext,
-      conn.openrouterProvider,
-      conn.maxTokensOverride,
-      conn.claudeFastMode === "true",
-      conn.treatAsLocalEndpoint === "true",
-      conn.defaultParameters,
-      conn.id,
-    );
+    const provider = useLocalSidecar
+      ? getLocalSidecarProvider()
+      : createLLMProvider(
+          conn.provider,
+          baseUrl,
+          conn.apiKey,
+          conn.maxContext,
+          conn.openrouterProvider,
+          conn.maxTokensOverride,
+          conn.claudeFastMode === "true",
+          conn.treatAsLocalEndpoint === "true",
+          conn.defaultParameters,
+          conn.id,
+        );
 
     const contextLines: string[] = [];
-    if (input.agentName) contextLines.push(`Agent: ${input.agentName}`);
-    if (input.dataLabel) contextLines.push(`Data: ${input.dataLabel}`);
+    if (input.agentName) contextLines.push(`Agent: ${normalizeTextRewriteFrameLabel(input.agentName)}`);
+    if (input.dataLabel) contextLines.push(`Data: ${normalizeTextRewriteFrameLabel(input.dataLabel)}`);
     // Keep the frame intact: labels stay single-line and content can't
     // close the delimiter early (names/entries are user- or import-authored).
     const referenceBlock = input.contextSections?.length
       ? `Reference context selected by the user (grounding only — do not output):\n${input.contextSections
           .map(
             (section) =>
-              `<<<CONTEXT: ${section.label.replace(/[\r\n]+/g, " ")}\n${section.content.replace(
-                /^CONTEXT>>>/gm,
-                "CONTEXT >>>",
+              `<<<CONTEXT: ${normalizeTextRewriteFrameLabel(section.label)}\n${escapeTextRewriteFrameDelimiter(
+                section.content,
+                "CONTEXT>>>",
               )}\nCONTEXT>>>`,
           )
           .join("\n")}\n\n`
       : "";
     const documentBlock =
       input.documentText && input.documentText !== input.selectedText
-        ? `Full document (context only — do not output):\n<<<DOCUMENT\n${escapePromptFrameDelimiter(
+        ? `Full document (context only — do not output):\n<<<DOCUMENT\n${escapeTextRewriteFrameDelimiter(
             input.documentText,
             "DOCUMENT>>>",
           )}\nDOCUMENT>>>\n\n`
@@ -746,21 +776,30 @@ export async function agentsRoutes(app: FastifyInstance) {
       `${contextLines.length ? `${contextLines.join("\n")}\n\n` : ""}` +
       `${referenceBlock}` +
       `${documentBlock}` +
-      `Excerpt to rewrite:\n<<<EXCERPT\n${escapePromptFrameDelimiter(input.selectedText, "EXCERPT>>>")}\nEXCERPT>>>\n\n` +
+      `Excerpt to rewrite:\n<<<EXCERPT\n${escapeTextRewriteFrameDelimiter(input.selectedText, "EXCERPT>>>")}\nEXCERPT>>>\n\n` +
       `Instruction: ${input.instruction}`;
 
+    const debugOverrideEnabled = input.debugMode === true || isDebugAgentsEnabled();
+    logDebugOverride(debugOverrideEnabled, "[debug/text-rewrite] system prompt:\n%s", TEXT_REWRITE_SYSTEM_PROMPT);
+    logDebugOverride(debugOverrideEnabled, "[debug/text-rewrite] user prompt:\n%s", userContent);
+
+    assertEnabled();
     const result = await provider.chatComplete(
       [
-        { role: "system", content: AGENT_SUITE_REWRITE_SYSTEM_PROMPT },
+        { role: "system", content: TEXT_REWRITE_SYSTEM_PROMPT },
         { role: "user", content: userContent },
       ],
       { model: conn.model, temperature: 0.3 },
     );
 
-    const rewrittenText = stripWrappingCodeFence((result.content ?? "").trim());
-    if (!rewrittenText) {
+    assertEnabled();
+    logDebugOverride(debugOverrideEnabled, "[debug/text-rewrite] raw response:\n%s", result.content ?? "");
+    const rewrittenText = normalizeTextRewriteResponse(input.selectedText, result.content ?? "");
+    if (!rewrittenText.trim()) {
       throw Object.assign(new Error("The model returned an empty response"), { statusCode: 502 });
     }
     return { rewrittenText };
-  });
+  };
+  app.post("/suite/rewrite", (req) => rewriteText(req.body, false));
+  app.post("/suite/rewrite-message", (req) => rewriteText(req.body, true));
 }

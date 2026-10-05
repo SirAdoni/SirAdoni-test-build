@@ -1,3 +1,4 @@
+import { useFeatureEnabled } from "../../hooks/use-feature-settings";
 // ──────────────────────────────────────────────
 // Agent Suite — view and edit everything the agents in the
 // active chat have stored (memory, tracker state, custom
@@ -20,7 +21,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { AgentOutputSpoiler } from "../agents/AgentOutputSpoiler";
-import { estimateTextTokens, type Chat, type GameState } from "@marinara-engine/shared";
+import { LOCAL_SIDECAR_CONNECTION_ID, estimateTextTokens, type Chat, type GameState } from "@marinara-engine/shared";
 import {
   useAgentMemory,
   useAgentSuiteRewrite,
@@ -41,12 +42,13 @@ import {
   getChatExcludedLorebookIds,
 } from "../../lib/chat-lorebooks";
 import { getChatCharacterIds } from "../../lib/chat-macros";
-import { filterLanguageGenerationConnections } from "../../lib/connection-filters";
+import { appendLocalSidecarConnectionOption } from "../../lib/connection-filters";
 import { AGENT_SUITE_TRACKER_SLICES } from "../../lib/agent-suite-tracker-slices";
 import { cn } from "../../lib/utils";
 import { useAgentStore } from "../../stores/agent.store";
 import { useChatStore } from "../../stores/chat.store";
 import { useGameStateStore } from "../../stores/game-state.store";
+import { useSidecarStore } from "../../stores/sidecar.store";
 import { Modal } from "../ui/Modal";
 import { useTranslation as useUiTranslation } from "react-i18next";
 
@@ -455,6 +457,9 @@ export function AgentSuiteModal({ chat, open, onClose, onCloseGuardChange, agent
 
   // 2. React Query hooks
   const { data: connections } = useConnections();
+  const localRewriteEnabled = useFeatureEnabled("localRewriteConnection");
+  const sidecarModelDownloaded = useSidecarStore((state) => state.modelDownloaded);
+  const sidecarModelDisplayName = useSidecarStore((state) => state.modelDisplayName);
   const memoryQuery = useAgentMemory(effectiveAgentId, chat.id, open);
   const updateMemory = useUpdateAgentMemory();
   const gameStateKey = useMemo(() => ["agent-suite", "game-state", chat.id] as const, [chat.id]);
@@ -516,15 +521,26 @@ export function AgentSuiteModal({ chat, open, onClose, onCloseGuardChange, agent
   }, [gameStateKey, isAgentProcessing, open, qc]);
 
   // 4. Memos and callbacks
-  const connectionOptions = useMemo(() => {
-    return filterLanguageGenerationConnections((connections ?? []) as ConnectionOption[]);
-  }, [connections]);
+  const connectionOptions = useMemo(
+    () =>
+      appendLocalSidecarConnectionOption(
+        (connections ?? []) as ConnectionOption[],
+        localRewriteEnabled &&
+          import.meta.env.VITE_MARINARA_LITE !== "true" &&
+          (sidecarModelDownloaded || chat.connectionId === LOCAL_SIDECAR_CONNECTION_ID),
+        sidecarModelDisplayName,
+      ),
+    [chat.connectionId, connections, sidecarModelDisplayName, sidecarModelDownloaded, localRewriteEnabled],
+  );
 
   const effectiveRewriteConnectionId = useMemo(() => {
     if (rewriteConnectionId && connectionOptions.some((c) => c.id === rewriteConnectionId)) {
       return rewriteConnectionId;
     }
-    const agentDefault = connectionOptions.find((c) => c.defaultForAgents === true || c.defaultForAgents === "true");
+    if (chat.connectionId === "random") return "";
+    const agentDefault = connectionOptions.find(
+      (c) => "defaultForAgents" in c && (c.defaultForAgents === true || c.defaultForAgents === "true"),
+    );
     const chatConnection = connectionOptions.find((c) => c.id === chat.connectionId);
     return (agentDefault ?? chatConnection ?? connectionOptions[0])?.id ?? "";
   }, [chat.connectionId, connectionOptions, rewriteConnectionId]);

@@ -123,6 +123,7 @@ type ActiveStorageWriterLease = { path: string; token: string; liveness: WriterL
 type FileTransactionContext = {
   snapshots: Map<string, Row[]>;
   dirtyTables: Set<string>;
+  durable: boolean;
   /** Shard keys written during this transaction, for the durable-rollback re-add (#4708). */
   dirtyShards: Map<string, Set<string>>;
   /**
@@ -278,7 +279,7 @@ export type FileNativeDB = {
   insert: (table: Table) => InsertBuilder;
   update: (table: Table) => UpdateSetBuilder;
   delete: (table: Table) => DeleteBuilder;
-  transaction: <T>(fn: (tx: FileNativeDB) => Promise<T> | T) => Promise<T>;
+  transaction: <T>(fn: (tx: FileNativeDB) => Promise<T> | T, options?: { durable?: boolean }) => Promise<T>;
   _fileStore: FileNativeStoreController;
 };
 
@@ -415,10 +416,21 @@ const BUILT_IN_FILE_BACKED_TABLES = [
   "capability_documents",
   "game_engine_state",
   "game_checkpoints",
+  "game_continuity_batches",
+  "campaign_memory_entities",
+  "campaign_memory_facts",
+  "campaign_memory_knowledge",
+  "campaign_memory_events",
+  "campaign_memory_current_state",
+  "campaign_memory_relationships",
+  "campaign_memory_mutation_journal",
   "game_scene_videos",
   "game_turn_storyboards",
   "game_turn_storyboard_keyframes",
   "game_dice_pools",
+  "game_prep_boards",
+  "random_tables",
+  "game_dice_rolls",
   "game_rulesets",
   "regex_scripts",
   "chat_images",
@@ -442,6 +454,7 @@ const BUILT_IN_FILE_BACKED_TABLES = [
   "prompt_overrides",
   "installed_extensions",
   "library_folders",
+  "library_campaign_links",
   "mari_instructions",
   "mari_workspace_context",
 ] as const;
@@ -505,10 +518,19 @@ const SHARD_KEY_COLUMNS: Record<string, string> = {
   spatial_context_snapshots: "chatId",
   game_engine_state: "chatId",
   game_checkpoints: "chatId",
+  game_continuity_batches: "chatId",
+  campaign_memory_entities: "chatId",
+  campaign_memory_facts: "chatId",
+  campaign_memory_knowledge: "chatId",
+  campaign_memory_events: "chatId",
+  campaign_memory_current_state: "chatId",
+  campaign_memory_relationships: "chatId",
+  campaign_memory_mutation_journal: "chatId",
   game_scene_videos: "chatId",
   game_turn_storyboards: "chatId",
   game_turn_storyboard_keyframes: "storyboardId",
   game_dice_pools: "chatId",
+  game_dice_rolls: "chatId",
   chat_images: "chatId",
   character_images: "characterId",
   persona_images: "personaId",
@@ -562,6 +584,7 @@ const LAZY_UNIT_TABLES: ReadonlySet<string> =
         "game_scene_videos",
         "game_turn_storyboards",
         "game_dice_pools",
+        "game_dice_rolls",
         "mari_workspace_context",
         "ooc_influences",
         "conversation_notes",
@@ -821,6 +844,13 @@ export const CASCADES: Array<{ parent: FileBackedTable; child: FileBackedTable; 
     },
     { parent: "slurp_accounts", child: "slurp_prepared_posts", parentKey: "id", childKey: "creatorAccountId" },
     { parent: "chats", child: "messages", parentKey: "id", childKey: "chatId" },
+    { parent: "chats", child: "campaign_memory_entities", parentKey: "id", childKey: "chatId" },
+    { parent: "chats", child: "campaign_memory_facts", parentKey: "id", childKey: "chatId" },
+    { parent: "chats", child: "campaign_memory_knowledge", parentKey: "id", childKey: "chatId" },
+    { parent: "chats", child: "campaign_memory_events", parentKey: "id", childKey: "chatId" },
+    { parent: "chats", child: "campaign_memory_current_state", parentKey: "id", childKey: "chatId" },
+    { parent: "chats", child: "campaign_memory_relationships", parentKey: "id", childKey: "chatId" },
+    { parent: "chats", child: "campaign_memory_mutation_journal", parentKey: "id", childKey: "chatId" },
     { parent: "chats", child: "conversation_call_sessions", parentKey: "id", childKey: "chatId" },
     { parent: "chats", child: "conversation_call_messages", parentKey: "id", childKey: "chatId" },
     { parent: "chats", child: "agent_runs", parentKey: "id", childKey: "chatId" },
@@ -844,9 +874,11 @@ export const CASCADES: Array<{ parent: FileBackedTable; child: FileBackedTable; 
     { parent: "chats", child: "spatial_context_snapshots", parentKey: "id", childKey: "chatId" },
     { parent: "chats", child: "game_engine_state", parentKey: "id", childKey: "chatId" },
     { parent: "chats", child: "game_checkpoints", parentKey: "id", childKey: "chatId" },
+    { parent: "chats", child: "game_continuity_batches", parentKey: "id", childKey: "chatId" },
     { parent: "chats", child: "game_scene_videos", parentKey: "id", childKey: "chatId" },
     { parent: "chats", child: "game_turn_storyboards", parentKey: "id", childKey: "chatId" },
     { parent: "chats", child: "game_dice_pools", parentKey: "id", childKey: "chatId" },
+    { parent: "chats", child: "game_dice_rolls", parentKey: "id", childKey: "chatId" },
     {
       parent: "game_turn_storyboards",
       child: "game_turn_storyboard_keyframes",
@@ -1482,23 +1514,28 @@ function readStableMachineId() {
   }
 
   if (process.platform === "win32") {
-    try {
-      const executable = process.env.SystemRoot ? join(process.env.SystemRoot, "System32", "reg.exe") : "reg.exe";
-      const output = execFileSync(
-        executable,
-        ["query", "HKLM\\SOFTWARE\\Microsoft\\Cryptography", "/v", "MachineGuid"],
-        {
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "ignore"],
-          timeout: 1_000,
-          maxBuffer: 64 * 1024,
-          windowsHide: true,
-        },
-      );
-      return output.match(/MachineGuid\s+REG_SZ\s+([^\r\n]+)/i)?.[1]?.trim() ?? null;
-    } catch {
-      return null;
+    const executable = process.env.SystemRoot ? join(process.env.SystemRoot, "System32", "reg.exe") : "reg.exe";
+    // A busy Windows host can exceed the first probe deadline. Retry only a
+    // timeout, retaining the same strong identity and failing closed otherwise.
+    for (const timeout of [1_000, 5_000]) {
+      try {
+        const output = execFileSync(
+          executable,
+          ["query", "HKLM\\SOFTWARE\\Microsoft\\Cryptography", "/v", "MachineGuid"],
+          {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "ignore"],
+            timeout,
+            maxBuffer: 64 * 1024,
+            windowsHide: true,
+          },
+        );
+        return output.match(/MachineGuid\s+REG_SZ\s+([^\r\n]+)/i)?.[1]?.trim() ?? null;
+      } catch (error) {
+        if (timeout === 5_000 || (error as NodeJS.ErrnoException)?.code !== "ETIMEDOUT") return null;
+      }
     }
+    return null;
   }
 
   return (
@@ -3116,7 +3153,11 @@ class FileTableStore {
     );
   }
 
-  async transaction<T>(fn: (tx: FileNativeDB) => Promise<T> | T, tx: FileNativeDB): Promise<T> {
+  async transaction<T>(
+    fn: (tx: FileNativeDB) => Promise<T> | T,
+    tx: FileNativeDB,
+    options: { durable?: boolean } = {},
+  ): Promise<T> {
     // Copy-on-write rollback, isolated to this transaction's async context:
     // instead of cloning every table up front (O(total rows) per call, on the
     // per-turn setMemories hot path), snapshot each table only on its first
@@ -3125,6 +3166,7 @@ class FileTableStore {
     if (this.txContext.getStore()) {
       // Nested call: run inside the outer transaction's context so the whole
       // nest rolls back together; the outermost owns snapshot/restore.
+      if (options.durable) this.txContext.getStore()!.durable = true;
       return await fn(tx);
     }
     this.assertWritable();
@@ -3158,6 +3200,7 @@ class FileTableStore {
       ctx = {
         snapshots: new Map<string, Row[]>(),
         dirtyTables: new Set<string>(),
+        durable: options.durable === true,
         dirtyShards: new Map<string, Set<string>>(),
         loadHealDirtyShards: new Map<string, Set<string>>(),
         loadHealDirtyTables: new Set<string>(),
@@ -3185,7 +3228,7 @@ class FileTableStore {
       // Flush on commit only for tables whose durability the caller reasons about across a
       // crash (attempt claims must never be replayed as free budget). Everything else keeps
       // the batched flush: this runs on hot per-turn paths like setMemories.
-      if ([...ctx.dirtyTables].some((table) => DURABLE_ON_COMMIT_TABLES.has(table))) {
+      if (ctx.durable || [...ctx.dirtyTables].some((table) => DURABLE_ON_COMMIT_TABLES.has(table))) {
         await this.txContext.run(ctx, () => this.flush(true, true));
       }
       return result;
@@ -5695,7 +5738,7 @@ export async function createFileNativeDB(testHooks?: FileNativeStoreTestHooks): 
     insert: (table) => store.insert(table),
     update: (table) => store.update(table),
     delete: (table) => store.delete(table),
-    transaction: (fn) => store.transaction(fn, db),
+    transaction: (fn, options) => store.transaction(fn, db, options),
     _fileStore: controller,
   };
   return db;

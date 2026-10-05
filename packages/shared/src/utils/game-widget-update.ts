@@ -1,6 +1,15 @@
 import type { HudWidget, WidgetUpdate } from "../types/game.js";
+import {
+  applyExtendedWidgetUpdate,
+  coerceWidgetValue,
+  isExtendedHudWidgetType,
+  leadingWidgetNumber,
+} from "./hud-widget-extended.js";
+import { applyHudWidgetLifecycle, listWidgetCapacity } from "./hud-widget-lifecycle.js";
 
-const MAX_LIST_WIDGET_ITEMS = 5;
+export interface GameWidgetUpdateOptions {
+  onListOverflow?: (widget: HudWidget, capacity: number, dropped: number) => void;
+}
 
 function normalizeListWidgetItem(value: string): string {
   const trimmed = value.trim();
@@ -14,13 +23,13 @@ function normalizeListWidgetItem(value: string): string {
   return compact.slice(0, end).toLowerCase();
 }
 
-function appendListWidgetItem(items: string[], nextItem: string): string[] {
+function appendListWidgetItem(items: string[], nextItem: string, capacity: number): string[] {
   const cleaned = nextItem.trim();
   if (!cleaned) return items;
 
   const normalizedNewItem = normalizeListWidgetItem(cleaned);
   const dedupedItems = items.filter((item) => normalizeListWidgetItem(item) !== normalizedNewItem);
-  return [...dedupedItems, cleaned].slice(-MAX_LIST_WIDGET_ITEMS);
+  return [...dedupedItems, cleaned].slice(-capacity);
 }
 
 function removeListWidgetItem(items: string[], target: string): string[] {
@@ -40,7 +49,21 @@ function removeListWidgetItem(items: string[], target: string): string[] {
   return items.filter((_, index) => index !== partialMatches[0]!.index);
 }
 
-export function applyGameWidgetUpdate(widgets: HudWidget[], update: WidgetUpdate): HudWidget[] {
+export function applyGameWidgetUpdate(
+  widgets: HudWidget[],
+  update: WidgetUpdate,
+  options: GameWidgetUpdateOptions = {},
+): HudWidget[] {
+  if (update.changes.action === "create" || update.changes.action === "delete") {
+    return applyHudWidgetLifecycle(widgets, update);
+  }
+  const current = widgets.find((widget) => widget.id === update.widgetId);
+  if (!current) return widgets;
+  if (isExtendedHudWidgetType(current.type)) {
+    const next = applyExtendedWidgetUpdate(current, update.changes);
+    return widgets.map((widget) => (widget.id === update.widgetId ? next : widget));
+  }
+
   return widgets.map((w) => {
     if (w.id !== update.widgetId) return w;
     const changes = update.changes;
@@ -51,11 +74,7 @@ export function applyGameWidgetUpdate(widgets: HudWidget[], update: WidgetUpdate
       const targetName = changes.statName.trim();
       const rawValue = changes.value;
       const newValue =
-        typeof rawValue === "number"
-          ? rawValue
-          : typeof rawValue === "string" && rawValue.trim()
-            ? rawValue.trim()
-            : undefined;
+        typeof rawValue === "string" ? (rawValue.trim() ? coerceWidgetValue(rawValue) : undefined) : rawValue;
       if (targetName && newValue !== undefined) {
         const stats = Array.isArray(newConfig.stats) ? [...newConfig.stats] : [];
         const targetKey = targetName.toLowerCase();
@@ -69,8 +88,10 @@ export function applyGameWidgetUpdate(widgets: HudWidget[], update: WidgetUpdate
       }
     } else {
       // Merge simple numeric/config fields
-      if (changes.value !== undefined)
-        newConfig.value = typeof changes.value === "number" ? changes.value : newConfig.value;
+      if (changes.value !== undefined) {
+        const value = leadingWidgetNumber(changes.value);
+        if (value !== null) newConfig.value = value;
+      }
       if (changes.count !== undefined) newConfig.count = changes.count;
       if (changes.running !== undefined) newConfig.running = changes.running;
       if (changes.seconds !== undefined) newConfig.seconds = changes.seconds;
@@ -79,11 +100,18 @@ export function applyGameWidgetUpdate(widgets: HudWidget[], update: WidgetUpdate
     // Handle list/inventory add/remove
     if (w.type === "list") {
       let nextItems = [...(newConfig.items ?? [])];
+      if (typeof changes.max === "number" && Number.isFinite(changes.max)) {
+        newConfig.max = listWidgetCapacity({ max: changes.max });
+      }
       if (changes.remove) {
         nextItems = removeListWidgetItem(nextItems, changes.remove);
       }
+      const capacity = listWidgetCapacity(newConfig);
       if (changes.add) {
-        nextItems = appendListWidgetItem(nextItems, changes.add);
+        const before = nextItems;
+        nextItems = appendListWidgetItem(before, changes.add, capacity);
+        const dropped = before.filter((item) => !nextItems.includes(item)).length;
+        if (dropped > 0) options.onListOverflow?.(w, capacity, dropped);
       }
       newConfig.items = nextItems;
     } else {

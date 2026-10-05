@@ -2467,7 +2467,7 @@ export function workspaceMutationTargetForPath(
     throw new Error("This path requires a dedicated reviewed tool and cannot be changed directly.");
   }
   if (options.forbidStorageMutation) {
-    const storageRoot = resolve(getFileStorageDir());
+    const storageRoot = canonicalizeThroughAncestors(resolve(getFileStorageDir()));
     if (
       isWithin(storageRoot, absolute) ||
       isWithin(storageRoot, canonicalTarget) ||
@@ -3748,20 +3748,22 @@ ${sections.join("\n\n")}
     if (!stats.isDirectory()) throw new Error("ls path must be a directory");
     const limit = numberArg(args, "limit", 500, 1, 1000);
     const entries = await readdir(dirPath, { withFileTypes: true });
-    const names = entries
+    const visibleEntries = entries.filter(
+      (entry) => workspacePathAccessPolicy(this.workspaceRoot, join(dirPath, entry.name)) !== "forbidden",
+    );
+    const names = visibleEntries
       .map((entry) => `${entry.name}${entry.isDirectory() ? "/" : ""}`)
       .sort((a, b) => a.localeCompare(b))
       .slice(0, limit);
-    const truncated = entries.length > names.length;
+    const truncated = visibleEntries.length > names.length;
     return [
       `Directory: ${this.displayPath(dirPath)}`,
       ...names,
-      truncated ? `… ${entries.length - names.length} more` : "",
+      truncated ? `… ${visibleEntries.length - names.length} more` : "",
     ]
       .filter(Boolean)
       .join("\n");
   }
-
   private async walkFiles(root: string, limit = MAX_WALK_ENTRIES): Promise<string[]> {
     const files: string[] = [];
     const visit = async (dir: string) => {

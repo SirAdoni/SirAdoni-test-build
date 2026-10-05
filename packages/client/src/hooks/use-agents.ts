@@ -2,8 +2,15 @@
 // Hooks: Agent Configs (React Query)
 // ──────────────────────────────────────────────
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { AgentSuiteRewriteInput, CustomAgentImportPolicy, ImportAgentConfigInput } from "@marinara-engine/shared";
+import {
+  LOCAL_SIDECAR_CONNECTION_ID,
+  type AgentSuiteRewriteInput,
+  type CustomAgentImportPolicy,
+  type ImportAgentConfigInput,
+} from "@marinara-engine/shared";
+import { isRewriteFeatureEnabled } from "./use-feature-settings";
 import { ApiError, api } from "../lib/api-client";
+import { useUIStore } from "../stores/ui.store";
 
 export const agentKeys = {
   all: ["agents"] as const,
@@ -188,9 +195,30 @@ export function useUpdateAgentMemory() {
   });
 }
 
-export function useAgentSuiteRewrite() {
+export function useAgentSuiteRewrite(draft = false) {
+  const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (body: AgentSuiteRewriteInput) => api.post<{ rewrittenText: string }>("/agents/suite/rewrite", body),
+    mutationFn: async (body: AgentSuiteRewriteInput) => {
+      const assertEnabled = () => {
+        if (
+          (draft && !isRewriteFeatureEnabled(queryClient, "draftRewrites")) ||
+          (body.connectionId === LOCAL_SIDECAR_CONNECTION_ID &&
+            !isRewriteFeatureEnabled(queryClient, "localRewriteConnection"))
+        ) {
+          throw new Error("FEATURE_DISABLED");
+        }
+      };
+      assertEnabled();
+      const result = await api.post<{ rewrittenText: string }>(
+        draft ? "/agents/suite/rewrite-message" : "/agents/suite/rewrite",
+        {
+          ...body,
+          debugMode: useUIStore.getState().debugMode,
+        },
+      );
+      assertEnabled();
+      return result;
+    },
   });
 }
 

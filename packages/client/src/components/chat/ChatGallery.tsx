@@ -1,6 +1,8 @@
 // ──────────────────────────────────────────────
 // Chat Gallery — Image grid for per-chat generated images
 // ──────────────────────────────────────────────
+import { useQueryClient } from "@tanstack/react-query";
+import { useFeatureEnabled, isGalleryBrowsingEnabled } from "../../hooks/use-feature-settings";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -115,6 +117,13 @@ export function ChatGallery({
   const upload = useUploadGalleryImage(chatId);
   const remove = useDeleteGalleryImage(chatId);
   const deleteVideo = useDeleteSceneVideo(chatId);
+  const queryClient = useQueryClient();
+  const browsingEnabled = useFeatureEnabled("galleryBrowsing");
+  const [visibleImageCount, setVisibleImageCount] = useState(48);
+  const visibleLimit = browsingEnabled ? visibleImageCount : Infinity;
+  const showMoreImages = () => {
+    if (isGalleryBrowsingEnabled(queryClient)) setVisibleImageCount((count) => count + 48);
+  };
   const [lightbox, setLightbox] = useState<ChatImage | null>(null);
   const [videoLightbox, setVideoLightbox] = useState<GeneratedSceneVideo | null>(null);
   const [selectingImages, setSelectingImages] = useState(false);
@@ -162,13 +171,13 @@ export function ChatGallery({
     [images, selectedImageIds],
   );
   const selectableImageIds = useMemo(() => {
-    if (!assetSearchActive) return images?.map((image) => image.id) ?? [];
+    if (!assetSearchActive) return images?.slice(0, visibleLimit).map((image) => image.id) ?? [];
     const availableIds = new Set(images?.map((image) => image.id) ?? []);
     return filteredAssets.flatMap((asset) => {
       const imageId = getChatGalleryImageId(asset, chatId);
       return imageId && availableIds.has(imageId) ? [imageId] : [];
     });
-  }, [assetSearchActive, chatId, filteredAssets, images]);
+  }, [assetSearchActive, chatId, filteredAssets, images, visibleLimit]);
   const displayedAssets = useMemo(
     () =>
       selectingImages
@@ -176,6 +185,8 @@ export function ChatGallery({
         : filteredAssets,
     [chatId, filteredAssets, selectingImages],
   );
+  const lightboxIndex =
+    browsingEnabled && lightbox ? (images?.findIndex((image) => image.id === lightbox.id) ?? -1) : -1;
 
   const leaveImageSelection = useCallback(() => {
     setSelectingImages(false);
@@ -196,6 +207,10 @@ export function ChatGallery({
     setSelectedImageIds(new Set());
     setAssetSearch("");
   }, [chatId]);
+
+  useEffect(() => {
+    setVisibleImageCount(48);
+  }, [assetSearch, chatId]);
 
   useEffect(() => {
     const availableIds = new Set(images?.map((image) => image.id) ?? []);
@@ -905,7 +920,7 @@ export function ChatGallery({
 
             {!assetsLoading && displayedAssets.length > 0 && (
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                {displayedAssets.map((asset) => {
+                {displayedAssets.slice(0, visibleLimit).map((asset) => {
                   const imageId = getChatGalleryImageId(asset, chatId);
                   const selected = imageId ? selectedImageIds.has(imageId) : false;
                   return (
@@ -961,6 +976,15 @@ export function ChatGallery({
                   );
                 })}
               </div>
+            )}
+            {!assetsLoading && displayedAssets.length > visibleLimit && (
+              <button
+                type="button"
+                className="w-full rounded-md border border-[var(--border)] px-3 py-2 text-sm hover:bg-[var(--secondary)]"
+                onClick={showMoreImages}
+              >
+                {localizeUi("ui.chat.chatgallery.showMoreImages")}
+              </button>
             )}
           </section>
         )}
@@ -1051,7 +1075,7 @@ export function ChatGallery({
             {/* Image grid */}
             {hasImages && (
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-2">
-                {images!.map((img) => (
+                {images!.slice(0, visibleLimit).map((img) => (
                   <div
                     key={img.id}
                     className={cn(
@@ -1166,6 +1190,16 @@ export function ChatGallery({
                   </div>
                 ))}
               </div>
+            )}
+
+            {(images?.length ?? 0) > visibleLimit && (
+              <button
+                type="button"
+                className="w-full rounded-md border border-[var(--border)] px-3 py-2 text-sm hover:bg-[var(--secondary)]"
+                onClick={showMoreImages}
+              >
+                {localizeUi("ui.chat.chatgallery.showMoreImages")}
+              </button>
             )}
           </>
         )}
@@ -1300,7 +1334,19 @@ export function ChatGallery({
         )}
 
       {/* Lightbox */}
-      {lightbox && <ChatImageLightbox image={lightbox} onPin={handlePinImage} onClose={() => setLightbox(null)} />}
+      {lightbox && (
+        <ChatImageLightbox
+          image={lightbox}
+          onPin={handlePinImage}
+          onClose={() => setLightbox(null)}
+          onPrevious={lightboxIndex > 0 ? () => setLightbox(images![lightboxIndex - 1]!) : undefined}
+          onNext={
+            lightboxIndex >= 0 && lightboxIndex < (images?.length ?? 0) - 1
+              ? () => setLightbox(images![lightboxIndex + 1]!)
+              : undefined
+          }
+        />
+      )}
       {sceneVideosEnabled && videoLightbox && (
         <ChatVideoLightbox video={videoLightbox} onPin={handlePinVideo} onClose={() => setVideoLightbox(null)} />
       )}

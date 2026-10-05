@@ -44,6 +44,7 @@ import {
 import { cn, copyToClipboard } from "../../lib/utils";
 import { useRenderTimer } from "../../lib/perf-diagnostics";
 import { findNamedMapValue } from "../../lib/game-character-name-match";
+import { applyGameNpcAvatarAuthority } from "../../lib/game-npc-avatar";
 import type { GameSegmentEdit } from "../../lib/game-segment-edits";
 import { hasVisibleGameNarrationText, parseGmTags, stripGmTagsKeepReadables } from "../../lib/game-tag-parser";
 import { audioManager } from "../../lib/game-audio";
@@ -92,6 +93,7 @@ import {
 import { applyGameDiceMarkers, formatGameDiceModifier, formatGameDiceRolls } from "../../lib/game-dice-markers";
 import type { CharacterMap, PersonaInfo } from "../chat/chat-area.types";
 import { MESSAGE_SELECTION_SURFACE_CLASS } from "../chat/message-selection-styles";
+import { MessageEditTextarea } from "../chat/MessageEditTextarea";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { formatNarration } from "./game-narration-format";
 import {
@@ -1403,7 +1405,11 @@ export function GameNarration({
         setAvatarInfo(npc.name, { url: npc.avatarUrl });
       }
     }
-    return byName;
+    return applyGameNpcAvatarAuthority(
+      byName,
+      gameNpcs,
+      activeCharacterEntries.map(([id, character]) => ({ id, name: character.name })),
+    );
   }, [activeCharacterEntries, personaInfo, speakerAvatarMap, gameNpcs]);
 
   const uploadableNpcNames = useMemo(
@@ -5334,14 +5340,17 @@ export function GameNarration({
                             )}
                           >
                             {editingContent !== null ? (
-                              <textarea
-                                ref={editTextareaRef}
-                                value={editingContent}
-                                onChange={(e) => setEditingContent(e.target.value)}
-                                className="w-full resize-none bg-transparent text-sm leading-relaxed text-[var(--foreground)] outline-none"
-                                style={narrationFontStyle}
-                                rows={3}
-                                autoFocus
+                              <MessageEditTextarea
+                                initialContent={editingContent}
+                                messageRole="assistant"
+                                quoteFormat={quoteFormat}
+                                textareaRef={editTextareaRef}
+                                textareaStyle={narrationFontStyle}
+                                variant="conversation"
+                                showSaveActions={false}
+                                onDraftChange={setEditingContent}
+                                onSave={handleSaveActiveSegmentEdit}
+                                onCancel={() => setEditingContent(null)}
                               />
                             ) : (
                               <div
@@ -5438,14 +5447,17 @@ export function GameNarration({
                   )}
                 >
                   {editingContent !== null ? (
-                    <textarea
-                      ref={editTextareaRef}
-                      value={editingContent}
-                      onChange={(e) => setEditingContent(e.target.value)}
-                      className="w-full resize-none bg-transparent text-sm leading-relaxed text-[var(--foreground)] outline-none"
-                      style={narrationFontStyle}
-                      rows={3}
-                      autoFocus
+                    <MessageEditTextarea
+                      initialContent={editingContent}
+                      messageRole="assistant"
+                      quoteFormat={quoteFormat}
+                      textareaRef={editTextareaRef}
+                      textareaStyle={narrationFontStyle}
+                      variant="conversation"
+                      showSaveActions={false}
+                      onDraftChange={setEditingContent}
+                      onSave={handleSaveActiveSegmentEdit}
+                      onCancel={() => setEditingContent(null)}
                     />
                   ) : (
                     <div

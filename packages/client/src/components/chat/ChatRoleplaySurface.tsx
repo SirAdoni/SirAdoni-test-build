@@ -86,6 +86,7 @@ import { CyoaChoices } from "./CyoaChoices";
 import { ChatBranchSelector } from "./ChatBranchSelector";
 import { ChatMessageSearch } from "./ChatMessageSearch";
 import { ChatHelpButton } from "./ChatHelpButton";
+import { PrivateNotebookToolbarButton } from "./PrivateNotebookPanel";
 import {
   CHAT_TOOLBAR_ICON_GAP_CLASS,
   CHAT_TOOLBAR_OVERFLOW_MENU_SELECTOR,
@@ -1332,6 +1333,8 @@ type RoleplaySurfaceProps = {
   isForkingScene?: boolean;
   onOpenSettings: (event?: ReactMouseEvent<HTMLElement>) => void;
   onOpenGallery: (event?: ReactMouseEvent<HTMLElement>) => void;
+  privateNotebookOpen: boolean;
+  onOpenPrivateNotebook: (event?: ReactMouseEvent<HTMLElement>) => void;
   onOpenScheduleEditor?: ComponentProps<typeof ChatCommonOverlays>["onOpenScheduleEditor"];
   onCloseSettings: () => void;
   onCloseGallery: () => void;
@@ -1451,6 +1454,8 @@ export function ChatRoleplaySurface({
   isForkingScene,
   onOpenSettings,
   onOpenGallery,
+  privateNotebookOpen,
+  onOpenPrivateNotebook,
   onOpenScheduleEditor,
   onCloseSettings,
   onCloseGallery,
@@ -2304,6 +2309,7 @@ export function ChatRoleplaySurface({
                         chatCharIds={chatCharIds}
                         characterMap={characterMap}
                       />
+                      <PrivateNotebookToolbarButton open={privateNotebookOpen} onClick={onOpenPrivateNotebook} />
                       <AuthorNotesButton
                         chatId={chat?.id ?? null}
                         chatMeta={chatMeta}
@@ -2450,6 +2456,11 @@ export function ChatRoleplaySurface({
                           chatCharIds={chatCharIds}
                           characterMap={characterMap}
                         />
+                        <PrivateNotebookToolbarButton
+                          open={privateNotebookOpen}
+                          compact
+                          onClick={onOpenPrivateNotebook}
+                        />
                         <AuthorNotesButton
                           chatId={chat?.id ?? null}
                           chatMeta={chatMeta}
@@ -2539,6 +2550,11 @@ export function ChatRoleplaySurface({
                         chatMeta={chatMeta}
                         chatCharIds={chatCharIds}
                         characterMap={characterMap}
+                      />
+                      <PrivateNotebookToolbarButton
+                        open={privateNotebookOpen}
+                        compact
+                        onClick={onOpenPrivateNotebook}
                       />
                       <AuthorNotesButton
                         chatId={chat?.id ?? null}

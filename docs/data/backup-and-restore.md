@@ -1,15 +1,15 @@
 # Backing Up and Restoring Marinara
 
-This guide shows the two ways to save a copy of everything in Marinara Engine, and how to put that copy back later. Use it before you upgrade, move to a new device, or reset your data.
+This guide shows the two ways to save Marinara Engine data and how to restore it. Use it before you upgrade, move to a new device, or reset your data.
 
 ## Two ways to save your data
 
 Marinara gives you two save options. They live in different places and do different jobs.
 
-- **Download Backup** makes a full **.zip** archive of everything on disk. A **.zip** is a single compressed file that holds many files inside it. This is the most complete copy, and the best guard against data loss.
-- **Export Profile** makes a lighter file that holds your account data (characters, personas, chats, lorebooks, presets, agents, themes, and Personal Extensions). A profile is Marinara's portable copy of your account. You can restore it later inside Marinara.
+- **Download Backup** saves a **.zip** using the selected Backup mode. **Full** is the default; the data and incremental modes have different coverage, described under [Automatic backups](#automatic-backups).
+- **Export Profile** makes a lighter file that holds your account data (characters, personas, chats, lorebooks, presets, agents, themes, and Personal Extensions). A profile is Marinara's portable copy of your account. It preserves chat-branch history when the referenced chats and messages are included. If an imported profile contains a branch reference to a missing or mismatched chat or message, Marinara omits that reference and reports it in the import warnings. You can restore a profile later inside Marinara.
 
-If you just want one safe copy of everything, use **Download Backup**. Use **Export Profile** when you want a smaller file or a version other roleplay tools can read.
+For the broadest current archive, use **Download Backup** with **Full** selected. Use **Export Profile** when you want a smaller file or a version other roleplay tools can read.
 
 Both save options live in **Settings** on the **Advanced** tab, in the **Backup & Export** section.
 
@@ -21,7 +21,7 @@ From a phone, tablet, or any other device, backup and restore need the **Admin A
 
 ## Download Backup
 
-**Download Backup** creates one **.zip** file with your database, your settings, and all your media folders (avatars, sprites, backgrounds, gallery images, fonts, your custom notification sound, and more).
+**Download Backup** creates one **.zip** file using the selected Backup mode. **Full** (the default) includes the profile, configured local files and media, and the local encryption-key file when present. **Chats and profile data** omits runtime-registered package table data, raw storage, general media, application code, and the local encryption key. **Changed files only** includes a complete full-source snapshot and reuses unchanged files from an earlier incremental snapshot. The [Automatic backups](#automatic-backups) section explains each mode.
 
 1. Open **Settings**.
 2. Go to the **Advanced** tab.
@@ -37,21 +37,40 @@ The **.zip** also contains a plain text file named `RESTORE.txt`. It explains ho
 
 ## Automatic backups
 
-The **Backup & Export** section can also create a rotating automatic full backup on the device that runs Marinara.
-Turn on **Automatic Backups**, choose **Daily**, **Weekly**, or **Monthly**, and set **Automatic backups kept** from
-1 to 9999. Marinara creates the first backup shortly after you enable it. After each successful run, it keeps the
-newest configured number of automatic archives and deletes the oldest excess automatic archive. This retention limit
-never deletes manual backups or backups saved with **Download Backup**.
+**Additional backup modes** in **Settings > Advanced > Features** starts off. While off, downloads and scheduled
+backups use the ordinary full backup. Your saved mode and existing archives remain available; re-enabling restores
+the mode choice. Data-only and incremental requests are rejected while off, and unfinished optional snapshots are
+not published after the switch is disabled. Restore and profile import remain available. While off, scheduled
+incremental snapshots are also excluded from automatic retention cleanup.
 
-Automatic backups are stored inside `backups/` in Marinara's data folder. The newest archive is
-`marinara-automatic-backup.zip`; retained older automatic archives use timestamped filenames. They use the same
-restorable, streamed archive format as **Download Backup**, including uploaded media and the encryption-key file when
-one exists. Keep a separate copy outside Marinara's data folder if you need protection from a lost disk, erased app
-storage, or a device reset.
+The **Backup & Export** section can create scheduled backups on the device that runs Marinara. Turn on
+**Automatic Backups**, choose **Daily**, **Weekly**, or **Monthly**, select a **Backup mode**, and set
+**Automatic backups kept** from 1 to 9999. Marinara creates the first backup shortly after you enable it. Retention
+keeps the newest configured number of scheduled backups across modes and deletes older scheduled backups. It does not
+delete manual backups or snapshots saved with **Download Backup**.
 
-Each run needs free space for one more full archive on the disk that holds `backups/`, because the previous archive
-is kept until the new one is complete. If there is not enough room, Marinara skips that run and shows the reason next
-to the Automatic Backups control; it tries again on the next check once space is freed.
+The modes are:
+
+- **Full app backup** includes the profile, configured local files and media, and the local encryption-key file when
+  present.
+- **Chats and profile data** includes built-in profile tables, such as chats, characters, lorebooks, settings and game
+  state, plus long-term-memory vault/event files. It excludes registered package table data, application code, general
+  media, raw storage copies and the local encryption-key file. Package-owned table data lives in raw storage; use
+  **Full app backup** or **Changed files only** when recovery must include it. This mode includes more than chats.
+- **Changed files only** creates a complete restore snapshot with the same broad contents as a full backup. It reuses
+  unchanged files from an earlier incremental snapshot, so those files do not need another physical copy. Keep the
+  snapshots on the same filesystem; incremental reuse depends on hard links.
+
+Automatic backups are stored inside `backups/` in Marinara's data folder. Full and data backups use
+`marinara-automatic-backup.zip` for the newest archive and timestamped filenames for retained older archives.
+Incremental backups are timestamped snapshot directories. The **Download Backup** action in Settings uses the
+selected mode and saves a ZIP to your device. The separate on-disk `POST /api/backup` operation remains a full backup.
+Keep a separate copy outside Marinara's data folder if you need protection from a lost disk, erased app storage, or a
+device reset.
+
+Full and data runs need space for a new archive while the previous one is kept. Scheduled incremental runs check free
+space as they copy content; unavailable space stops the new snapshot before it is published. If a scheduled run cannot
+complete, Marinara shows the reason next to the Automatic Backups control and tries again on the next check.
 
 ## Export Profile
 
@@ -67,10 +86,10 @@ to the Automatic Backups control; it tries again on the next check once space is
 
 The dialog offers two formats:
 
-| Format | What it is | Restorable in Marinara? |
-| --- | --- | --- |
-| **Marinara Native** | Keeps Marinara fields, lorebook folders, character and persona data, presets, agents, themes, Personal Extension drafts, and inline media. | Yes |
-| **Compatible JSON** | Plain character, persona, and lorebook files for other roleplay tools. | No |
+| Format              | What it is                                                                                                                                 | Restorable in Marinara? |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------- |
+| **Marinara Native** | Keeps Marinara fields, lorebook folders, character and persona data, presets, agents, themes, Personal Extension drafts, and inline media. | Yes                     |
+| **Compatible JSON** | Plain character, persona, and lorebook files for other roleplay tools.                                                                     | No                      |
 
 Choose **Marinara Native** to keep a copy you can restore in Marinara later. Smaller profiles download as
 `marinara-profile.json`; larger profiles are offered as a streamed `marinara-profile.zip` whose data is split into

@@ -87,6 +87,8 @@ import { ConversationPromptSection } from "../../features/chat-settings/sections
 import { DiscordMirrorControls } from "../../features/chat-settings/sections/DiscordMirrorSection";
 import { FunctionCallingSection } from "../../features/chat-settings/sections/FunctionCallingSection";
 import { GameExtraPromptSection } from "../../features/chat-settings/sections/GameExtraPromptSection";
+import type { GamePromptDirectEdit } from "../../features/chat-settings/game-prompt-direct-edits";
+import { GmReasoningEffortSection } from "../../features/chat-settings/sections/GmReasoningEffortSection";
 import { ImpersonateSection } from "../../features/chat-settings/sections/ImpersonateSection";
 import { LorebooksSection } from "../../features/chat-settings/sections/LorebooksSection";
 import { PromptPresetSection } from "../../features/chat-settings/sections/PromptPresetSection";
@@ -128,6 +130,8 @@ import { HapticConnectionPanel } from "./HapticConnectionPanel";
 import { HAPTIC_SENSITIVITY_OPTIONS } from "./haptic-sensitivity-options";
 import { ChatModeIcon } from "./ChatModeIcon";
 import { SettingsSwitch } from "../panels/settings/SettingControls";
+import { GAME_SCENE_TIMELINE_ENABLED_KEY } from "@marinara-engine/shared";
+import { useFeatureEnabled, isCampaignFeatureEnabled } from "../../hooks/use-feature-settings";
 import { ChoiceSelectionModal } from "../presets/ChoiceSelectionModal";
 import { SecretPlotPanel } from "../agents/SecretPlotPanel";
 import { SummariesEditorModal } from "./SummariesEditorModal";
@@ -634,6 +638,7 @@ const CHAT_SETTINGS_ORDER = {
   modeIntro: -1500,
   chatName: -1400,
   connection: -1300,
+  gmReasoningEffort: -1290,
   promptPreset: -1200,
   advancedParameters: -1100,
   combatStyle: -475,
@@ -871,6 +876,7 @@ export function ChatSettingsDrawer({
   const { t: localizeUi } = useUiTranslation();
   const { t } = useTranslation();
   const qc = useQueryClient();
+  const sceneTimelineEnabled = useFeatureEnabled("sceneTimeline");
   const panelRef = useRef<HTMLDivElement | null>(null);
   const scheduleControlsRef = useRef<HTMLDivElement | null>(null);
   const modePromptDefaultAppliedRef = useRef<string | null>(null);
@@ -3741,6 +3747,23 @@ export function ChatSettingsDrawer({
   const [gameSpecialInstructionsDraft, setGameSpecialInstructionsDraft] = useState(
     (metadata.gameSpecialInstructions as string) ?? "",
   );
+  const gamePromptDirectEdits = useMemo(
+    () =>
+      Array.isArray(metadata.gamePromptDirectEdits)
+        ? metadata.gamePromptDirectEdits.filter(
+            (entry: unknown): entry is GamePromptDirectEdit =>
+              !!entry &&
+              typeof entry === "object" &&
+              "role" in entry &&
+              typeof entry.role === "string" &&
+              "find" in entry &&
+              typeof entry.find === "string" &&
+              "replace" in entry &&
+              typeof entry.replace === "string",
+          )
+        : [],
+    [metadata.gamePromptDirectEdits],
+  );
   const [gameImagePromptInstructionsDraft, setGameImagePromptInstructionsDraft] = useState(
     (metadata.gameImagePromptInstructions as string) ?? "",
   );
@@ -5121,6 +5144,15 @@ export function ChatSettingsDrawer({
             </div>
           )}
 
+          {isGame && (
+            <GmReasoningEffortSection
+              style={{ order: CHAT_SETTINGS_ORDER.gmReasoningEffort }}
+              value={metadata.gameGmReasoningEffort}
+              connection={chatGenerationConnectionsList.find((connection) => connection.id === chat.connectionId)}
+              onChange={(gameGmReasoningEffort) => updateMeta.mutate({ id: chat.id, gameGmReasoningEffort })}
+            />
+          )}
+
           {/* Conversation/Game prompt preset */}
           {modeSettingsSurfaces.promptSettingsSurface === "conversation" && (
             <div style={{ order: CHAT_SETTINGS_ORDER.promptPreset }}>
@@ -5139,6 +5171,12 @@ export function ChatSettingsDrawer({
           {modeSettingsSurfaces.promptSettingsSurface === "game" && (
             <div style={{ order: CHAT_SETTINGS_ORDER.promptPreset }}>
               <GameExtraPromptSection
+                chatId={chat.id}
+                settingsRevision={
+                  typeof metadata.gamePromptDirectEditsRevision === "string"
+                    ? metadata.gamePromptDirectEditsRevision
+                    : null
+                }
                 storedValue={(metadata.gameSystemPrompt as string) ?? ""}
                 specialInstructionsValue={gameSpecialInstructionsDraft}
                 promptPresetId={effectiveModePromptPresetId}
@@ -5146,6 +5184,7 @@ export function ChatSettingsDrawer({
                 selectedPresetPrompt={selectedModePromptPreset?.gamePrompt ?? ""}
                 gmPromptTemplateId={selectedGameGmPromptTemplateId}
                 gmPromptTemplates={GAME_GM_BUILT_IN_PROMPT_TEMPLATES}
+                directEdits={gamePromptDirectEdits}
                 onCommit={(gameSystemPrompt) => updateMeta.mutate({ id: chat.id, gameSystemPrompt })}
                 onSpecialInstructionsCommit={(gameSpecialInstructions) =>
                   updateMeta.mutate({ id: chat.id, gameSpecialInstructions })
@@ -5153,6 +5192,10 @@ export function ChatSettingsDrawer({
                 onSpecialInstructionsChange={setGameSpecialInstructionsDraft}
                 onPromptPresetChange={handleModePromptPresetChange}
                 onGmPromptTemplateChange={updateGameGmPromptTemplateSelection}
+                onDirectEditsCommit={(gamePromptDirectEdits) =>
+                  updateMeta.mutateAsync({ id: chat.id, gamePromptDirectEdits })
+                }
+                onDirectEditsReset={() => updateMeta.mutateAsync({ id: chat.id, gamePromptDirectEdits: [] })}
               />
             </div>
           )}
@@ -7391,6 +7434,21 @@ export function ChatSettingsDrawer({
                   labelClassName="text-xs font-medium"
                 />
               )}
+              {isGame && (
+                <SettingsSwitch
+                  label={localizeUi("chat.settings.game.sceneTimeline")}
+                  description={localizeUi("chat.settings.game.sceneTimelineHelp")}
+                  checked={metadata[GAME_SCENE_TIMELINE_ENABLED_KEY] !== false}
+                  disabled={!sceneTimelineEnabled}
+                  onChange={(checked) => {
+                    if (isCampaignFeatureEnabled(qc, "sceneTimeline"))
+                      updateMeta.mutate({ id: chat.id, [GAME_SCENE_TIMELINE_ENABLED_KEY]: checked });
+                  }}
+                  labelPosition="start"
+                  className="mb-2 justify-between rounded-lg bg-[var(--secondary)] px-3 py-2.5 text-left"
+                  labelClassName="text-xs font-medium"
+                />
+              )}
               {availableAgents.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-[var(--border)] bg-[var(--secondary)]/35 px-4 py-5 text-center">
                   <p className="text-xs font-medium text-[var(--foreground)]">
@@ -9307,6 +9365,7 @@ export function ChatSettingsDrawer({
             >
               <div className="space-y-3">
                 <GameWidgetSetupEditor
+                  chatId={chat.id}
                   widgets={gameWidgetDrafts}
                   onChange={(widgets) => setGameWidgetDrafts(normalizeGameHudWidgets(widgets, { mode: "draft" }))}
                   disabled={updateGameWidgets.isPending}
@@ -9334,6 +9393,7 @@ export function ChatSettingsDrawer({
                   </AgentSettingsActionButton>
                 </div>
                 <GameWidgetFileControls
+                  chatId={chat.id}
                   widgets={gameWidgetDrafts}
                   onImport={(widgets) => setGameWidgetDrafts(normalizeGameHudWidgets(widgets))}
                   disabled={updateGameWidgets.isPending}

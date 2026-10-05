@@ -69,6 +69,9 @@ try {
   assert.equal(branch.metadata.branchName, "New Branch");
   assert.equal(branch.metadata.branchParentChatId, root.id);
   assert.equal(branch.metadata.branchParentMessageId, middle.id);
+  assert.equal(branch.metadata.branchLineageVersion, 1);
+  assert.equal(branch.metadata.branchCopyMode, "through-message");
+  assert.equal(branch.metadata.branchCopiedMessageCount, 2);
   assert.equal(typeof branch.groupId, "string");
 
   const branchMessagesResponse = await app.inject({ method: "GET", url: `/api/chats/${branch.id}/messages` });
@@ -91,6 +94,8 @@ try {
   const child = childResponse.json();
   assert.equal(child.metadata.branchParentChatId, branch.id);
   assert.equal(child.metadata.branchParentMessageId, branchMessages.at(-1).id);
+  assert.equal(child.metadata.branchCopyMode, "full-prefix");
+  assert.equal(child.metadata.branchCopiedMessageCount, 2);
 
   const empty = await create("Empty root");
   const emptyBranchResponse = await app.inject({
@@ -103,6 +108,9 @@ try {
   assert.equal(emptyBranch.metadata.branchParentChatId, empty.id);
   assert.equal(emptyBranch.metadata.branchParentMessageId, null);
   assert.equal(emptyBranch.metadata.branchMessageId, null);
+  assert.equal(emptyBranch.metadata.branchLineageVersion, 1);
+  assert.equal(emptyBranch.metadata.branchCopyMode, "full-prefix");
+  assert.equal(emptyBranch.metadata.branchCopiedMessageCount, 0);
 
   const chatStorage = (await import("../../packages/server/src/services/storage/chats.storage.js")).createChatsStorage(
     db,
@@ -241,6 +249,36 @@ try {
   assert.equal(transcript.statusCode, 200);
   const importedMemory = await importSTChat(transcript.body, db, { mode: "roleplay" });
   assert.equal(importedMemory.success, true);
+  const lineageHeaderLines = transcript.body.split("\n");
+  const lineageHeader = JSON.parse(lineageHeaderLines[0]!);
+  lineageHeader.chat_metadata = {
+    ...lineageHeader.chat_metadata,
+    marinara_metadata: {
+      ...lineageHeader.chat_metadata?.marinara_metadata,
+      gameSessionParentChatId: "foreign-session",
+      branchParentChatId: "foreign-branch",
+      branchParentMessageId: "foreign-source-message",
+      branchMessageId: "foreign-copy-message",
+      branchLineageVersion: 1,
+      branchCopyMode: "through-message",
+      branchCopiedMessageCount: 4,
+    },
+  };
+  const importedWithForeignLineage = await importSTChat(
+    [JSON.stringify(lineageHeader), ...lineageHeaderLines.slice(1)].join("\n"),
+    db,
+    { mode: "roleplay" },
+  );
+  assert.equal(importedWithForeignLineage.success, true);
+  const importedLineageChat = await app.inject({
+    method: "GET",
+    url: `/api/chats/${importedWithForeignLineage.chatId}`,
+  });
+  const importedLineageMetadata = importedLineageChat.json().metadata;
+  assert.equal(importedLineageMetadata.gameSessionParentChatId, undefined);
+  assert.equal(importedLineageMetadata.branchLineageVersion, undefined);
+  assert.equal(importedLineageMetadata.branchCopyMode, undefined);
+  assert.equal(importedLineageMetadata.branchCopiedMessageCount, undefined);
   const importedRows = await db
     .select()
     .from(advancedMemoryRecords)
@@ -830,9 +868,34 @@ try {
   assert.equal(survivingChild.statusCode, 200);
   assert.equal(survivingChild.json().metadata.branchParentChatId, root.id);
 
+  const branchMetadataUpdate = await app.inject({
+    method: "PATCH",
+    url: `/api/chats/${branch.id}/metadata`,
+    payload: { gameSessionParentChatId: "foreign-session" },
+  });
+  assert.equal(branchMetadataUpdate.statusCode, 200);
+
   const profileExport = await app.inject({ method: "GET", url: "/api/backup/export-profile" });
   assert.equal(profileExport.statusCode, 200, profileExport.body);
   const profile = profileExport.json();
+  const backedUpChats = profile.data.fileStorage.tables.chats;
+  const backedUpBranch = backedUpChats.find((record: { id: string }) => record.id === branch.id);
+  assert.ok(backedUpBranch);
+  const backedUpBranchMetadata = JSON.parse(backedUpBranch.metadata);
+  assert.equal(backedUpBranchMetadata.branchLineageVersion, undefined);
+  assert.equal(backedUpBranchMetadata.branchCopyMode, undefined);
+  assert.equal(backedUpBranchMetadata.branchCopiedMessageCount, undefined);
+  assert.equal(backedUpBranchMetadata.gameSessionParentChatId, undefined);
+  assert.equal(
+    backedUpBranchMetadata.branchParentChatId,
+    root.id,
+    "raw profile export preserves branch references for import validation",
+  );
+  assert.equal(
+    backedUpChats.some((record: { id: string }) => record.id === root.id),
+    false,
+    "the deleted source is absent from the exported snapshot",
+  );
   const backedUpRecords = profile.data.fileStorage.tables.advanced_memory_records;
   assert.ok(Array.isArray(backedUpRecords), "native backups must discover the managed memory table");
   const backedUpCorrection = backedUpRecords.find((record: { id: string }) => record.id === retainedCorrection!.id);
@@ -840,6 +903,13 @@ try {
   await db.delete(advancedMemoryRecords).where(eq(advancedMemoryRecords.id, retainedCorrection!.id));
   const profileImport = await app.inject({ method: "POST", url: "/api/backup/import-profile", payload: profile });
   assert.equal(profileImport.statusCode, 200, profileImport.body);
+  const restoredBranch = await app.inject({ method: "GET", url: `/api/chats/${branch.id}` });
+  assert.equal(restoredBranch.statusCode, 200);
+  assert.equal(
+    restoredBranch.json().metadata.branchParentChatId,
+    undefined,
+    "import removes references to parents absent from the snapshot",
+  );
   const restoredCorrection = (
     await db.select().from(advancedMemoryRecords).where(eq(advancedMemoryRecords.id, retainedCorrection!.id))
   )[0];

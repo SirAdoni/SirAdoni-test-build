@@ -13,6 +13,7 @@ import {
   VenetianMask,
   Menu,
   Check,
+  Search,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -31,6 +32,8 @@ import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { useUIStore } from "../../stores/ui.store";
 import { useChatStore } from "../../stores/chat.store";
+import { useCommandPaletteStore } from "../../stores/command-palette.store";
+import { useFeatureEnabled } from "../../hooks/use-feature-settings";
 import { cn } from "../../lib/utils";
 import { SpotifyMiniPlayer } from "../spotify/SpotifyMiniPlayer";
 import { YouTubePlayer } from "../chat/YouTubePlayer";
@@ -105,8 +108,11 @@ const TOPBAR_ACCENT_ICON_CLASS = "mari-topbar-accent-icon mari-accent-animated";
 const CHAT_TOPBAR_GRADIENT_ID = "mari-topbar-chats-gradient";
 
 export function TopBar({ mobileTopbarNavigation }: { mobileTopbarNavigation: boolean }) {
+  const { t } = useTranslation();
   const localize = useLocalizedUiText();
+  const openPalette = useCommandPaletteStore((state) => state.openPalette);
   const { contributions } = usePersonalExtensionContributions();
+  const libraryNavigationEnabled = useFeatureEnabled("libraryNavigation");
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
   const setSidebarOpen = useUIStore((s) => s.setSidebarOpen);
@@ -394,6 +400,19 @@ export function TopBar({ mobileTopbarNavigation }: { mobileTopbarNavigation: boo
           className="mari-topbar-left-controls mari-rgb-icon-scope flex shrink-0 items-center gap-2"
         >
           {mobileTopbarNavigation ? [homeButton, chatsButton] : [chatsButton, homeButton]}
+          {libraryNavigationEnabled && (
+            <button
+              type="button"
+              onClick={openPalette}
+              data-topbar-hover-key="command-palette"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] max-md:h-9 max-md:w-9"
+              title={t("palette.openButton")}
+              aria-label={t("palette.openButton")}
+              aria-keyshortcuts="Control+K Meta+K"
+            >
+              <Search size={15} aria-hidden="true" />
+            </button>
+          )}
         </div>
         {musicDjInstalled ? (
           <>

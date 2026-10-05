@@ -2,6 +2,7 @@ import {
   isClaudeAdaptiveOnlyNoSamplingModel,
   normalizeThinkingTagPairs,
   resolveManagedGenerationParameters,
+  resolveGameGmReasoningEffort,
   resolveProviderReasoningEffort,
   type GenerationParameterSendMap,
   type ManagedGenerationParameterDefinition,
@@ -53,6 +54,9 @@ type GenerationProviderRuntimeArgs = {
   chatMode: string;
   isSceneChat: boolean;
   chatParameters: unknown;
+  /** Game chats only: per-game GM narration reasoning effort from chat metadata. */
+  gameGmReasoningEffort?: unknown;
+  gameGmReasoningEnabled?: boolean;
   managedParameterDefinitions: ManagedGenerationParameterDefinition[];
   modelAccessPolicy: Parameters<typeof mergeModelContextLimit>[0];
   initialSources?: Record<string, string>;
@@ -84,6 +88,7 @@ export type GenerationProviderRuntime = GenerationProviderRuntimeArgs["initial"]
   chatParams: ReturnType<typeof parseStoredGenerationParameters>;
   resolvedEffort: "low" | "medium" | "high" | "xhigh" | "max" | null;
   providerReasoningEffort: "none" | "low" | "medium" | "high" | "xhigh" | "max" | undefined;
+  gameGmReasoningApplied: boolean;
   enableThinking: boolean;
   isClaudeNoSampling: boolean;
   providerTopK: number | undefined;
@@ -172,6 +177,24 @@ export function resolveGenerationProviderRuntime(args: GenerationProviderRuntime
     if (capped < runtime.maxTokens) forceParameters("outputCap", { maxTokens: capped });
   }
 
+  let gameGmReasoningApplied = false;
+  if (
+    args.chatMode === "game" &&
+    !args.isSceneChat &&
+    args.gameGmReasoningEnabled === true &&
+    args.gameGmReasoningEffort !== undefined
+  ) {
+    const gmEffort = resolveGameGmReasoningEffort({
+      provider: args.connection.provider,
+      model: args.connection.model,
+      setting: args.gameGmReasoningEffort,
+    });
+    if (gmEffort !== undefined) {
+      forceParameters("gameGm", { reasoningEffort: gmEffort });
+      gameGmReasoningApplied = true;
+    }
+  }
+
   const modelLower = (args.connection.model ?? "").toLowerCase();
   const providerLower = (args.connection.provider ?? "").toLowerCase();
   let resolvedEffort = resolveProviderReasoningEffort({
@@ -253,6 +276,7 @@ export function resolveGenerationProviderRuntime(args: GenerationProviderRuntime
     chatParams,
     resolvedEffort,
     providerReasoningEffort,
+    gameGmReasoningApplied,
     enableThinking,
     isClaudeNoSampling,
     providerTopK,

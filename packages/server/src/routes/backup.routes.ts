@@ -1,3 +1,5 @@
+import { isFeatureEnabled } from "../services/features/feature-settings.js";
+
 import {
   embedCharacterBookImages,
   embedLorebookImages,
@@ -8,7 +10,7 @@ import {
 // ──────────────────────────────────────────────
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { Transform } from "node:stream";
-import { extname, join, relative } from "path";
+import { dirname, extname, join, relative } from "path";
 import { createReadStream, createWriteStream, existsSync, readdirSync, statSync } from "fs";
 import type { Dirent, WriteStream } from "fs";
 import {
@@ -25,6 +27,8 @@ import {
   rm,
   open,
   rename,
+  realpath,
+  lstat,
 } from "fs/promises";
 import type { FileHandle } from "fs/promises";
 import { tmpdir } from "os";
@@ -39,6 +43,8 @@ import { migrateLegacyNoodlePostAccessRow } from "../db/noodle-access-migration.
 import { getFileTableConfig, isFileTable, type AnyFileTable } from "../db/file-schema.js";
 import * as schema from "../db/schema/index.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
+import { withoutCharacterAvatarState } from "../services/game/npc-avatar-state.js";
+import { withoutGameNpcAvatarStates } from "../services/game/npc-avatar-state.js";
 import { createLorebooksStorage } from "../services/storage/lorebooks.storage.js";
 import { createPromptsStorage } from "../services/storage/prompts.storage.js";
 import { createAgentsStorage } from "../services/storage/agents.storage.js";
@@ -84,8 +90,9 @@ import {
   automaticBackupFreeSpaceError,
   normalizeAutomaticBackupRetentionCount,
   parseAutomaticBackupRetentionCount,
-  pruneAutomaticBackupFiles,
+  listAutomaticBackupFiles,
 } from "../services/backup/automatic-backup-retention.js";
+import { writeIncrementalSnapshot } from "../services/backup/incremental-snapshot.js";
 
 /** Directories inside DATA_DIR that should be included in every backup. */
 const BACKUP_DIRS = [
@@ -181,14 +188,39 @@ let profileImportLifecycleTail = Promise.resolve();
 let automaticBackupLifecycleTail = Promise.resolve();
 
 type AutomaticBackupFrequency = "daily" | "weekly" | "monthly";
+type BackupMode = "full" | "data" | "incremental";
+
+export function effectiveAutomaticBackupMode(mode: BackupMode): BackupMode {
+  return isFeatureEnabled("backupModes") ? mode : "full";
+}
+
+function assertBackupModeEnabled(mode: BackupMode): void {
+  if (mode !== "full" && !isFeatureEnabled("backupModes")) {
+    throw Object.assign(new Error("Additional backup modes are disabled"), { statusCode: 403 });
+  }
+}
 type AutomaticBackupSettings = {
   enabled: boolean;
   frequency: AutomaticBackupFrequency;
+  mode: BackupMode;
   retentionCount: number;
   lastBackupAt: string | null;
   lastError: string | null;
   lastOmittedEntries: string[];
 };
+
+export function isBackupMode(value: unknown): value is BackupMode {
+  return value === "full" || value === "data" || value === "incremental";
+}
+
+export function automaticBackupMode(value: unknown): BackupMode {
+  return isBackupMode(value) ? value : "full";
+}
+
+export function automaticBackupModeUpdate(value: unknown, current: BackupMode): BackupMode | null {
+  if (value === undefined) return current;
+  return isBackupMode(value) ? value : null;
+}
 
 export function buildPreparedBackupDownloadUrl(jobId: string, token: string): string {
   return `/api/backup/download/file/${encodeURIComponent(jobId)}?token=${encodeURIComponent(token)}`;
@@ -217,9 +249,11 @@ function normalizeAutomaticBackupSettings(value: unknown): AutomaticBackupSettin
   const candidate = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   const frequency: AutomaticBackupFrequency =
     candidate.frequency === "weekly" || candidate.frequency === "monthly" ? candidate.frequency : "daily";
+  const mode = automaticBackupMode(candidate.mode);
   return {
     enabled: candidate.enabled === true,
     frequency,
+    mode,
     retentionCount: normalizeAutomaticBackupRetentionCount(candidate.retentionCount),
     lastBackupAt: typeof candidate.lastBackupAt === "string" ? candidate.lastBackupAt : null,
     lastError: typeof candidate.lastError === "string" ? candidate.lastError : null,
@@ -275,7 +309,15 @@ async function withAutomaticBackupLifecycleLock<T>(task: () => Promise<T>): Prom
 function getBackupsRoot(): string {
   return join(getDataDir(), "backups");
 }
-
+async function prepareBackupsRoot(): Promise<string> {
+  const dataRoot = await realpath(getDataDir());
+  const root = join(dataRoot, "backups");
+  await mkdir(root, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+  if ((await lstat(root)).isSymbolicLink() || (await realpath(root)) !== root) {
+    throw new Error("Backup root must not be a symlink or junction");
+  }
+  return root;
+}
 function normalizeLorebookScope(value: unknown): { mode: "all" | "disabled" | "specific"; chatIds: string[] } {
   if (!value || typeof value !== "object") return { mode: "all", chatIds: [] };
   const raw = value as Record<string, unknown>;
@@ -324,6 +366,7 @@ type ProfileImportWarning =
   | ProfileNoodleImportWarning
   | { type: "missing_asset"; path: string; message: string }
   | { type: "skipped_asset"; path: string; message: string }
+  | { type: "branch_lineage_references_omitted"; path: string; message: string }
   | {
       type:
         | "connection_credentials_quarantined"
@@ -529,7 +572,7 @@ async function buildCompatibleProfileZip(app: FastifyInstance) {
 
   for (const [index, character] of (Array.isArray(data.characters) ? data.characters : []).entries()) {
     const charData = await embedCharacterBookImages(
-      typeof character.data === "string" ? JSON.parse(character.data) : character.data,
+      withoutCharacterAvatarState(typeof character.data === "string" ? JSON.parse(character.data) : character.data),
       exportBudget,
     );
     zip.addFile(
@@ -654,6 +697,7 @@ for (const candidate of Object.values(schema)) {
 
 export function sanitizeProfileTableRows(tableName: string, rows: Array<Record<string, unknown>>) {
   if (tableName === "noodler_fan_activity_state") return [];
+  if (tableName === "characters") return rows.map((row) => sanitizeProfileAvatarStateRow(tableName, row));
   if (tableName === "chats") {
     return rows.map((row) => {
       if (typeof row.metadata !== "string") return row;
@@ -661,9 +705,13 @@ export function sanitizeProfileTableRows(tableName: string, rows: Array<Record<s
         const metadata = JSON.parse(row.metadata) as unknown;
         if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return row;
         const sanitized = { ...(metadata as Record<string, unknown>) };
-        delete sanitized.branchParentChatId;
-        delete sanitized.branchParentMessageId;
-        delete sanitized.branchMessageId;
+        delete sanitized.branchLineageVersion;
+        delete sanitized.branchCopyMode;
+        delete sanitized.branchCopiedMessageCount;
+        delete sanitized.gameSessionParentChatId;
+        if (Array.isArray(sanitized.gameNpcs)) {
+          sanitized.gameNpcs = withoutGameNpcAvatarStates(sanitized.gameNpcs);
+        }
         return { ...row, metadata: JSON.stringify(sanitized) };
       } catch {
         return row;
@@ -688,6 +736,34 @@ export function sanitizeProfileTableRows(tableName: string, rows: Array<Record<s
     return rows.map(quarantineProfilePersonalExtensionRow);
   }
   return rows;
+}
+
+/** Profile snapshots are portable input/output; server-owned portrait authority never is. */
+export function sanitizeProfileAvatarStateRow(
+  tableName: string,
+  row: Record<string, unknown>,
+): Record<string, unknown> {
+  if (tableName === "characters") {
+    try {
+      const data = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
+      const sanitized = withoutCharacterAvatarState(data as { extensions?: unknown });
+      return { ...row, data: typeof row.data === "string" ? JSON.stringify(sanitized) : sanitized };
+    } catch {
+      return row;
+    }
+  }
+  if (tableName === "chats") {
+    try {
+      const parsed: unknown = typeof row.metadata === "string" ? JSON.parse(row.metadata) : row.metadata;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return row;
+      const metadata = { ...(parsed as Record<string, unknown>) };
+      if (Array.isArray(metadata.gameNpcs)) metadata.gameNpcs = withoutGameNpcAvatarStates(metadata.gameNpcs);
+      return { ...row, metadata: typeof row.metadata === "string" ? JSON.stringify(metadata) : metadata };
+    } catch {
+      return row;
+    }
+  }
+  return row;
 }
 
 export function quarantineProfilePersonalExtensionRow(row: Record<string, unknown>) {
@@ -915,11 +991,12 @@ async function readInlineBase64File(filePath: string, budget?: ProfileInlineJson
 async function collectProfileAssetFiles(
   dataDir: string,
   options: ProfileStorageSnapshotOptions = {},
+  includedDirs: readonly string[] = PROFILE_ASSET_DIRS,
 ): Promise<ProfileFileAsset[]> {
   const files: ProfileFileAsset[] = [];
   const inlineFileData = options.inlineFileData ?? true;
 
-  for (const dirName of PROFILE_ASSET_DIRS) {
+  for (const dirName of includedDirs) {
     const src = join(dataDir, dirName);
     if (!existsSync(src)) continue;
     const stack = [src];
@@ -1114,6 +1191,7 @@ function previewProfileStorageSnapshotStats(
   readAsset: ProfileAssetReader | undefined,
   warnings: ProfileImportWarning[],
 ) {
+  sanitizeProfileChatBranchLineage(snapshot, warnings);
   const tableCounts: Record<string, number> = {};
   for (const tableName of FILE_BACKED_TABLES) {
     const rows = snapshot.tables[tableName];
@@ -1251,6 +1329,75 @@ function buildProfileImportAssetInputs(
   });
 }
 
+function sanitizeProfileChatBranchLineage(snapshot: ProfileStorageSnapshot, warnings: ProfileImportWarning[]) {
+  const chats = snapshot.tables.chats;
+  const messages = Array.isArray(snapshot.tables.messages) ? snapshot.tables.messages : [];
+  if (!Array.isArray(chats)) return;
+
+  const chatIds = new Set(chats.map((chat) => chat.id).filter((id): id is string => typeof id === "string"));
+  const messageChatIds = new Map<string, string | null>();
+  for (const message of messages) {
+    if (typeof message.id !== "string" || typeof message.chatId !== "string") continue;
+    const existingOwner = messageChatIds.get(message.id);
+    messageChatIds.set(
+      message.id,
+      existingOwner === undefined || existingOwner === message.chatId ? message.chatId : null,
+    );
+  }
+
+  for (const chat of chats) {
+    if (typeof chat.metadata !== "string" || typeof chat.id !== "string") continue;
+    let metadata: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(chat.metadata) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+      metadata = { ...(parsed as Record<string, unknown>) };
+    } catch {
+      continue;
+    }
+
+    let omittedReference = false;
+    const parentChatId = metadata.branchParentChatId;
+    if (
+      parentChatId !== undefined &&
+      parentChatId !== null &&
+      (typeof parentChatId !== "string" || !chatIds.has(parentChatId))
+    ) {
+      delete metadata.branchParentChatId;
+      delete metadata.branchParentMessageId;
+      omittedReference = true;
+    }
+
+    const parentMessageId = metadata.branchParentMessageId;
+    if (
+      parentMessageId !== undefined &&
+      parentMessageId !== null &&
+      (typeof parentMessageId !== "string" || messageChatIds.get(parentMessageId) !== parentChatId)
+    ) {
+      delete metadata.branchParentMessageId;
+      omittedReference = true;
+    }
+
+    const branchMessageId = metadata.branchMessageId;
+    if (
+      branchMessageId !== undefined &&
+      branchMessageId !== null &&
+      (typeof branchMessageId !== "string" || messageChatIds.get(branchMessageId) !== chat.id)
+    ) {
+      delete metadata.branchMessageId;
+      omittedReference = true;
+    }
+
+    if (!omittedReference) continue;
+    chat.metadata = JSON.stringify(metadata);
+    addProfileImportWarning(warnings, {
+      type: "branch_lineage_references_omitted",
+      path: `chats/${encodeURIComponent(chat.id)}/metadata/branch-lineage`,
+      message: `One or more branch-history references for chat “${chat.id}” were omitted because their source chat or message is missing or mismatched in this profile.`,
+    });
+  }
+}
+
 async function importProfileStorageSnapshot(
   app: FastifyInstance,
   snapshot: ProfileStorageSnapshot,
@@ -1258,6 +1405,7 @@ async function importProfileStorageSnapshot(
   onProgress?: ProfileImportProgressReporter,
   readAsset?: ProfileAssetReader,
 ) {
+  sanitizeProfileChatBranchLineage(snapshot, warnings);
   validateProfileStorageTableInputs(snapshot);
   let stagedAssets: StagedProfileImportAssets;
   try {
@@ -1315,6 +1463,7 @@ async function importProfileStorageSnapshot(
           emit("tables", `Importing ${tableName.replace(/_/g, " ")}`);
           for (const [rowIndex, row] of rows.entries()) {
             let cleanRow = { ...row };
+            cleanRow = sanitizeProfileAvatarStateRow(tableName, cleanRow);
             // A pre-rename snapshot carries `visibility`/`publicAccountId`. Inserting it raw
             // lets the column default fill `platform: "noodle"`, putting a restored NoodleR
             // account and its posts on the Noodle timeline.
@@ -1414,7 +1563,8 @@ async function buildProfileExportEnvelope(
       if (includeLegacyAvatarBase64 && avatarPath && existsSync(avatarPath)) {
         avatarBase64 = await readInlineBase64File(avatarPath, inlineJsonBudget);
       }
-      return { ...c, avatarBase64 };
+      const { data } = sanitizeProfileAvatarStateRow("characters", { data: c.data });
+      return { ...c, data, avatarBase64 };
     }),
   );
 
@@ -1563,6 +1713,9 @@ async function buildProfileArchiveSources(
   includeAssets: boolean,
   skipUnreadableAssets = false,
   onSkippedAsset?: (path: string) => void,
+  includeManifestFiles = true,
+  dataDir = getDataDir(),
+  manifestAssetDirs: readonly string[] = PROFILE_ASSET_DIRS,
 ) {
   const skippedAssetPaths = new Set<string>();
   const tables: Record<string, ProfileArchiveTableFile> = {};
@@ -1585,11 +1738,17 @@ async function buildProfileArchiveSources(
     });
   }
 
-  const collectedFiles = await collectProfileAssetFiles(getDataDir(), {
-    inlineFileData: false,
-    skipUnreadableFiles: skipUnreadableAssets,
-    onSkippedFile: (path) => skippedAssetPaths.add(path),
-  });
+  const collectedFiles = includeManifestFiles
+    ? await collectProfileAssetFiles(
+        dataDir,
+        {
+          inlineFileData: false,
+          skipUnreadableFiles: skipUnreadableAssets,
+          onSkippedFile: (path) => skippedAssetPaths.add(path),
+        },
+        manifestAssetDirs,
+      )
+    : [];
   const assetSources = includeAssets
     ? await collectProfileAssetZipSources(collectedFiles, basePath, {
         skipFailedFiles: skipUnreadableAssets,
@@ -3146,20 +3305,44 @@ async function collectDirectoryZipSources(
   return sources;
 }
 
-async function writeFullBackupArchive(
+function buildDataBackupRestoreNotes(omittedEntries: readonly string[] = []) {
+  const lines = [
+    "Marinara Engine data backup",
+    "",
+    "This portable profile backup contains built-in profile table data such as chats, characters, lorebooks, settings, and game state.",
+    "It includes long-term-memory vault and event files, while omitting package-owned table data, application code, general media, raw storage copies, and the local encryption key.",
+    "Use Full app backup or Changed files only when the recovery must include package-owned table data from raw storage.",
+    "Sensitive credentials are removed or quarantined by the profile import format.",
+    "",
+    "For one-click import inside Marinara:",
+    "1. Open Settings -> Import.",
+    "2. Use Import Profile and select this ZIP archive.",
+    "3. Keep the ZIP intact so its streamed table shards remain available to the importer.",
+  ];
+  if (omittedEntries.length > 0) {
+    lines.push(
+      "",
+      "Warning: this backup completed without the following files because they could not be archived:",
+      ...omittedEntries.map((entryName) => `- ${JSON.stringify(entryName)}`),
+    );
+  }
+  return lines.join("\n");
+}
+
+async function buildFullBackupSources(
   app: FastifyInstance,
-  outputPath: string,
   backupName: string,
   workingDir: string,
-  beforeWrite?: (archiveBytes: number) => Promise<void>,
+  mode: BackupMode,
+  dataDir = getDataDir(),
 ) {
-  const dataDir = getDataDir();
   const omittedEntries = new Set<string>();
   const filesystemSources: StoredZipEntrySource[] = [];
-  for (const dirName of BACKUP_DIRS) {
+  const selectedBackupDirs = mode === "data" ? ["long-term-memory"] : BACKUP_DIRS;
+  for (const dirName of selectedBackupDirs) {
     const sourceDir = resolveBackupDir(dataDir, dirName);
     filesystemSources.push(
-      ...(await collectDirectoryZipSources(sourceDir, `${backupName}/${dirName}`, {
+      ...(await collectDirectoryZipSources(sourceDir, profileArchiveEntryPath(backupName, dirName), {
         skipUnreadableFiles: true,
         onSkippedEntry: (entryName) => omittedEntries.add(entryName),
       })),
@@ -3169,18 +3352,26 @@ async function writeFullBackupArchive(
   // Capture the manifest after filesystem source sizes so a later change makes
   // the writer omit that source instead of creating a manifest-size mismatch.
   const sources = await withOptionalNoodleAutoPostPaused(() =>
-    buildProfileArchiveSources(app, backupName, workingDir, false, true, (path) =>
-      omittedEntries.add(profileArchiveEntryPath(backupName, path)),
+    buildProfileArchiveSources(
+      app,
+      backupName,
+      workingDir,
+      false,
+      true,
+      (path) => omittedEntries.add(profileArchiveEntryPath(backupName, path)),
+      true,
+      dataDir,
+      mode === "data" ? ["long-term-memory"] : PROFILE_ASSET_DIRS,
     ),
   );
   sources.push(...filesystemSources);
 
   const keyPath = resolvePersistedEncryptionKeyPath(dataDir);
-  if (existsSync(keyPath)) {
+  if (mode !== "data" && existsSync(keyPath)) {
     try {
       const keyStat = await stat(keyPath);
       sources.push({
-        entryName: `${backupName}/${ENCRYPTION_KEY_FILENAME}`,
+        entryName: profileArchiveEntryPath(backupName, ENCRYPTION_KEY_FILENAME),
         filePath: keyPath,
         size: keyStat.size,
         mtime: keyStat.mtime,
@@ -3195,9 +3386,29 @@ async function writeFullBackupArchive(
 
   // Keep this deferred note last so it sees every omission discovered while earlier sources are written.
   sources.push({
-    entryName: `${backupName}/RESTORE.txt`,
-    buildData: () => Buffer.from(buildBackupRestoreNotes([...omittedEntries]), "utf8"),
+    entryName: profileArchiveEntryPath(backupName, "RESTORE.txt"),
+    buildData: () =>
+      Buffer.from(
+        mode === "data"
+          ? buildDataBackupRestoreNotes([...omittedEntries])
+          : buildBackupRestoreNotes([...omittedEntries]),
+        "utf8",
+      ),
   });
+  return { sources, omittedEntries };
+}
+
+async function writeFullBackupArchive(
+  app: FastifyInstance,
+  outputPath: string,
+  backupName: string,
+  workingDir: string,
+  beforeWrite?: (archiveBytes: number) => Promise<void>,
+  mode: BackupMode = "full",
+  dataDir = getDataDir(),
+) {
+  assertBackupModeEnabled(mode);
+  const { sources, omittedEntries } = await buildFullBackupSources(app, backupName, workingDir, mode, dataDir);
   if (beforeWrite) {
     // ponytail: reserve ZIP64 records and every possible omission line; use a shared writer
     // estimator if the ZIP layout or deferred entries beyond RESTORE.txt change.
@@ -3205,7 +3416,7 @@ async function writeFullBackupArchive(
       ZIP64_EOCD_MIN_SIZE +
       ZIP64_EOCD_LOCATOR_SIZE +
       ZIP_EOCD_MIN_SIZE +
-      Buffer.byteLength(buildBackupRestoreNotes([""]), "utf8");
+      Buffer.byteLength((mode === "data" ? buildDataBackupRestoreNotes : buildBackupRestoreNotes)([""]), "utf8");
     for (const source of sources) {
       const payloadBytes =
         "filePath" in source ? source.size : "data" in source ? source.data.length : source.buildData().length;
@@ -3215,25 +3426,268 @@ async function writeFullBackupArchive(
     }
     await beforeWrite(archiveBytes);
   }
+  assertBackupModeEnabled(mode);
   await writeStoredZipArchive(outputPath, sources, {
     skipFailedFileEntries: true,
     entryLimitBytes: Number.MAX_SAFE_INTEGER,
     unlimitedArchiveSize: true,
     onOmittedEntry: (entryName) => omittedEntries.add(entryName),
   });
+  assertBackupModeEnabled(mode);
   return { omittedEntries: [...omittedEntries] };
 }
 
-async function writeAutomaticBackup(app: FastifyInstance, retentionCount: number) {
+export async function writeBackupArchiveForRegression(options: {
+  mode: BackupMode;
+  dataDir: string;
+  outputPath: string;
+  tables: Record<string, Array<Record<string, unknown>>>;
+}) {
+  const app = {
+    db: {
+      select: () => ({
+        from: async (table: AnyFileTable) => options.tables[schemaTableName(table)] ?? [],
+      }),
+    },
+  } as unknown as FastifyInstance;
+  const workingDir = await mkdtemp(join(tmpdir(), "marinara-backup-archive-regression-"));
+  try {
+    return await writeFullBackupArchive(
+      app,
+      options.outputPath,
+      `marinara-backup-${options.mode}-regression`,
+      workingDir,
+      undefined,
+      options.mode,
+      options.dataDir,
+    );
+  } finally {
+    await rm(workingDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+const SCHEDULED_SNAPSHOT_MARKER = ".scheduled-backup";
+const BACKUP_MODE_MARKER = ".backup-mode";
+const INCREMENTAL_SNAPSHOT_NAME = /^marinara-backup-incremental-[\w-]+$/u;
+
+async function listIncrementalSnapshots(backupsRoot: string) {
+  let entries;
+  try {
+    entries = await readdir(backupsRoot, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return [];
+    throw error;
+  }
+  const snapshots: Array<{ name: string; path: string; modifiedAtMs: number; scheduled: boolean }> = [];
+  for (const entry of entries) {
+    if (!INCREMENTAL_SNAPSHOT_NAME.test(entry.name) || !entry.isDirectory()) continue;
+    const path = join(backupsRoot, entry.name);
+    try {
+      const info = await lstat(path);
+      if (!info.isDirectory() || info.isSymbolicLink()) continue;
+      snapshots.push({
+        name: entry.name,
+        path,
+        modifiedAtMs: info.mtimeMs,
+        scheduled: existsSync(join(path, SCHEDULED_SNAPSHOT_MARKER)),
+      });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | null)?.code !== "ENOENT") throw error;
+    }
+  }
+  return snapshots.sort((left, right) => right.modifiedAtMs - left.modifiedAtMs || right.name.localeCompare(left.name));
+}
+
+async function pruneScheduledBackupHistory(backupsRoot: string, retentionCount: number) {
+  const scheduled = [
+    ...(await listAutomaticBackupFiles(backupsRoot)).map((archive) => ({
+      name: archive.filename,
+      path: archive.path,
+      modifiedAtMs: archive.modifiedAtMs,
+    })),
+    ...(await listIncrementalSnapshots(backupsRoot))
+      .filter((snapshot) => snapshot.scheduled && isFeatureEnabled("backupModes"))
+      .map(({ name, path, modifiedAtMs }) => ({ name, path, modifiedAtMs })),
+  ].sort((left, right) => right.modifiedAtMs - left.modifiedAtMs || right.name.localeCompare(left.name));
+  const removed: string[] = [];
+  for (const item of scheduled.slice(normalizeAutomaticBackupRetentionCount(retentionCount))) {
+    if (!item.name.endsWith(".zip") && !isFeatureEnabled("backupModes")) continue;
+    await rm(item.path, { recursive: true, force: true });
+    removed.push(item.name);
+  }
+  return removed;
+}
+
+async function scheduledBackupExists(backupsRoot: string) {
+  if (await automaticBackupExists(backupsRoot)) return true;
+  return (await listIncrementalSnapshots(backupsRoot)).some((snapshot) => snapshot.scheduled);
+}
+
+async function writeModeSnapshot(
+  app: FastifyInstance,
+  mode: "data" | "incremental",
+  destination: string,
+  workingDir: string,
+  options: {
+    scheduled?: boolean;
+    previous?: string;
+    dataDir?: string;
+    beforeCopy?: (requiredBytes: number) => Promise<void>;
+    afterPublish?: () => Promise<void>;
+  } = {},
+) {
+  assertBackupModeEnabled(mode);
+  if (existsSync(destination)) throw new Error("Backup snapshot destination already exists");
+  const parentDir = dirname(destination);
+  // Callers serialize snapshot publication with the automatic-backup lifecycle lock,
+  // so only abandoned staging directories can match this private pending prefix.
+  for (const entry of await readdir(parentDir, { withFileTypes: true }).catch(() => [])) {
+    if (!/^\.marinara-backup-pending-[0-9a-f-]{36}$/u.test(entry.name)) continue;
+    const stalePath = join(parentDir, entry.name);
+    const staleInfo = await lstat(stalePath).catch(() => null);
+    if (staleInfo?.isDirectory() && !staleInfo.isSymbolicLink()) {
+      await rm(stalePath, { recursive: true, force: true });
+    }
+  }
+  const { sources, omittedEntries } = await buildFullBackupSources(app, "", workingDir, mode, options.dataDir);
+  if (omittedEntries.size > 0) {
+    throw new Error(
+      `Backup snapshot was not published because ${omittedEntries.size} source file(s) could not be read.`,
+    );
+  }
+  sources.push({ entryName: BACKUP_MODE_MARKER, data: Buffer.from(`${mode}\n`) });
+  if (options.scheduled) sources.push({ entryName: SCHEDULED_SNAPSHOT_MARKER, data: Buffer.from("scheduled\n") });
+  const pendingPath = join(parentDir, `.marinara-backup-pending-${randomUUID()}`);
+  try {
+    const result = await writeIncrementalSnapshot({
+      sources,
+      destination: pendingPath,
+      ...(options.previous ? { previous: options.previous } : {}),
+      beforeCopy: async (requiredBytes) => {
+        assertBackupModeEnabled(mode);
+        await options.beforeCopy?.(requiredBytes);
+        assertBackupModeEnabled(mode);
+      },
+    });
+    assertBackupModeEnabled(mode);
+    await rename(pendingPath, destination);
+    try {
+      await options.afterPublish?.();
+      assertBackupModeEnabled(mode);
+    } catch (error) {
+      try {
+        await rm(destination, { recursive: true, force: true });
+      } catch (cleanupError) {
+        logger.error(
+          cleanupError,
+          "[backup] Failed to remove a just-published snapshot after backup modes were disabled",
+        );
+        const cleanupMessage = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+        throw new Error(`Backup modes were disabled after publication, but snapshot cleanup failed: ${cleanupMessage}`);
+      }
+      throw error;
+    }
+    return result;
+  } catch (error) {
+    await rm(pendingPath, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+async function writeSnapshotDirectoryArchive(snapshotPath: string, backupName: string, outputPath: string) {
+  const markerPaths = new Set([`${backupName}/${BACKUP_MODE_MARKER}`, `${backupName}/${SCHEDULED_SNAPSHOT_MARKER}`]);
+  const sources = (await collectDirectoryZipSources(snapshotPath, backupName)).filter(
+    (source) => !markerPaths.has(source.entryName),
+  );
+  await writeStoredZipArchive(outputPath, sources, {
+    entryLimitBytes: Number.MAX_SAFE_INTEGER,
+    unlimitedArchiveSize: true,
+  });
+}
+
+export async function writeBackupSnapshotForRegression(options: {
+  mode: "data" | "incremental";
+  dataDir: string;
+  destination: string;
+  tables: Record<string, Array<Record<string, unknown>>>;
+  previous?: string;
+  beforeCopy?: (requiredBytes: number) => Promise<void>;
+  afterPublish?: () => Promise<void>;
+}) {
+  const app = {
+    db: {
+      select: () => ({
+        from: async (table: AnyFileTable) => options.tables[schemaTableName(table)] ?? [],
+      }),
+    },
+  } as unknown as FastifyInstance;
+  const workingDir = await mkdtemp(join(tmpdir(), "marinara-backup-mode-regression-"));
+  try {
+    return await writeModeSnapshot(app, options.mode, options.destination, workingDir, {
+      dataDir: options.dataDir,
+      ...(options.previous ? { previous: options.previous } : {}),
+      ...(options.beforeCopy ? { beforeCopy: options.beforeCopy } : {}),
+      ...(options.afterPublish ? { afterPublish: options.afterPublish } : {}),
+    });
+  } finally {
+    await rm(workingDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+export async function writeBackupSnapshotArchiveForRegression(
+  snapshotPath: string,
+  backupName: string,
+  outputPath: string,
+) {
+  await writeSnapshotDirectoryArchive(snapshotPath, backupName, outputPath);
+}
+
+export async function readStoredBackupTablesForRegression(filePath: string) {
+  const zip = await readProfileZipArchive(filePath);
+  const { envelope, basePath } = await readProfileEnvelopeFromArchive(zip);
+  await hydrateProfileArchiveStorageSnapshot(zip, basePath, envelope);
+  const tables = (envelope.data as { fileStorage?: { tables?: ProfileTableSnapshots } }).fileStorage?.tables;
+  return { isFullBackup: zip.isFullBackup, tables, entryNames: zip.entries.map((entry) => entry.entryName) };
+}
+
+export async function pruneScheduledBackupHistoryForRegression(backupsRoot: string, retentionCount: number) {
+  return pruneScheduledBackupHistory(backupsRoot, retentionCount);
+}
+
+async function ensureSnapshotFileFreeSpace(backupsRoot: string, requiredBytes: number) {
+  const fsStat = await statfs(backupsRoot);
+  const freeBytes = Number(fsStat.bavail) * Number(fsStat.bsize);
+  const error = automaticBackupFreeSpaceError(freeBytes, requiredBytes);
+  if (error) throw new Error(error);
+}
+
+async function writeAutomaticBackup(app: FastifyInstance, retentionCount: number, mode: BackupMode = "full") {
   await flushDB();
-  const backupsRoot = getBackupsRoot();
+  const backupsRoot = await prepareBackupsRoot();
   const workingDir = await mkdtemp(join(tmpdir(), "marinara-automatic-backup-"));
   const pendingPath = join(backupsRoot, `${AUTOMATIC_BACKUP_FILENAME}.pending`);
   const finalPath = join(backupsRoot, AUTOMATIC_BACKUP_FILENAME);
   const legacyPreviousPath = join(backupsRoot, `${AUTOMATIC_BACKUP_FILENAME}.previous`);
   let archivedPreviousPath: string | null = null;
   try {
-    await mkdir(backupsRoot, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+    if (mode === "incremental") {
+      const timestamp = new Date().toISOString().replace(/[:.]/gu, "-").replace("T", "_").slice(0, 19);
+      const destination = join(
+        backupsRoot,
+        `marinara-backup-incremental-${timestamp}-${randomBytes(4).toString("hex")}`,
+      );
+      const previous = (await listIncrementalSnapshots(backupsRoot))[0]?.path;
+      const snapshot = await writeModeSnapshot(app, "incremental", destination, workingDir, {
+        scheduled: true,
+        ...(previous ? { previous } : {}),
+        beforeCopy: (requiredBytes) => ensureSnapshotFileFreeSpace(backupsRoot, requiredBytes),
+      });
+      return {
+        removedBackups: await pruneScheduledBackupHistory(backupsRoot, retentionCount),
+        omittedEntries: [],
+        archiveBytes: snapshot.bytes,
+      };
+    }
     await hardenPrivateBackupTree(backupsRoot);
     await rm(pendingPath, { force: true });
     if (!existsSync(finalPath) && existsSync(legacyPreviousPath)) {
@@ -3258,7 +3712,9 @@ async function writeAutomaticBackup(app: FastifyInstance, retentionCount: number
         const error = freeBytes === null ? null : automaticBackupFreeSpaceError(freeBytes, archiveBytes);
         if (error) throw new Error(error);
       },
+      mode,
     );
+    assertBackupModeEnabled(mode);
     const hadPreviousBackup = existsSync(finalPath);
     try {
       if (hadPreviousBackup) {
@@ -3277,7 +3733,7 @@ async function writeAutomaticBackup(app: FastifyInstance, retentionCount: number
       throw error;
     }
     return {
-      removedBackups: await pruneAutomaticBackupFiles(backupsRoot, retentionCount),
+      removedBackups: await pruneScheduledBackupHistory(backupsRoot, retentionCount),
       omittedEntries,
     };
   } finally {
@@ -3311,6 +3767,7 @@ export async function backupRoutes(app: FastifyInstance) {
   type BackupDownloadJob = {
     status: "preparing" | "ready" | "failed";
     backupName: string;
+    mode: BackupMode;
     tempDir: string;
     archivePath: string;
     createdAt: number;
@@ -3397,7 +3854,7 @@ export async function backupRoutes(app: FastifyInstance) {
   const automaticBackupResponse = async (settings: AutomaticBackupSettings) => ({
     ...settings,
     nextBackupAt: automaticBackupNextAt(settings),
-    backupExists: await automaticBackupExists(getBackupsRoot()),
+    backupExists: await scheduledBackupExists(getBackupsRoot()),
   });
   const runAutomaticBackupIfDue = async (force = false) => {
     if (automaticBackupRunning) return;
@@ -3413,8 +3870,9 @@ export async function backupRoutes(app: FastifyInstance) {
       if (!due) return;
 
       const { removedBackups, omittedEntries } = await withAutomaticBackupLifecycleLock(() =>
-        writeAutomaticBackup(app, settings.retentionCount),
+        writeAutomaticBackup(app, settings.retentionCount, effectiveAutomaticBackupMode(settings.mode)),
       );
+
       const current = await loadAutomaticBackupSettings();
       await saveAutomaticBackupSettings({
         ...current,
@@ -3449,7 +3907,7 @@ export async function backupRoutes(app: FastifyInstance) {
   });
 
   app.put<{
-    Body: { enabled?: unknown; frequency?: unknown; retentionCount?: unknown };
+    Body: { enabled?: unknown; frequency?: unknown; retentionCount?: unknown; mode?: unknown };
   }>("/automatic", async (req, reply) => {
     if (!requirePrivilegedAccess(req, reply, { feature: "Automatic backup settings" })) return;
     const parsedRetentionCount =
@@ -3457,15 +3915,20 @@ export async function backupRoutes(app: FastifyInstance) {
     if (
       typeof req.body?.enabled !== "boolean" ||
       !["daily", "weekly", "monthly"].includes(String(req.body?.frequency)) ||
-      parsedRetentionCount === null
+      parsedRetentionCount === null ||
+      (req.body?.mode !== undefined && !isBackupMode(req.body.mode))
     ) {
       return reply.status(400).send({ error: "Invalid automatic backup settings" });
+    }
+    if (req.body.mode !== undefined && req.body.mode !== "full" && !isFeatureEnabled("backupModes")) {
+      return reply.status(403).send({ error: "Additional backup modes are disabled" });
     }
     const current = await loadAutomaticBackupSettings();
     const next = normalizeAutomaticBackupSettings({
       ...current,
       enabled: req.body.enabled,
       frequency: req.body.frequency,
+      mode: automaticBackupModeUpdate(req.body.mode, current.mode) ?? current.mode,
       retentionCount: parsedRetentionCount ?? current.retentionCount,
       lastError: null,
       lastOmittedEntries: [],
@@ -3473,7 +3936,7 @@ export async function backupRoutes(app: FastifyInstance) {
     await saveAutomaticBackupSettings(next);
     const backupsRoot = getBackupsRoot();
     const removedBackups = await withAutomaticBackupLifecycleLock(() =>
-      pruneAutomaticBackupFiles(backupsRoot, next.retentionCount),
+      pruneScheduledBackupHistory(backupsRoot, next.retentionCount),
     );
     if (removedBackups.length > 0) {
       logger.info(
@@ -3482,7 +3945,7 @@ export async function backupRoutes(app: FastifyInstance) {
       );
     }
     if (next.enabled) {
-      const hasAutomaticBackup = await automaticBackupExists(backupsRoot);
+      const hasAutomaticBackup = await scheduledBackupExists(backupsRoot);
       queueMicrotask(() => void runAutomaticBackupIfDue(!current.enabled || !hasAutomaticBackup));
     }
     return automaticBackupResponse(next);
@@ -3537,17 +4000,38 @@ export async function backupRoutes(app: FastifyInstance) {
   // Download a full backup as a single zip — client-side saves to a
   // user-chosen location via the browser's Save dialog / File System Access
   // API. Preferred on Android where the on-disk data folder isn't reachable.
-  app.post("/download", async (req, reply) => {
+  app.post<{ Body: { mode?: unknown } }>("/download", async (req, reply) => {
     if (!requirePrivilegedAccess(req, reply, { feature: "Backup download" })) return;
+    if (req.body?.mode !== undefined && !isBackupMode(req.body.mode)) {
+      return reply.status(400).send({ error: "Invalid backup mode" });
+    }
+    const mode = automaticBackupMode(req.body?.mode);
+    if (mode !== "full" && !isFeatureEnabled("backupModes")) {
+      return reply.status(403).send({ error: "Additional backup modes are disabled" });
+    }
     let tempDir: string | null = null;
     try {
       await flushDB();
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
-      const backupName = `marinara-backup-${timestamp}`;
+      const backupName = `marinara-backup-${mode === "full" ? "" : `${mode}-`}${timestamp}${mode === "incremental" ? `-${randomBytes(4).toString("hex")}` : ""}`;
       tempDir = await mkdtemp(join(tmpdir(), "marinara-backup-download-"));
       const archivePath = join(tempDir, `${backupName}.zip`);
-      const { omittedEntries } = await writeFullBackupArchive(app, archivePath, backupName, tempDir);
+      let omittedEntries: string[];
+      if (mode === "incremental") {
+        const backupsRoot = await prepareBackupsRoot();
+        await withAutomaticBackupLifecycleLock(async () => {
+          const previous = (await listIncrementalSnapshots(backupsRoot))[0]?.path;
+          const snapshotPath = join(backupsRoot, backupName);
+          await writeModeSnapshot(app, "incremental", snapshotPath, tempDir!, { ...(previous ? { previous } : {}) });
+          assertBackupModeEnabled(mode);
+          await writeSnapshotDirectoryArchive(snapshotPath, backupName, archivePath);
+        });
+        omittedEntries = [];
+      } else {
+        ({ omittedEntries } = await writeFullBackupArchive(app, archivePath, backupName, tempDir, undefined, mode));
+      }
       const archiveStat = await stat(archivePath);
+      assertBackupModeEnabled(mode);
       cleanupTempDirAfterReply(reply, tempDir);
       return reply
         .header("Content-Type", "application/zip")
@@ -3564,59 +4048,88 @@ export async function backupRoutes(app: FastifyInstance) {
   // Safari can terminate a request that receives no response bytes while a
   // large archive is being assembled. Start that work asynchronously and let
   // the client poll short status requests before opening the finished stream.
-  app.post("/download/start", { config: { rateLimit: BACKUP_RATE_LIMIT } }, async (req, reply) => {
-    if (!requirePrivilegedAccess(req, reply, { feature: "Backup download" })) return;
-    if (activeBackupDownloadJobId) {
-      const activeJob = backupDownloadJobs.get(activeBackupDownloadJobId);
-      if (activeJob) {
-        return reply.status(202).send({ jobId: activeBackupDownloadJobId, status: activeJob.status });
+  app.post<{ Body: { mode?: unknown } }>(
+    "/download/start",
+    { config: { rateLimit: BACKUP_RATE_LIMIT } },
+    async (req, reply) => {
+      if (!requirePrivilegedAccess(req, reply, { feature: "Backup download" })) return;
+      if (req.body?.mode !== undefined && !isBackupMode(req.body.mode)) {
+        return reply.status(400).send({ error: "Invalid backup mode" });
       }
-      return reply.status(409).send({ error: "A backup download is already being prepared" });
-    }
-    const jobId = randomUUID();
-    activeBackupDownloadJobId = jobId;
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
-    const backupName = `marinara-backup-${timestamp}`;
-    let tempDir: string;
-    try {
-      tempDir = await mkdtemp(join(tmpdir(), "marinara-backup-download-"));
-    } catch (error) {
-      activeBackupDownloadJobId = null;
-      throw error;
-    }
-    const archivePath = join(tempDir, `${backupName}.zip`);
-    const job: BackupDownloadJob = {
-      status: "preparing",
-      backupName,
-      tempDir,
-      archivePath,
-      createdAt: Date.now(),
-      downloadToken: randomBytes(32).toString("base64url"),
-    };
-    backupDownloadJobs.set(jobId, job);
-
-    job.workPromise = (async () => {
+      const mode = automaticBackupMode(req.body?.mode);
+      if (mode !== "full" && !isFeatureEnabled("backupModes")) {
+        return reply.status(403).send({ error: "Additional backup modes are disabled" });
+      }
+      if (activeBackupDownloadJobId) {
+        const activeJob = backupDownloadJobs.get(activeBackupDownloadJobId);
+        if (activeJob) {
+          if (activeJob.mode !== mode) {
+            return reply.status(409).send({ error: "A different backup mode is already being prepared" });
+          }
+          return reply.status(202).send({ jobId: activeBackupDownloadJobId, status: activeJob.status });
+        }
+        return reply.status(409).send({ error: "A backup download is already being prepared" });
+      }
+      const jobId = randomUUID();
+      activeBackupDownloadJobId = jobId;
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
+      const backupName = `marinara-backup-${mode === "full" ? "" : `${mode}-`}${timestamp}${mode === "incremental" ? `-${randomBytes(4).toString("hex")}` : ""}`;
+      let tempDir: string;
       try {
-        await flushDB();
-        const { omittedEntries } = await writeFullBackupArchive(app, archivePath, backupName, tempDir);
-        const archiveStat = await stat(archivePath);
-        job.status = "ready";
-        job.completedAt = Date.now();
-        job.size = archiveStat.size;
-        job.omittedCount = omittedEntries.length;
+        tempDir = await mkdtemp(join(tmpdir(), "marinara-backup-download-"));
       } catch (error) {
-        job.status = "failed";
-        job.completedAt = Date.now();
-        job.error = getBackupErrorMessage(error, "Backup download failed");
-        logger.error(error, "[backup] Asynchronous backup download failed");
-      } finally {
-        if (activeBackupDownloadJobId === jobId) activeBackupDownloadJobId = null;
+        activeBackupDownloadJobId = null;
+        throw error;
       }
-    })();
-    void job.workPromise;
+      const archivePath = join(tempDir, `${backupName}.zip`);
+      const job: BackupDownloadJob = {
+        status: "preparing",
+        backupName,
+        mode,
+        tempDir,
+        archivePath,
+        createdAt: Date.now(),
+        downloadToken: randomBytes(32).toString("base64url"),
+      };
+      backupDownloadJobs.set(jobId, job);
 
-    return reply.status(202).send({ jobId, status: job.status });
-  });
+      job.workPromise = (async () => {
+        try {
+          await flushDB();
+          let omittedEntries: string[];
+          if (mode === "incremental") {
+            const backupsRoot = await prepareBackupsRoot();
+            await withAutomaticBackupLifecycleLock(async () => {
+              const previous = (await listIncrementalSnapshots(backupsRoot))[0]?.path;
+              const snapshotPath = join(backupsRoot, backupName);
+              await writeModeSnapshot(app, "incremental", snapshotPath, tempDir, { ...(previous ? { previous } : {}) });
+              assertBackupModeEnabled(mode);
+              await writeSnapshotDirectoryArchive(snapshotPath, backupName, archivePath);
+            });
+            omittedEntries = [];
+          } else {
+            ({ omittedEntries } = await writeFullBackupArchive(app, archivePath, backupName, tempDir, undefined, mode));
+          }
+          const archiveStat = await stat(archivePath);
+          assertBackupModeEnabled(mode);
+          job.status = "ready";
+          job.completedAt = Date.now();
+          job.size = archiveStat.size;
+          job.omittedCount = omittedEntries.length;
+        } catch (error) {
+          job.status = "failed";
+          job.completedAt = Date.now();
+          job.error = getBackupErrorMessage(error, "Backup download failed");
+          logger.error(error, "[backup] Asynchronous backup download failed");
+        } finally {
+          if (activeBackupDownloadJobId === jobId) activeBackupDownloadJobId = null;
+        }
+      })();
+      void job.workPromise;
+
+      return reply.status(202).send({ jobId, status: job.status });
+    },
+  );
 
   app.get<{ Params: { jobId: string } }>(
     "/download/status/:jobId",
@@ -3671,15 +4184,18 @@ export async function backupRoutes(app: FastifyInstance) {
     const backupsRoot = getBackupsRoot();
     if (!existsSync(backupsRoot)) return [];
 
-    return readdirSync(backupsRoot)
-      .filter((name) => {
-        const p = join(backupsRoot, name);
-        return statSync(p).isDirectory() && name.startsWith("marinara-backup-");
-      })
-      .map((name) => {
+    return readdirSync(backupsRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith("marinara-backup-"))
+      .map((entry) => {
+        const name = entry.name;
         const p = join(backupsRoot, name);
         const st = statSync(p);
-        return { name, createdAt: st.birthtime.toISOString() };
+        const mode: BackupMode = name.startsWith("marinara-backup-incremental-")
+          ? "incremental"
+          : name.startsWith("marinara-backup-data-")
+            ? "data"
+            : "full";
+        return { name, createdAt: st.birthtime.toISOString(), mode };
       })
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   });
@@ -3694,16 +4210,15 @@ export async function backupRoutes(app: FastifyInstance) {
     }
     const backupsRoot = getBackupsRoot();
     const backupDir = join(backupsRoot, name);
-
-    if (!existsSync(backupDir)) {
-      return reply.status(404).send({ error: "Backup not found" });
-    }
-
-    // Remove recursively
-    const { rm } = await import("fs/promises");
-    await rm(backupDir, { recursive: true, force: true });
-
-    return { success: true };
+    return withAutomaticBackupLifecycleLock(async () => {
+      if (!existsSync(backupDir)) return reply.status(404).send({ error: "Backup not found" });
+      const backupInfo = await lstat(backupDir);
+      if (!backupInfo.isDirectory() || backupInfo.isSymbolicLink()) {
+        return reply.status(400).send({ error: "Backup path is not a safe directory" });
+      }
+      await rm(backupDir, { recursive: true, force: true });
+      return { success: true };
+    });
   });
 
   // ── Profile Export ──

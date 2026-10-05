@@ -1,4 +1,5 @@
 import { currentRoomGeneration, resolveRoomGenerationPolicy } from "../multiplayer/generation-policy.js";
+import { reconcileNpcAvatarState, type NpcAvatarWriteIntents } from "../game/npc-avatar-state.js";
 // ──────────────────────────────────────────────
 // Storage: Chats
 // ──────────────────────────────────────────────
@@ -77,6 +78,7 @@ import {
 import { galleryFileHasReferences, unlinkGalleryFileIfUnreferenced } from "../image/gallery-file-lifecycle.js";
 
 import { createAppSettingsStorage } from "./app-settings.storage.js";
+import { deletePrivateNotebookRowsForChat, deletePrivateNotebookRowsForGroup } from "../private-notebook.service.js";
 
 const GALLERY_DIR = join(DATA_DIR, "gallery");
 const GAME_SCENE_VIDEOS_DIR = join(DATA_DIR, "game-scene-videos");
@@ -1454,6 +1456,7 @@ export function createChatsStorage(db: DB) {
       .from(chatImages)
       .where(eq(chatImages.chatId, chatId));
     await database.delete(chatImages).where(eq(chatImages.chatId, chatId));
+    await deletePrivateNotebookRowsForChat(database, chatId);
     await database.delete(chats).where(eq(chats.id, chatId));
     return galleryFiles.map((image) => image.filePath);
   }
@@ -1788,17 +1791,35 @@ export function createChatsStorage(db: DB) {
      * capability-persistence.service.ts) writes whole metadata blobs the same unstamped way and
      * is in the same category — it carries the mirror through untouched rather than restamping.
      */
-    async updateMetadata(id: string, metadata: Record<string, unknown>) {
-      const room = currentRoomGeneration();
-      if (room) {
-        // A model/agent's old snapshot must never restore an ended room or overwrite its coordinator.
-        return this.patchMetadata(id, () => metadata);
-      }
-      await db
-        .update(chats)
-        .set({ metadata: JSON.stringify(metadata), updatedAt: now() })
-        .where(eq(chats.id, id));
-      return this.getById(id);
+    async updateMetadata(
+      id: string,
+      metadata: Record<string, unknown>,
+      opts: { npcAvatarWriteIntents?: NpcAvatarWriteIntents } = {},
+    ) {
+      return withChatMetadataPatchQueue(id, async () => {
+        const existing = await this.getById(id);
+        if (!existing) return null;
+        const room = currentRoomGeneration();
+        if (room) {
+          // A model/agent's old snapshot must never restore an ended room or overwrite its coordinator.
+          return this.patchMetadata(id, () => metadata, {
+            metadataQueueHeld: true,
+            npcAvatarWriteIntents: opts.npcAvatarWriteIntents,
+          });
+        }
+        const existingMetadata = parseMetadata(existing.metadata);
+        if (Array.isArray(metadata.gameNpcs)) {
+          metadata = {
+            ...metadata,
+            gameNpcs: await reconcileNpcAvatarState(db, metadata.gameNpcs, existingMetadata.gameNpcs, opts),
+          };
+        }
+        await db
+          .update(chats)
+          .set({ metadata: JSON.stringify(metadata), updatedAt: now() })
+          .where(eq(chats.id, id));
+        return this.getById(id);
+      });
     },
 
     /**
@@ -1866,7 +1887,15 @@ export function createChatsStorage(db: DB) {
     async patchMetadata(
       id: string,
       patchOrUpdater: MetadataPatch | MetadataUpdater,
-      opts: { touchUpdatedAt?: boolean; metadataQueueHeld?: boolean; allowRoomKeys?: readonly RoomMetadataKey[] } = {},
+      opts: {
+        touchUpdatedAt?: boolean;
+        metadataQueueHeld?: boolean;
+        allowRoomKeys?: readonly RoomMetadataKey[];
+        assertWritable?: () => void;
+        npcAvatarWriteIntents?: NpcAvatarWriteIntents;
+        /** Synchronous authorization after awaited reconciliation, immediately before writing. */
+        beforeWrite?: () => void;
+      } = {},
     ) {
       const applyPatch = async () => {
         const existing = await this.getById(id);
@@ -1874,9 +1903,10 @@ export function createChatsStorage(db: DB) {
 
         const current = parseMetadata(existing.metadata);
         const room = currentRoomGeneration();
+        let roomCharacterIds: readonly string[] | undefined;
         if (room) {
           if (id !== room.chatId) throw new Error("Shared-room generation cannot modify another chat.");
-          resolveRoomGenerationPolicy(id, current, [], room);
+          roomCharacterIds = resolveRoomGenerationPolicy(id, current, [], room)?.characterIds;
         }
         // #5406: fingerprint BEFORE the updater runs. `{ ...current }` is a shallow copy, so an
         // updater that mutates a nested value in place mutates `current`'s value too and the
@@ -1889,6 +1919,12 @@ export function createChatsStorage(db: DB) {
           protectRoomMetadata(patch, opts.allowRoomKeys);
         }
         const merged = mergeMetadataPatch(current, patch);
+        if (Array.isArray(merged.gameNpcs)) {
+          merged.gameNpcs = await reconcileNpcAvatarState(db, merged.gameNpcs, current.gameNpcs, {
+            ...opts,
+            authorizedCharacterIds: roomCharacterIds,
+          });
+        }
         // Explicitly detaching a pinned book resets its chat-local entry state.
         // Temporary exclusions retain it so disabling/re-enabling a book is reversible.
         if (Array.isArray(patch.activeLorebookIds) && Array.isArray(current.activeLorebookIds)) {
@@ -1910,7 +1946,9 @@ export function createChatsStorage(db: DB) {
         // whose ordinal the counter never advanced past.
         const stamp = stampMetadataWriteOrdinals(existing.writeOrdinalCounter, current, merged, patch, before);
         applyOrdinalStamp(merged, stamp);
+        opts.assertWritable?.();
 
+        opts.beforeWrite?.();
         await db
           .update(chats)
           .set({
@@ -2112,8 +2150,14 @@ export function createChatsStorage(db: DB) {
         const videoDir = join(GAME_SCENE_VIDEOS_DIR, chat.id);
         if (existsSync(videoDir)) rmSync(videoDir, { recursive: true, force: true });
       }
-
-      await db.delete(chats).where(eq(chats.groupId, groupId));
+      await db.transaction(async (tx) => {
+        await deletePrivateNotebookRowsForGroup(
+          tx,
+          groupId,
+          groupChats.map((chat) => chat.id),
+        );
+        await tx.delete(chats).where(eq(chats.groupId, groupId));
+      });
     },
 
     // ── Messages ──
@@ -2779,6 +2823,7 @@ export function createChatsStorage(db: DB) {
       swipeIndex: number,
       partial: Record<string, unknown>,
       expectedContent?: string,
+      writeAdmission?: (metadata: unknown) => boolean,
     ) {
       return withPatchQueue(messageExtraPatchQueues, id, async () => {
         const msg = await this.getMessage(id);
@@ -2786,6 +2831,10 @@ export function createChatsStorage(db: DB) {
         const swipes = await this.getSwipes(id);
         const targetSwipe = swipes.find((s: any) => s.index === swipeIndex);
         if (!targetSwipe) return null;
+        if (writeAdmission) {
+          const chat = await this.getById(msg.chatId);
+          if (!chat || !writeAdmission(chat.metadata)) return null;
+        }
 
         const swipeExtra = parseExtraRecord(targetSwipe.extra);
         // A delayed automatic translation must not replace an edit or a translation the user hid.

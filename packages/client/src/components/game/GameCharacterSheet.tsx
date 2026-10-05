@@ -1,3 +1,4 @@
+import { useFeatureEnabled } from "../../hooks/use-feature-settings";
 // ──────────────────────────────────────────────
 // Game: Character Sheet Modal (tabletop-style character sheet)
 // ──────────────────────────────────────────────
@@ -35,10 +36,12 @@ import { NEUTRAL_SURFACE_VARIABLES } from "../ui/neutral-surface-styles";
 import {
   createDefaultRpgStatPools,
   normalizeRpgStatPools,
+  normalizeRpgStatAttributes,
   syncRpgHpFromPools,
   type RPGStatPool,
 } from "@marinara-engine/shared";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import type { GameCharacterProfile } from "../../lib/game-character-profile";
 
 export interface GameCharacterSheetGameCard {
   shortDescription: string;
@@ -65,6 +68,7 @@ export interface CharacterSheetCard {
   stats?: Array<{ name: string; value: number; max?: number; color?: string }>;
   inventory?: Array<{ name: string; quantity?: number; location?: string }>;
   customFields?: Record<string, string>;
+  profile?: GameCharacterProfile;
   gameCard?: GameCharacterSheetGameCard;
 }
 
@@ -187,21 +191,7 @@ function normalizeDraftAttributes(value: unknown) {
   if (!Array.isArray(value)) {
     return DEFAULT_ATTRIBUTES.map((attr) => ({ ...attr }));
   }
-
-  const entries = value
-    .map((entry) => {
-      if (!entry || typeof entry !== "object") return null;
-      const raw = entry as Record<string, unknown>;
-      const name = normalizeTextValue(raw.name).trim();
-      if (!name) return null;
-      return {
-        name,
-        value: normalizeNumberValue(raw.value, 0),
-      };
-    })
-    .filter((entry): entry is { name: string; value: number } => !!entry);
-
-  return entries;
+  return normalizeRpgStatAttributes(value);
 }
 
 function createDraft(gameCard?: GameCharacterSheetGameCard): GameCardDraft {
@@ -361,8 +351,13 @@ export function GameCharacterSheet({
   const hasRpgPools = previewRpgPools.length > 0;
   const hasRpgStats = Boolean(hasRpgAttributes || hasRpgPools);
   const hasPersistentSheetData = hasGameData(previewGameCard) || hasRpgStats;
+  const savedProfilesEnabled = useFeatureEnabled("savedCharacterProfiles");
+  const hasSavedProfile =
+    savedProfilesEnabled &&
+    Object.values(card.profile ?? {}).some((value) => (Array.isArray(value) ? value.length > 0 : !!value));
   const hasAnyData =
     hasPersistentSheetData ||
+    hasSavedProfile ||
     !!ruleset ||
     (card.stats?.length ?? 0) > 0 ||
     (card.inventory?.length ?? 0) > 0 ||
@@ -1031,6 +1026,7 @@ export function GameCharacterSheet({
                 title={localizeUi("ui.characters.statstab.attributes")}
                 className="text-[var(--muted-foreground)]"
               />
+
               {hasRpgAttributes && (
                 <div className="mb-3 grid grid-cols-3 gap-2">
                   {previewGameCard.rpgStats.attributes.map((attr) => (
@@ -1076,6 +1072,69 @@ export function GameCharacterSheet({
                   })}
                 </div>
               )}
+            </div>
+          )}
+
+          {!isEditing && hasSavedProfile && card.profile && (
+            <div className="border-b border-[var(--marinara-chat-chrome-panel-border)] px-5 py-4">
+              <SectionHeader
+                icon={<Sparkles size={12} />}
+                title={localizeUi("ui.game.gamecharactersheet.profile")}
+                className="text-[var(--muted-foreground)]"
+              />
+              <div className="space-y-3 text-xs">
+                {card.profile.description && (
+                  <div>
+                    <div className={FIELD_LABEL_CLASS}>
+                      {localizeUi("ui.game.gamecharactersheet.profileDescription")}
+                    </div>
+                    <p className="mt-1 whitespace-pre-wrap text-[var(--foreground)]/80">{card.profile.description}</p>
+                  </div>
+                )}
+                {card.profile.personality && (
+                  <div>
+                    <div className={FIELD_LABEL_CLASS}>
+                      {localizeUi("ui.game.gamecharactersheet.profilePersonality")}
+                    </div>
+                    <p className="mt-1 whitespace-pre-wrap text-[var(--foreground)]/80">{card.profile.personality}</p>
+                  </div>
+                )}
+                {card.profile.backstory && (
+                  <div>
+                    <div className={FIELD_LABEL_CLASS}>{localizeUi("ui.game.gamecharactersheet.profileBackstory")}</div>
+                    <p className="mt-1 whitespace-pre-wrap text-[var(--foreground)]/80">{card.profile.backstory}</p>
+                  </div>
+                )}
+                {card.profile.appearance && (
+                  <div>
+                    <div className={FIELD_LABEL_CLASS}>
+                      {localizeUi("ui.game.gamecharactersheet.profileAppearance")}
+                    </div>
+                    <p className="mt-1 whitespace-pre-wrap text-[var(--foreground)]/80">{card.profile.appearance}</p>
+                  </div>
+                )}
+                {card.profile.notes && (
+                  <div>
+                    <div className={FIELD_LABEL_CLASS}>{localizeUi("ui.game.gamecharactersheet.profileNotes")}</div>
+                    <p className="mt-1 whitespace-pre-wrap text-[var(--foreground)]/80">{card.profile.notes}</p>
+                  </div>
+                )}
+                {(card.profile.tags?.length ?? 0) > 0 && (
+                  <div>
+                    <div className={FIELD_LABEL_CLASS}>{localizeUi("ui.game.gamecharactersheet.profileTags")}</div>
+                    <div className="mt-1 flex flex-wrap gap-1.5">
+                      {card.profile.tags!.map((tag) => (
+                        <span
+                          key={tag}
+                          className="rounded-full border border-[var(--marinara-chat-chrome-panel-border)] px-2 py-0.5 text-[var(--foreground)]/75"
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 

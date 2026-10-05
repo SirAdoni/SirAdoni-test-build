@@ -211,6 +211,7 @@ export function ConversationMessageBubble({ ctx }: { ctx: MessageRenderContext }
               onValueChange={onEditValueChange}
               onSave={onSaveEdit}
               onCancel={onCancelEdit}
+              messageRole={message.role}
               messageTextStyle={messageTextStyle}
               quoteFormat={quoteFormat}
             />

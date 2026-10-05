@@ -1,5 +1,8 @@
 // Game: Inventory Panel
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { isInventoryBrowsingEnabled, useFeatureEnabled } from "../../hooks/use-feature-settings";
+
 import {
   DndContext,
   type DragEndEvent,
@@ -21,14 +24,17 @@ import {
   Package,
   Plus,
   Scissors,
+  Search,
   Shirt,
   Wand2,
   X,
+  ArrowUpDown,
 } from "lucide-react";
 import {
   gameInventoryBagKey,
   gameInventoryBearerStatus,
   gameInventoryItemId,
+  gameInventoryNameKey,
   gameInventoryStackLabel,
   type GameInventoryBearerStatus,
   type GameInventoryWear,
@@ -116,11 +122,13 @@ interface GameInventoryProps {
   onGiveItem?: (stackId: string, to: string | undefined, count?: number) => Promise<string | null> | string | null;
   /** Called when the user drags one stack onto another item to swap their places. */
   onSwapItems?: (firstId: string, secondId: string) => void | Promise<void>;
+  onReorderItem?: (fromIndex: number, toIndex: number) => void | Promise<void>;
   /** Whether the player can interact (input phase) */
   canInteract?: boolean;
 }
 
 const ITEMS_PER_PAGE = 20;
+type InventorySortMode = "original" | "name" | "quantity";
 
 /** A drop's change is fire-and-forget: whoever handles it says what went wrong, and a rejection it
  *  did not catch is not left unhandled here. */
@@ -146,6 +154,7 @@ export function GameInventory({
   onMergeItems,
   onGiveItem,
   onSwapItems,
+  onReorderItem,
   canInteract,
 }: GameInventoryProps) {
   const { t: localizeUi } = useUiTranslation();
@@ -165,6 +174,11 @@ export function GameInventory({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [view, setView] = useState<InventoryView>({ kind: "all" });
   const [pageIndex, setPageIndex] = useState(0);
+  const queryClient = useQueryClient();
+  const browsingEnabled = useFeatureEnabled("inventoryBrowsing");
+
+  const [query, setQuery] = useState("");
+  const [sortMode, setSortMode] = useState<InventorySortMode>("original");
 
   // Tabs only when somebody besides the player could carry something.
   const showBags = bags.length > 1;
@@ -176,11 +190,34 @@ export function GameInventory({
     () => (showBags && (view.kind === "all" || bagByKey.has(view.key)) ? view : { kind: "all" }),
     [bagByKey, showBags, view],
   );
-  const visibleItems = useMemo(
+  const itemsInView = useMemo(
     () =>
       activeView.kind === "all" ? items : items.filter((item) => gameInventoryBagKey(item.holder) === activeView.key),
     [activeView, items],
   );
+  const visibleItems = useMemo(() => {
+    if (!browsingEnabled) return itemsInView;
+
+    const queryKey = gameInventoryNameKey(query);
+    const filtered = queryKey
+      ? itemsInView.filter((item) =>
+          [item.name, item.nickname, gameInventoryStackLabel(item), item.holder, item.item, gameInventoryItemId(item)]
+            .filter((value): value is string => Boolean(value))
+            .map(gameInventoryNameKey)
+            .join(" ")
+            .includes(queryKey),
+        )
+      : itemsInView;
+    const byName = (a: InventoryItem, b: InventoryItem) =>
+      gameInventoryNameKey(gameInventoryStackLabel(a)).localeCompare(gameInventoryNameKey(gameInventoryStackLabel(b)));
+    return sortMode === "name"
+      ? [...filtered].sort(byName)
+      : sortMode === "quantity"
+        ? [...filtered].sort((a, b) => b.quantity - a.quantity || byName(a, b))
+        : filtered;
+  }, [itemsInView, query, sortMode, browsingEnabled]);
+  const viewActive = browsingEnabled && (query.trim().length > 0 || sortMode !== "original");
+  const reorderEnabled = browsingEnabled && Boolean(onReorderItem) && !viewActive;
   const activeBag = activeView.kind === "bag" ? bagByKey.get(activeView.key) : undefined;
 
   // Mouse: 4px distance threshold so quick clicks still select.
@@ -204,12 +241,12 @@ export function GameInventory({
 
   // Clear selection if the selected stack was removed, or is not in the tab that is open.
   useEffect(() => {
-    if (selectedItem && !visibleItems.some((i) => i.id === selectedItem)) {
+    if (selectedItem && !itemsInView.some((i) => i.id === selectedItem)) {
       setSelectedItem(null);
     }
-  }, [visibleItems, selectedItem]);
+  }, [itemsInView, selectedItem]);
 
-  const selectedInventoryItem = selectedItem ? (visibleItems.find((item) => item.id === selectedItem) ?? null) : null;
+  const selectedInventoryItem = selectedItem ? (itemsInView.find((item) => item.id === selectedItem) ?? null) : null;
   const pageCount = Math.max(1, Math.ceil(visibleItems.length / ITEMS_PER_PAGE));
   const pageStart = pageIndex * ITEMS_PER_PAGE;
   const pageItems = visibleItems.slice(pageStart, pageStart + ITEMS_PER_PAGE);
@@ -320,8 +357,11 @@ export function GameInventory({
   // What the bag in view carries and wears against what its bearer can: the player's own in the
   // shared view when there are no other bags.
   const bindingLabel = rulesetDefinition?.items?.binding?.label;
+  const statusItems = items.map((item) => ({ ...item, item: gameInventoryItemId(item) }));
   const statusOf = (holder: string | undefined) =>
-    itemBook && (itemBook.bearer || itemBook.slots) ? gameInventoryBearerStatus(items, holder, itemBook) : undefined;
+    itemBook && (itemBook.bearer || itemBook.slots)
+      ? gameInventoryBearerStatus(statusItems, holder, itemBook)
+      : undefined;
   const bagStatus = activeBag ? statusOf(activeBag.holder) : !showBags ? statusOf(undefined) : undefined;
   /** The coins in view, family by family, largest first, with their worth in the family's smallest. */
   const purse = useMemo(() => {
@@ -477,9 +517,25 @@ export function GameInventory({
         settle(onMergeItems(from.id, to.id));
         return;
       }
-      if (onSwapItems) settle(onSwapItems(from.id, to.id));
+      if (onReorderItem && browsingEnabled) {
+        if (!reorderEnabled || !isInventoryBrowsingEnabled(queryClient)) return;
+        const fromIndex = items.findIndex((item) => item.id === from.id);
+        const toIndex = items.findIndex((item) => item.id === to.id);
+        if (fromIndex >= 0 && toIndex >= 0) settle(onReorderItem(fromIndex, toIndex));
+      } else if (onSwapItems) settle(onSwapItems(from.id, to.id));
     },
-    [bags, visibleItems, onGiveItem, onMergeItems, onSwapItems],
+    [
+      bags,
+      items,
+      visibleItems,
+      onGiveItem,
+      onMergeItems,
+      onReorderItem,
+      onSwapItems,
+      reorderEnabled,
+      browsingEnabled,
+      queryClient,
+    ],
   );
 
   if (!open) return null;
@@ -606,6 +662,55 @@ export function GameInventory({
 
           {/* Item list */}
           <div className="flex-1 overflow-y-auto p-3">
+            {browsingEnabled && (
+              <div className="mb-3 flex items-center gap-2">
+                <label className="relative min-w-0 flex-1">
+                  <Search
+                    size={12}
+                    className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-white/35"
+                  />
+                  <input
+                    type="search"
+                    value={query}
+                    onChange={(event) => {
+                      if (!isInventoryBrowsingEnabled(queryClient)) return;
+
+                      setQuery(event.currentTarget.value);
+                      setPageIndex(0);
+                    }}
+                    placeholder={localizeUi("ui.game.gameinventory.searchItems")}
+                    aria-label={localizeUi("ui.game.gameinventory.searchItems")}
+                    className="h-8 w-full rounded border border-white/10 bg-black/40 pl-7 pr-2 text-[0.7rem] text-white/85 outline-none placeholder:text-white/30 focus:border-amber-400/40"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!isInventoryBrowsingEnabled(queryClient)) return;
+                    setSortMode((mode) => (mode === "original" ? "name" : mode === "name" ? "quantity" : "original"));
+
+                    setPageIndex(0);
+                  }}
+                  aria-label={localizeUi("ui.game.gameinventory.sortByValue1", {
+                    value1:
+                      sortMode === "name"
+                        ? localizeUi("ui.game.gameinventory.sortName")
+                        : sortMode === "quantity"
+                          ? localizeUi("ui.game.gameinventory.sortQuantity")
+                          : localizeUi("ui.game.gameinventory.sortOriginal"),
+                  })}
+                  className="flex h-8 shrink-0 items-center gap-1 rounded border border-white/10 bg-white/[0.03] px-2 text-[0.65rem] text-white/65 transition-colors hover:bg-white/[0.07]"
+                >
+                  <ArrowUpDown size={12} />
+                  {sortMode === "name"
+                    ? localizeUi("ui.game.gameinventory.sortName")
+                    : sortMode === "quantity"
+                      ? localizeUi("ui.game.gameinventory.sortQuantity")
+                      : localizeUi("ui.game.gameinventory.sortOriginal")}
+                </button>
+              </div>
+            )}
+
             {visibleItems.length > 0 ? (
               <>
                 {pageCount > 1 && (
@@ -642,13 +747,17 @@ export function GameInventory({
                         holderName={showBags && activeView.kind === "all" && item ? bagName(item.holder) : undefined}
                         bindingLabel={bindingLabel}
                         selected={Boolean(item && selectedItem === item.id)}
-                        reorderEnabled={Boolean(onSwapItems || onMergeItems || onGiveItem)}
+                        reorderEnabled={Boolean(onSwapItems || onMergeItems || onGiveItem || reorderEnabled)}
                         onClick={() => item && handleItemClick(item)}
                       />
                     );
                   })}
                 </div>
               </>
+            ) : browsingEnabled && query.trim() ? (
+              <div className="flex min-h-40 items-center justify-center rounded border border-dashed border-white/10 bg-white/[0.02] px-4 text-center text-[0.7rem] text-white/45">
+                {localizeUi("ui.game.gameinventory.noItemsMatchYourSearch")}
+              </div>
             ) : activeBag && items.length > 0 ? (
               <div className="flex min-h-40 flex-col items-center justify-center rounded border border-dashed border-white/10 bg-white/[0.02] px-4 text-center">
                 <Package size={18} className="mb-2 text-white/25" />

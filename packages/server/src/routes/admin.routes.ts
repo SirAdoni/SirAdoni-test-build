@@ -163,6 +163,11 @@ export async function adminRoutes(app: FastifyInstance) {
 
     if (requestedScopes.includes("chats")) {
       await runDelete("message_swipes", () => db.delete(schema.messageSwipes).run());
+      await runDelete("game_prep_boards", () => db.delete(schema.gamePrepBoards).run());
+      await runDelete("game_dice_rolls", () => db.delete(schema.gameDiceRolls).run());
+      await runDelete("random_tables", () =>
+        db.delete(schema.randomTables).where(ne(schema.randomTables.gameId, "")).run(),
+      );
       await runDelete("ooc_influences", () => db.delete(schema.oocInfluences).run());
       await runDelete("memory_chunks", () => db.delete(schema.memoryChunks).run());
       await runDelete("messages", () => db.delete(schema.messages).run());

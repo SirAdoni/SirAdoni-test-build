@@ -104,6 +104,8 @@ export interface FloatingWidgetPosition {
   x: number;
   y: number;
 }
+// Keep the legacy default persisted. The opt-in placement feature derives a render position but
+// never rewrites a user's saved coordinates when the switch changes.
 export const DEFAULT_MOBILE_MUSIC_WIDGET_POSITION = { x: 16, y: 144 } as const;
 export interface SummaryPopoverSettings {
   sourceMode: SummaryPopoverSourceMode;

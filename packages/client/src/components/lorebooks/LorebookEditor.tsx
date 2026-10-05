@@ -417,6 +417,7 @@ export function LorebookEditor() {
   const { t: localizeUi } = useUiTranslation();
   const { t } = useTranslation();
   const lorebookId = useUIStore((s) => s.lorebookDetailId);
+  const lorebookDetailInitialEntryId = useUIStore((s) => s.lorebookDetailInitialEntryId);
   const closeDetail = useUIStore((s) => s.closeLorebookDetail);
   const linkClipboard = useUIStore((s) => s.lorebookLinkClipboard);
   const setLinkClipboard = useUIStore((s) => s.setLorebookLinkClipboard);
@@ -1120,14 +1121,21 @@ export function LorebookEditor() {
     [contentRef, entries, folders, lorebookId, scrollToElement],
   );
 
-  // Open the entry an opener asked for once, e.g. one just made from selected chat text (#6899).
-  const initialEntryIdRef = useRef(useUIStore.getState().lorebookDetailInitialEntryId);
   useEffect(() => {
-    const entryId = initialEntryIdRef.current;
-    if (!entryId || isLoading || !entries.some((entry) => entry.id === entryId)) return;
-    initialEntryIdRef.current = null;
-    jumpToEntry(entryId);
-  }, [entries, isLoading, jumpToEntry]);
+    if (!lorebookId || !lorebookDetailInitialEntryId || !rawEntries || isLoading || !lorebook) return;
+    if (!entries.some((entry) => entry.id === lorebookDetailInitialEntryId)) return;
+
+    const current = useUIStore.getState();
+    if (
+      current.lorebookDetailId !== lorebookId ||
+      current.lorebookDetailInitialEntryId !== lorebookDetailInitialEntryId
+    ) {
+      return;
+    }
+
+    useUIStore.setState({ lorebookDetailInitialEntryId: null });
+    jumpToEntry(lorebookDetailInitialEntryId);
+  }, [entries, isLoading, jumpToEntry, lorebookId, lorebook, lorebookDetailInitialEntryId, rawEntries]);
   const entryNameById = useMemo(() => new Map(entries.map((entry) => [entry.id, entry.name])), [entries]);
   const activeChatForTest = useMemo(
     () =>

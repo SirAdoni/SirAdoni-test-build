@@ -1,7 +1,24 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { isGameGuideEnabled, useFeatureEnabled } from "../../hooks/use-feature-settings";
+import {
+  Component,
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ErrorInfo,
+  type RefObject,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 import type { ChatMode } from "@marinara-engine/shared";
 import {
+  BookOpen,
   Bookmark,
   Brain,
   ChevronsLeftRight,
@@ -32,6 +49,7 @@ import {
   requestChatHelp,
 } from "../../lib/chat-help-events";
 import { useUIStore } from "../../stores/ui.store";
+import { Modal } from "../ui/Modal";
 import { NEUTRAL_PANEL_SHELL } from "../ui/neutral-surface-styles";
 
 type HelpTargetId =
@@ -42,6 +60,7 @@ type HelpTargetId =
   | "agent-controls"
   | "summary"
   | "context"
+  | "private-notebook"
   | "author-notes"
   | "gallery"
   | "connected-chat"
@@ -92,6 +111,60 @@ const HELP_TARGET: HelpTargetDefinition = {
   bodyKey: "chat.help.targets.help.body",
 };
 
+const GameFeaturesGuide = lazy(() =>
+  import("../game/GameFeaturesGuide").then((module) => ({ default: module.GameFeaturesGuide })),
+);
+
+function GameGuideLoadDialog({
+  onClose,
+  restoreFocusRef,
+  failed = false,
+}: {
+  onClose: () => void;
+  restoreFocusRef: RefObject<HTMLElement | null>;
+  failed?: boolean;
+}) {
+  const { t } = useTranslation();
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={t("gameGuide.title")}
+      width="max-w-md"
+      mobileFullscreen
+      restoreFocusRef={restoreFocusRef}
+    >
+      <p className="text-sm text-[var(--muted-foreground)]" role={failed ? "alert" : "status"}>
+        {t(failed ? "gameGuide.loadError" : "gameGuide.loading")}
+      </p>
+    </Modal>
+  );
+}
+
+class GameGuideErrorBoundary extends Component<
+  { children: ReactNode; onClose: () => void; restoreFocusRef: RefObject<HTMLElement | null> },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: unknown, info: ErrorInfo) {
+    console.error("Game mode guide failed to load", error, info.componentStack);
+  }
+
+  render() {
+    return this.state.hasError ? (
+      <GameGuideLoadDialog failed onClose={this.props.onClose} restoreFocusRef={this.props.restoreFocusRef} />
+    ) : (
+      this.props.children
+    );
+  }
+}
+
 const COMMON_TOOLBAR_TARGETS: HelpTargetDefinition[] = [
   {
     id: "branches",
@@ -110,6 +183,12 @@ const COMMON_TOOLBAR_TARGETS: HelpTargetDefinition[] = [
     selector: '[data-chat-help="context"]',
     titleKey: "chat.help.targets.context.title",
     bodyKey: "chat.help.targets.context.body",
+  },
+  {
+    id: "private-notebook",
+    selector: '[data-chat-help="private-notebook"]',
+    titleKey: "chat.help.targets.privateNotebook.title",
+    bodyKey: "chat.help.targets.privateNotebook.body",
   },
   {
     id: "gallery",
@@ -189,7 +268,7 @@ const TARGETS_BY_MODE: Record<ChatMode, HelpTargetDefinition[]> = {
       titleKey: "chat.help.targets.summary.title",
       bodyKey: "chat.help.targets.summary.body",
     },
-    ...commonToolbarTargets("context"),
+    ...commonToolbarTargets("context", "private-notebook"),
     {
       id: "author-notes",
       selector: '[data-chat-help="author-notes"]',
@@ -255,7 +334,7 @@ const TARGETS_BY_MODE: Record<ChatMode, HelpTargetDefinition[]> = {
       titleKey: "chat.help.targets.assets.title",
       bodyKey: "chat.help.targets.assets.body",
     },
-    ...commonToolbarTargets("context", "gallery", "connected-chat", "settings"),
+    ...commonToolbarTargets("context", "private-notebook", "gallery", "connected-chat", "settings"),
     {
       id: "widgets",
       selector: "[data-game-widget-rail]",
@@ -692,6 +771,15 @@ export function ChatHelpOverlay({
   const [selectedTargetId, setSelectedTargetId] = useState<HelpTargetId | null>(null);
   const [hoveredTargetId, setHoveredTargetId] = useState<HelpTargetId | null>(null);
   const [hoverPoint, setHoverPoint] = useState<{ x: number; y: number } | null>(null);
+  const [gameGuideOpen, setGameGuideOpen] = useState(false);
+  const queryClient = useQueryClient();
+  const guideEnabled = useFeatureEnabled("gameGuide");
+  const guideVisible = gameGuideOpen && guideEnabled && mode === "game";
+  const gameGuideButtonRef = useRef<HTMLButtonElement>(null);
+  const closeGameGuide = useCallback(() => {
+    setGameGuideOpen(false);
+    requestAnimationFrame(() => gameGuideButtonRef.current?.focus({ preventScroll: true }));
+  }, []);
   const overlayRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const measurementSignatureRef = useRef("");
@@ -771,7 +859,22 @@ export function ChatHelpOverlay({
     if (!open) return;
     previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     overlayRef.current?.focus({ preventScroll: true });
+    return () => {
+      previousFocusRef.current?.focus({ preventScroll: true });
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (open && !guideVisible && !overlayRef.current?.contains(document.activeElement)) {
+      overlayRef.current?.focus({ preventScroll: true });
+    }
+  }, [guideVisible, open]);
+
+  useEffect(() => {
+    if (!open) return;
+
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (guideVisible) return;
       if (event.key === "Escape") {
         markChatHelpSeen(mode);
         closeChatHelp(mode);
@@ -799,9 +902,8 @@ export function ChatHelpOverlay({
     document.addEventListener("keydown", handleKeyDown);
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
-      previousFocusRef.current?.focus({ preventScroll: true });
     };
-  }, [markChatHelpSeen, mode, open]);
+  }, [guideVisible, markChatHelpSeen, mode, open]);
 
   const dismiss = useCallback(() => {
     markChatHelpSeen(mode);
@@ -819,11 +921,12 @@ export function ChatHelpOverlay({
   const hoveredTarget = targets.find((target) => target.id === hoveredTargetId) ?? null;
 
   useEffect(() => {
-    if (open) return;
+    if (open && mode === "game") return;
     setSelectedTargetId(null);
     setHoveredTargetId(null);
     setHoverPoint(null);
-  }, [open]);
+    setGameGuideOpen(false);
+  }, [mode, open]);
 
   if (!open || !rootRect || typeof document === "undefined") return null;
 
@@ -979,9 +1082,22 @@ export function ChatHelpOverlay({
         >
           <div className="flex items-center gap-2 border-b border-[var(--marinara-chat-chrome-panel-divider)] px-3 py-2.5">
             <CircleHelp size="0.875rem" className="shrink-0 text-[var(--marinara-chat-chrome-button-text-active)]" />
-            <h2 className="text-sm font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
+            <h2 className="min-w-0 flex-1 text-sm font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
               {t(`chat.help.mode.${mode}`)}
             </h2>
+            {guideEnabled && mode === "game" && (
+              <button
+                type="button"
+                ref={gameGuideButtonRef}
+                className="mari-chrome-control shrink-0 px-2 py-1 text-[0.625rem]"
+                onClick={() => {
+                  if (isGameGuideEnabled(queryClient)) setGameGuideOpen(true);
+                }}
+              >
+                <BookOpen size="0.6875rem" aria-hidden="true" />
+                {t("gameGuide.open")}
+              </button>
+            )}
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
             <ol className="space-y-2 px-3 py-2.5">
@@ -1003,6 +1119,13 @@ export function ChatHelpOverlay({
           </div>
         </div>
       )}
+      {guideVisible && (
+        <GameGuideErrorBoundary onClose={closeGameGuide} restoreFocusRef={gameGuideButtonRef}>
+          <Suspense fallback={<GameGuideLoadDialog onClose={closeGameGuide} restoreFocusRef={gameGuideButtonRef} />}>
+            <GameFeaturesGuide onClose={closeGameGuide} />
+          </Suspense>
+        </GameGuideErrorBoundary>
+      )}
 
       {mobile && selectedTarget && (
         <div
@@ -1021,6 +1144,19 @@ export function ChatHelpOverlay({
             <p className="mt-1 text-xs leading-4 text-[var(--marinara-chat-chrome-panel-muted)]">
               {t(selectedTarget.bodyKey)}
             </p>
+            {guideEnabled && mode === "game" && selectedTarget.id === "help" && (
+              <button
+                ref={gameGuideButtonRef}
+                type="button"
+                className="mari-chrome-control mt-3 px-2.5 py-1.5 text-xs"
+                onClick={() => {
+                  if (isGameGuideEnabled(queryClient)) setGameGuideOpen(true);
+                }}
+              >
+                <BookOpen size="0.75rem" aria-hidden="true" />
+                {t("gameGuide.open")}
+              </button>
+            )}
           </div>
           {targetIncludesActionLegend(mode, selectedTarget.id) && <MessageActionLegend mode={mode} />}
         </div>

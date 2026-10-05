@@ -1,9 +1,11 @@
 // ──────────────────────────────────────────────
 // Peek Prompt Modal — collapsible section viewer
 // ──────────────────────────────────────────────
-import { useState, useMemo } from "react";
-import { X, ChevronRight, ChevronDown } from "lucide-react";
-import { cn } from "../../lib/utils";
+import { useEffect, useState, useMemo } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { getCachedFeatureEnabled, useFeatureEnabled } from "../../hooks/use-feature-settings";
+import { Copy, Search, X, ChevronRight, ChevronDown } from "lucide-react";
+import { cn, copyToClipboard } from "../../lib/utils";
 import { useBackdropDismiss } from "../../hooks/use-backdrop-dismiss";
 import {
   NEUTRAL_PANEL_HEADER,
@@ -14,6 +16,13 @@ import {
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { estimateTextTokens, type GameToolPlanningInfo, type DecisionDebugPreview } from "@marinara-engine/shared";
 import { DecisionDebugPanel } from "./DecisionDebugPanel";
+import {
+  countPromptInspectorResults,
+  filterPromptInspectorItems,
+  inspectPromptMessages,
+  serializePromptMessages,
+  type PromptInspectorScope,
+} from "../../lib/peek-prompt-inspector";
 
 const PROMPT_TAG_CLASS =
   "border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-highlight-text)]";
@@ -54,7 +63,7 @@ interface PeekPromptModalProps {
     messages: Array<{ role: string; content: string }>;
     chatMode?: string;
     parameters: unknown;
-    source?: "cached" | "live_preview" | "raw_messages";
+    source?: "cached" | "live_preview" | "raw_messages" | "assembled";
     exact?: boolean;
     generationInfo?: GenerationInfo | null;
     gameToolPlanning?: GameToolPlanningInfo | null;
@@ -62,13 +71,6 @@ interface PeekPromptModalProps {
     decisions?: { unanswered: string[]; dropped?: string[]; decisionModelSet: boolean };
   };
   onClose: () => void;
-}
-
-function sourceLabel(data: PeekPromptModalProps["data"]): string {
-  if (data.exact) return "Exact Text Model Request";
-  if (data.source === "live_preview") return "Live Preview";
-  if (data.source === "raw_messages") return "Raw Messages";
-  return "Prompt Preview";
 }
 
 function sourceBadgeClass(data: PeekPromptModalProps["data"]): string {
@@ -163,40 +165,10 @@ function parseXmlSections(content: string, fallbackLabel: string): SectionBlock[
   return blocks.length > 0 ? blocks : [{ kind: "section", label: fallbackLabel, role: fallbackLabel, content }];
 }
 
-function parseConversationMarkdownSections(content: string, fallbackLabel: string): SectionBlock[] {
-  const sectionRegex = /^## (Context|Commands|Output Format)\n/gim;
-  const matches = [...content.matchAll(sectionRegex)];
-  if (matches.length === 0) {
-    return [{ kind: "section", label: fallbackLabel, role: fallbackLabel, content }];
-  }
-
-  const blocks: SectionBlock[] = [];
-  const leading = content.slice(0, matches[0]!.index).trim();
-  if (leading) {
-    blocks.push({ kind: "section", label: fallbackLabel, role: fallbackLabel, content: leading });
-  }
-  for (let index = 0; index < matches.length; index += 1) {
-    const match = matches[index]!;
-    const nextStart = matches[index + 1]?.index ?? content.length;
-    blocks.push({
-      kind: "section",
-      label: match[1]!,
-      role: fallbackLabel,
-      content: content.slice(match.index, nextStart).trim(),
-    });
-  }
-  return blocks;
-}
-
-function parseConversationRoleSections(segment: PromptSegment): SectionBlock[] {
-  const xmlBlocks = parseXmlSections(segment.content, segment.role);
-  if (xmlBlocks.some((block) => /^(?:context|commands|output_format)$/i.test(block.label))) {
-    return xmlBlocks;
-  }
-  return parseConversationMarkdownSections(segment.content, segment.role);
-}
-
-function splitPromptSegments(messages: Array<{ role: string; content: string }>): PromptSegment[] {
+function splitPromptSegments(
+  messages: Array<{ role: string; content: string }>,
+  preserveChatRoleContent = false,
+): PromptSegment[] {
   const segments: PromptSegment[] = [];
   let inXmlChatHistory = false;
   let inMarkdownChatHistory = false;
@@ -208,6 +180,12 @@ function splitPromptSegments(messages: Array<{ role: string; content: string }>)
 
   for (const message of messages) {
     let remaining = message.content;
+
+    // Conversation user/assistant text is authored dialogue; prompt-like tags in it must not become sections.
+    if (preserveChatRoleContent && isDisplayedChatHistoryRole(message.role)) {
+      pushSegment(message.role, remaining, true);
+      continue;
+    }
 
     while (remaining.length > 0) {
       if (inXmlChatHistory) {
@@ -295,10 +273,10 @@ function appendPromptSection(result: DisplaySection[], segment: PromptSegment) {
   for (const block of blocks) result.push(block);
 }
 
-function buildDisplaySections(
+export function buildDisplaySections(
   messages: Array<{ role: string; content: string }>,
   groupAllChatRoles = false,
-): DisplaySection[] {
+): Array<DisplaySection & { inspectorId: string }> {
   const result: DisplaySection[] = [];
   const historyEntries: ChatHistoryEntry[] = [];
   const historyRawParts: string[] = [];
@@ -310,30 +288,13 @@ function buildDisplaySections(
     historyRawParts.length = 0;
   };
 
-  for (const segment of splitPromptSegments(messages)) {
+  for (const segment of splitPromptSegments(messages, groupAllChatRoles)) {
     if (groupAllChatRoles && isDisplayedChatHistoryRole(segment.role)) {
-      const roleBlocks = parseConversationRoleSections(segment);
-      const hasPromptSections = roleBlocks.some((block) => block.label !== segment.role);
-      if (!hasPromptSections) {
-        historyEntries.push({
-          role: conversationHistoryDisplayRole(segment.role, segment.content),
-          content: segment.content,
-        });
-        historyRawParts.push(segment.content);
-        continue;
-      }
-      for (const block of roleBlocks) {
-        if (block.label === segment.role) {
-          historyEntries.push({
-            role: conversationHistoryDisplayRole(segment.role, block.content),
-            content: block.content,
-          });
-          historyRawParts.push(block.content);
-        } else {
-          flushChatHistory();
-          result.push(block);
-        }
-      }
+      historyEntries.push({
+        role: conversationHistoryDisplayRole(segment.role, segment.content),
+        content: segment.content,
+      });
+      historyRawParts.push(segment.content);
       continue;
     }
 
@@ -354,7 +315,18 @@ function buildDisplaySections(
   }
 
   flushChatHistory();
-  return result;
+  return result.map((item, index) =>
+    item.kind === "chat-history"
+      ? {
+          ...item,
+          inspectorId: `prompt-item-${index}`,
+          entries: item.entries.map((entry, entryIndex) => ({
+            ...entry,
+            inspectorId: `prompt-item-${index}-entry-${entryIndex}`,
+          })),
+        }
+      : { ...item, inspectorId: `prompt-item-${index}` },
+  );
 }
 
 // ═══════════════════════════════════════════════
@@ -366,15 +338,21 @@ function CollapsibleBlock({
   content,
   defaultOpen,
   roleColor,
+  revealKey,
 }: {
   label: string;
   content: string;
   defaultOpen: boolean;
   roleColor: string;
+  revealKey?: string;
 }) {
   const { t: localizeUi } = useUiTranslation();
   const [open, setOpen] = useState(defaultOpen);
   const tokens = estimateTokens(content);
+
+  useEffect(() => {
+    if (revealKey) setOpen(true);
+  }, [revealKey]);
 
   return (
     <div className="rounded-lg border border-[var(--border)] bg-[var(--secondary)]/50 overflow-hidden">
@@ -409,15 +387,19 @@ function CollapsibleBlock({
 function ChatHistorySection({
   entries,
   rawContent,
-  providerBlocks = false,
+  revealKey,
 }: {
   entries: ChatHistoryEntry[];
   rawContent: string;
-  providerBlocks?: boolean;
+  revealKey?: string;
 }) {
   const { t: localizeUi } = useUiTranslation();
   const [open, setOpen] = useState(false);
   const tokens = estimateTokens(rawContent);
+
+  useEffect(() => {
+    if (revealKey) setOpen(true);
+  }, [revealKey]);
 
   const msgRoleColor = (role: string) => {
     if (role === "assistant") return PROMPT_TAG_ACTIVE_CLASS;
@@ -446,9 +428,7 @@ function ChatHistorySection({
         <span className="text-[0.625rem] text-[var(--muted-foreground)]">
           {localizeUi("ui.chat.chathistorysection.value1Value2Value3", {
             value1: entries.length,
-            value2: providerBlocks
-              ? localizeUi("ui.chat.chathistorysection.providerBlock")
-              : localizeUi("ui.chat.chathistorysection.message"),
+            value2: localizeUi("ui.chat.chathistorysection.message"),
             value3: entries.length !== 1 ? localizeUi("ui.noodle.stageprofileview.s") : "",
           })}
         </span>
@@ -460,7 +440,7 @@ function ChatHistorySection({
       {open && (
         <div className="border-t border-[var(--border)]/50 p-2 space-y-1">
           {entries.map((entry, i) => (
-            <ChatHistoryMessage key={i} entry={entry} roleColor={msgRoleColor(entry.role)} />
+            <ChatHistoryMessage key={i} entry={entry} roleColor={msgRoleColor(entry.role)} revealKey={revealKey} />
           ))}
         </div>
       )}
@@ -468,10 +448,22 @@ function ChatHistorySection({
   );
 }
 
-function ChatHistoryMessage({ entry, roleColor }: { entry: ChatHistoryEntry; roleColor: string }) {
+function ChatHistoryMessage({
+  entry,
+  roleColor,
+  revealKey,
+}: {
+  entry: ChatHistoryEntry;
+  roleColor: string;
+  revealKey?: string;
+}) {
   const [open, setOpen] = useState(false);
   const tokens = estimateTokens(entry.content);
   const preview = entry.content.split("\n")[0]?.slice(0, 80) ?? "";
+
+  useEffect(() => {
+    if (revealKey) setOpen(true);
+  }, [revealKey]);
 
   return (
     <div className="rounded-md border border-[var(--border)]/30 bg-[var(--background)]/50 overflow-hidden">
@@ -508,9 +500,14 @@ function ChatHistoryMessage({ entry, roleColor }: { entry: ChatHistoryEntry; rol
 // ═══════════════════════════════════════════════
 
 export function PeekPromptModal({ data: originalData, onClose }: PeekPromptModalProps) {
+  const inspectorEnabled = useFeatureEnabled("promptInspector");
+  const queryClient = useQueryClient();
   const { t: localizeUi } = useUiTranslation();
   const [tested, setTested] = useState<DecisionDebugPreview | null>(null);
   const [showTest, setShowTest] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [inspectorScope, setInspectorScope] = useState<PromptInspectorScope>("all");
+  const [copyResult, setCopyResult] = useState<"copied" | "failed" | null>(null);
   const data: PeekPromptModalProps["data"] =
     showTest && tested
       ? {
@@ -527,6 +524,16 @@ export function PeekPromptModal({ data: originalData, onClose }: PeekPromptModal
     () => buildDisplaySections(data.messages, data.chatMode === "conversation"),
     [data.chatMode, data.messages],
   );
+  const filteredSections = useMemo(
+    () => (inspectorEnabled ? filterPromptInspectorItems(sections, searchQuery, inspectorScope) : sections),
+    [inspectorEnabled, inspectorScope, searchQuery, sections],
+  );
+  const resultCount = countPromptInspectorResults(filteredSections);
+  const diagnostics = useMemo(
+    () => (inspectorEnabled ? inspectPromptMessages(data.messages, sections, data.source) : []),
+    [inspectorEnabled, data.messages, data.source, sections],
+  );
+  const revealKey = inspectorEnabled && searchQuery.trim() ? searchQuery : undefined;
   const totalTokens = useMemo(() => estimateTokens(data.messages.map((m) => m.content).join("")), [data.messages]);
 
   const gen = data.generationInfo;
@@ -590,7 +597,17 @@ export function PeekPromptModal({ data: originalData, onClose }: PeekPromptModal
                 sourceBadgeClass(data),
               )}
             >
-              {showTest ? localizeUi("decisionDebug.testedPrompt") : sourceLabel(data)}
+              {showTest
+                ? localizeUi("decisionDebug.testedPrompt")
+                : localizeUi(
+                    data.exact
+                      ? "ui.chat.peekpromptmodal.savedEngineInput"
+                      : data.source === "live_preview"
+                        ? "ui.chat.peekpromptmodal.livePreviewApproximate"
+                        : data.source === "raw_messages"
+                          ? "ui.chat.peekpromptmodal.rawMessagesApproximate"
+                          : "ui.chat.peekpromptmodal.promptPreviewApproximate",
+                  )}
             </span>
             <span className="min-w-0 text-[0.625rem] text-[var(--muted-foreground)]">
               {sections.length} {localizeUi("ui.chat.peekpromptmodal.section")}
@@ -669,6 +686,18 @@ export function PeekPromptModal({ data: originalData, onClose }: PeekPromptModal
               </ul>
             </div>
           )}
+          <div
+            role="note"
+            className="rounded-lg border border-[var(--border)] bg-[var(--secondary)]/30 px-3 py-2 text-xs text-[var(--muted-foreground)]"
+          >
+            {localizeUi(
+              data.exact
+                ? "ui.chat.peekpromptmodal.savedBoundaryNote"
+                : data.source === "raw_messages"
+                  ? "ui.chat.peekpromptmodal.rawBoundaryNote"
+                  : "ui.chat.peekpromptmodal.previewBoundaryNote",
+            )}
+          </div>
           {/* Generation info panel */}
           {(gen || planner || paramPills.length > 0) && (
             <div className="rounded-lg border border-[var(--border)] bg-[var(--secondary)]/30 px-4 py-3 space-y-2">
@@ -753,18 +782,117 @@ export function PeekPromptModal({ data: originalData, onClose }: PeekPromptModal
               {localizeUi("ui.chat.peekpromptmodal.note")} {data.agentNote}
             </div>
           )}
-          {sections.map((s, i) =>
-            s.kind === "chat-history" ? (
-              <ChatHistorySection key={i} entries={s.entries} rawContent={s.rawContent} providerBlocks={data.exact} />
-            ) : (
-              <CollapsibleBlock
-                key={i}
-                label={s.label}
-                content={s.content}
-                defaultOpen={false}
-                roleColor={sectionRoleColor(s.role, s.label)}
-              />
-            ),
+          {inspectorEnabled && (
+            <div className="flex flex-col gap-2 rounded-lg border border-[var(--border)] bg-[var(--secondary)]/30 p-3 sm:flex-row sm:items-center">
+              <label className="relative min-w-0 flex-1">
+                <Search
+                  aria-hidden="true"
+                  size="0.875rem"
+                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted-foreground)]"
+                />
+                <input
+                  type="search"
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder={localizeUi("ui.chat.peekpromptmodal.searchPlaceholder")}
+                  aria-label={localizeUi("ui.chat.peekpromptmodal.searchPlaceholder")}
+                  className="min-h-10 w-full rounded-md border border-[var(--border)] bg-[var(--background)] pl-9 pr-3 text-sm text-[var(--foreground)]"
+                />
+              </label>
+              <label className="sr-only" htmlFor="peek-prompt-scope">
+                {localizeUi("ui.chat.peekpromptmodal.filterScope")}
+              </label>
+              <select
+                id="peek-prompt-scope"
+                value={inspectorScope}
+                onChange={(event) => setInspectorScope(event.target.value as PromptInspectorScope)}
+                className="min-h-10 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]"
+              >
+                <option value="all">{localizeUi("ui.chat.peekpromptmodal.scopeAll")}</option>
+                <option value="sections">{localizeUi("ui.chat.peekpromptmodal.scopeSections")}</option>
+                <option value="chat-history">{localizeUi("ui.chat.peekpromptmodal.scopeChatHistory")}</option>
+              </select>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!getCachedFeatureEnabled(queryClient, "promptInspector")) return;
+                  const didCopy = await copyToClipboard(serializePromptMessages(data.messages));
+                  setCopyResult(didCopy ? "copied" : "failed");
+                }}
+                className="mari-chrome-control min-h-10 px-3"
+                aria-label={localizeUi("ui.chat.peekpromptmodal.copyMessages")}
+              >
+                <Copy aria-hidden="true" size="0.875rem" />
+                {localizeUi("ui.chat.peekpromptmodal.copyMessages")}
+              </button>
+              <span role="status" className="text-xs text-[var(--muted-foreground)]">
+                {localizeUi(
+                  copyResult === "copied"
+                    ? "ui.chat.peekpromptmodal.copied"
+                    : copyResult === "failed"
+                      ? "ui.chat.peekpromptmodal.copyFailed"
+                      : "ui.chat.peekpromptmodal.resultCount",
+                  { count: resultCount },
+                )}
+              </span>
+            </div>
+          )}
+          {diagnostics.length > 0 && (
+            <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
+              <p className="font-medium">
+                {localizeUi("ui.chat.peekpromptmodal.diagnosticCount", { count: diagnostics.length })}
+              </p>
+              <ul className="mt-1 list-disc pl-4 text-[var(--muted-foreground)]">
+                {diagnostics.map((diagnostic, index) => (
+                  <li key={`${diagnostic.kind}-${index}`}>
+                    {localizeUi(
+                      diagnostic.kind === "empty-message"
+                        ? "ui.chat.peekpromptmodal.diagnosticEmptyMessage"
+                        : diagnostic.kind === "empty-section"
+                          ? "ui.chat.peekpromptmodal.diagnosticEmptySection"
+                          : "ui.chat.peekpromptmodal.diagnosticUnresolvedMacro",
+                      diagnostic.kind === "empty-message"
+                        ? { index: diagnostic.messageIndex + 1, role: diagnostic.role }
+                        : diagnostic.kind === "empty-section"
+                          ? { index: diagnostic.sectionIndex + 1, label: diagnostic.label }
+                          : {
+                              index: diagnostic.sectionIndex + 1,
+                              label: diagnostic.label,
+                              macros: diagnostic.macros.join(", "),
+                            },
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {filteredSections.length === 0 ? (
+            <p
+              role="status"
+              className="rounded-lg border border-[var(--border)] px-3 py-6 text-center text-sm text-[var(--muted-foreground)]"
+            >
+              {localizeUi("ui.chat.peekpromptmodal.noMatches")}
+            </p>
+          ) : (
+            filteredSections.map((s, i) =>
+              s.kind === "chat-history" ? (
+                <ChatHistorySection
+                  key={s.inspectorId ?? `history-${i}`}
+                  entries={s.entries}
+                  rawContent={s.rawContent}
+                  revealKey={revealKey}
+                />
+              ) : (
+                <CollapsibleBlock
+                  key={s.inspectorId ?? `section-${i}`}
+                  label={s.label}
+                  content={s.content}
+                  defaultOpen={false}
+                  roleColor={sectionRoleColor(s.role, s.label)}
+                  revealKey={revealKey}
+                />
+              ),
+            )
           )}
         </div>
       </div>

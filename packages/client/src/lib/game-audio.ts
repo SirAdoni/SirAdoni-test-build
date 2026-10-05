@@ -62,6 +62,10 @@ function clampUnit(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
+function isAutoplayBlock(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { name?: unknown }).name === "NotAllowedError";
+}
+
 function setAmbientAudioSession(): void {
   if (typeof navigator === "undefined") return;
   const audioSession = (navigator as NavigatorWithAudioSession).audioSession;
@@ -82,10 +86,12 @@ class GameAudioManager {
   private musicElement: LoopingAudioLayer | null = null;
   private nextMusicElement: LoopingAudioLayer | null = null;
   private fadingMusicElement: LoopingAudioLayer | null = null;
+  private fadingMusicVolumeRatio = 0;
   private ambientElement: LoopingAudioLayer | null = null;
   private nextAmbientElement: LoopingAudioLayer | null = null;
   private sfxPool: HTMLAudioElement[] = [];
   private sfxIndex = 0;
+  private sfxOwners = new Map<HTMLAudioElement, number>();
   private sfxAudioContext: AudioContext | null = null;
   private proceduralSfxTimers = new Set<ReturnType<typeof setTimeout>>();
   private sfxGeneration = 0;
@@ -106,6 +112,27 @@ class GameAudioManager {
   /** True after the user has interacted with the page (click/touch/key). */
   private userHasInteracted = false;
   private interactionListenerAttached = false;
+  private visibilityResumeGeneration = 0;
+  private visibilityListenerAttached = false;
+  private handleVisibilityChange = () => {
+    if (typeof document === "undefined" || document.visibilityState !== "visible") return;
+    const ctx = this.sfxAudioContext;
+    if (!ctx || ctx.state === "running") return;
+
+    const generation = ++this.visibilityResumeGeneration;
+    void ctx
+      .resume()
+      .then(() => {
+        if (generation !== this.visibilityResumeGeneration || ctx !== this.sfxAudioContext) return;
+        this.audioContextUnlocked = ctx.state === "running";
+        if (!this.audioContextUnlocked) this.ensureGestureListener();
+      })
+      .catch(() => {
+        if (generation !== this.visibilityResumeGeneration || ctx !== this.sfxAudioContext) return;
+        this.audioContextUnlocked = false;
+        this.ensureGestureListener();
+      });
+  };
 
   constructor() {
     setAmbientAudioSession();
@@ -119,6 +146,12 @@ class GameAudioManager {
   }
 
   /** Track user interaction so we know autoplay is allowed. */
+  private attachVisibilityListener(): void {
+    if (this.visibilityListenerAttached || typeof document === "undefined") return;
+    document.addEventListener("visibilitychange", this.handleVisibilityChange);
+    this.visibilityListenerAttached = true;
+  }
+
   private attachInteractionListener(): void {
     if (this.interactionListenerAttached) return;
     this.interactionListenerAttached = true;
@@ -198,6 +231,7 @@ class GameAudioManager {
       if (!AudioContextCtor) return null;
       this.sfxAudioContext = new AudioContextCtor();
     }
+    this.attachVisibilityListener();
     if (this.sfxAudioContext.state === "suspended") {
       void this.sfxAudioContext.resume().catch(() => {});
     }
@@ -347,7 +381,9 @@ class GameAudioManager {
         if (!response.ok) throw new Error(`Audio fetch failed (${response.status})`);
         const buffer = await ctx.decodeAudioData(await response.arrayBuffer());
         if (stopped) return;
-        if (!(await this.resumeAudioContext(ctx))) {
+        const resumed = await this.resumeAudioContext(ctx);
+        if (stopped) return;
+        if (!resumed) {
           throw new Error("Audio context is not running");
         }
 
@@ -481,7 +517,9 @@ class GameAudioManager {
         if (!response.ok) throw new Error(`Audio fetch failed (${response.status})`);
         const buffer = await ctx.decodeAudioData(await response.arrayBuffer());
         if (stopped) return;
-        if (!(await this.resumeAudioContext(ctx))) {
+        const resumed = await this.resumeAudioContext(ctx);
+        if (stopped) return;
+        if (!resumed) {
           throw new Error("Audio context is not running");
         }
 
@@ -653,6 +691,7 @@ class GameAudioManager {
       if (this.pendingMusic?.tag === tag) this.pendingMusic = null;
       return;
     }
+    this.pendingMusic = null;
     this.currentMusicTag = tag;
 
     // Defer playback if the user hasn't interacted yet (avoids autoplay warnings)
@@ -693,7 +732,6 @@ class GameAudioManager {
         // Playback started — clear any pending retry
         this.pendingMusic = null;
         const steps = CROSSFADE_MS / 50;
-        const fadeStep = this.musicVolume / steps;
         let step = 0;
 
         const interval = setInterval(() => {
@@ -707,11 +745,11 @@ class GameAudioManager {
           step++;
           // Fade in new
           newAudio.setMuted(this.isMuted);
-          newAudio.setVolume(Math.min(this.musicVolume, fadeStep * step));
+          newAudio.setVolume(Math.min(this.musicVolume, (this.musicVolume / steps) * step));
           // Fade out old
           if (oldAudio) {
             oldAudio.setMuted(this.isMuted);
-            oldAudio.setVolume(Math.max(0, this.musicVolume - fadeStep * step));
+            oldAudio.setVolume(Math.max(0, this.musicVolume * (1 - step / steps)));
           }
 
           if (step >= steps) {
@@ -727,7 +765,7 @@ class GameAudioManager {
 
         this.fadeInterval = interval;
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         if (this.nextMusicElement !== newAudio) {
           newAudio.stop();
           return;
@@ -736,14 +774,15 @@ class GameAudioManager {
         this.nextMusicElement = null;
         newAudio.stop();
 
-        // Autoplay blocked — queue for retry on user gesture
-        this.pendingMusic = { tag, manifest };
         this.currentMusicTag = tag;
         if (oldAudio) {
           oldAudio.setMuted(this.isMuted);
           oldAudio.setVolume(this.musicVolume);
         }
-        this.ensureGestureListener();
+        if (isAutoplayBlock(err)) {
+          this.pendingMusic = { tag, manifest };
+          this.ensureGestureListener();
+        }
       });
   }
 
@@ -775,13 +814,15 @@ class GameAudioManager {
       return;
     }
     const steps = CROSSFADE_MS / 50;
-    const fadeStep = audio.getVolume() / steps;
+    const initialVolumeRatio = this.musicVolume > 0 ? audio.getVolume() / this.musicVolume : 0;
+    this.fadingMusicVolumeRatio = initialVolumeRatio;
     let step = 0;
     this.fadingMusicElement = audio;
 
     const interval = setInterval(() => {
       step++;
-      audio.setVolume(Math.max(0, audio.getVolume() - fadeStep));
+      this.fadingMusicVolumeRatio = Math.max(0, initialVolumeRatio * (1 - step / steps));
+      audio.setVolume(this.musicVolume * this.fadingMusicVolumeRatio);
       if (step >= steps) {
         clearInterval(interval);
         if (this.fadeInterval === interval) this.fadeInterval = null;
@@ -799,8 +840,11 @@ class GameAudioManager {
     const url = this.resolveAssetUrl(tag, manifest);
     const audio = this.sfxPool[this.sfxIndex % SFX_POOL_SIZE]!;
     this.sfxIndex++;
+    const playId = this.sfxIndex;
+    this.sfxOwners.set(audio, playId);
     let remainingPlays = Number.isFinite(loopCount) ? Math.max(1, Math.min(5, Math.floor(loopCount))) : 1;
     const playProceduralFallback = () => {
+      if (this.sfxOwners.get(audio) !== playId) return;
       if (generation !== this.sfxGeneration || remainingPlays <= 0) return;
       const fallbackPlays = remainingPlays;
       remainingPlays = 0;
@@ -809,7 +853,7 @@ class GameAudioManager {
       for (let index = 0; index < fallbackPlays; index++) {
         const timer = setTimeout(() => {
           this.proceduralSfxTimers.delete(timer);
-          if (generation !== this.sfxGeneration) return;
+          if (this.sfxOwners.get(audio) !== playId || generation !== this.sfxGeneration) return;
           this.playProceduralSfx(tag);
         }, index * 350);
         this.proceduralSfxTimers.add(timer);
@@ -839,6 +883,7 @@ class GameAudioManager {
   /** Set looping ambient sound. */
   playAmbient(tag: string, manifest?: Record<string, { path: string }> | null): void {
     if (tag === this.currentAmbientTag) return;
+    this.pendingAmbient = null;
     const previousAmbientTag = this.currentAmbientTag;
     const previousAmbient = this.ambientElement;
     this.currentAmbientTag = tag;
@@ -878,14 +923,16 @@ class GameAudioManager {
 
         console.warn("[audio] Ambient playback failed:", tag, err);
         this.nextAmbientElement = null;
-        this.pendingAmbient = { tag, manifest };
         this.currentAmbientTag = previousAmbientTag;
         this.ambientElement = previousAmbient ?? null;
         if (previousAmbient) {
           previousAmbient.setMuted(this.isMuted);
           previousAmbient.setVolume(this.ambientVolume);
         }
-        this.ensureGestureListener();
+        if (isAutoplayBlock(err)) {
+          this.pendingAmbient = { tag, manifest };
+          this.ensureGestureListener();
+        }
       });
   }
 
@@ -912,6 +959,7 @@ class GameAudioManager {
     if (this.nextMusicElement) {
       this.nextMusicElement.setMuted(muted);
     }
+    this.fadingMusicElement?.setMuted(muted);
     if (this.ambientElement) {
       this.ambientElement.setMuted(muted);
     }
@@ -930,14 +978,13 @@ class GameAudioManager {
     this.musicVolume = Math.max(0, Math.min(1, music));
     this.sfxVolume = Math.max(0, Math.min(1, sfx));
     this.ambientVolume = Math.max(0, Math.min(1, ambient));
-    if (!this.isMuted) {
-      if (!this.fadeInterval || !this.nextMusicElement) {
-        this.musicElement?.setVolume(this.musicVolume);
-        this.nextMusicElement?.setVolume(this.musicVolume);
-      }
-      this.ambientElement?.setVolume(this.ambientVolume);
-      this.nextAmbientElement?.setVolume(this.ambientVolume);
+    if (!this.fadeInterval || !this.nextMusicElement) {
+      this.musicElement?.setVolume(this.musicVolume);
+      this.nextMusicElement?.setVolume(this.musicVolume);
     }
+    this.fadingMusicElement?.setVolume(this.musicVolume * this.fadingMusicVolumeRatio);
+    this.ambientElement?.setVolume(this.ambientVolume);
+    this.nextAmbientElement?.setVolume(this.ambientVolume);
     for (const el of this.sfxPool) {
       this.setElementLayerVolume(el, this.sfxVolume);
     }
@@ -958,6 +1005,11 @@ class GameAudioManager {
   /** Stop everything and clean up. */
   dispose(): void {
     this.sfxGeneration += 1;
+    this.visibilityResumeGeneration += 1;
+    if (typeof document !== "undefined" && this.visibilityListenerAttached) {
+      document.removeEventListener("visibilitychange", this.handleVisibilityChange);
+      this.visibilityListenerAttached = false;
+    }
     this.stopMusic(true);
     this.stopAmbient();
     for (const timer of this.proceduralSfxTimers) clearTimeout(timer);

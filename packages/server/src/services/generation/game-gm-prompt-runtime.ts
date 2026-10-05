@@ -1,6 +1,9 @@
 import { currentRoomGeneration, roomHostIdentity } from "../multiplayer/generation-policy.js";
+import { isCampaignSurfaceEnabled } from "../features/campaign-surface-opt-in.js";
 import {
   GAME_GM_BUILT_IN_PROMPT_TEMPLATES,
+  composeGameTimeLine,
+  isGameExtendedWidgetsEnabled,
   normalizeAgentPromptTemplateOptions,
   normalizeTextForMatch,
   resolveGameSetupArtStylePrompt,
@@ -11,6 +14,7 @@ import {
   type GameNpc,
   type SessionSummary,
 } from "@marinara-engine/shared";
+import { isFeatureEnabled } from "../features/feature-settings.js";
 import { buildGmSystemPrompt, type GmPromptContext } from "../game/gm-prompts.js";
 import { listPartySprites } from "../game/sprite.service.js";
 import { generatePerceptionHints, formatPerceptionHints, type PerceptionContext } from "../game/perception.service.js";
@@ -19,11 +23,119 @@ import { sidecarModelService } from "../sidecar/sidecar-model.service.js";
 import { isInferenceAvailable as isSidecarInferenceAvailable } from "../sidecar/sidecar-inference.service.js";
 import { cardPromptText } from "../prompt/card-text.js";
 import { buildPartyNpcId, isPartyNpcId } from "./game-party-utils.js";
+import type { DB } from "../../db/connection.js";
+import { logger } from "../../lib/logger.js";
+import { isCampaignMemoryRecallEnabled } from "../features/campaign-opt-in.js";
+import {
+  buildCampaignMemoryContextFromStorage,
+  normalizeCampaignMemoryMaxCharacters,
+  type CampaignMemoryContextResult,
+} from "../game/campaign-memory-context.js";
+export { DEFAULT_CAMPAIGN_MEMORY_MAX_CHARACTERS } from "../game/campaign-memory-context.js";
 
 type PromptMessage = {
   role: "system" | "user" | "assistant";
   content: string;
+  contextKind?: string;
+  providerMetadata?: Record<string, unknown>;
 };
+
+/** Explicit per-character boundary: what each present character may use from the block above. */
+export function formatGameGmCharacterBoundary(context: CampaignMemoryContextResult): string {
+  const lines = ["<character_boundary>"];
+  if (!context.characterBoundaries) {
+    lines.push(
+      "Scene presence was unavailable for this request. Every record above is GM-only: no character may reference it unless established fiction shows they learned it on-screen.",
+    );
+  } else {
+    lines.push(
+      "Presence comes from the current scene state. A present character may use only the record IDs listed for it, plus what it witnesses on-screen from now on.",
+    );
+    for (const boundary of context.characterBoundaries) {
+      const aliases = boundary.aliases.length ? ` aliases=${boundary.aliases.join(",")}` : "";
+      lines.push(
+        `[may-use holder=${boundary.entityId}${aliases}] ${boundary.mayUseIds.length ? boundary.mayUseIds.join(", ") : "(nothing listed)"}`,
+      );
+    }
+    if (!context.characterBoundaries.length)
+      lines.push("No campaign-memory character is present in the current scene.");
+    lines.push("Everything else above is GM-only: no character may reference it unless they learn it on-screen.");
+  }
+  lines.push("</character_boundary>");
+  return lines.join("\n");
+}
+
+export function formatGameGmMemoryOmissions(context: CampaignMemoryContextResult): string {
+  const omissions = context.omissions ?? { budgetOmitted: 0, duplicatesMerged: 0, mergedIds: [] };
+  return `[memory_omissions] ${omissions.budgetOmitted} records omitted for budget; ${omissions.duplicatesMerged} duplicates merged into continuity receipts`;
+}
+
+const GAME_GM_CAMPAIGN_MEMORY_PRECEDENCE =
+  "Precedence: current state and verified facts in this block override any conflicting character card, persona, or lore text; when they conflict, use this block.";
+
+export function appendGameGmCampaignMemory(
+  messages: PromptMessage[],
+  context: CampaignMemoryContextResult,
+  cutoffOrder?: string,
+): boolean {
+  if (!context.text.trim() && !context.degraded) return false;
+  const availability = context.degraded
+    ? "Some campaign memory was excluded by validation or budget. Absence is not evidence that a fact never happened. Use current verified records over stale descriptions; respect each listed knowledge holder."
+    : "These are current verified campaign records. World truth is not automatic character knowledge; only listed holders have the attributed knowledge.";
+  const body = [
+    GAME_GM_CAMPAIGN_MEMORY_PRECEDENCE,
+    availability,
+    context.text,
+    formatGameGmCharacterBoundary(context),
+    formatGameGmMemoryOmissions(context),
+  ]
+    .filter((part) => part.trim().length > 0)
+    .join("\n");
+  messages.push({
+    role: "system",
+    content: `<campaign_memory audience="gm">\n${body}\n</campaign_memory>`,
+    contextKind: "injection",
+    providerMetadata: {
+      marinaraPromptHistoryReplaySnapshot: true,
+      marinaraRuntimeContext: true,
+      marinaraCampaignMemory: {
+        audience: "gm",
+        includedIds: context.includedIds,
+        exclusions: context.exclusions,
+        degraded: context.degraded,
+        cutoffOrder: cutoffOrder ?? null,
+        characterBoundaries: context.characterBoundaries ?? null,
+        omissions: context.omissions ?? null,
+        precedence: "campaign-memory-over-cards",
+        currentStateCount: context.currentStateCount ?? 0,
+      },
+    },
+  });
+  return true;
+}
+
+export function appendGameGmCampaignMemoryIfEnabled(
+  messages: PromptMessage[],
+  context: CampaignMemoryContextResult,
+  cutoffOrder?: string,
+): boolean {
+  return isCampaignMemoryRecallEnabled() && appendGameGmCampaignMemory(messages, context, cutoffOrder);
+}
+
+/** Limit only what enters a future prompt; persisted session history is unchanged. */
+export function limitGameGmSessionSummaries(summaries: SessionSummary[], limit: unknown): SessionSummary[] {
+  if (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit <= 0) return summaries;
+  if (summaries.length <= limit) return summaries;
+  return [...summaries].sort((left, right) => left.sessionNumber - right.sessionNumber).slice(-limit);
+}
+
+export function projectGameGmSessionSummaries(
+  summaries: SessionSummary[],
+  limit: unknown,
+): { summaries: SessionSummary[]; applied: boolean } {
+  const projected = limitGameGmSessionSummaries(summaries, isFeatureEnabled("gameMemoryControls") ? limit : null);
+  return { summaries: projected, applied: projected.length < summaries.length };
+}
 
 type CharactersStore = {
   getById(id: string): Promise<{ data: unknown } | null>;
@@ -47,6 +159,8 @@ export type GameGmPromptRuntime = {
   gameTime: string | undefined;
   gameMap: GameMap | null;
   hasSceneModel: boolean;
+  memoryControlsApplied: boolean;
+  campaignMemoryApplied: boolean;
 };
 
 function parseExtra(extra: unknown): Record<string, unknown> {
@@ -143,7 +257,25 @@ function buildLibraryCardParts(data: any, fallbackName = "Unknown"): { name: str
   return { name, parts };
 }
 
+/** Cancel only a request that already incorporated the optional widget instructions. */
+export async function assertExtendedWidgetDispatchAllowed(
+  applied: boolean,
+  loadChat: () => Promise<{ metadata: unknown } | null | undefined>,
+): Promise<void> {
+  if (!applied) return;
+  const current = await loadChat();
+  if (
+    !current ||
+    !isFeatureEnabled("extendedHudWidgets") ||
+    !isGameExtendedWidgetsEnabled(parseExtra(current.metadata))
+  ) {
+    throw new Error("Extended HUD widgets were disabled before dispatch; retry the request.");
+  }
+}
+
 export async function injectGameGmPromptRuntime(args: {
+  db?: DB;
+  campaignMemoryRequestMode?: "live-current";
   messages: PromptMessage[];
   chatId: string;
   chat: ChatLike;
@@ -152,7 +284,7 @@ export async function injectGameGmPromptRuntime(args: {
   chars: CharactersStore;
   chats: ChatsStore;
   selectedGameStateSnapshotPromise: Promise<any | null>;
-  mappedMessages: Array<{ role: string }>;
+  mappedMessages: Array<{ role: string; content?: unknown; contextKind?: string }>;
   personaName: string;
   resolvePromptMacros(value: string): string;
 }): Promise<GameGmPromptRuntime> {
@@ -176,9 +308,15 @@ export async function injectGameGmPromptRuntime(args: {
       : null;
   const gameMap = (args.chatMetadata.gameMap as GameMap) || null;
   const gameNpcs = Array.isArray(args.chatMetadata.gameNpcs) ? (args.chatMetadata.gameNpcs as GameNpc[]) : [];
-  const sessionSummaries = Array.isArray(args.chatMetadata.gamePreviousSessionSummaries)
+  const storedSessionSummaries = Array.isArray(args.chatMetadata.gamePreviousSessionSummaries)
     ? (args.chatMetadata.gamePreviousSessionSummaries as SessionSummary[])
     : [];
+  const sessionSummaryProjection = projectGameGmSessionSummaries(
+    storedSessionSummaries,
+    args.chatMetadata.gamePromptRecentSessionLimit,
+  );
+  const sessionSummaries = sessionSummaryProjection.summaries;
+  let campaignMemoryApplied = false;
   const playerNotes =
     typeof args.chatMetadata.gamePlayerNotes === "string" ? args.chatMetadata.gamePlayerNotes.trim() : undefined;
 
@@ -288,8 +426,11 @@ export async function injectGameGmPromptRuntime(args: {
     if (snap) {
       if (snap.weather)
         weatherContext = `Current weather: ${snap.weather}${snap.temperature ? `, ${snap.temperature}` : ""}`;
-      if (snap.time || snap.date) gameTime = [snap.date, snap.time].filter(Boolean).join(", ");
     }
+    const calendarMetadata = isCampaignSurfaceEnabled("gameCalendar")
+      ? args.chatMetadata
+      : { ...args.chatMetadata, gameCalendar: undefined };
+    gameTime = composeGameTimeLine(snap, calendarMetadata);
   } catch {
     /* ignore */
   }
@@ -406,6 +547,10 @@ export async function injectGameGmPromptRuntime(args: {
     gameTime,
     weatherContext,
     playerNotes,
+    enableCustomWidgets:
+      args.chatMetadata.enableCustomWidgets !== false &&
+      (setupConfig as { enableCustomWidgets?: boolean } | null)?.enableCustomWidgets !== false,
+    enableExtendedWidgets: isFeatureEnabled("extendedHudWidgets") && isGameExtendedWidgetsEnabled(args.chatMetadata),
     hudWidgets: Array.isArray(args.chatMetadata.gameWidgetState)
       ? (args.chatMetadata.gameWidgetState as any[])
       : Array.isArray(gameBlueprint?.hudWidgets)
@@ -435,6 +580,58 @@ export async function injectGameGmPromptRuntime(args: {
   let fullGmPrompt = customGmPrompt ? `${builtGmPrompt}\n\n${customGmPrompt}` : builtGmPrompt;
   fullGmPrompt = args.resolvePromptMacros(fullGmPrompt);
 
+  // Only a current request may read the latest durable projection. Historical callers use their explicit cutoff.
+  if (args.db && args.campaignMemoryRequestMode === "live-current" && isCampaignMemoryRecallEnabled()) {
+    try {
+      let presence: { characterIds: string[]; personaId: string | null } | undefined;
+      try {
+        const snapshot = await args.selectedGameStateSnapshotPromise;
+        const presentCharacters = parseMaybeJson(snapshot?.presentCharacters);
+        presence = {
+          characterIds: Array.isArray(presentCharacters)
+            ? presentCharacters
+                .map((entry: { characterId?: unknown }) =>
+                  typeof entry?.characterId === "string" ? entry.characterId.trim() : "",
+                )
+                .filter(Boolean)
+            : [],
+          personaId: typeof args.chat.personaId === "string" ? args.chat.personaId : null,
+        };
+      } catch {
+        presence = undefined;
+      }
+      const campaignMemory = await buildCampaignMemoryContextFromStorage(args.db, {
+        chatId: args.chatId,
+        audience: { kind: "gm" },
+        ...(presence ? { presence } : {}),
+        dedupeContinuityReceipts: true,
+        focusTexts: args.mappedMessages
+          .filter((message) => message.contextKind === undefined || message.contextKind === "history")
+          .slice(-4)
+          .map((message) => (typeof message.content === "string" ? message.content : "")),
+        maxCharacters: normalizeCampaignMemoryMaxCharacters(args.chatMetadata.gameCampaignMemoryMaxCharacters),
+      });
+      campaignMemoryApplied = appendGameGmCampaignMemoryIfEnabled(args.messages, campaignMemory);
+    } catch (err) {
+      logger.error(
+        {
+          event: "prompt.campaign_memory.unavailable",
+          outcome: "failed",
+          errorCode: "CAMPAIGN_MEMORY_PROJECTION_UNAVAILABLE",
+          chatId: args.chatId,
+          err,
+        },
+        "Campaign memory projection unavailable; preserving the existing GM prompt",
+      );
+      campaignMemoryApplied = appendGameGmCampaignMemoryIfEnabled(args.messages, {
+        text: "[Campaign memory unavailable: canonical campaign memory was not validated for this request. Do not treat absent campaign memory as proof that no memory exists.]",
+        includedIds: [],
+        exclusions: [{ id: "campaign-memory", reason: "projection unavailable" }],
+        degraded: true,
+      });
+    }
+  }
+
   const sysIdx = args.messages.findIndex((message) => message.role === "system");
   if (sysIdx >= 0) {
     args.messages[sysIdx] = { role: "system", content: fullGmPrompt };
@@ -450,5 +647,7 @@ export async function injectGameGmPromptRuntime(args: {
     gameTime,
     gameMap,
     hasSceneModel,
+    memoryControlsApplied: sessionSummaryProjection.applied,
+    campaignMemoryApplied,
   };
 }

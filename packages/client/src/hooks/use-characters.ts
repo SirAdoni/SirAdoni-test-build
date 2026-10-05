@@ -30,6 +30,7 @@ import {
   type CharacterCatalogEntry,
   type CharacterCatalogPage,
   type CharacterCardVersion,
+  type GameNpcAvatarState,
   type Persona,
   type PersonaCardVersion,
   type PersonaCreateInput,
@@ -37,6 +38,7 @@ import {
   type TrackerCardColorConfig,
 } from "@marinara-engine/shared";
 import type { CustomKind, CustomTagPatch } from "../lib/custom-emoji";
+import { useGameModeStore } from "../stores/game-mode.store";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -73,6 +75,31 @@ export const characterKeys = {
   personaGroups: ["persona-groups"] as const,
   personaGroupDetail: (id: string) => ["persona-groups", "detail", id] as const,
 };
+
+type CharacterAvatarMutationResult = {
+  avatarState?: GameNpcAvatarState;
+  avatarPath?: string | null;
+  avatarUrl?: string | null;
+  affectedChatIds?: string[];
+  data?: { extensions?: { marinara?: { avatarState?: GameNpcAvatarState } } };
+};
+
+function reconcileCharacterAvatarMutation(id: string, result: CharacterAvatarMutationResult): void {
+  const avatarState = result.avatarState ?? result.data?.extensions?.marinara?.avatarState;
+  if (!avatarState) return;
+  useGameModeStore
+    .getState()
+    .patchNpcAvatars([
+      { characterId: id, name: "", avatarUrl: result.avatarPath ?? result.avatarUrl ?? null, avatarState },
+    ]);
+}
+
+function invalidateAvatarMutationQueries(qc: QueryClient, result: CharacterAvatarMutationResult): void {
+  for (const chatId of result.affectedChatIds ?? []) {
+    if (!chatId) continue;
+    qc.invalidateQueries({ queryKey: chatKeys.detail(chatId) });
+  }
+}
 
 export type CharacterSummary = {
   id: string;
@@ -346,8 +373,10 @@ export function useRestoreCharacterVersion() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, versionId }: { id: string; versionId: string }) =>
-      api.post(`/characters/${id}/versions/${versionId}/restore`, {}),
-    onSuccess: (_data, variables) => {
+      api.post<CharacterAvatarMutationResult>(`/characters/${id}/versions/${versionId}/restore`, {}),
+    onSuccess: (result, variables) => {
+      reconcileCharacterAvatarMutation(variables.id, result);
+      invalidateAvatarMutationQueries(qc, result);
       qc.invalidateQueries({ queryKey: characterKeys.list() });
       qc.invalidateQueries({ queryKey: characterKeys.detail(variables.id) });
       qc.invalidateQueries({ queryKey: characterKeys.versions(variables.id) });
@@ -393,8 +422,10 @@ export function useUploadAvatar() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, avatar, data }: { id: string; avatar: string; data?: CharacterData }) =>
-      api.post(`/characters/${id}/avatar`, { avatar, ...(data ? { data } : {}) }),
-    onSuccess: (_data, variables) => {
+      api.post<CharacterAvatarMutationResult>(`/characters/${id}/avatar`, { avatar, ...(data ? { data } : {}) }),
+    onSuccess: (result, variables) => {
+      reconcileCharacterAvatarMutation(variables.id, result);
+      invalidateAvatarMutationQueries(qc, result);
       qc.invalidateQueries({ queryKey: characterKeys.list() });
       qc.invalidateQueries({ queryKey: characterKeys.summariesRoot() });
       qc.invalidateQueries({ queryKey: characterKeys.detail(variables.id) });
@@ -405,8 +436,10 @@ export function useUploadAvatar() {
 export function useRemoveAvatar() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.delete(`/characters/${id}/avatar`),
-    onSuccess: (_data, id) => {
+    mutationFn: (id: string) => api.delete<CharacterAvatarMutationResult>(`/characters/${id}/avatar`),
+    onSuccess: (result, id) => {
+      reconcileCharacterAvatarMutation(id, result);
+      invalidateAvatarMutationQueries(qc, result);
       qc.invalidateQueries({ queryKey: characterKeys.list() });
       qc.invalidateQueries({ queryKey: characterKeys.summariesRoot() });
       qc.invalidateQueries({ queryKey: characterKeys.detail(id) });
@@ -936,8 +969,11 @@ export function useDeleteCharacterGalleryImage(characterId: string) {
 export function useSetCharacterGalleryImageAsAvatar(characterId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (imageId: string) => api.post(`/characters/${characterId}/gallery/${imageId}/avatar`),
-    onSuccess: () => {
+    mutationFn: (imageId: string) =>
+      api.post<CharacterAvatarMutationResult>(`/characters/${characterId}/gallery/${imageId}/avatar`),
+    onSuccess: (result) => {
+      reconcileCharacterAvatarMutation(characterId, result);
+      invalidateAvatarMutationQueries(qc, result);
       qc.invalidateQueries({ queryKey: characterKeys.detail(characterId) });
       qc.invalidateQueries({ queryKey: characterKeys.list() });
       qc.invalidateQueries({ queryKey: characterKeys.listWithBuiltIns() });

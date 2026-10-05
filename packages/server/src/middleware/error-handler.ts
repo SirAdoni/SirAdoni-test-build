@@ -4,8 +4,13 @@
 import type { FastifyError, FastifyReply, FastifyRequest } from "fastify";
 import { ZodError } from "zod";
 import { failureLevel } from "../lib/log-context.js";
+import { sendCampaignFeatureDisabled } from "../services/features/campaign-opt-in.js";
+import { LLMHttpError } from "../services/llm/base-provider.js";
+import { isFeatureEnabled } from "../services/features/feature-settings.js";
 
 export function errorHandler(error: FastifyError, _request: FastifyRequest, reply: FastifyReply) {
+  if (sendCampaignFeatureDisabled(reply, error)) return;
+
   // Zod validation errors → 400
   if (error instanceof ZodError) {
     return reply.status(400).send({
@@ -24,6 +29,28 @@ export function errorHandler(error: FastifyError, _request: FastifyRequest, repl
     return reply.status(413).send({
       error: "The request body is larger than this endpoint accepts.",
     });
+  }
+
+  if (error instanceof LLMHttpError) {
+    if (error.diagnostic && isFeatureEnabled("providerDiagnostics")) {
+      // The provider failure was already logged with bounded HTTP metadata. Do
+      // not serialize its message or response body into this routine log line.
+      return reply.status(500).send({
+        error: "Internal Server Error",
+        diagnosticRef: error.diagnostic.diagnosticRef,
+      });
+    }
+
+    // Keep typed failure evidence safe when optional provider diagnostics are off,
+    // including errors created while the switch was on and handled after it turns off.
+    reply.log.error(
+      {
+        providerStatus: error.status,
+        ...(typeof error.retryAfterMs === "number" ? { retryAfterMs: error.retryAfterMs } : {}),
+      },
+      "LLM provider request failed",
+    );
+    return reply.status(500).send({ error: "Internal Server Error" });
   }
 
   if (error.statusCode) {

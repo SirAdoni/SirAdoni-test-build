@@ -81,28 +81,28 @@ const TTS_SOURCE_DEFAULTS: Record<
     baseUrl: "https://api.openai.com/v1",
     model: "tts-1",
     voice: "alloy",
-    idleText: "OpenAI-compatible TTS",
+    idleText: "ui.panels.ttsconfigcard.idleOpenai",
   },
   elevenlabs: {
     label: "ElevenLabs",
     baseUrl: "https://api.elevenlabs.io",
     model: "eleven_multilingual_v2",
     voice: "",
-    idleText: "ElevenLabs TTS",
+    idleText: "ui.panels.ttsconfigcard.idleElevenlabs",
   },
   pockettts: {
     label: "PocketTTS",
     baseUrl: "http://localhost:8000",
     model: "pocket-tts",
     voice: "alba",
-    idleText: "Local PocketTTS",
+    idleText: "ui.panels.ttsconfigcard.idlePockettts",
   },
   xai: {
     label: "xAI Voice",
     baseUrl: "https://api.x.ai/v1",
     model: "grok-tts",
     voice: "eve",
-    idleText: "xAI Voice",
+    idleText: "ui.panels.ttsconfigcard.idleXai",
   },
 };
 
@@ -1069,10 +1069,10 @@ export function TTSConfigCard() {
       ttsService.subscribe((s) => {
         setTTSState(s);
         if (s === "error") {
-          setPreviewError(ttsService.getLastError() ?? "TTS preview failed.");
+          setPreviewError(ttsService.getLastError() ?? localizeUi("ui.panels.ttsconfigcard.previewFailed"));
         }
       }),
-    [],
+    [localizeUi],
   );
 
   // Clear debounce timer on unmount
@@ -1233,7 +1233,7 @@ export function TTSConfigCard() {
           await saveNow(payload);
         } catch {
           setSaveStatus("error");
-          throw new Error("Failed to save TTS settings before preview.");
+          throw new Error(localizeUi("ui.panels.ttsconfigcard.saveBeforePreviewFailed"));
         }
         await ttsService.speak("Hello! This is a preview of the text to speech voice.", "tts-preview", {
           throwOnError: true,
@@ -1243,7 +1243,7 @@ export function TTSConfigCard() {
           audioConnectionId: "",
         });
       } catch (error) {
-        const message = error instanceof Error ? error.message : "TTS preview failed.";
+        const message = error instanceof Error ? error.message : localizeUi("ui.panels.ttsconfigcard.previewFailed");
         setPreviewError(message);
         toast.error(message);
       }
@@ -1349,11 +1349,11 @@ export function TTSConfigCard() {
   }, [elevenLabsMatchedFemaleVoiceOptions, npcDefaultFemaleVoices, voiceOptions]);
   const maleNpcVoiceFallbackNote =
     voiceOptions.length > 0 && elevenLabsMatchedMaleVoiceOptions.length === 0
-      ? "No male-labeled defaults were detected, so this pool uses the provider voice list."
+      ? localizeUi("ui.panels.ttsconfigcard.maleFallbackNote")
       : undefined;
   const femaleNpcVoiceFallbackNote =
     voiceOptions.length > 0 && elevenLabsMatchedFemaleVoiceOptions.length === 0
-      ? "No female-labeled defaults were detected, so this pool uses the provider voice list."
+      ? localizeUi("ui.panels.ttsconfigcard.femaleFallbackNote")
       : undefined;
   const defaultMaleVoiceIds = useMemo(
     () =>
@@ -1377,12 +1377,14 @@ export function TTSConfigCard() {
         return {
           id: character.id,
           name: info.name,
-          label: info.comment ? `${info.name} — ${info.comment}` : info.name,
+          label: info.comment
+            ? localizeUi("ui.panels.ttsconfigcard.characterWithComment", { name: info.name, comment: info.comment })
+            : info.name,
         };
       })
       .filter((option): option is CharacterOption => Boolean(option))
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [characters]);
+  }, [characters, localizeUi]);
   const languageConnectionOptions = useMemo(
     () => (connections ?? []).filter(isTTSLanguageConnectionOption).sort((a, b) => a.name.localeCompare(b.name)),
     [connections],
@@ -1400,9 +1402,13 @@ export function TTSConfigCard() {
   const selectedSource = TTS_SOURCE_DEFAULTS[source];
   const selectedVoiceLabel =
     voiceMode === "per-character"
-      ? `Per character${customVoiceCount > 0 ? ` · ${customVoiceCount} custom` : ""}`
-      : voice || (source === "elevenlabs" ? "No voice selected" : selectedSource.voice);
-  const narratorVoiceLabel = narratorVoice || (source === "elevenlabs" ? "No narrator voice selected" : voice);
+      ? customVoiceCount > 0
+        ? localizeUi("ui.panels.ttsconfigcard.perCharacterCustom", { count: customVoiceCount })
+        : localizeUi("ui.panels.ttsconfigcard.perCharacter")
+      : voice ||
+        (source === "elevenlabs" ? localizeUi("ui.panels.ttsconfigcard.noVoiceSelected") : selectedSource.voice);
+  const narratorVoiceLabel =
+    narratorVoice || (source === "elevenlabs" ? localizeUi("ui.panels.ttsconfigcard.noNarratorVoiceSelected") : voice);
   const previewVoice =
     voiceMode === "per-character" ? (voiceAssignments.find((assignment) => assignment.voice)?.voice ?? voice) : voice;
   const selectedLanguage =
@@ -1412,24 +1418,27 @@ export function TTSConfigCard() {
   const speedMax = source === "elevenlabs" ? 1.2 : source === "xai" ? 1.5 : 4.0;
   const speedHelp =
     source === "elevenlabs"
-      ? "Playback speed. ElevenLabs supports 0.7×–1.2×; wider saved values are clamped when spoken."
+      ? localizeUi("ui.panels.ttsconfigcard.speedHelpElevenlabs")
       : source === "xai"
-        ? "Playback speed. xAI Voice supports 0.7×–1.5×; wider saved values are clamped when spoken."
-        : "Playback speed. 1.0 is normal; range is 0.25×–4.0×.";
+        ? localizeUi("ui.panels.ttsconfigcard.speedHelpXai")
+        : localizeUi("ui.panels.ttsconfigcard.speedHelpDefault");
   const speedSliderValue = Math.min(speedMax, Math.max(speedMin, speed));
   const speedLabel =
     (source === "elevenlabs" || source === "xai") && speedSliderValue !== speed
-      ? `Speed — ${speedSliderValue.toFixed(2)}× (clamped from ${speed.toFixed(2)}×)`
-      : `Speed — ${speed.toFixed(2)}×`;
+      ? localizeUi("ui.panels.ttsconfigcard.speedLabelClamped", {
+          speed: speedSliderValue.toFixed(2),
+          saved: speed.toFixed(2),
+        })
+      : localizeUi("ui.panels.ttsconfigcard.speedLabel", { speed: speed.toFixed(2) });
   const previewDisabled = !enabled || ttsState === "loading" || (source === "elevenlabs" && !previewVoice);
   const previewTitle =
     source === "elevenlabs" && !previewVoice
-      ? "Select an ElevenLabs voice first"
+      ? localizeUi("ui.panels.ttsconfigcard.selectElevenlabsVoiceFirst")
       : !enabled
-        ? "Enable TTS first"
+        ? localizeUi("ui.panels.ttsconfigcard.enableTtsFirst")
         : ttsState === "playing" || ttsState === "blocked"
-          ? "Stop preview"
-          : "Preview voice";
+          ? localizeUi("ui.panels.ttsconfigcard.stopPreview")
+          : localizeUi("ui.panels.ttsconfigcard.previewVoice");
   const updateVoiceAssignments = (nextAssignments: TTSVoiceAssignment[]) => {
     setVoiceAssignments(nextAssignments);
     mark({ voiceAssignments: nextAssignments });
@@ -1548,7 +1557,7 @@ export function TTSConfigCard() {
                       ? ""
                       : localizeUi("ui.panels.ttsconfigcard.builtInVoices"),
                 })
-              : selectedSource.idleText}
+              : localizeUi(selectedSource.idleText)}
           </div>
         </div>
 
@@ -2072,9 +2081,15 @@ export function TTSConfigCard() {
               }}
               className="w-full accent-[var(--primary)]"
             />
-            <div className="flex justify-between text-[0.6rem] text-[var(--muted-foreground)]">
+            <div className="relative flex justify-between text-[0.6rem] text-[var(--muted-foreground)]">
               <span>{speedMin.toFixed(2)}×</span>
-              <span>1.0×</span>
+              {/* The speed range is not symmetric around 1.0, so pin the marker to where 1.0 sits. */}
+              <span
+                className="absolute -translate-x-1/2"
+                style={{ left: `${((1 - speedMin) / (speedMax - speedMin)) * 100}%` }}
+              >
+                1.0×
+              </span>
               <span>{speedMax.toFixed(2)}×</span>
             </div>
           </FieldRow>

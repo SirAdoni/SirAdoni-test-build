@@ -88,7 +88,7 @@ async function leaveStaleSocket(path: string) {
   await waitForExit(child);
 }
 
-async function waitForExit(child: ReturnType<typeof spawn>, timeoutMs = 15_000) {
+async function waitForExit(child: ReturnType<typeof spawn>, timeoutMs = 60_000) {
   return new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit, reject) => {
     const timeout = setTimeout(
       () => reject(new Error(`Development watcher ${child.pid ?? "unknown"} did not exit`)),
@@ -189,6 +189,8 @@ try {
         process.pid,
         "the healthy writer remains the lease owner",
       );
+    } catch (error) {
+      throw new Error(`${error instanceof Error ? error.message : String(error)}\n${watcherOutput}`, { cause: error });
     } finally {
       forceStopProcessTree(watcher);
     }

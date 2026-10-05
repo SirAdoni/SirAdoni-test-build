@@ -92,7 +92,6 @@ import { hasActiveTextSelection } from "../../lib/text-selection";
 import { parseChatMetadata } from "../../lib/chat-display";
 import { useTranslate } from "../../hooks/use-translate";
 import { api } from "../../lib/api-client";
-import { applyTextareaQuoteFormat } from "../../lib/textarea-quotes";
 import { ttsService } from "../../lib/tts-service";
 import { useTTSConfig } from "../../hooks/use-tts";
 import {
@@ -127,6 +126,7 @@ import { MessageThinkingModal } from "./MessageThinkingModal";
 import { MESSAGE_ACTION_ICON_SIZE, MessageActionButton } from "./MessageActionButton";
 import { MessageMarkIndicators, MessageMarksAction, type MessageNoteSharing } from "./MessageMarks";
 import { RoleplayStoryboardMessageMedia } from "./RoleplayStoryboardMessageMedia";
+import { MessageEditTextarea } from "./MessageEditTextarea";
 
 const MESSAGE_DOUBLE_TAP_MS = 320;
 const MESSAGE_DOUBLE_TAP_DISTANCE_PX = 26;
@@ -850,120 +850,6 @@ function HiddenFromAIMessageSummary({
     </button>
   );
 }
-
-/** Isolated edit textarea — uncontrolled to avoid React re-renders on every keystroke. */
-const EditTextarea = memo(function EditTextarea({
-  initialContent,
-  fontSize,
-  quoteFormat,
-  saving,
-  onSave,
-  onCancel,
-}: {
-  initialContent: string;
-  fontSize: string | number | undefined;
-  quoteFormat: QuoteFormat;
-  saving: boolean;
-  onSave: (content: string) => void | Promise<void>;
-  onCancel: () => void;
-}) {
-  const { t: localizeUi } = useUiTranslation();
-  const ref = useRef<HTMLTextAreaElement>(null);
-
-  const autoResize = useCallback(() => {
-    const el = ref.current;
-    if (!el) return;
-    // Find the nearest scrollable ancestor so we can freeze its scroll
-    // position while we re-measure the textarea height.
-    const scroller = el.closest("[data-chat-scroll]") as HTMLElement | null;
-    const scrollTop = scroller?.scrollTop ?? 0;
-    el.style.height = "0";
-    el.style.height = el.scrollHeight + "px";
-    if (scroller) scroller.scrollTop = scrollTop;
-  }, []);
-
-  useLayoutEffect(() => {
-    if (ref.current) {
-      autoResize();
-      if (window.matchMedia("(max-width: 767px)").matches) ref.current.setSelectionRange(0, 0);
-      ref.current.focus({ preventScroll: true });
-    }
-  }, [autoResize]);
-
-  // An iPhone keyboard shrinks the transcript but not 60dvh. Keep the editor
-  // and its Save row within the part between the top controls and the
-  // composer, so scrolling inside it can always bring its last line into view.
-  useLayoutEffect(() => {
-    const el = ref.current;
-    const transcript = el?.closest<HTMLElement>("[data-chat-scroll]");
-    if (!el || !transcript) return;
-    const fit = () => {
-      const style = getComputedStyle(transcript);
-      const covered =
-        (Number.parseFloat(style.scrollPaddingTop) || 0) +
-        (Number.parseFloat(style.getPropertyValue("--mari-roleplay-content-padding-bottom")) || 0) +
-        (el.nextElementSibling?.getBoundingClientRect().height ?? 0);
-      el.style.setProperty("--mari-message-editor-fit-height", `${Math.max(96, transcript.clientHeight - covered)}px`);
-    };
-    fit();
-    // ponytail: re-measures only when the transcript resizes, so a composer that
-    // grows mid-edit keeps the older limit until then. Observe the composer too if that matters.
-    const observer = new ResizeObserver(fit);
-    observer.observe(transcript);
-    return () => observer.disconnect();
-  }, []);
-
-  const handleSave = useCallback(() => {
-    if (ref.current) void onSave(formatTextQuotes(ref.current.value, quoteFormat));
-  }, [onSave, quoteFormat]);
-
-  return (
-    <div className="relative isolate z-20 flex flex-col gap-2 max-md:gap-0">
-      <textarea
-        ref={ref}
-        data-chat-message-editor="true"
-        defaultValue={formatTextQuotes(initialContent, quoteFormat)}
-        readOnly={saving}
-        aria-busy={saving}
-        aria-keyshortcuts="Control+Enter Meta+Enter"
-        rows={1}
-        onInput={(event) => {
-          applyTextareaQuoteFormat(event.currentTarget, quoteFormat, event.nativeEvent as InputEvent);
-          autoResize();
-        }}
-        onKeyDown={(e) => {
-          if (saving) return;
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleSave();
-          if (e.key === "Escape") onCancel();
-        }}
-        className="relative z-0 w-full resize-none overflow-y-auto overscroll-contain rounded-lg bg-black/30 px-3 py-2 text-white outline-none ring-1 ring-white/20 focus:ring-blue-400/50 max-md:max-h-[min(60dvh,32rem,var(--mari-message-editor-fit-height,100dvh))]"
-        style={{ fontSize, lineHeight: 1.5 }}
-      />
-      <div className="pointer-events-auto relative z-30 flex items-center justify-end gap-1.5">
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={saving}
-          aria-label={localizeUi("ui.chat.edittextarea.cancelEdit")}
-          className="pointer-events-auto relative z-30 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-white/40 hover:bg-white/10 hover:text-white/70 disabled:pointer-events-none disabled:opacity-50"
-          title={localizeUi("ui.chat.edittextarea.cancelEsc")}
-        >
-          <X size="0.8125rem" />
-        </button>
-        <button
-          type="button"
-          onClick={handleSave}
-          disabled={saving}
-          aria-label={localizeUi("ui.chat.edittextarea.saveEdit")}
-          className="pointer-events-auto relative z-30 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-emerald-400/70 hover:bg-emerald-400/10 hover:text-emerald-400 disabled:pointer-events-none disabled:opacity-50"
-          title={localizeUi("ui.chat.edittextarea.saveCmdEnter")}
-        >
-          <Check size="0.8125rem" />
-        </button>
-      </div>
-    </div>
-  );
-});
 
 /** Props for a single rendered chat message, including optional scene fork actions. */
 interface ChatMessageProps {
@@ -3297,8 +3183,9 @@ export const ChatMessage = memo(function ChatMessage({
       statusLabel={hiddenFromAIStatusLabel}
     />
   ) : editing ? (
-    <EditTextarea
+    <MessageEditTextarea
       initialContent={message.content}
+      messageRole={message.role}
       fontSize={chatFontSize}
       quoteFormat={quoteFormat}
       saving={editSavePending}
@@ -4357,8 +4244,9 @@ export const ChatMessage = memo(function ChatMessage({
                 statusLabel={hiddenFromAIStatusLabel}
               />
             ) : editing ? (
-              <EditTextarea
+              <MessageEditTextarea
                 initialContent={message.content}
+                messageRole={message.role}
                 fontSize={chatFontSize}
                 quoteFormat={quoteFormat}
                 saving={editSavePending}

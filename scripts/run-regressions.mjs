@@ -23,11 +23,16 @@ function repositoryRelative(file) {
 }
 
 export function regressionTimeoutMs(relativePath) {
+  // Combined cold startup and multi-format backups need bounded additional time; keep assertions intact.
+  if (relativePath === 'scripts/regressions/storage-writer-lock.regression.ts' ||
+      relativePath === 'scripts/regressions/backup-modes.regression.ts') return 120_000;
   if (relativePath === 'scripts/regressions/server-signal-shutdown.regression.ts') {
     // 20s main-server phase + six sequential 40s PTY bounds + 10s setup/cleanup margin.
     return 270_000;
   }
   if (relativePath === 'scripts/regressions/restart-supervisor.regression.ts') return 90_000;
+  // Fifty durable turns and two cold reopens take over30s on Windows; retain a bounded cleanup margin.
+  if (relativePath === "scripts/regressions/continuity-lifecycle-50-turns.regression.ts") return 60_000;
   return FILE_TIMEOUT_MS;
 }
 

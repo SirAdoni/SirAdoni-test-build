@@ -6,6 +6,7 @@ import type { DB } from "../../db/connection.js";
 import { gameStateSnapshots } from "../../db/schema/index.js";
 import { newId, now } from "../../utils/id-generator.js";
 import { ensureTimestampAfter } from "../import/import-timestamps.js";
+import { parseStoredPlayerStats, reconcileInventoryItemIdentities } from "./inventory-item-identity.js";
 import {
   coerceGameStateTextValue,
   applyTrackerFieldLocksToGameStatePatch,
@@ -25,6 +26,8 @@ import {
 } from "@marinara-engine/shared";
 
 export type GameStateVisibleAnchor = { messageId: string; swipeIndex: number };
+export type TrustedInventoryIdentitySource = { snapshotId: string; chatId: string };
+export type GameStateSnapshotWritePrecondition = { playerStats: string | null; fieldLocks: string | null };
 
 const MANUAL_OVERRIDE_FIELDS = ["date", "time", "location", "weather", "temperature"] as const;
 
@@ -355,6 +358,7 @@ export function createGameStateStorage(db: DB) {
       state: Omit<GameState, "id" | "createdAt">,
       manualOverrides?: Record<string, string> | null,
       options?: {
+        trustedInventoryIdentitySource?: TrustedInventoryIdentitySource;
         /** Keep the detailed inventory of the row being replaced, for a caller that carries the
          *  previous turn's stats forward (the world-state tracker). The turn's own inventory tags
          *  wrote that inventory and no tracker works one out, so carrying the stats would undo them. */
@@ -362,6 +366,38 @@ export function createGameStateStorage(db: DB) {
       },
     ) {
       const latestBeforeInsert = await this.getLatest(state.chatId);
+      let trustedIncomingIds: Set<string> | undefined;
+      const trustedSource = options?.trustedInventoryIdentitySource;
+      if (trustedSource) {
+        const sourceRows = await db
+          .select()
+          .from(gameStateSnapshots)
+          .where(
+            and(
+              eq(gameStateSnapshots.id, trustedSource.snapshotId),
+              eq(gameStateSnapshots.chatId, trustedSource.chatId),
+            ),
+          )
+          .limit(1);
+        const source = sourceRows[0];
+        if (!source) throw new Error("GAME_STATE_TRUSTED_INVENTORY_SOURCE_NOT_FOUND");
+        const sourceStats = parseStoredPlayerStats(source.playerStats);
+        trustedIncomingIds = new Set<string>();
+        for (const rows of [
+          sourceStats?.inventory,
+          sourceStats?.inventoryTrackerCurrencies,
+          sourceStats?.inventoryTrackerEquipped,
+          sourceStats?.inventoryTrackerInventory,
+        ]) {
+          if (!Array.isArray(rows)) continue;
+          for (const row of rows) {
+            if (row && typeof row === "object" && typeof (row as { itemId?: unknown }).itemId === "string") {
+              const itemId = (row as { itemId: string }).itemId.trim();
+              if (itemId) trustedIncomingIds.add(itemId);
+            }
+          }
+        }
+      }
       // Most callers rebuild a snapshot from the fields they know and have never heard of ruleset
       // live state. When such a caller replaces the row of a message + swipe, the live state that
       // row already carried (written right after the message was saved) stays with it.
@@ -373,7 +409,7 @@ export function createGameStateStorage(db: DB) {
         const stats = parseSnapshotJson<{ inventory?: unknown } | null>(replaced.playerStats, null);
         return Array.isArray(stats?.inventory) ? stats.inventory : undefined;
       })();
-      const playerStats =
+      const incomingPlayerStats =
         state.playerStats && replacedInventory
           ? { ...state.playerStats, inventory: replacedInventory as NonNullable<typeof state.playerStats>["inventory"] }
           : state.playerStats;
@@ -390,6 +426,13 @@ export function createGameStateStorage(db: DB) {
           );
       }
       const id = newId();
+      const playerStats = incomingPlayerStats
+        ? reconcileInventoryItemIdentities(
+            parseStoredPlayerStats(replaced?.playerStats ?? latestBeforeInsert?.playerStats),
+            incomingPlayerStats,
+            { trustedIncomingIds },
+          )
+        : state.playerStats;
       await db.insert(gameStateSnapshots).values({
         id,
         chatId: state.chatId,
@@ -583,8 +626,12 @@ export function createGameStateStorage(db: DB) {
       if (fields.worldCustomFields !== undefined)
         updates.worldCustomFields = JSON.stringify(normalizeWorldCustomFields(fields.worldCustomFields));
       if (fields.presentCharacters !== undefined) updates.presentCharacters = JSON.stringify(fields.presentCharacters);
+      const reconciledPlayerStats =
+        fields.playerStats !== undefined
+          ? reconcileInventoryItemIdentities(parseStoredPlayerStats(row.playerStats), fields.playerStats)
+          : undefined;
       if (fields.playerStats !== undefined)
-        updates.playerStats = fields.playerStats ? JSON.stringify(fields.playerStats) : null;
+        updates.playerStats = reconciledPlayerStats ? JSON.stringify(reconciledPlayerStats) : null;
       if (fields.personaStats !== undefined)
         updates.personaStats = fields.personaStats ? JSON.stringify(fields.personaStats) : null;
       if (fields.hiddenTrackerFields !== undefined)
@@ -616,7 +663,7 @@ export function createGameStateStorage(db: DB) {
             ? { worldCustomFields: normalizeWorldCustomFields(fields.worldCustomFields) }
             : {}),
           ...(fields.presentCharacters !== undefined ? { presentCharacters: fields.presentCharacters } : {}),
-          ...(fields.playerStats !== undefined ? { playerStats: fields.playerStats } : {}),
+          ...(fields.playerStats !== undefined ? { playerStats: reconciledPlayerStats } : {}),
           ...(fields.personaStats !== undefined ? { personaStats: fields.personaStats } : {}),
         });
         updates.fieldLocks = serializeFieldLocks(
@@ -635,6 +682,43 @@ export function createGameStateStorage(db: DB) {
         .set(updates)
         .where(and(eq(gameStateSnapshots.chatId, row.chatId), eq(gameStateSnapshots.id, row.id)));
       return { ...row, ...updates };
+    },
+
+    async updatePlayerStatsAtSnapshot(
+      snapshotId: string,
+      chatId: string,
+      playerStats: unknown,
+      fieldLocks?: TrackerFieldLocks | null,
+      expected?: GameStateSnapshotWritePrecondition,
+    ) {
+      return db.transaction(async (tx) => {
+        const rows = await tx
+          .select()
+          .from(gameStateSnapshots)
+          .where(and(eq(gameStateSnapshots.id, snapshotId), eq(gameStateSnapshots.chatId, chatId)))
+          .limit(1);
+        const row = rows[0];
+        if (!row) return null;
+        if (expected && (row.playerStats !== expected.playerStats || row.fieldLocks !== expected.fieldLocks)) {
+          throw new Error("GAME_STATE_INVENTORY_CONFLICT");
+        }
+        const reconciledPlayerStats = reconcileInventoryItemIdentities(
+          parseStoredPlayerStats(row.playerStats),
+          playerStats,
+        );
+        const updates: Record<string, unknown> = {
+          playerStats: reconciledPlayerStats ? JSON.stringify(reconciledPlayerStats) : null,
+        };
+        if (fieldLocks !== undefined) {
+          const lockState = buildLockMigrationState({ ...row, playerStats: reconciledPlayerStats });
+          updates.fieldLocks = serializeFieldLocks(normalizeTrackerFieldLocksForState(fieldLocks, lockState));
+        }
+        await tx
+          .update(gameStateSnapshots)
+          .set(updates)
+          .where(and(eq(gameStateSnapshots.id, snapshotId), eq(gameStateSnapshots.chatId, chatId)));
+        return { ...row, ...updates };
+      });
     },
 
     async deleteForChat(chatId: string) {

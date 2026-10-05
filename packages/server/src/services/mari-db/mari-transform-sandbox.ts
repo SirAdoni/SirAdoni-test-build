@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { existsSync, realpathSync } from "node:fs";
 import { logger } from "../../lib/logger.js";
+import { isProfessorMariPrivateDataPath } from "../professor-mari/workspace-change-review.service.js";
 import {
   getWorkspaceShellSandboxStatus,
   sanitizeWorkspaceShellEnv,
@@ -191,6 +193,13 @@ async function spawnTransformProcess(workspaceRoot: string, args: string[]): Pro
 
 export async function runMariTransformSandbox(input: RunMariTransformInput): Promise<MariTransformOutput[]> {
   const workspaceRoot = resolve(input.workspaceRoot);
+  const scriptPath = resolve(workspaceRoot, input.scriptPath);
+  if (
+    isProfessorMariPrivateDataPath(scriptPath) ||
+    (existsSync(scriptPath) && isProfessorMariPrivateDataPath(realpathSync(scriptPath)))
+  ) {
+    throw new Error("mari db cannot use private application data as a transform script");
+  }
   const marker = `MARINARA_TRANSFORM_${randomUUID()}:`;
   const sandboxed = await spawnTransformProcess(workspaceRoot, [
     "--permission",
@@ -204,7 +213,7 @@ export async function runMariTransformSandbox(input: RunMariTransformInput): Pro
   ]);
   const payload = JSON.stringify({
     marker,
-    scriptPath: resolve(workspaceRoot, input.scriptPath),
+    scriptPath,
     timestamp: input.timestamp,
     tables: input.tables,
   });

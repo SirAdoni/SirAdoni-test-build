@@ -14,6 +14,14 @@ import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { MusicSourceButton, MusicSourceGlyph } from "@/components/music/MusicSourceButton";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import type { FeatureSwitchName } from "@marinara-engine/shared";
+import { useFeatureEnabled } from "../../hooks/use-feature-settings";
+import { placeFloatingWidget } from "../../lib/floating-widget-avoid";
+import {
+  useFloatingWidgetAvoid,
+  useMeasuredFloatingWidgetSize,
+  type FloatingWidgetAvoidState,
+} from "../../hooks/use-floating-widget-avoid";
 
 // The YouTube IFrame API attaches itself to window; it has no bundled types.
 type YTPlayer = {
@@ -51,18 +59,24 @@ const MUSIC_NEUTRAL_PROGRESS_FILL_CLASS = "bg-[#FF0000]";
 const MUSIC_NEUTRAL_ACTION_BG_CLASS = "bg-[var(--marinara-music-player-action-bg)]";
 const MUSIC_NEUTRAL_ACTION_TEXT_CLASS = "text-[var(--marinara-music-player-action-text)]";
 const YOUTUBE_LOGO_CLASS = "text-[#FF0000]";
+/** Touch screens get an invisible hit area of at least 36px around the small player buttons; the bar keeps its height. */
+const MUSIC_TOUCH_HIT_AREA_CLASS =
+  "relative pointer-coarse:before:absolute pointer-coarse:before:-inset-[0.375rem] pointer-coarse:before:content-['']";
 const MOBILE_WIDGET_COLLAPSED_SIZE = 48;
 const MOBILE_WIDGET_EXPANDED_MAX_WIDTH = 320;
 const MOBILE_WIDGET_EXPANDED_HORIZONTAL_GUTTER = 24;
 const MOBILE_WIDGET_EXPANDED_HEIGHT = 132;
 const MOBILE_WIDGET_VIEWPORT_PADDING = 8;
+/** Room kept free at the bottom for the chat composer so the collapsed bubble never covers Send. */
+const MOBILE_WIDGET_COMPOSER_RESERVE = 88;
+const FLOATING_MEDIA_PLACEMENT_FEATURE = "floatingMediaPlacement" as FeatureSwitchName;
 
-function clampMobilePosition(x: number, y: number, collapsed: boolean) {
+function clampMobilePosition(x: number, y: number, collapsed: boolean, collapsedSize = MOBILE_WIDGET_COLLAPSED_SIZE) {
   if (typeof window === "undefined") return { x, y };
   const width = collapsed
-    ? MOBILE_WIDGET_COLLAPSED_SIZE
+    ? collapsedSize
     : Math.min(MOBILE_WIDGET_EXPANDED_MAX_WIDTH, window.innerWidth - MOBILE_WIDGET_EXPANDED_HORIZONTAL_GUTTER);
-  const height = collapsed ? MOBILE_WIDGET_COLLAPSED_SIZE : MOBILE_WIDGET_EXPANDED_HEIGHT;
+  const height = collapsed ? collapsedSize : MOBILE_WIDGET_EXPANDED_HEIGHT;
   return {
     x: Math.max(
       MOBILE_WIDGET_VIEWPORT_PADDING,
@@ -78,15 +92,35 @@ function clampMobilePosition(x: number, y: number, collapsed: boolean) {
 function getMobileWidgetStyle(
   position: { x: number; y: number },
   collapsed: boolean,
+  placementEnabled: boolean,
+  avoid: FloatingWidgetAvoidState,
+  collapsedSize = MOBILE_WIDGET_COLLAPSED_SIZE,
 ): Pick<CSSProperties, "left" | "top"> {
   if (typeof window === "undefined") {
     return { left: position.x, top: position.y };
+  }
+  if (collapsed && placementEnabled) {
+    const viewportWidth = avoid.viewportWidth || window.innerWidth;
+    const viewportHeight = avoid.viewportHeight || window.innerHeight;
+    const placement = placeFloatingWidget({
+      x: position.x,
+      y: position.y,
+      size: collapsedSize,
+      viewportWidth,
+      viewportHeight,
+      viewportLeft: avoid.viewportLeft,
+      viewportTop: avoid.viewportTop,
+      padding: MOBILE_WIDGET_VIEWPORT_PADDING,
+      bottomReserve: MOBILE_WIDGET_COMPOSER_RESERVE,
+      obstacles: avoid.obstacles,
+    });
+    return { left: placement.x, top: placement.y };
   }
 
   return {
     left: Math.max(
       MOBILE_WIDGET_VIEWPORT_PADDING,
-      Math.min(window.innerWidth - MOBILE_WIDGET_COLLAPSED_SIZE - MOBILE_WIDGET_VIEWPORT_PADDING, position.x),
+      Math.min(window.innerWidth - collapsedSize - MOBILE_WIDGET_VIEWPORT_PADDING, position.x),
     ),
     top: collapsed
       ? position.y
@@ -97,17 +131,29 @@ function getMobileWidgetStyle(
   };
 }
 
-function getMobileExpandedPanelStyle(position: { x: number; y: number }): CSSProperties {
+/** Where the collapsed widget actually sits; stored x may be a right-edge sentinel. */
+function resolveMobileWidgetX(x: number, viewportWidth?: number, collapsedSize = MOBILE_WIDGET_COLLAPSED_SIZE): number {
+  if (typeof window === "undefined") return x;
+  const width = viewportWidth ?? window.innerWidth;
+  return Math.max(MOBILE_WIDGET_VIEWPORT_PADDING, Math.min(width - collapsedSize - MOBILE_WIDGET_VIEWPORT_PADDING, x));
+}
+
+function getMobileExpandedPanelStyle(
+  position: { x: number; y: number },
+  placementEnabled: boolean,
+  collapsedSize = MOBILE_WIDGET_COLLAPSED_SIZE,
+): CSSProperties {
   if (typeof window === "undefined") return {};
+  const left = placementEnabled ? resolveMobileWidgetX(position.x, undefined, collapsedSize) : position.x;
 
   const width = Math.min(
     MOBILE_WIDGET_EXPANDED_MAX_WIDTH,
     window.innerWidth - MOBILE_WIDGET_EXPANDED_HORIZONTAL_GUTTER,
   );
   const opensLeft =
-    position.x + width > window.innerWidth - MOBILE_WIDGET_VIEWPORT_PADDING ||
-    position.x + MOBILE_WIDGET_COLLAPSED_SIZE / 2 > window.innerWidth / 2;
-  const preferredLeft = opensLeft ? position.x + MOBILE_WIDGET_COLLAPSED_SIZE - width : position.x;
+    left + width > window.innerWidth - MOBILE_WIDGET_VIEWPORT_PADDING ||
+    left + collapsedSize / 2 > window.innerWidth / 2;
+  const preferredLeft = opensLeft ? left + collapsedSize - width : left;
   const clampedLeft = Math.max(
     MOBILE_WIDGET_VIEWPORT_PADDING,
     Math.min(window.innerWidth - width - MOBILE_WIDGET_VIEWPORT_PADDING, preferredLeft),
@@ -115,7 +161,7 @@ function getMobileExpandedPanelStyle(position: { x: number; y: number }): CSSPro
 
   return {
     width,
-    transform: `translateX(${Math.round(clampedLeft - position.x)}px)`,
+    transform: `translateX(${Math.round(clampedLeft - left)}px)`,
   };
 }
 
@@ -143,6 +189,7 @@ function loadYouTubeApi(): Promise<void> {
  * and plays it in an in-app IFrame player. No OAuth, no external device.
  */
 export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
+  const floatingMediaPlacementEnabled = useFeatureEnabled(FLOATING_MEDIA_PLACEMENT_FEATURE);
   const { t: localizeUi } = useUiTranslation();
   const youtubePlay = useAgentStore((s) => s.youtubePlay);
   const youtubeVolume = useAgentStore((s) => s.youtubeVolume);
@@ -151,6 +198,10 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
   const setPlayerVolume = useUIStore((s) => s.setYoutubePlayerVolume);
   const musicPlayerActive = useUIStore((s) => s.musicPlayerEnabled && s.musicPlayerSource === "youtube");
   const collapsed = useUIStore((s) => s.spotifyMobileWidgetCollapsed);
+  const [collapsedWidgetRef, collapsedWidgetSize] = useMeasuredFloatingWidgetSize(
+    mobile && collapsed && floatingMediaPlacementEnabled,
+    MOBILE_WIDGET_COLLAPSED_SIZE,
+  );
   const setCollapsed = useUIStore((s) => s.setSpotifyMobileWidgetCollapsed);
   const mobilePosition = useUIStore((s) => s.spotifyMobileWidgetPosition);
   const setMobilePosition = useUIStore((s) => s.setSpotifyMobileWidgetPosition);
@@ -337,12 +388,13 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
         return;
       }
       event.preventDefault();
+      const rendered = floatingMediaPlacementEnabled ? event.currentTarget.getBoundingClientRect() : null;
       dragRef.current = {
         pointerId: event.pointerId,
         startX: event.clientX,
         startY: event.clientY,
-        originX: mobilePosition.x,
-        originY: mobilePosition.y,
+        originX: rendered?.left ?? mobilePosition.x,
+        originY: rendered?.top ?? mobilePosition.y,
       };
       try {
         event.currentTarget.setPointerCapture(event.pointerId);
@@ -350,7 +402,7 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
         // Some mobile browsers can deny capture if the pointer was already cancelled.
       }
     },
-    [mobile, mobilePosition.x, mobilePosition.y],
+    [floatingMediaPlacementEnabled, mobile, mobilePosition.x, mobilePosition.y],
   );
 
   const moveDrag = useCallback(
@@ -362,10 +414,11 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
         drag.originX + event.clientX - drag.startX,
         drag.originY + event.clientY - drag.startY,
         collapsed,
+        collapsedWidgetSize,
       );
       setMobilePosition(next);
     },
-    [collapsed, setMobilePosition],
+    [collapsed, collapsedWidgetSize, setMobilePosition],
   );
 
   const endDrag = useCallback(
@@ -394,8 +447,22 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
     : error
       ? "Playback needs attention"
       : (nowPlaying?.channel ?? nowPlaying?.mood ?? "Ready for Music DJ");
-  const mobileWidgetStyle = useMemo(() => getMobileWidgetStyle(mobilePosition, collapsed), [collapsed, mobilePosition]);
-  const mobileExpandedPanelStyle = useMemo(() => getMobileExpandedPanelStyle(mobilePosition), [mobilePosition]);
+  const floatingAvoid = useFloatingWidgetAvoid(mobile && floatingMediaPlacementEnabled);
+  const mobileWidgetStyle = useMemo(
+    () =>
+      getMobileWidgetStyle(
+        mobilePosition,
+        collapsed,
+        floatingMediaPlacementEnabled,
+        floatingAvoid,
+        collapsedWidgetSize,
+      ),
+    [collapsed, collapsedWidgetSize, floatingAvoid, floatingMediaPlacementEnabled, mobilePosition],
+  );
+  const mobileExpandedPanelStyle = useMemo(
+    () => getMobileExpandedPanelStyle(mobilePosition, floatingMediaPlacementEnabled, collapsedWidgetSize),
+    [collapsedWidgetSize, floatingMediaPlacementEnabled, mobilePosition],
+  );
 
   const volumeMuted = playerVolume <= 0;
   const VolumeIcon = volumeMuted ? VolumeX : Volume2;
@@ -412,6 +479,7 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
         type="button"
         onClick={toggleMute}
         className={cn(
+          floatingMediaPlacementEnabled && MUSIC_TOUCH_HIT_AREA_CLASS,
           "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors",
           MUSIC_NEUTRAL_ICON_CLASS,
           MUSIC_NEUTRAL_ICON_HOVER_CLASS,
@@ -430,7 +498,7 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
         step={1}
         value={playerVolume}
         onChange={(event) => setPlayerVolume(Number(event.target.value))}
-        className="mari-youtube-volume-slider w-full"
+        className={cn("mari-youtube-volume-slider w-full", floatingMediaPlacementEnabled && "pointer-coarse:h-9!")}
         title={localizeUi("game.toolbar.volume")}
         aria-label={localizeUi("ui.chat.youtubeplayer.youtubeVolume")}
         style={{ "--range-progress": `${playerVolume}%` } as CSSProperties}
@@ -441,7 +509,14 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
   const compactBody = (
     <>
       <div className="flex min-w-0 flex-1 items-center gap-2">
-        <MusicSourceButton source="youtube" className={cn(MUSIC_NEUTRAL_BORDER_CLASS, MUSIC_NEUTRAL_BUTTON_BG_CLASS)} />
+        <MusicSourceButton
+          source="youtube"
+          className={cn(
+            floatingMediaPlacementEnabled && MUSIC_TOUCH_HIT_AREA_CLASS,
+            MUSIC_NEUTRAL_BORDER_CLASS,
+            MUSIC_NEUTRAL_BUTTON_BG_CLASS,
+          )}
+        />
         <div
           className={cn(
             "flex h-7 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[0.375rem] ring-1",
@@ -464,7 +539,15 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
           >
             {displayTitle}
           </p>
-          <p className={cn("truncate text-[0.5625rem] leading-tight", MUSIC_NEUTRAL_MUTED_CLASS)}>{displaySubtitle}</p>
+          <p
+            className={cn(
+              "truncate text-[0.5625rem] leading-tight",
+              floatingMediaPlacementEnabled && "pointer-coarse:text-[0.6875rem]",
+              MUSIC_NEUTRAL_MUTED_CLASS,
+            )}
+          >
+            {displaySubtitle}
+          </p>
         </div>
       </div>
       {nowPlaying && (
@@ -472,6 +555,7 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
           type="button"
           onClick={togglePlay}
           className={cn(
+            floatingMediaPlacementEnabled && MUSIC_TOUCH_HIT_AREA_CLASS,
             "inline-flex h-7 w-7 items-center justify-center rounded-full shadow-[0_1px_8px_rgba(255,255,255,0.18)] transition-transform hover:scale-105 active:scale-95",
             MUSIC_NEUTRAL_ACTION_BG_CLASS,
             MUSIC_NEUTRAL_ACTION_TEXT_CLASS,
@@ -488,6 +572,7 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
           type="button"
           onClick={() => setShowVideo((v) => !v)}
           className={cn(
+            floatingMediaPlacementEnabled && MUSIC_TOUCH_HIT_AREA_CLASS,
             "inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors active:scale-90",
             MUSIC_NEUTRAL_ICON_CLASS,
             MUSIC_NEUTRAL_ICON_HOVER_CLASS,
@@ -504,6 +589,7 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
           type="button"
           onClick={close}
           className={cn(
+            floatingMediaPlacementEnabled && MUSIC_TOUCH_HIT_AREA_CLASS,
             "inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors active:scale-90",
             MUSIC_NEUTRAL_ICON_CLASS,
             MUSIC_NEUTRAL_ICON_HOVER_CLASS,
@@ -560,6 +646,7 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
           >
             {collapsed ? (
               <div
+                ref={collapsedWidgetRef}
                 className={cn(
                   "flex h-12 w-12 items-center justify-center rounded-full border shadow-lg backdrop-blur-xl",
                   MUSIC_NEUTRAL_SHELL_BORDER_CLASS,

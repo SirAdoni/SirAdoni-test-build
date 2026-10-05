@@ -27,6 +27,11 @@ import { migrateCharacterExtendedDescriptionsToLorebooks } from "./services/lore
 import { migrateTtsSettingsToAudioConnection } from "./services/connections/tts-audio-connection-migration.js";
 import { migrateLegacyDefaultAgentPrompts } from "./services/agents/default-prompt-migration.js";
 import { APP_VERSION, resetTurnGameRegistry } from "@marinara-engine/shared";
+import { createGameContinuityRuntime } from "./services/game/continuity-runtime.js";
+import { createContinuityChangeNotifier } from "./services/game/continuity-change-notifier.js";
+import { forgetCampaignMemoryCache } from "./services/game/campaign-memory-campaign-scope.js";
+import { structurePublishedContinuity } from "./services/game/continuity-structure.js";
+import { isCampaignOptInEnabled, onFeatureSettingsChange } from "./services/features/campaign-opt-in.js";
 import { existsSync } from "fs";
 import { join, resolve, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -143,6 +148,18 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
   // ── Storage ──
   const db = await startup.phase("storage.open", () => getDB());
   app.decorate("db", db);
+  const gameContinuity = createGameContinuityRuntime(db, {
+    onPublished: async (receipt) => {
+      if (!isCampaignOptInEnabled("gameContinuity") || !isCampaignOptInEnabled("campaignMemory")) return;
+      forgetCampaignMemoryCache(receipt.chatId);
+      void structurePublishedContinuity(db, receipt.chatId, { receiptIds: [receipt.id] }).catch((error) =>
+        app.log.warn({ err: error, receiptId: receipt.id }, "[game-continuity] structure pass failed"),
+      );
+    },
+  });
+  app.decorate("gameContinuity", gameContinuity);
+  app.decorate("continuityChanges", createContinuityChangeNotifier(app));
+  app.addHook("onClose", () => gameContinuity.stop());
   let stopMessageTrashMaintenance: (() => Promise<void>) | undefined;
   app.addHook("onClose", async () => {
     await stopMessageTrashMaintenance?.();
@@ -308,6 +325,22 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
     await registerRoutes(app);
     await androidLocalLoginRoute(app);
   });
+  let continuityEnabled = isCampaignOptInEnabled("gameContinuity");
+  const stopContinuitySettingsListener = onFeatureSettingsChange(() => {
+    const enabled = isCampaignOptInEnabled("gameContinuity");
+    if (enabled === continuityEnabled) return;
+    continuityEnabled = enabled;
+    if (enabled) {
+      gameContinuity.resume();
+      void gameContinuity
+        .start()
+        .catch((error) => app.log.error({ err: error }, "[game-continuity] settings resume failed"));
+    } else {
+      gameContinuity.pause();
+    }
+  });
+  app.addHook("onClose", stopContinuitySettingsListener);
+  if (continuityEnabled) await startup.phase("game-continuity.start", () => gameContinuity.start());
 
   // Trusted downloaded server capabilities register while Fastify is still mutable.
   await startup.phase("capabilities.start", () => capabilityModuleRuntime.start(app));

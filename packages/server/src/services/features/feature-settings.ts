@@ -10,7 +10,9 @@ import {
   FEATURE_SETTINGS_KEY,
   normalizeFeatureSettings,
   resolveFeatureEnabled,
+  resolveFeatureNumber,
   type FeatureSettings,
+  type FeatureNumberName,
   type FeatureSettingsResponse,
   type FeatureSwitchName,
 } from "@marinara-engine/shared";
@@ -97,6 +99,15 @@ export function isFeatureEnabled(name: FeatureSwitchName): boolean {
     if (override !== null) return override;
   }
   return resolveFeatureEnabled(cached, name);
+}
+
+export function getFeatureNumber(name: FeatureNumberName): number {
+  return resolveFeatureNumber(cached, name);
+}
+
+/** Stable API response for an optional feature that is currently switched off. */
+export function featureDisabledResponse(name: FeatureSwitchName) {
+  return { error: "Feature is disabled", code: "FEATURE_DISABLED", feature: name } as const;
 }
 
 export function featureEnvOverrides(): FeatureSettingsResponse["envOverrides"] {

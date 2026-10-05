@@ -12,6 +12,8 @@ import type {
 } from "@marinara-engine/shared";
 import {
   DEFAULT_GAME_SYSTEM_PROMPT,
+  describeExtendedWidgetForPrompt,
+  upstreamHudWidgets,
   gameInventoryBagKey,
   rulesetDefenseLabel,
   rulesetItemStatsRead,
@@ -80,6 +82,11 @@ export interface GmPromptContext {
   playerNotes?: string;
   /** Active HUD widgets the model designed (so it can update them) */
   hudWidgets?: HudWidget[];
+  /** Whether the existing custom widget system is enabled for this request. */
+  enableCustomWidgets?: boolean;
+
+  /** Whether extended widget types and lifecycle commands are enabled for this request. */
+  enableExtendedWidgets?: boolean;
   /** Content rating: sfw or nsfw */
   rating?: "sfw" | "nsfw";
   /** Whether the GM may emit timed reaction prompts. Defaults to true. */
@@ -587,6 +594,8 @@ function inventGrammarLines(
 function buildWidgetSummaryLines(widgets: HudWidget[]): string[] {
   return widgets.map((widget) => {
     const config = (widget.config ?? {}) as Record<string, any>;
+    const extended = describeExtendedWidgetForPrompt(widget);
+    if (extended !== null) return `- ${widget.id} (${widget.type}): ${extended}`;
     if (widget.type === "stat_block" && Array.isArray(config.stats) && config.stats.length > 0) {
       const stats = config.stats.map((stat) => `${stat.name}=${stat.value}`).join(", ");
       return `- ${widget.id} (${widget.type}): ${stats}`;
@@ -600,6 +609,21 @@ function buildWidgetSummaryLines(widgets: HudWidget[]): string[] {
     const value = config.value ?? config.count ?? JSON.stringify(config);
     return `- ${widget.id} (${widget.type}): ${value}`;
   });
+}
+
+/** Extended HUD widgets OFF: keep the familiar upstream instructions and baseline types only. */
+function buildUpstreamWidgetLines(widgets: HudWidget[]): string[] {
+  if (widgets.length === 0) return [];
+  return [
+    ``,
+    `HUD WIDGETS:`,
+    ...buildWidgetSummaryLines(widgets),
+    `- Widget usage: emit widget commands for every real change to these visible HUD widgets. Do not skip a changed widget just because another system tracks related player or party stats.`,
+    `- HUD widgets are visual UI state only. Player stats, inventory, party member HP, party relationships, and other durable game facts remain in their own canonical systems; use [widget:] only to mirror a visible widget when that widget\'s displayed value should change.`,
+    `- Command mapping: value = bars/gauges, count = counters, stat = one stat_block entry, add/remove = rotating list items, running/seconds = timers.`,
+    `- Widget commands: [widget: id, value: n] [widget: id, stat: "Name", value: x] [widget: id, count: n] [widget: id, add: "Item"] [widget: id, remove: "Item"] [widget: id, running: true, seconds: 60]`,
+    `- List widgets: keep at most 5 short entries visible; remove stale items freely.`,
+  ];
 }
 
 /** Build the GM system prompt. Injects full game context (story arc, plot twists, map, etc.). */
@@ -1162,6 +1186,8 @@ export function buildGmFormatReminder(
     | "canGenerateBackgrounds"
     | "artStylePrompt"
     | "hudWidgets"
+    | "enableCustomWidgets"
+    | "enableExtendedWidgets"
     | "turnNumber"
     | "gameActiveState"
     | "sessionNumber"
@@ -1623,16 +1649,21 @@ export function buildGmFormatReminder(
     }
   }
 
-  if (hudWidgets.length > 0) {
+  if (ctx.enableCustomWidgets !== false && ctx.enableExtendedWidgets !== true) {
+    lines.push(...buildUpstreamWidgetLines(upstreamHudWidgets(hudWidgets)));
+  } else if (ctx.enableCustomWidgets !== false) {
     lines.push(
       ``,
-      `HUD WIDGETS:`,
+      `<gm_only_hud_widgets>`,
+      `These values are UI bookkeeping, not facts characters can automatically perceive or discuss.`,
       ...buildWidgetSummaryLines(hudWidgets),
-      `- Widget usage: emit widget commands for every real change to these visible HUD widgets. Do not skip a changed widget just because another system tracks related player or party stats.`,
-      `- HUD widgets are visual UI state only. Player stats, inventory, party member HP, party relationships, and other durable game facts remain in their own canonical systems; use [widget:] only to mirror a visible widget when that widget's displayed value should change.`,
-      `- Command mapping: value = bars/gauges, count = counters, stat = one stat_block entry, add/remove = rotating list items, running/seconds = timers.`,
-      `- Widget commands: [widget: id, value: n] [widget: id, stat: "Name", value: x] [widget: id, count: n] [widget: id, add: "Item"] [widget: id, remove: "Item"] [widget: id, running: true, seconds: 60]`,
-      `- List widgets: keep at most 5 short entries visible; remove stale items freely.`,
+      `- You may dynamically create useful HUD widgets and delete obsolete ones as the scene changes. Reuse stable IDs; do not duplicate existing widgets or invent story events to justify UI changes. Preserve user-requested trackers unless the user removes them or their stated purpose is complete.`,
+      `- Create: [widget: stable_id, action: create, type: counter, label: "Supplies", position: hud_left, count: 3]. Supported types include progress_bar, gauge, relationship_meter, counter, stat_block, list, inventory_grid, timer, and the extended types below.`,
+      `- Delete: [widget: stable_id, action: delete]. This removes only its HUD display, never inventory, relationships, quests, or other canonical facts. Create commands never overwrite an existing widget.`,
+      `- HUD widgets are visual UI state only. Player stats, inventory, party member HP, relationships, and other durable game facts remain in their canonical systems.`,
+      `- Extended types: checklist/obligations use add/check/uncheck/remove; schedule/calendar use add/remove dated entries; note uses text; tags use add/remove; log and rumor_board use add; clock, pips, countdown, tug_of_war, tier_track, stages, ledger, turn_order, scoreboard, bars, and charges use their type-specific value/text/add/stat commands.`,
+      `- Widget commands: [widget: id, value: n] [widget: id, stat: "Name", value: x] [widget: id, count: n] [widget: id, add: "Item"] [widget: id, remove: "Item"] [widget: id, check: "Task"] [widget: id, uncheck: "Task"] [widget: id, text: "text"]`,
+      `</gm_only_hud_widgets>`,
     );
   }
 

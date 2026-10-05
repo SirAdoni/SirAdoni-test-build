@@ -28,6 +28,10 @@ const db = await getDB();
 const chats = createChatsStorage(db);
 const app = Fastify();
 app.decorate("db", db);
+const { createGameContinuityRuntime } = await import("../../packages/server/src/services/game/continuity-runtime.js");
+const gameContinuity = createGameContinuityRuntime(db);
+app.decorate("gameContinuity", gameContinuity);
+app.addHook("onClose", () => gameContinuity.stop());
 app.decorate("activeGenerations", new Map());
 const delay = () => new Promise<void>((done) => setTimeout(done, 30));
 let active = 0;
@@ -353,10 +357,22 @@ try {
         for (const session of [canonical, branch]) {
           await chats.patchMetadata(session.id, {
             gameSequentialAgents: session.id === selected.id,
+            gameGmReasoningEffort: session.id === selected.id ? "high" : "low",
             gameSessionNumber: 1,
             gameSessionStatus: "concluded",
             gamePreviousSessionSummaries: [{ summary: "The gate was opened." }],
-            ...(session.id === branch.id ? { branchName: "Alternative gate" } : {}),
+            ...(session.id === branch.id
+              ? {
+                  branchName: "Alternative gate",
+                  branchParentChatId: canonical.id,
+                  branchParentMessageId: null,
+                  branchMessageId: null,
+                  branchLineageVersion: 1,
+                  branchCopyMode: "full-prefix",
+                  branchCopiedMessageCount: 0,
+                  gameSessionParentChatId: "stale-inherited-predecessor",
+                }
+              : {}),
           });
         }
         const background = await gamePost("media", { chatId: selected.id });
@@ -378,6 +394,18 @@ try {
           JSON.parse(sessionChat.metadata).gameSequentialAgents,
           true,
           "the new session retains the selected session's opt-in",
+        );
+        assert.equal(
+          JSON.parse(sessionChat.metadata).gameSessionParentChatId,
+          selected.id,
+          "the new session records the exact source session selected at creation",
+        );
+        assert.equal(JSON.parse(sessionChat.metadata).branchParentChatId, undefined);
+        assert.equal(JSON.parse(sessionChat.metadata).branchCopyMode, undefined);
+        assert.equal(
+          JSON.parse(sessionChat.metadata).gameGmReasoningEffort,
+          "high",
+          "the new session retains the selected session's GM reasoning effort",
         );
         assert.equal(sessionChat.name.startsWith(explicitSource ? "Branch" : "Canonical"), true);
       }

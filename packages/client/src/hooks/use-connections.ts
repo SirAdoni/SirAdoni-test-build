@@ -42,9 +42,10 @@ export function useRefreshLocalContext() {
   }, [qc]);
 }
 
-export function useConnections() {
+export function useConnections(enabled = true) {
   return useQuery({
     queryKey: connectionKeys.list(),
+    enabled,
     // Deadline so a frozen host cannot leave isLoading true forever — this
     // query gates the Support Diagnostics copy button alongside health (#5657).
     queryFn: ({ signal }) => api.get<unknown[]>("/connections", { signal: requestTimeoutSignal(10_000, signal) }),

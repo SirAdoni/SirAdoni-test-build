@@ -128,12 +128,17 @@ const apples = (): GameInventoryStack[] => [
     "onto the first stack of that name, and no other",
   );
   const fresh = addToGameInventory(apples(), "Lantern", 2, fixedId("new"));
-  assert.deepEqual(fresh.at(-1), { id: "new", name: "Lantern", quantity: 2 });
+  assert.deepEqual(fresh.at(-1), {
+    id: "new",
+    name: "Lantern",
+    item: gameInventoryPlainItemId("Lantern"),
+    quantity: 2,
+  });
   // What the first stack cannot hold starts a new stack; nothing added is lost.
   const nearlyFull: GameInventoryStack[] = [{ id: "c1", name: "Coin", quantity: GAME_INVENTORY_MAX_QUANTITY - 5 }];
   assert.deepEqual(addToGameInventory(nearlyFull, "coin", 20, fixedId("c2")), [
     { id: "c1", name: "Coin", quantity: GAME_INVENTORY_MAX_QUANTITY },
-    { id: "c2", name: "Coin", quantity: 15 },
+    { id: "c2", name: "Coin", item: gameInventoryPlainItemId("Coin"), quantity: 15 },
   ]);
   const full: GameInventoryStack[] = [{ id: "c1", name: "Coin", quantity: GAME_INVENTORY_MAX_QUANTITY }];
   assert.deepEqual(piles(addToGameInventory(full, "Coin", 3, fixedId("c2"))), [
@@ -182,8 +187,8 @@ const apples = (): GameInventoryStack[] => [
   assert.equal(none.taken, 0);
   assert.equal(gameInventoryCount(apples(), " APPLE"), 300);
   assert.deepEqual(gameInventoryTotals(apples()), [
-    { name: "Apple", quantity: 300 },
-    { name: "Rope", quantity: 1 },
+    { name: "Apple", quantity: 300, item: gameInventoryPlainItemId("Apple") },
+    { name: "Rope", quantity: 1, item: gameInventoryPlainItemId("Rope") },
   ]);
 }
 
@@ -266,15 +271,15 @@ const apples = (): GameInventoryStack[] => [
   assert.equal(renamed.id, "a2");
   assert.deepEqual(
     renamed.stacks[2],
-    { id: "a2", name: "Apple", nickname: "Green apple", quantity: 100 },
+    { id: "a2", name: "Apple", nickname: "Green apple", item: gameInventoryPlainItemId("Apple"), quantity: 100 },
     "only that stack is called something else, and it is still an apple",
   );
   assert.equal(gameInventoryItemId(renamed.stacks[2]!), gameInventoryItemId(same[0]!));
   assert.equal(gameInventoryCount(renamed.stacks, "Apple"), 300, "named by its own name");
   assert.equal(gameInventoryCount(renamed.stacks, "green APPLE"), 300, "or by the nickname, any case");
   assert.deepEqual(gameInventoryTotals(renamed.stacks), [
-    { name: "Apple", quantity: 300 },
-    { name: "Rope", quantity: 1 },
+    { name: "Apple", quantity: 300, item: gameInventoryPlainItemId("Apple") },
+    { name: "Rope", quantity: 1, item: gameInventoryPlainItemId("Rope") },
   ]);
   const into = renameGameInventoryStack(same, "r1", "Apple")!;
   assert.equal(into.id, "r1", "a rope called Apple is never poured into the apples");
@@ -286,7 +291,11 @@ const apples = (): GameInventoryStack[] => [
   assert.equal(gameInventoryCount(into.stacks, "rope"), 1, "it is still a rope");
   assert.equal(mergeGameInventoryStacks(into.stacks, "r1", "a1"), into.stacks, "and never merges with them");
   const back = renameGameInventoryStack(renamed.stacks, "a2", "  APPLE ")!;
-  assert.deepEqual(back.stacks[2], same[2], "the item's own name, in any case, clears the nickname");
+  assert.deepEqual(
+    back.stacks[2],
+    { ...same[2], item: gameInventoryPlainItemId("Apple") },
+    "the item's own name, in any case, clears the nickname",
+  );
   assert.equal(renameGameInventoryStack(same, "a2", "APPLE")!.stacks, same, "which is nothing to clear here");
   assert.equal(renameGameInventoryStack(same, "a1", "Apple")!.stacks, same);
   assert.equal(renameGameInventoryStack(renamed.stacks, "a2", "Green apple")!.stacks, renamed.stacks);
@@ -300,9 +309,9 @@ const apples = (): GameInventoryStack[] => [
       { id: "z", name: "Rope", nickname: 7, quantity: 1 },
     ]),
     [
-      { id: "x", name: "Rope", nickname: "Grandpa's rope", quantity: 2 },
-      { id: "y", name: "Rope", quantity: 1 },
-      { id: "z", name: "Rope", quantity: 1 },
+      { id: "x", name: "Rope", nickname: "Grandpa's rope", item: gameInventoryPlainItemId("Rope"), quantity: 2 },
+      { id: "y", name: "Rope", item: gameInventoryPlainItemId("Rope"), quantity: 1 },
+      { id: "z", name: "Rope", item: gameInventoryPlainItemId("Rope"), quantity: 1 },
     ],
   );
 }
@@ -364,13 +373,13 @@ const apples = (): GameInventoryStack[] => [
   // Nicknames carry over, and an entry that follows an item by id is that item under any name.
   assert.deepEqual(
     carryGameInventory(
-      [{ id: "st-r", name: "Rope", nickname: "Grandpa's rope", quantity: 2 }],
+      [{ id: "st-r", name: "Rope", nickname: "Grandpa's rope", item: gameInventoryPlainItemId("Rope"), quantity: 2 }],
       [
         { item: gameInventoryPlainItemId("Rope"), name: "Old faithful", description: "", quantity: 2, location: "" },
         { name: "grandpa's rope", description: "", quantity: 2, location: "" },
       ],
     ),
-    [{ id: "st-r", name: "Rope", nickname: "Grandpa's rope", quantity: 2 }],
+    [{ id: "st-r", name: "Rope", nickname: "Grandpa's rope", item: gameInventoryPlainItemId("Rope"), quantity: 2 }],
   );
   // An entry that follows an item nobody holds any more is carried, even when its name (a nickname)
   // is another held item's own name: it comes back as its own item, not onto the rope.
@@ -466,7 +475,7 @@ const apples = (): GameInventoryStack[] => [
       { id: "c", name: "Axe", item: "Outfitter/Axe", quantity: 1 },
       { id: "d", name: "Axe", item: `outfitter/${"a".repeat(130)}`, quantity: 1 },
     ]).map((stack) => stack.item ?? null),
-    ["outfitter/arrows", null, null, null],
+    ["outfitter/arrows", "plain:rope", "plain:axe", "plain:axe"],
   );
 
   // A name that is one of the ruleset's items adds that item, called by its label.
@@ -486,7 +495,9 @@ const apples = (): GameInventoryStack[] => [
     ["Arrows", "outfitter/arrows", 2, null],
   ]);
   // Without rules a name is a plain item, as before.
-  assert.deepEqual(shape(addToGameInventoryNamed([], "Hand axe", 1, next)!.stacks), [["Hand axe", null, 1, null]]);
+  assert.deepEqual(shape(addToGameInventoryNamed([], "Hand axe", 1, next)!.stacks), [
+    ["Hand axe", "plain:hand-axe", 1, null],
+  ]);
   // By its id; one the ruleset does not have is refused.
   assert.deepEqual(shape(addGameInventoryRulesetItem([], "outfitter/hand-axe", 2, next, "Bram", rules())!.stacks), [
     ["Hand axe", "outfitter/hand-axe", 2, "Bram"],
@@ -662,7 +673,7 @@ const apples = (): GameInventoryStack[] => [
       ),
     ),
     [
-      ["Old lantern", null, 1, null],
+      ["Old lantern", "plain:old-lantern", 1, null],
       ["Veiled lamp", "kit/veiled", 1, null],
     ],
   );

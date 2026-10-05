@@ -12,6 +12,8 @@ import type {
   MariWorkspacePendingApproval,
 } from "@marinara-engine/shared";
 import { logger } from "../../lib/logger.js";
+import { getDataDir, getFileStorageDir } from "../../config/runtime-config.js";
+import { isFeatureEnabled } from "../features/feature-settings.js";
 
 const APPROVAL_TIMEOUT_MS = 10 * 60_000;
 const INSTALL_TIMEOUT_MS = 10 * 60_000;
@@ -152,10 +154,110 @@ function isEnvironmentSecretName(name: string) {
   return normalized === ".env" || normalized.startsWith(".env.");
 }
 
+function accessPolicyPath(path: string): string {
+  const absolute = resolve(path);
+  let ancestor = absolute;
+  while (!existsSync(ancestor) && ancestor !== dirname(ancestor)) ancestor = dirname(ancestor);
+  const canonical = join(realpathSync(ancestor), relative(ancestor, absolute));
+  return process.platform === "win32" || process.platform === "darwin" ? canonical.toLowerCase() : canonical;
+}
+
+function relativeInside(rootPath: string, absolutePath: string): string | null {
+  const root = resolve(rootPath);
+  const absolute = resolve(absolutePath);
+  const rel = relative(root, absolute);
+  if (rel === "") return "";
+  if (rel === ".." || rel.startsWith(`..${sep}`) || resolve(root, rel) !== absolute) return null;
+  return normalizeRelativePath(rel);
+}
+
+function configuredPathRoots(path: string): string[] {
+  const resolved = resolve(path);
+  if (!existsSync(resolved)) return [resolved];
+  const canonical = realpathSync(resolved);
+  return canonical === resolved ? [resolved] : [resolved, canonical];
+}
+
+function repeatedlyDecodePath(path: string): string {
+  let decoded = path;
+  for (let pass = 0; pass < 3; pass += 1) {
+    try {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    } catch {
+      break;
+    }
+  }
+  return decoded.replace(/\\/g, "/").toLowerCase();
+}
+
+/** Managed files that may contain Private Notebook or GM prep board plaintext and must stay outside Professor Mari context. */
+export function isProfessorMariPrivateDataPath(absolutePath: string): boolean {
+  for (const storageRoot of configuredPathRoots(getFileStorageDir())) {
+    const rel = relativeInside(accessPolicyPath(storageRoot), accessPolicyPath(absolutePath));
+    if (rel === null) continue;
+    const normalized = repeatedlyDecodePath(rel);
+    const tablePath = normalized.split("/");
+    if (tablePath[0] === "tables" && (tablePath[1] === "app_settings" || tablePath[1] === "game_prep_boards"))
+      return true;
+    const name = tablePath.at(-1) ?? "";
+    if (
+      tablePath[0] === "tables" &&
+      tablePath.length === 2 &&
+      /^\.?(?:app_settings|game_prep_boards)\.json(?:$|[.-])/u.test(name)
+    ) {
+      return true;
+    }
+  }
+  for (const dataRoot of configuredPathRoots(getDataDir())) {
+    const rel = relativeInside(accessPolicyPath(dataRoot), accessPolicyPath(absolutePath));
+    if (rel === null) continue;
+    const normalized = repeatedlyDecodePath(rel);
+    if (normalized === "backups" || normalized.startsWith("backups/")) return true;
+  }
+  return false;
+}
+
+/** Git pathspecs keep every managed storage/backup byte out of `mari code` output. */
+export function professorMariCodePathspecs(workspaceRoot: string): string[] {
+  const excludedRoots = [getFileStorageDir(), join(getDataDir(), "backups")]
+    .map((path) => relativeInside(workspaceRoot, path))
+    .filter((path): path is string => path !== null)
+    .flatMap((path) => {
+      const normalized = normalizeRelativePath(path);
+      return normalized ? [`:(exclude,glob)${normalized}`, `:(exclude,glob)${normalized}/**`] : [":(exclude,glob)**"];
+    });
+  return ["--", ".", ...new Set(excludedRoots)];
+}
+
+function isDisabledOptionalFeatureDataPath(candidatePath: string): boolean {
+  const tableRoot = resolve(getFileStorageDir(), "tables");
+  const candidate = accessPolicyPath(candidatePath);
+  for (const [table, feature] of [
+    ["random_tables", "randomTables"],
+    ["game_dice_rolls", "diceLog"],
+  ] as const) {
+    if (isFeatureEnabled(feature)) continue;
+    const shardDir = accessPolicyPath(resolve(tableRoot, table));
+    const tableFile = accessPolicyPath(resolve(tableRoot, `${table}.json`));
+    if (
+      candidate === tableFile ||
+      candidate.startsWith(tableFile + ".") ||
+      candidate === shardDir ||
+      candidate.startsWith(shardDir + sep)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 export function workspacePathAccessPolicy(
   workspaceRoot: string,
   absolutePath: string,
 ): "normal" | "sensitive" | "forbidden" {
+  if (isProfessorMariPrivateDataPath(absolutePath) || isDisabledOptionalFeatureDataPath(absolutePath))
+    return "forbidden";
   const root = resolve(workspaceRoot);
   const absolute = resolve(absolutePath);
   const rel = relative(root, absolute);
@@ -164,7 +266,8 @@ export function workspacePathAccessPolicy(
   const parts = normalized.split("/").filter(Boolean);
   const name = parts.at(-1) ?? "";
 
-  if (parts.includes(".git") || isEnvironmentSecretName(name)) return "forbidden";
+  if (parts.includes(".git") || isEnvironmentSecretName(name) || isProfessorMariPrivateDataPath(absolute))
+    return "forbidden";
   if (PACKAGE_CONTROL_FILES.has(name)) return "sensitive";
   if (parts.length === 1 && ROOT_LAUNCHER_FILES.has(name)) return "sensitive";
   if (normalized === ".github/workflows" || normalized.startsWith(".github/workflows/")) return "sensitive";

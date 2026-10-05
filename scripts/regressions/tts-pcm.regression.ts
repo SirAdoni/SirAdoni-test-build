@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
+import type { FeatureSwitchName } from "../../packages/shared/src/schemas/feature-settings.schema.js";
 const requireServer = createRequire(new URL("../../packages/server/package.json", import.meta.url));
 const Fastify = requireServer("fastify") as typeof import("fastify").default;
 import { TTS_SETTINGS_KEY, ttsAudioFormatSchema } from "../../packages/shared/src/types/tts.js";
@@ -77,18 +78,24 @@ assert.throws(
 
 // The provider fixture is loopback-only: it captures the actual route request and never contacts a provider.
 process.env.TTS_LOCAL_URLS_ENABLED = "true";
-let providerMode: { contentType: string; body: Uint8Array; status?: number } = {
+let providerMode: { contentType: string; body: Uint8Array; status?: number; resetConnection?: boolean } = {
   contentType: "audio/pcm;rate=48000;channels=2",
   body: pcm,
 };
 let capturedRequest: { pathname: string; body: Record<string, unknown> } | null = null;
+let providerRequestCount = 0;
 const provider = createServer(async (request, response) => {
+  providerRequestCount++;
   const chunks: Buffer[] = [];
   for await (const chunk of request) chunks.push(Buffer.from(chunk));
   capturedRequest = {
     pathname: new URL(request.url ?? "/", "http://127.0.0.1").pathname,
     body: JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>,
   };
+  if (providerMode.resetConnection) {
+    response.destroy();
+    return;
+  }
   response.writeHead(
     providerMode.status ?? 200,
     providerMode.contentType ? { "content-type": providerMode.contentType } : {},
@@ -97,36 +104,90 @@ const provider = createServer(async (request, response) => {
 });
 let app: ReturnType<typeof Fastify> | undefined;
 let browser: import("playwright").Browser | undefined;
+let isolatedData: string | undefined;
+let closeDatabase: (() => Promise<void>) | undefined;
+let clearFeatureSettings: (() => void) | undefined;
+const logLines: string[] = [];
+const diagnosticEvents = () =>
+  logLines.flatMap((line) => {
+    try {
+      const entry = JSON.parse(line) as Record<string, unknown>;
+      return entry.event === "tts.speak" ? [entry] : [];
+    } catch {
+      return [];
+    }
+  });
 try {
   await new Promise<void>((resolve) => provider.listen(0, "127.0.0.1", resolve));
   const providerAddress = provider.address();
   assert.ok(providerAddress && typeof providerAddress !== "string");
 
-  const isolatedData = mkdtempSync(join(tmpdir(), "marinara-tts-pcm-"));
+  isolatedData = mkdtempSync(join(tmpdir(), "marinara-tts-pcm-"));
   process.env.DATA_DIR = isolatedData;
   process.env.FILE_STORAGE_DIR = join(isolatedData, "storage");
   const { createFileNativeDB } = await import("../../packages/server/src/db/file-backed-store.js");
+  const { encryptApiKey } = await import("../../packages/server/src/utils/crypto.js");
   const { createAppSettingsStorage } =
     await import("../../packages/server/src/services/storage/app-settings.storage.js");
+  const { applyFeatureSettingsValue, isFeatureEnabled } =
+    await import("../../packages/server/src/services/features/feature-settings.js");
+  clearFeatureSettings = () => applyFeatureSettingsValue(null);
+  applyFeatureSettingsValue(null);
   const db = await createFileNativeDB();
-  await createAppSettingsStorage(db).set(
-    TTS_SETTINGS_KEY,
-    JSON.stringify({
-      enabled: true,
-      source: "openai",
-      apiKey: "",
-      baseUrl: `http://127.0.0.1:${providerAddress.port}/v1`,
-      model: "tts-1",
-      voice: "alloy",
-      audioFormat: "pcm",
-    }),
-  );
-  app = Fastify();
+  closeDatabase = () => db._fileStore.close();
+  const settings = createAppSettingsStorage(db);
+  const ttsSettings = {
+    enabled: true,
+    source: "openai",
+    apiKey: encryptApiKey("API_KEY_SENTINEL"),
+    baseUrl: "http://127.0.0.1:" + providerAddress.port + "/v1",
+    model: "tts-1",
+    voice: "CONFIG_VOICE_SENTINEL",
+    audioFormat: "pcm",
+  };
+  await settings.set(TTS_SETTINGS_KEY, JSON.stringify(ttsSettings));
+  app = Fastify({
+    logger: {
+      level: "info",
+      stream: { write: (line: string) => void logLines.push(line) },
+    },
+  });
   app.decorate("db", db);
   await app.register(ttsRoutes, { prefix: "/api/tts" });
-  const speak = () => app!.inject({ method: "POST", url: "/api/tts/speak", payload: { text: "fixture speech" } });
-  const response = await speak();
+  const speak = async (payload: Record<string, unknown> = { text: "fixture speech" }, expectDiagnostic = true) => {
+    const previousCount = diagnosticEvents().length;
+    const response = await app!.inject({ method: "POST", url: "/api/tts/speak", payload });
+    assert.equal(
+      diagnosticEvents().length,
+      previousCount + (expectDiagnostic ? 1 : 0),
+      expectDiagnostic
+        ? "each handled speech request emits exactly one outcome event when diagnostics are enabled"
+        : "speech outcome diagnostics stay silent when the feature is off",
+    );
+    return response;
+  };
+  assert.equal(isFeatureEnabled("speechDiagnostics" as FeatureSwitchName), false, "missing flag defaults off");
+  const defaultOffResponse = await speak({ text: "DEFAULT_OFF_TEXT_SENTINEL" }, false);
+  assert.equal(defaultOffResponse.statusCode, 200, "disabling diagnostics does not disable TTS");
+  assert.deepEqual([...defaultOffResponse.rawPayload], [...wav]);
+  assert.equal(providerRequestCount, 1);
+  assert.equal(diagnosticEvents().length, 0, "the default-off request emits no outcome event");
+
+  const callsBeforeEnabled = providerRequestCount;
+  applyFeatureSettingsValue(JSON.stringify({ speechDiagnostics: true }));
+  assert.equal(isFeatureEnabled("speechDiagnostics" as FeatureSwitchName), true);
+  const response = await speak({
+    text: "TEXT_SENTINEL",
+    speaker: "SPEAKER_SENTINEL",
+    tone: "TONE_SENTINEL",
+    voice: "VOICE_SENTINEL",
+  });
   assert.equal(response.statusCode, 200);
+  assert.equal(diagnosticEvents().at(-1)?.outcome, "success");
+  assert.equal(diagnosticEvents().at(-1)?.errorCode, "success");
+  assert.equal(diagnosticEvents().at(-1)?.provider, "openai");
+  assert.equal(diagnosticEvents().at(-1)?.voiceConfigured, true);
+  assert.equal(diagnosticEvents().at(-1)?.textCharacters, "TEXT_SENTINEL".length);
   const captured = capturedRequest as { pathname: string; body: Record<string, unknown> } | null;
   assert.ok(captured, "the synthetic provider received the request");
   assert.equal(captured.pathname, "/v1/audio/speech");
@@ -139,6 +200,45 @@ try {
     [0xff, 0xff],
     "the weak MP3-signature samples are preserved",
   );
+  assert.equal(providerRequestCount, callsBeforeEnabled + 1, "the successful request reached the mock provider once");
+
+  await settings.set(TTS_SETTINGS_KEY, JSON.stringify({ ...ttsSettings, enabled: false }));
+  const disabled = await speak();
+  assert.equal(disabled.statusCode, 400);
+  assert.equal(diagnosticEvents().at(-1)?.errorCode, "tts_disabled");
+  assert.equal(providerRequestCount, callsBeforeEnabled + 1, "disabled TTS does not call the provider");
+
+  const elevenLabsBase = {
+    ...ttsSettings,
+    source: "elevenlabs",
+    model: "eleven_multilingual_v2",
+    baseUrl: "http://127.0.0.1:" + providerAddress.port,
+  };
+  await settings.set(TTS_SETTINGS_KEY, JSON.stringify({ ...elevenLabsBase, apiKey: "", voice: "" }));
+  const missingKey = await speak();
+  assert.equal(missingKey.statusCode, 400);
+  assert.equal(diagnosticEvents().at(-1)?.errorCode, "provider_key_missing");
+  assert.equal(providerRequestCount, callsBeforeEnabled + 1, "missing provider key does not call the provider");
+
+  await settings.set(TTS_SETTINGS_KEY, JSON.stringify({ ...elevenLabsBase, voice: "" }));
+  const missingVoice = await speak();
+  assert.equal(missingVoice.statusCode, 400);
+  assert.equal(diagnosticEvents().at(-1)?.errorCode, "voice_missing");
+  assert.equal(providerRequestCount, callsBeforeEnabled + 1, "missing voice does not call the provider");
+
+  await settings.set(TTS_SETTINGS_KEY, JSON.stringify({ ...elevenLabsBase, model: "eleven_ttv_v3" }));
+  const unsupportedModel = await speak();
+  assert.equal(unsupportedModel.statusCode, 400);
+  assert.equal(diagnosticEvents().at(-1)?.errorCode, "unsupported_model");
+  assert.equal(providerRequestCount, callsBeforeEnabled + 1, "unsupported model does not call the provider");
+  await settings.set(TTS_SETTINGS_KEY, JSON.stringify(ttsSettings));
+
+  providerMode = { contentType: "audio/pcm;rate=48000;channels=2", body: pcm, resetConnection: true };
+  const disconnected = await speak();
+  assert.equal(disconnected.statusCode, 502);
+  assert.deepEqual(disconnected.json(), { error: "TTS provider unreachable" });
+  assert.equal(diagnosticEvents().at(-1)?.errorCode, "provider_unreachable");
+  providerMode = { contentType: "audio/pcm;rate=48000;channels=2", body: pcm };
 
   if (process.env.TTS_PCM_BROWSER_PROOF === "1") {
     // Chromium's WebAudio decoder verifies that the actual route response is playable WAV.
@@ -317,19 +417,70 @@ try {
   assert.equal(jsonBody.statusCode, 502, "a successful JSON provider response is not treated as audio");
   assert.match(jsonBody.json<{ error: string }>().error, /non-audio response/u);
 
-  providerMode = { contentType: "audio/pcm;rate=48000;channels=2", body: pcm, status: 503 };
+  const providerBodySentinel = "PROVIDER_BODY_SENTINEL";
+  providerMode = {
+    contentType: "application/json",
+    body: new TextEncoder().encode(JSON.stringify({ error: { message: providerBodySentinel } })),
+    status: 503,
+  };
+  const previousProviderErrors = diagnosticEvents().length;
   const providerFailure = await speak();
   assert.equal(providerFailure.statusCode, 502, "provider errors remain gateway errors");
-  assert.match(providerFailure.json<{ error: string }>().error, /provider returned 503/u);
+  assert.deepEqual(providerFailure.json(), {
+    error: "TTS provider returned 503",
+    detail: providerBodySentinel,
+  });
+  assert.equal(diagnosticEvents().length, previousProviderErrors + 1);
+  assert.equal(diagnosticEvents().at(-1)?.errorCode, "provider_http_error");
+  assert.equal(diagnosticEvents().at(-1)?.providerStatus, 503);
+
+  for (const sentinel of [
+    "DEFAULT_OFF_TEXT_SENTINEL",
+    "TEXT_SENTINEL",
+    "SPEAKER_SENTINEL",
+    "TONE_SENTINEL",
+    "VOICE_SENTINEL",
+    "CONFIG_VOICE_SENTINEL",
+    "API_KEY_SENTINEL",
+    providerBodySentinel,
+  ]) {
+    assert.equal(logLines.join("").includes(sentinel), false, "sensitive sentinel leaked to logs");
+  }
+
+  applyFeatureSettingsValue(JSON.stringify({ speechDiagnostics: false }));
+  assert.equal(
+    isFeatureEnabled("speechDiagnostics" as FeatureSwitchName),
+    false,
+    "explicit false disables diagnostics",
+  );
+  providerMode = { contentType: "audio/pcm;rate=48000;channels=2", body: pcm };
+  await settings.set(TTS_SETTINGS_KEY, JSON.stringify(ttsSettings));
+  const countBeforeExplicitOff = diagnosticEvents().length;
+  const providerCallsBeforeExplicitOff = providerRequestCount;
+  const explicitOffResponse = await speak({ text: "EXPLICIT_OFF_TEXT_SENTINEL" }, false);
+  assert.equal(explicitOffResponse.statusCode, 200, "explicit false leaves the TTS response unchanged");
+  assert.deepEqual([...explicitOffResponse.rawPayload], [...wav]);
+  assert.equal(providerRequestCount, providerCallsBeforeExplicitOff + 1);
+  assert.equal(diagnosticEvents().length, countBeforeExplicitOff);
+  assert.equal(logLines.join("").includes("EXPLICIT_OFF_TEXT_SENTINEL"), false);
 } finally {
+  clearFeatureSettings?.();
   try {
     await browser?.close();
   } finally {
     try {
       await app?.close();
     } finally {
-      if (provider.listening) {
-        await new Promise<void>((resolve, reject) => provider.close((error) => (error ? reject(error) : resolve())));
+      try {
+        if (provider.listening) {
+          await new Promise<void>((resolve, reject) => provider.close((error) => (error ? reject(error) : resolve())));
+        }
+      } finally {
+        try {
+          await closeDatabase?.();
+        } finally {
+          if (isolatedData) rmSync(isolatedData, { recursive: true, force: true });
+        }
       }
     }
   }

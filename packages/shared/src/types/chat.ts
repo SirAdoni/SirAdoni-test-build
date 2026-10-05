@@ -253,7 +253,11 @@ export function normalizeSummaryTailMessages(value: unknown): number {
   if (!Number.isFinite(parsed) || parsed < MIN) return MIN;
   return parsed;
 }
-export const CHAT_SUMMARY_OUTPUT_TOKENS = { MIN: 1, MAX: 32768, DEFAULT: 4096 } as const;
+export const CHAT_SUMMARY_OUTPUT_TOKENS = {
+  MIN: 1,
+  MAX: 32768,
+  DEFAULT: 4096,
+} as const;
 
 export type GameStoryboardViewerDisplayMode = "floating" | "background";
 
@@ -262,7 +266,11 @@ export interface ChatMetadata {
   /** Fresh, explicitly reviewed setup for an optional shared session. */
   multiplayerSetup?: boolean;
   multiplayerSetupComplete?: boolean;
-  multiplayerGameSetup?: { preferences: string; gmConnectionId?: string; gameName?: string };
+  multiplayerGameSetup?: {
+    preferences: string;
+    gmConnectionId?: string;
+    gameName?: string;
+  };
   multiplayer?: import("./multiplayer.js").MultiplayerStoredRoom | import("./multiplayer.js").MultiplayerJoinedRoom;
   /** Opt-in coordinated Roleplay context and scene memory. */
   advancedMemory?: import("./advanced-memory.js").AdvancedMemorySettings;
@@ -286,6 +294,10 @@ export interface ChatMetadata {
   branchParentMessageId?: string | null;
   /** Copied message corresponding to branchParentMessageId. */
   branchMessageId?: string | null;
+  /** Versioned proof for the copied branch prefix. */
+  branchLineageVersion?: 1;
+  branchCopyMode?: "full-prefix" | "through-message";
+  branchCopiedMessageCount?: number;
   /** Structured rolling summary entries. Missing means legacy summary-only metadata. */
   summaryEntries?: ChatSummaryEntry[];
   /** Recent message count used by manual rolling summary generation and automatic summaries. */
@@ -578,6 +590,12 @@ export interface ChatMetadata {
   gameId?: string;
   /** Session number within a game (1-based) */
   gameSessionNumber?: number;
+  /** Actual prior session chat selected when this later session was created. */
+  gameSessionParentChatId?: string;
+  /** Whether campaign memory reads prior sessions (default) or only this chat. */
+  gameCampaignMemoryScope?: "campaign" | "session";
+  /** Maximum serialized campaign-memory record characters per prompt; invalid values use the default. */
+  gameCampaignMemoryMaxCharacters?: number;
   /** Current session lifecycle status */
   gameSessionStatus?: import("./game.js").GameSessionStatus;
   /** Whether the first game intro screen has been dismissed for this game chat. */
@@ -671,6 +689,8 @@ export interface ChatMetadata {
   gameSequentialAgents?: boolean;
   /** Master visibility/runtime switch for manual Game Mode scene videos. */
   gameSceneVideosEnabled?: boolean;
+  /** Reasoning effort for Game Mode GM narration only; absent uses the normal connection/chat setting. */
+  gameGmReasoningEffort?: import("../constants/game-gm-reasoning-effort.js").GameGmReasoningEffort;
   /** Selected Game Mode scene/storyboard video prompt template. */
   gameVideoPromptTemplateId?: string | null;
   /** Selected Game Mode prompt template for storyboard keyframe clips only. */
@@ -713,6 +733,10 @@ export interface ChatMetadata {
   sceneLastVideoId?: string | null;
   /** Game-mode GM instruction override. Empty/null uses the built-in default prompt. */
   gameSystemPrompt?: string | null;
+  /** Role-scoped edits to the assembled Game Mode request, reapplied after fresh assembly. */
+  gamePromptDirectEdits?: Array<{ role: string; find: string; replace: string }>;
+  /** Changes whenever the saved assembled-request edits change; snapshots record the revision they used. */
+  gamePromptDirectEditsRevision?: string | null;
   /** Selected built-in or chat-local Game Mode GM prompt template. */
   gameGmPromptTemplateId?: string | null;
   /** Chat-local Game Mode GM prompt templates. */
@@ -960,7 +984,11 @@ export interface MessageExtra {
    * Cached pipeline injections (prose-guardian, director, knowledge-retrieval, etc.)
    * saved with this assistant message — reused when regenerating that swipe unless refreshed.
    */
-  contextInjections?: Array<{ agentType: string; agentName?: string; text: string }> | null;
+  contextInjections?: Array<{
+    agentType: string;
+    agentName?: string;
+    text: string;
+  }> | null;
   /** Fingerprint of the compiled chat summary used when prompt caches/reasoning were stored. */
   chatSummaryFingerprint?: string | null;
   /**
@@ -1021,7 +1049,11 @@ export interface GameToolPlanningInfo {
   connectionId?: string;
   model: string;
   provider: string;
-  usage: { promptTokens?: number; completionTokens?: number; totalTokens?: number } | null;
+  usage: {
+    promptTokens?: number;
+    completionTokens?: number;
+    totalTokens?: number;
+  } | null;
 }
 
 /** Metadata about how a message was generated. */

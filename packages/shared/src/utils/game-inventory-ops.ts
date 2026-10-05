@@ -475,14 +475,29 @@ export function followGameInventoryDetails(
         (key) => (entry: InventoryItem) => entry.item === undefined && gameInventoryNameKey(entry.name) === key,
       ),
     ];
-    const shown = current?.label;
+    const canonical = current?.own ?? then?.own;
+    const nickname = current?.label && current.label !== canonical ? current.label : undefined;
     if (difference >= 0) {
       const index = finds.map((find) => items.findIndex(find)).find((found) => found >= 0) ?? -1;
       if (index >= 0) {
         const entry = items[index]!;
-        items[index] = { ...entry, item, name: shown ?? entry.name, quantity: entry.quantity + difference };
+        const { nickname: _oldNickname, ...rest } = entry;
+        items[index] = {
+          ...rest,
+          item,
+          name: canonical ?? entry.name,
+          ...(nickname ? { nickname } : {}),
+          quantity: entry.quantity + difference,
+        };
       } else if (difference > 0) {
-        items.push({ item, name: shown!, description: "", quantity: difference, location: "on_person" });
+        items.push({
+          item,
+          name: canonical!,
+          ...(nickname ? { nickname } : {}),
+          description: "",
+          quantity: difference,
+          location: "on_person",
+        });
       }
       continue;
     }
@@ -501,7 +516,9 @@ export function followGameInventoryDetails(
       const take = takeAt.get(index);
       if (take === undefined) return [entry];
       const rest = entry.quantity - take;
-      return rest > 0 ? [{ ...entry, item, name: shown ?? entry.name, quantity: rest }] : [];
+      if (rest <= 0) return [];
+      const { nickname: _oldNickname, ...kept } = entry;
+      return [{ ...kept, item, name: canonical ?? entry.name, ...(nickname ? { nickname } : {}), quantity: rest }];
     });
   }
   const unchanged =

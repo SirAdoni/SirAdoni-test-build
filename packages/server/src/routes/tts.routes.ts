@@ -32,6 +32,7 @@ import { encryptApiKey, decryptApiKey } from "../utils/crypto.js";
 import { getChatGenerationTimeoutMs, isTtsLocalUrlsEnabled } from "../config/runtime-config.js";
 import { safeFetch } from "../utils/security.js";
 import { logger, logDebugOverride } from "../lib/logger.js";
+import { isFeatureEnabled } from "../services/features/feature-settings.js";
 import { buildAssetManifest, GAME_ASSETS_DIR } from "../services/game/asset-manifest.service.js";
 import { createLLMProvider } from "../services/llm/provider-registry.js";
 import { resolveBaseUrl } from "../services/generation/connection-base-url.js";
@@ -1615,23 +1616,58 @@ export async function ttsRoutes(app: FastifyInstance) {
   app.post("/speak", async (req, reply) => {
     const { text, speaker, tone, voice, audioConnectionId } = speakSchema.parse(req.body);
 
+    const startedAt = performance.now();
     const cfg = await resolveAudioConfig(storage, connections, audioConnectionId);
+    const recordOutcome = (
+      outcome: "success" | "failure",
+      errorCode:
+        | "tts_disabled"
+        | "provider_key_missing"
+        | "voice_missing"
+        | "unsupported_model"
+        | "provider_timeout"
+        | "provider_unreachable"
+        | "provider_http_error"
+        | "provider_body_read_failed"
+        | "invalid_pcm_audio"
+        | "invalid_audio_response"
+        | "success",
+      providerStatus?: number,
+    ) => {
+      if (!isFeatureEnabled("speechDiagnostics")) return;
+      const fields = {
+        event: "tts.speak",
+        outcome,
+        errorCode,
+        provider: cfg.source,
+        textCharacters: text.length,
+        voiceConfigured: Boolean(cfg.voice || voice),
+        elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
+        ...(providerStatus === undefined ? {} : { providerStatus }),
+      };
+      if (outcome === "success") req.log.info(fields, "TTS speech request completed");
+      else req.log.warn(fields, "TTS speech request failed");
+    };
 
     if (!cfg.enabled) {
+      recordOutcome("failure", "tts_disabled");
       return reply.status(400).send({ error: "TTS is not enabled" });
     }
 
     if (cfg.source === "elevenlabs" && !cfg.apiKey) {
+      recordOutcome("failure", "provider_key_missing");
       return reply.status(400).send({ error: "ElevenLabs API key is not configured" });
     }
 
     if (cfg.source === "xai" && !cfg.apiKey) {
+      recordOutcome("failure", "provider_key_missing");
       return reply.status(400).send({ error: "xAI API key is not configured" });
     }
 
     const requestVoice = resolveTTSRequestVoice(cfg.voice, voice);
 
     if (cfg.source === "elevenlabs" && !requestVoice) {
+      recordOutcome("failure", "voice_missing");
       return reply.status(400).send({ error: "ElevenLabs voice is not selected" });
     }
 
@@ -1650,6 +1686,7 @@ export async function ttsRoutes(app: FastifyInstance) {
     const normalizedModel = model.toLowerCase();
     const nanoGptElevenLabsModel = useNanoGptSpeech && isNanoGptElevenLabsModel(model);
     if (cfg.source === "elevenlabs" && ELEVENLABS_NON_TTS_MODELS.has(normalizedModel)) {
+      recordOutcome("failure", "unsupported_model");
       return reply.status(400).send({
         error: `ElevenLabs model "${model}" cannot generate text-to-speech`,
         detail: `That model is for Text to Voice / voice design. Use "eleven_v3" for Eleven v3 speech, or "eleven_multilingual_v2", "eleven_flash_v2_5", or "eleven_turbo_v2_5" for regular TTS.`,
@@ -1754,14 +1791,15 @@ export async function ttsRoutes(app: FastifyInstance) {
         decodeCompressedResponse: cfg.source === "elevenlabs",
       });
     } catch (err: unknown) {
-      const msg =
-        err instanceof Error && err.name === "TimeoutError" ? "TTS request timed out" : "TTS provider unreachable";
-      req.log.error(err, "TTS provider request failed");
+      const timedOut = err instanceof Error && err.name === "TimeoutError";
+      const msg = timedOut ? "TTS request timed out" : "TTS provider unreachable";
+      recordOutcome("failure", timedOut ? "provider_timeout" : "provider_unreachable");
       return reply.status(502).send({ error: msg });
     }
 
     if (!providerRes.ok) {
       const body = await providerRes.text().catch(() => "");
+      recordOutcome("failure", "provider_http_error", providerRes.status);
       return reply
         .status(502)
         .send({ error: `TTS provider returned ${providerRes.status}`, detail: readProviderErrorDetail(body) });
@@ -1771,8 +1809,8 @@ export async function ttsRoutes(app: FastifyInstance) {
     let audioBuffer: ArrayBufferLike;
     try {
       audioBuffer = await providerRes.arrayBuffer();
-    } catch (error: unknown) {
-      logger.error(error, "Failed to read TTS provider response body");
+    } catch {
+      recordOutcome("failure", "provider_body_read_failed");
       return reply.status(502).send({ error: "TTS provider response could not be read" });
     }
 
@@ -1835,6 +1873,7 @@ export async function ttsRoutes(app: FastifyInstance) {
           audioBuffer = wrapTTSPcm16AsWav(providerAudio, resolveTTSPcmFormat(contentType, base)).buffer;
         }
       } catch (error: unknown) {
+        recordOutcome("failure", "invalid_pcm_audio");
         return reply.status(502).send({
           error: "TTS provider returned invalid PCM audio",
           detail: error instanceof Error ? error.message : "Unknown PCM error",
@@ -1845,6 +1884,7 @@ export async function ttsRoutes(app: FastifyInstance) {
     const responseContentType = isRawPcm ? "audio/wav" : resolveTTSAudioResponseContentType(contentType, providerAudio);
     if (!responseContentType) {
       const body = new TextDecoder().decode(providerAudio);
+      recordOutcome("failure", "invalid_audio_response");
       return reply.status(502).send({
         error: "TTS provider returned a non-audio response",
         detail: readProviderErrorDetail(body) || `Content-Type: ${contentType || "missing"}`,
@@ -1853,6 +1893,7 @@ export async function ttsRoutes(app: FastifyInstance) {
 
     reply.header("Content-Type", responseContentType);
     reply.header("Content-Length", String(audioBuffer.byteLength));
+    recordOutcome("success", "success");
     return reply.send(Buffer.from(audioBuffer));
   });
 }

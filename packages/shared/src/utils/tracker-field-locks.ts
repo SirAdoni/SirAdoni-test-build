@@ -66,6 +66,17 @@ function namedRowLockRef(rowOrIndex: NamedLockRow | number | null | undefined, i
   return `index:${stableIndexRef(typeof rowOrIndex === "number" ? rowOrIndex : index)}`;
 }
 
+function inventoryTrackerRowLockRef(
+  rowOrIndex: Pick<InventoryTrackerRow, "itemId" | "name"> | number | null | undefined,
+  index?: number,
+) {
+  if (typeof rowOrIndex !== "number") {
+    const itemId = typeof rowOrIndex?.itemId === "string" ? rowOrIndex.itemId.trim() : "";
+    if (itemId) return `id:${encodeSegment(itemId)}`;
+  }
+  return namedRowLockRef(rowOrIndex, index);
+}
+
 function objectiveLockRef(rowOrIndex: ObjectiveLockRow | number | null | undefined, index?: number) {
   if (typeof rowOrIndex !== "number") {
     const text = typeof rowOrIndex?.text === "string" ? rowOrIndex.text.trim() : "";
@@ -334,7 +345,7 @@ export function inventoryTrackerLockPrefix() {
 
 export function roleplayInventoryTrackerLockKey(
   group: InventoryTrackerGroup,
-  rowOrIndex: Pick<InventoryTrackerRow, "name"> | number | null | undefined,
+  rowOrIndex: Pick<InventoryTrackerRow, "name" | "itemId"> | number | null | undefined,
   field: InventoryTrackerField,
   index?: number,
 ) {
@@ -343,10 +354,10 @@ export function roleplayInventoryTrackerLockKey(
 
 export function roleplayInventoryTrackerRowLockPrefix(
   group: InventoryTrackerGroup,
-  rowOrIndex: Pick<InventoryTrackerRow, "name"> | number | null | undefined,
+  rowOrIndex: Pick<InventoryTrackerRow, "name" | "itemId"> | number | null | undefined,
   index?: number,
 ) {
-  return `player.inventoryTracker.${group}.${namedRowLockRef(rowOrIndex, index)}`;
+  return `player.inventoryTracker.${group}.${inventoryTrackerRowLockRef(rowOrIndex, index)}`;
 }
 
 export function roleplayInventoryTrackerGroupLockPrefix(group: InventoryTrackerGroup) {
@@ -571,6 +582,37 @@ export function normalizeTrackerFieldLocksForState(
   });
 
   const playerStats = getPlayerStats(state);
+  for (const group of ["currencies", "equipped", "inventory"] as const) {
+    const rows =
+      group === "currencies"
+        ? (playerStats.inventoryTrackerCurrencies ?? [])
+        : group === "equipped"
+          ? (playerStats.inventoryTrackerEquipped ?? [])
+          : (playerStats.inventoryTrackerInventory ?? []);
+    const namedRows = new Map<string, { rows: InventoryTrackerRow[]; hasLegacyRow: boolean }>();
+    for (const row of rows) {
+      const itemId = typeof row.itemId === "string" ? row.itemId.trim() : "";
+      if (!itemId || !row.name.trim()) continue;
+      const legacyPrefix = `player.inventoryTracker.${group}.name:${encodeSegment(row.name)}`;
+      const entry = namedRows.get(legacyPrefix) ?? { rows: [], hasLegacyRow: false };
+      entry.rows.push(row);
+      entry.hasLegacyRow ||= rows.some(
+        (candidate) =>
+          !candidate.itemId && typeof candidate.name === "string" && candidate.name.trim() === row.name.trim(),
+      );
+      namedRows.set(legacyPrefix, entry);
+    }
+    for (const [legacyPrefix, entry] of namedRows) {
+      for (const field of ["name", "qty", "description", "location"] as const) {
+        const legacyKey = `${legacyPrefix}.${field}`;
+        if (next[legacyKey] !== true) continue;
+        for (const row of entry.rows) {
+          next[`${roleplayInventoryTrackerRowLockPrefix(group, row)}.${field}`] = true;
+        }
+        if (!entry.hasLegacyRow) delete next[legacyKey];
+      }
+    }
+  }
   playerStats.inventory?.forEach((item, index) => {
     for (const field of ["name", "quantity", "description", "location"] as const) {
       replaceLockKey(next, legacyInventoryTrackerLockKey(index, field), inventoryTrackerLockKey(item, field, index));
@@ -667,18 +709,29 @@ function findCurrentQuestMatch(
   };
 }
 
-function findCurrentNamedMatch<T extends { name?: string }>(
+function findCurrentNamedMatch<T extends { itemId?: string; name?: string }>(
   next: Partial<T>,
   current: T[],
   fallbackIndex: number,
   usedCurrent: Set<number>,
 ) {
+  const itemId = typeof next.itemId === "string" ? next.itemId.trim() : "";
+  if (itemId) {
+    const byId = current.findIndex((item, index) => !usedCurrent.has(index) && item.itemId === itemId);
+    if (byId >= 0) return { index: byId, matchedByIdentity: true };
+  }
   const name = normalizeComparableText(next.name);
   if (name) {
     const byName = current.findIndex(
-      (item, index) => !usedCurrent.has(index) && normalizeComparableText(item.name) === name,
+      (item, index) =>
+        !usedCurrent.has(index) &&
+        normalizeComparableText(item.name) === name &&
+        !(itemId && item.itemId && item.itemId !== itemId),
     );
     if (byName >= 0) return { index: byName, matchedByIdentity: true };
+  }
+  if (itemId && fallbackIndex < current.length && current[fallbackIndex]?.itemId) {
+    return { index: -1, matchedByIdentity: false };
   }
   return {
     index: fallbackIndex < current.length && !usedCurrent.has(fallbackIndex) ? fallbackIndex : -1,
@@ -686,7 +739,7 @@ function findCurrentNamedMatch<T extends { name?: string }>(
   };
 }
 
-function mergeNamedRowsWithLocks<T extends { name?: string }>(
+function mergeNamedRowsWithLocks<T extends { itemId?: string; name?: string }>(
   nextRows: T[],
   currentRows: T[] | null | undefined,
   locks: TrackerFieldLocks,

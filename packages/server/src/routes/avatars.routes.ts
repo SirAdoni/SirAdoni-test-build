@@ -64,7 +64,7 @@ export async function avatarsRoutes(app: FastifyInstance) {
     return sendValidatedMediaFile(reply, image, {
       method: req.method,
       rangeHeader: req.headers.range,
-      cacheControl: "public, max-age=604800",
+      cacheControl: "no-cache, max-age=0, must-revalidate",
     });
   });
 

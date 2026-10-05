@@ -26,6 +26,8 @@ import {
 import { normalizeTimestampOverrides, type TimestampOverrides } from "../import/import-timestamps.js";
 import { toPaginatedList } from "../../utils/list-pagination.js";
 import { withAvatarFileLifecycleLock } from "../image/avatar-file-lifecycle.js";
+import { deletePrivateNotebookRowsForCharacter } from "../private-notebook.service.js";
+import { readCharacterAvatarState, withoutCharacterAvatarState } from "../game/npc-avatar-state.js";
 
 function resolveTimestamps(overrides?: TimestampOverrides | null) {
   const normalized = normalizeTimestampOverrides(overrides);
@@ -59,9 +61,16 @@ function characterVersionedContent(data: CharacterData) {
     conversationStatusOverride: _override,
     conversationStatus: _status,
     conversationActivity: _activity,
+    marinara,
     ...versionedExtensions
   } = extensions ?? {};
-  return { ...content, extensions: versionedExtensions };
+  const { avatarState: _avatarState, ...versionedMarinara } = (marinara ?? {}) as Record<string, unknown>;
+  return {
+    ...content,
+    extensions: Object.keys(versionedMarinara).length
+      ? { ...versionedExtensions, marinara: versionedMarinara }
+      : versionedExtensions,
+  };
 }
 
 function characterVersionedContentChanged(current: CharacterData, next: CharacterData) {
@@ -148,6 +157,55 @@ function mergeCharacterData(
 }
 
 type CharacterRow = typeof characters.$inferSelect;
+
+async function syncLinkedCharacterAvatarChats(db: DB, characterId: string): Promise<string[]> {
+  const { createChatsStorage } = await import("./chats.storage.js");
+  const storage = createChatsStorage(db);
+  const affected: string[] = [];
+  for (const chat of await storage.list()) {
+    let metadata: Record<string, unknown>;
+    try {
+      const value = typeof chat.metadata === "string" ? JSON.parse(chat.metadata) : chat.metadata;
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      metadata = value as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (
+      !Array.isArray(metadata.gameNpcs) ||
+      !metadata.gameNpcs.some(
+        (npc) => npc && typeof npc === "object" && (npc as Record<string, unknown>).characterId === characterId,
+      )
+    )
+      continue;
+    const updated = await storage.patchMetadata(
+      chat.id,
+      (current) => {
+        const currentNpcs = Array.isArray(current.gameNpcs) ? current.gameNpcs : [];
+        return currentNpcs.some(
+          (npc) => npc && typeof npc === "object" && (npc as Record<string, unknown>).characterId === characterId,
+        )
+          ? { gameNpcs: currentNpcs }
+          : {};
+      },
+      { touchUpdatedAt: false },
+    );
+    const updatedMetadata = updated
+      ? typeof updated.metadata === "string"
+        ? (JSON.parse(updated.metadata) as Record<string, unknown>)
+        : (updated.metadata as Record<string, unknown>)
+      : null;
+    if (
+      Array.isArray(updatedMetadata?.gameNpcs) &&
+      updatedMetadata.gameNpcs.some(
+        (npc) => npc && typeof npc === "object" && (npc as Record<string, unknown>).characterId === characterId,
+      )
+    )
+      affected.push(chat.id);
+  }
+  return affected;
+}
+
 type CharacterListRow = {
   row: CharacterRow;
   name: string;
@@ -542,10 +600,11 @@ export function createCharactersStorage(db: DB) {
       const create = async () => {
         const id = newId();
         const timestamp = resolveTimestamps(timestampOverrides);
+        const safeData = withoutCharacterAvatarState(data);
         const normalizedData = normalizeCharacterData({
-          ...data,
-          character_version: data.character_version?.trim() || "1.0",
-          extensions: { ...data.extensions, versioningEnabled: data.extensions?.versioningEnabled !== false },
+          ...safeData,
+          character_version: safeData.character_version?.trim() || "1.0",
+          extensions: { ...safeData.extensions, versioningEnabled: safeData.extensions?.versioningEnabled !== false },
         });
         await db.insert(characters).values({
           id,
@@ -564,7 +623,7 @@ export function createCharactersStorage(db: DB) {
     async update(
       id: string,
       data: CharacterDataUpdate,
-      avatarPath?: string,
+      avatarPath?: string | null,
       options?: {
         updatedAt?: string | null;
         comment?: string | null;
@@ -572,69 +631,123 @@ export function createCharactersStorage(db: DB) {
         versionReason?: string | null;
         skipVersionSnapshot?: boolean;
         mergeExtensions?: boolean;
+        /** Explicit portrait assignment/removal advances server-owned avatar authority. */
+        avatarIntent?: boolean;
+        /** Discard a stale portrait assignment if a clear occurred while work was in flight. */
+        expectedAvatarRevision?: number;
+        /** Recheck caller-owned linkage/approval in the same transaction as the write. */
+        canUpdate?: (transaction: DB) => Promise<boolean>;
         /** Internal recursion guard for avatar-reference lifecycle serialization. */
         _avatarLifecycleLocked?: boolean;
       },
-    ): Promise<CharacterRow | null> {
+    ): Promise<(CharacterRow & { affectedChatIds?: string[] }) | null> {
       if (avatarPath !== undefined && !options?._avatarLifecycleLocked) {
         return withAvatarFileLifecycleLock(() =>
           this.update(id, data, avatarPath, { ...options, _avatarLifecycleLocked: true }),
         );
       }
-      const existing = await this.getById(id);
-      if (!existing) return null;
-      const currentData = parseCharacterData(existing.data);
-      let merged = mergeCharacterData(currentData, data, {
-        mergeExtensions: options?.mergeExtensions,
-      });
-      const nextComment = options?.comment !== undefined ? (options.comment ?? "") : (existing.comment ?? "");
-      const nextAvatarPath = avatarPath !== undefined ? avatarPath : existing.avatarPath;
-      const versionedContentChanged =
-        characterVersionedContentChanged(currentData, merged) ||
-        nextComment !== (existing.comment ?? "") ||
-        nextAvatarPath !== existing.avatarPath;
-      const requestedVersionChanged =
-        Object.hasOwn(data, "character_version") && merged.character_version !== currentData.character_version;
-      const shouldSnapshot =
-        !options?.skipVersionSnapshot &&
-        characterVersioningEnabled(merged) &&
-        (versionedContentChanged || requestedVersionChanged);
-      if (shouldSnapshot) {
-        await this.createVersionSnapshot(id, {
-          source: options?.versionSource ?? "manual",
-          reason: options?.versionReason ?? "",
-          // Timestamp the snapshot with when the card being replaced was last
-          // saved (its own edit time), not when this newer save happens, so a
-          // restored version keeps its real date in history (#4040).
-          createdAt: existing.updatedAt ?? options?.updatedAt ?? null,
-        });
-        if (versionedContentChanged && !requestedVersionChanged) {
-          merged = { ...merged, character_version: bumpCardVersion(currentData.character_version) };
+      const updated = await db.transaction(async (tx) => {
+        const rows = await tx.select().from(characters).where(eq(characters.id, id));
+        const existing = rows[0];
+        if (!existing) return null;
+        const currentData = parseCharacterData(existing.data);
+        let merged = mergeCharacterData(currentData, data, { mergeExtensions: options?.mergeExtensions });
+        const currentAvatarState = readCharacterAvatarState(currentData);
+        const currentAvatarRevision = currentAvatarState?.revision ?? 0;
+        if (options?.expectedAvatarRevision !== undefined && currentAvatarRevision !== options.expectedAvatarRevision)
+          return null;
+        if (options?.canUpdate && !(await options.canUpdate(tx))) return null;
+        const mergedExtensions = { ...(merged.extensions ?? {}) } as Record<string, unknown>;
+        const marinara = {
+          ...(mergedExtensions.marinara && typeof mergedExtensions.marinara === "object"
+            ? (mergedExtensions.marinara as Record<string, unknown>)
+            : {}),
+        };
+        if (options?.avatarIntent && avatarPath !== undefined) {
+          if (currentAvatarRevision >= Number.MAX_SAFE_INTEGER)
+            throw new RangeError("NPC avatar revision is exhausted.");
+          marinara.avatarState = { revision: currentAvatarRevision + 1, removed: avatarPath === null };
+        } else if (currentAvatarState) marinara.avatarState = currentAvatarState;
+        else delete marinara.avatarState;
+        if (Object.keys(marinara).length) mergedExtensions.marinara = marinara;
+        else delete mergedExtensions.marinara;
+        merged = { ...merged, extensions: mergedExtensions as CharacterData["extensions"] };
+        const nextComment = options?.comment !== undefined ? (options.comment ?? "") : (existing.comment ?? "");
+        const nextAvatarPath = avatarPath !== undefined ? avatarPath : existing.avatarPath;
+        const versionedContentChanged =
+          characterVersionedContentChanged(currentData, merged) ||
+          nextComment !== (existing.comment ?? "") ||
+          nextAvatarPath !== existing.avatarPath;
+        const requestedVersionChanged =
+          Object.hasOwn(data, "character_version") && merged.character_version !== currentData.character_version;
+        const shouldSnapshot =
+          !options?.skipVersionSnapshot &&
+          characterVersioningEnabled(merged) &&
+          (versionedContentChanged || requestedVersionChanged);
+        if (shouldSnapshot) {
+          await insertCharacterVersionSnapshot(tx, existing, {
+            source: options?.versionSource ?? "manual",
+            reason: options?.versionReason ?? "",
+            createdAt: existing.updatedAt ?? options?.updatedAt ?? null,
+          });
+          if (versionedContentChanged && !requestedVersionChanged) {
+            merged = { ...merged, character_version: bumpCardVersion(currentData.character_version) };
+          }
         }
+        const updatedAt = normalizeTimestampOverrides({
+          createdAt: options?.updatedAt,
+          updatedAt: options?.updatedAt,
+        })?.updatedAt;
+        await tx
+          .update(characters)
+          .set({
+            data: JSON.stringify(merged),
+            ...(options?.comment !== undefined && { comment: nextComment }),
+            ...(avatarPath !== undefined && { avatarPath }),
+            updatedAt: updatedAt ?? now(),
+          })
+          .where(eq(characters.id, id));
+        const updatedRows = await tx.select().from(characters).where(eq(characters.id, id));
+        return updatedRows[0] ?? null;
+      });
+      if (!updated) return null;
+      if (options?.avatarIntent && avatarPath !== undefined) {
+        return { ...updated, affectedChatIds: await syncLinkedCharacterAvatarChats(db, id) };
       }
-      const updatedAt = normalizeTimestampOverrides({
-        createdAt: options?.updatedAt,
-        updatedAt: options?.updatedAt,
-      })?.updatedAt;
-      await db
-        .update(characters)
-        .set({
-          data: JSON.stringify(merged),
-          ...(options?.comment !== undefined && { comment: nextComment }),
-          ...(avatarPath !== undefined && { avatarPath }),
-          updatedAt: updatedAt ?? now(),
-        })
-        .where(eq(characters.id, id));
-      return this.getById(id);
+      return updated;
     },
 
-    async updateAvatar(id: string, avatarPath: string | null) {
-      return withAvatarFileLifecycleLock(() =>
-        db.transaction(async (tx) => {
+    async updateAvatar(
+      id: string,
+      avatarPath: string | null,
+      options?: {
+        expectedAvatarRevision?: number;
+        canUpdate?: (transaction: DB) => Promise<boolean>;
+        beforeWrite?: () => void;
+      },
+    ) {
+      return withAvatarFileLifecycleLock(async () => {
+        const updated = await db.transaction(async (tx) => {
           const rows = await tx.select().from(characters).where(eq(characters.id, id));
           const existing = rows[0];
           if (!existing) return null;
           const currentData = normalizeCharacterData(parseCharacterData(existing.data));
+          const currentAvatarState = readCharacterAvatarState(currentData);
+          const currentAvatarRevision = currentAvatarState?.revision ?? 0;
+          if (options?.expectedAvatarRevision !== undefined && currentAvatarRevision !== options.expectedAvatarRevision)
+            return null;
+          if (options?.canUpdate && !(await options.canUpdate(tx))) return null;
+          if (currentAvatarRevision >= Number.MAX_SAFE_INTEGER)
+            throw new RangeError("NPC avatar revision is exhausted.");
+          const extensions = { ...(currentData.extensions ?? {}) } as Record<string, unknown>;
+          const marinara = {
+            ...(extensions.marinara && typeof extensions.marinara === "object"
+              ? (extensions.marinara as Record<string, unknown>)
+              : {}),
+          };
+          marinara.avatarState = { revision: currentAvatarRevision + 1, removed: avatarPath === null };
+          extensions.marinara = marinara;
+          const nextData = { ...currentData, extensions: extensions as CharacterData["extensions"] };
           const versioningEnabled = characterVersioningEnabled(currentData);
           if (existing.avatarPath !== avatarPath && versioningEnabled) {
             await insertCharacterVersionSnapshot(tx, existing, {
@@ -642,25 +755,26 @@ export function createCharactersStorage(db: DB) {
               reason: avatarPath ? "Avatar update" : "Avatar removed",
             });
           }
+          options?.beforeWrite?.();
           await tx
             .update(characters)
             .set({
               avatarPath,
-              ...(existing.avatarPath !== avatarPath && versioningEnabled
-                ? {
-                    data: JSON.stringify({
-                      ...currentData,
-                      character_version: bumpCardVersion(currentData.character_version),
-                    }),
-                  }
-                : {}),
+              data: JSON.stringify({
+                ...nextData,
+                ...(existing.avatarPath !== avatarPath && versioningEnabled
+                  ? { character_version: bumpCardVersion(currentData.character_version) }
+                  : {}),
+              }),
               updatedAt: now(),
             })
             .where(eq(characters.id, id));
           const updatedRows = await tx.select().from(characters).where(eq(characters.id, id));
           return updatedRows[0] ?? null;
-        }),
-      );
+        });
+        if (!updated) return null;
+        return { ...updated, affectedChatIds: await syncLinkedCharacterAvatarChats(db, id) };
+      });
     },
 
     async restoreVersion(characterId: string, versionId: string) {
@@ -675,7 +789,27 @@ export function createCharactersStorage(db: DB) {
         const existing = rows[0];
         if (!existing) return false;
         const currentData = normalizeCharacterData(parseCharacterData(existing.data));
-        const restoredData = normalizeCharacterData(version.data);
+        const restoredDataBase = normalizeCharacterData(version.data);
+        const currentAvatarState = readCharacterAvatarState(currentData);
+        const restoredAvatarPath = version.avatarPath ?? null;
+        const avatarChanged = (existing.avatarPath ?? null) !== restoredAvatarPath;
+        const currentAvatarRevision = currentAvatarState?.revision ?? 0;
+        if (avatarChanged && currentAvatarRevision >= Number.MAX_SAFE_INTEGER)
+          throw new RangeError("NPC avatar revision is exhausted.");
+        const restoredExtensions = { ...(restoredDataBase.extensions ?? {}) } as Record<string, unknown>;
+        const restoredMarinara = {
+          ...(restoredExtensions.marinara && typeof restoredExtensions.marinara === "object"
+            ? (restoredExtensions.marinara as Record<string, unknown>)
+            : {}),
+        };
+        const restoredAvatarState = avatarChanged
+          ? { revision: currentAvatarRevision + 1, removed: restoredAvatarPath === null }
+          : currentAvatarState;
+        if (restoredAvatarState) restoredMarinara.avatarState = restoredAvatarState;
+        else delete restoredMarinara.avatarState;
+        if (Object.keys(restoredMarinara).length) restoredExtensions.marinara = restoredMarinara;
+        else delete restoredExtensions.marinara;
+        const restoredData = { ...restoredDataBase, extensions: restoredExtensions as CharacterData["extensions"] };
         const alreadyMatches =
           !characterDataChanged(currentData, restoredData) &&
           (existing.comment ?? "") === (version.comment ?? "") &&
@@ -705,7 +839,8 @@ export function createCharactersStorage(db: DB) {
         return true;
       });
       if (!ok) return null;
-      return this.getById(characterId);
+      const restored = await this.getById(characterId);
+      return restored ? { ...restored, affectedChatIds: await syncLinkedCharacterAvatarChats(db, characterId) } : null;
     },
 
     async deleteVersion(characterId: string, versionId: string) {
@@ -779,6 +914,7 @@ export function createCharactersStorage(db: DB) {
             })
             .where(eq(lorebooks.id, lorebookId));
         }
+        await deletePrivateNotebookRowsForCharacter(tx, id);
         await tx.delete(characters).where(eq(characters.id, id));
         // Every chat, not only Game: otherwise a deleted card's id stays in a Roleplay or
         // Conversation chat's member list and Chat Settings counts it (#6084). The Game
@@ -848,7 +984,7 @@ export function createCharactersStorage(db: DB) {
         if (!source) return null;
         const newCharId = newId();
         const timestamp = now();
-        const sourceData = JSON.parse(source.data) as Record<string, unknown>;
+        const sourceData = withoutCharacterAvatarState(JSON.parse(source.data) as Record<string, unknown>);
         const sourceName = typeof sourceData.name === "string" ? sourceData.name.trim() : "";
         sourceData.name = `${sourceName || "Character"} (Copy)`;
         const sourceExtensions =

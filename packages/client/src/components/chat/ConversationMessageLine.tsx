@@ -181,6 +181,7 @@ export function ConversationMessageLine({ ctx }: { ctx: MessageRenderContext }) 
           <ConversationMessageEditForm
             editRef={editRef}
             editValue={editValue}
+            messageRole={message.role}
             onValueChange={onEditValueChange}
             onSave={onSaveEdit}
             onCancel={onCancelEdit}

@@ -111,6 +111,8 @@ export interface CustomTrackerField {
 
 /** A concise row maintained by the dedicated roleplay Inventory Tracker. */
 export interface InventoryTrackerRow {
+  /** Host-assigned identity. Legacy rows may omit this until an unambiguous write reconciles them. */
+  itemId?: string;
   name: string;
   /** Omitted when the quantity is one. */
   qty?: number;
@@ -155,9 +157,12 @@ export interface RPGAttributes {
 
 /** An item in the player's inventory. */
 export interface InventoryItem {
-  /** Which item of Game Mode's inventory this entry follows (see `gameInventoryItemId`), stamped the
-   *  first time the Engine moves it. Entries written without one are matched by name. */
+  /** Host-assigned identity for this detailed row. Legacy rows may omit it until reconciled. */
+  itemId?: string;
+  /** Semantic Game Mode item identity (`plain:…` or `<catalog>/<entry>`), when linked to a stack. */
   item?: string;
+  /** Display alias; `name` remains the canonical item name. */
+  nickname?: string;
   name: string;
   description: string;
   quantity: number;

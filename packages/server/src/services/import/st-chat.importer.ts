@@ -269,6 +269,10 @@ function sanitizeImportedMarinaraMetadata(
   delete sanitized.branchParentChatId;
   delete sanitized.branchParentMessageId;
   delete sanitized.branchMessageId;
+  delete sanitized.branchLineageVersion;
+  delete sanitized.branchCopyMode;
+  delete sanitized.branchCopiedMessageCount;
+  delete sanitized.gameSessionParentChatId;
 
   if (typeof sanitized.gameId === "string" && sanitized.gameId.trim().length > 0) {
     sanitized.gameId = localGameId;

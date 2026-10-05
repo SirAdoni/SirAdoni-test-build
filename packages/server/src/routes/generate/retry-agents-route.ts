@@ -3453,10 +3453,23 @@ async function applyRetryResultEffects(args: {
         });
         if (snap && inventoryTrackerPatch.changed) {
           assertRetryActive();
-          await app.db
-            .update(gameStateSnapshotsTable)
-            .set({ playerStats: JSON.stringify(inventoryTrackerPatch.playerStats) })
-            .where(and(eq(gameStateSnapshotsTable.chatId, chatId), eq(gameStateSnapshotsTable.id, snap.id)));
+          const persisted = await gameStateStore.updatePlayerStatsAtSnapshot(
+            snap.id,
+            chatId,
+            inventoryTrackerPatch.playerStats,
+            parseGameStateRow(snap as Record<string, unknown>)?.fieldLocks,
+            { playerStats: snap.playerStats, fieldLocks: snap.fieldLocks },
+          );
+          if (!persisted) throw new Error("GAME_STATE_INVENTORY_SNAPSHOT_NOT_FOUND");
+          const persistedPlayerStats = parseSnapshotPlayerStats(persisted);
+          inventoryTrackerPatch.playerStats = persistedPlayerStats as any;
+          inventoryTrackerPatch.patch = {
+            playerStats: {
+              inventoryTrackerCurrencies: persistedPlayerStats.inventoryTrackerCurrencies,
+              inventoryTrackerEquipped: persistedPlayerStats.inventoryTrackerEquipped,
+              inventoryTrackerInventory: persistedPlayerStats.inventoryTrackerInventory,
+            },
+          } as any;
           assertRetryActive();
         }
         if (inventoryTrackerPatch.changed) {

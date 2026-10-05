@@ -23,6 +23,8 @@ import { translateDraftText } from "../../lib/draft-translation";
 import { formatTextQuotes, type DiceRollResult, type PendingSpatialTransition } from "@marinara-engine/shared";
 import { getChatInputShellClass } from "../chat/chat-input-styles";
 import { CapabilityElement } from "../capabilities/CapabilityElement";
+import { CARD_ASSET_INSERT_EVENT, type CardAssetInsertDetail } from "../../lib/card-asset-links";
+import { buildGameInputInsertion } from "../../lib/game-input-insertion";
 import type { PendingSpatialTransitionDraft } from "../../stores/chat.store";
 import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
 
@@ -231,6 +233,36 @@ export function GameInput({
     },
     [quoteFormat, storageKey],
   );
+
+  useEffect(() => {
+    const handleCardAssetInsert = (event: Event) => {
+      const input = inputRef.current;
+      if (!input || draftDisabled || sessionConcluded) return;
+
+      const detail = (event as CustomEvent<CardAssetInsertDetail>).detail;
+      const insertion = buildGameInputInsertion(
+        detail,
+        draftKey,
+        input.value,
+        input.selectionStart,
+        input.selectionEnd,
+      );
+      if (!insertion) return;
+
+      updateText(insertion.value);
+      requestAnimationFrame(() => {
+        const currentInput = inputRef.current;
+        if (!currentInput) return;
+        currentInput.focus();
+        currentInput.setSelectionRange(insertion.cursor, insertion.cursor);
+        currentInput.style.height = "auto";
+        currentInput.style.height = `${Math.min(currentInput.scrollHeight, 120)}px`;
+      });
+    };
+
+    window.addEventListener(CARD_ASSET_INSERT_EVENT, handleCardAssetInsert);
+    return () => window.removeEventListener(CARD_ASSET_INSERT_EVENT, handleCardAssetInsert);
+  }, [draftDisabled, draftKey, sessionConcluded, updateText]);
 
   /** Clear the persisted draft */
   const clearDraft = useCallback(() => {

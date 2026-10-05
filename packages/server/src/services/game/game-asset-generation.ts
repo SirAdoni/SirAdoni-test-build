@@ -11,7 +11,7 @@ import { supportsNovelAiCharacterPrompts } from "../image/character-prompts.js";
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { createHash } from "crypto";
 import { logger } from "../../lib/logger.js";
-import { basename, join } from "path";
+import { basename, join, resolve, sep } from "path";
 import { DATA_DIR } from "../../utils/data-dir.js";
 import { generateImage, type ImageGenRequest, type ImageGenResult } from "../image/image-generation.js";
 import { buildAssetManifest, GAME_ASSETS_DIR } from "./asset-manifest.service.js";
@@ -363,14 +363,14 @@ export function safeGeneratedAssetSlug(name: string, opts: { maxBytes?: number; 
   return `${prefix}-${tail}`;
 }
 
-function npcPortraitSlug(req: NpcPortraitRequest): string {
-  const identityHash = createHash("sha256")
-    .update([req.npcName, req.appearance, req.gender ?? "", req.pronouns ?? ""].join("\n"))
-    .digest("hex")
-    .slice(0, 8);
+export function npcPortraitSlug(req: NpcPortraitRequest): string {
+  const identityParts = [req.npcName, req.appearance, req.gender ?? "", req.pronouns ?? ""];
+  if (req.npcId || req.styleCacheKey) identityParts.unshift(req.npcId ?? "");
+  if (req.styleCacheKey) identityParts.push(req.styleCacheKey);
+  const identityHash = createHash("sha256").update(identityParts.join("\n")).digest("hex").slice(0, 8);
   return safeGeneratedAssetSlug(req.npcName, {
     maxBytes: 160,
-    suffix: identityHash,
+    suffix: [identityHash, req.outputToken].filter(Boolean).join("-"),
   });
 }
 
@@ -503,12 +503,20 @@ function resolvedSize(size: ImageGenerationSize | undefined, fallback: ImageGene
 
 export interface NpcPortraitRequest {
   chatId: string;
+  /** Stable Game NPC identity; distinguishes separate campaign identities sharing a name. */
+  npcId?: string | null;
+  /** Optional opt-in gate for campaign portraits; ordinary scene portraits omit it. */
+  isAllowed?: () => boolean;
+  /** Unique owner token for a write that must not replace another in-flight portrait. */
+  outputToken?: string;
   npcName: string;
   appearance: string;
   gender?: string | null;
   pronouns?: string | null;
   /** Unified art style prompt for visual consistency. */
   artStyle?: string;
+  /** Cache namespace for an explicitly selected campaign portrait style. */
+  styleCacheKey?: string;
   /** Connection credentials — already resolved & decrypted. */
   imgSource?: string | null;
   imgModel: string;
@@ -563,6 +571,12 @@ async function buildNpcPortraitRawPrompt(req: NpcPortraitRequest): Promise<strin
 }
 
 export async function buildNpcPortraitProviderPrompt(req: NpcPortraitRequest): Promise<CompiledGameImagePrompt> {
+  const assertAllowed = () => {
+    if (req.isAllowed && !req.isAllowed()) {
+      throw Object.assign(new Error("Campaign portrait generation is disabled"), { statusCode: 403 });
+    }
+  };
+  assertAllowed();
   if (req.promptOverride?.trim()) {
     return {
       prompt: req.promptOverride.trim(),
@@ -570,7 +584,8 @@ export async function buildNpcPortraitProviderPrompt(req: NpcPortraitRequest): P
     };
   }
   const sourcePrompt = await buildNpcPortraitRawPrompt(req);
-  const prompt = await maybeGenerateDynamicGameImagePrompt(req.dynamicPromptGenerator, {
+  assertAllowed();
+  const generatedPrompt = await maybeGenerateDynamicGameImagePrompt(req.dynamicPromptGenerator, {
     kind: "portrait",
     title: req.npcName,
     sourcePrompt,
@@ -583,8 +598,15 @@ export async function buildNpcPortraitProviderPrompt(req: NpcPortraitRequest): P
       req.artStyle ? `Art style: ${req.artStyle}` : "",
     ],
   });
+  assertAllowed();
+  const style = req.artStyle?.trim();
+  // A prompt-rewriting model may omit the selected style; keep it in the provider-visible prefix.
+  const prompt =
+    style && !generatedPrompt.toLowerCase().includes(style.toLowerCase())
+      ? `Art style: ${style}. ${generatedPrompt}`
+      : generatedPrompt;
   return compileGameImagePrompt(
-    req.dynamicPromptGenerator ? { ...req, appearance: null, preserveFullSourcePrompt: true } : req,
+    req.dynamicPromptGenerator ? { ...req, preserveFullSourcePrompt: true } : req,
     "portrait",
     prompt,
     1400,
@@ -754,31 +776,31 @@ function cleanDynamicGameImagePrompt(value: string | null | undefined, maxCharac
  * Returns the avatar URL path on success, or null on failure.
  */
 export async function generateNpcPortrait(req: NpcPortraitRequest): Promise<string | null> {
+  if (req.isAllowed && !req.isAllowed()) return null;
   const slug = npcPortraitSlug(req);
   if (!slug) return null;
 
   const avatarDir = join(NPC_AVATAR_DIR, req.chatId);
-
-  // Skip if already exists unless the caller explicitly asked for a fresh portrait.
   const existingPortraitPath = !req.force ? existingGeneratedPortraitPath(avatarDir, slug) : null;
   if (existingPortraitPath) {
     return `/api/avatars/npc/${req.chatId}/${basename(existingPortraitPath)}`;
   }
 
-  const compiled = await buildNpcPortraitProviderPrompt(req);
-  const prompt = compiled.prompt;
-  const size = resolvedSize(req.size, DEFAULT_GAME_PORTRAIT_SIZE);
-  req.debugLog?.(
-    "[debug/game/image-generation] NPC portrait request name=%s model=%s source=%s size=%dx%d prompt:\n%s",
-    req.npcName,
-    req.imgModel,
-    req.imgSource || req.imgService || "",
-    size.width,
-    size.height,
-    prompt,
-  );
-
   try {
+    const compiled = await buildNpcPortraitProviderPrompt(req);
+    if (req.isAllowed && !req.isAllowed()) return null;
+    const prompt = compiled.prompt;
+    const size = resolvedSize(req.size, DEFAULT_GAME_PORTRAIT_SIZE);
+    req.debugLog?.(
+      "[debug/game/image-generation] NPC portrait request name=%s model=%s source=%s size=%dx%d prompt:\n%s",
+      req.npcName,
+      req.imgModel,
+      req.imgSource || req.imgService || "",
+      size.width,
+      size.height,
+      prompt,
+    );
+
     const result = await generateImage(
       req.imgModel,
       req.imgBaseUrl,
@@ -798,6 +820,7 @@ export async function generateNpcPortrait(req: NpcPortraitRequest): Promise<stri
         signal: req.signal,
       },
     );
+    if (req.isAllowed && !req.isAllowed()) return null;
 
     if (!existsSync(avatarDir)) mkdirSync(avatarDir, { recursive: true });
     const avatarBuffer = Buffer.from(result.base64, "base64");
@@ -818,6 +841,26 @@ export async function generateNpcPortrait(req: NpcPortraitRequest): Promise<stri
     logger.warn(err, '[game-asset-gen] Failed to generate portrait for "%s"', req.npcName);
     return null;
   }
+}
+export function removeOwnedNpcPortrait(chatId: string, avatarUrl: string, outputToken: string): boolean {
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(outputToken)) return false;
+  if (!chatId || basename(chatId) !== chatId || chatId === "." || chatId === "..") return false;
+  const cleanUrl = avatarUrl.split(/[?#]/u, 1)[0] ?? avatarUrl;
+  const prefix = `/api/avatars/npc/${chatId}/`;
+  if (!cleanUrl.startsWith(prefix)) return false;
+  const filename = cleanUrl.slice(prefix.length);
+  if (!filename || basename(filename) !== filename || !filename.match(/\.(?:png|jpe?g|webp|gif|avif)$/iu)) return false;
+  const slug = filename.slice(0, filename.lastIndexOf("."));
+  if (!slug.endsWith(`-${outputToken}`)) return false;
+  const root = resolve(NPC_AVATAR_DIR);
+  const rootPrefix = `${root}${sep}`;
+  const directory = resolve(root, chatId);
+  if (!directory.startsWith(rootPrefix)) return false;
+  const filePath = resolve(directory, filename);
+  if (!filePath.startsWith(`${directory}${sep}`)) return false;
+  if (!existsSync(filePath)) return false;
+  unlinkSync(filePath);
+  return true;
 }
 
 // ── Background Generation ──

@@ -28,6 +28,9 @@ export * from "./types/haptic.js";
 export * from "./types/theme.js";
 export * from "./types/chat-preset.js";
 export * from "./types/game.js";
+export * from "./types/campaign-memory.js";
+export * from "./types/campaign-memory-api.js";
+export * from "./types/game-scene-timeline.js";
 export * from "./types/sidecar.js";
 export * from "./types/sidecar-footprint.js";
 export * from "./types/utility-sidecar.js";
@@ -49,6 +52,10 @@ export * from "./types/localization.js";
 export * from "./types/personal-extension.js";
 export * from "./types/home-feed.js";
 export * from "./types/chat-insights.js";
+export * from "./utils/game-feature-switches.js";
+export * from "./utils/prep-board.js";
+export * from "./utils/random-tables.js";
+export * from "./utils/game-identity.js";
 
 // Schemas
 export * from "./schemas/multiplayer.schema.js";
@@ -79,8 +86,10 @@ export * from "./schemas/personal-extension.schema.js";
 export * from "./schemas/folder.schema.js";
 export * from "./schemas/scene-analysis.schema.js";
 export * from "./schemas/library-folder.schema.js";
+export * from "./schemas/library-campaign.schema.js";
 export * from "./schemas/lorebook-enabled.schema.js";
 export * from "./schemas/home-widget.schema.js";
+export * from "./schemas/private-notebook.schema.js";
 
 // Constants
 export * from "./constants/providers.js";
@@ -88,6 +97,7 @@ export * from "./constants/defaults.js";
 export * from "./constants/chat-mode-agent-policy.js";
 export * from "./constants/model-lists.js"; // also exports IMAGE_GENERATION_SOURCES
 export * from "./constants/generation-parameter-relevance.js";
+export * from "./constants/game-gm-reasoning-effort.js";
 export * from "./constants/agent-prompts.js";
 export * from "./constants/agent-activation.js";
 export * from "./constants/impersonate.js";
@@ -229,8 +239,16 @@ export * from "./features/ruleset-combat/index.js";
 
 export * from "./constants/request-timeouts.js";
 
+export * from "./utils/family-tree.js";
 export * from "./utils/game-narration-text.js";
+export * from "./utils/game-calendar.js";
+export * from "./utils/world-history.js";
 export * from "./utils/message-marks.js";
 
 export * from "./utils/game-tag-parser.js";
 export * from "./utils/game-widget-update.js";
+export * from "./types/game-continuity.js";
+export * from "./types/diagnostics.js";
+export * from "./utils/hud-widget-extended.js";
+export * from "./utils/hud-widget-lifecycle.js";
+export * from "./utils/game-feature-switches.js";

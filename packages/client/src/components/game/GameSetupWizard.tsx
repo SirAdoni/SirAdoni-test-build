@@ -3,7 +3,8 @@ import { normalizeGameDifficulty } from "@marinara-engine/shared";
 // Game: Setup Wizard (initial game setup modal)
 // ──────────────────────────────────────────────
 import { lazy, Suspense, useState, useMemo, useCallback, useEffect, useRef, type ChangeEvent } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { isNewGameWidgetSetupAllowed } from "../../hooks/use-extended-widgets";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { toast } from "sonner";
 import {
@@ -506,6 +507,7 @@ export function GameSetupWizard({
   multiplayerPlayers,
 }: GameSetupWizardProps) {
   const { t: localizeUi } = useUiTranslation();
+  const queryClient = useQueryClient();
   const prefersReducedMotion = useReducedMotion();
   const [step, setStep] = useState(0);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -1125,6 +1127,11 @@ export function GameSetupWizard({
         isNewGame,
       });
       const config = imported.config;
+      const importedWidgets = normalizeGameHudWidgets(config.customHudWidgets ?? [], { preserveExtended: false });
+      if (!isNewGameWidgetSetupAllowed(queryClient, importedWidgets)) {
+        throw new Error(localizeUi("ui.game.widgets.extendedDisabled"));
+      }
+
       setRulesetId(config.ruleset?.id ?? null);
       // The layers the file chose, against the definition installed HERE: an id this version of the
       // ruleset no longer has is dropped rather than sent to a create call that would refuse it.
@@ -1183,7 +1190,6 @@ export function GameSetupWizard({
       const importedBasePrompt = importedStoryboardGamePrompt
         ? ANIME_GAME_SYSTEM_PROMPT
         : importedPromptPreset?.gamePrompt?.trim() || DEFAULT_GAME_SYSTEM_PROMPT;
-      const importedWidgets = normalizeGameHudWidgets(config.customHudWidgets ?? []);
       const importedGenerationParameters =
         imported.effectiveGenerationParameters ?? config.generationParameters ?? null;
       const importedParameterOverrides = parseEditableGenerationParameters(importedGenerationParameters);
@@ -1493,6 +1499,12 @@ export function GameSetupWizard({
 
   const handleComplete = () => {
     if (isLoading || !canStart) return;
+    const setupConfig = buildSetupConfig();
+    if (!isNewGameWidgetSetupAllowed(queryClient, setupConfig.customHudWidgets ?? [])) {
+      toast.error(localizeUi("ui.game.widgets.extendedDisabled"));
+      return;
+    }
+
     if (startMuted) {
       useGameAssetStore.getState().setAudioMuted(true);
     }
@@ -1514,7 +1526,7 @@ export function GameSetupWizard({
       },
     );
     onComplete(
-      buildSetupConfig(),
+      setupConfig,
       preferences,
       {
         gmConnectionId: gmConnectionId ?? undefined,
@@ -3108,6 +3120,7 @@ export function GameSetupWizard({
                       {enableCustomWidgets && (
                         <div className="mt-3 space-y-3 border-t border-[var(--border)] pt-3">
                           <GameWidgetFileControls
+                            chatId={null}
                             widgets={customHudWidgets}
                             onImport={(widgets) => {
                               setCustomHudWidgets(normalizeGameHudWidgets(widgets));
@@ -3141,7 +3154,11 @@ export function GameSetupWizard({
                           </button>
 
                           {manualWidgetSetupEnabled && (
-                            <GameWidgetSetupEditor widgets={customHudWidgets} onChange={setCustomHudWidgets} />
+                            <GameWidgetSetupEditor
+                              chatId={null}
+                              widgets={customHudWidgets}
+                              onChange={setCustomHudWidgets}
+                            />
                           )}
                         </div>
                       )}

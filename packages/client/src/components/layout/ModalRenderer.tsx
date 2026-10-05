@@ -78,6 +78,21 @@ const ChatStatsModal = lazy(() =>
 const ActivityOverviewModal = lazy(() =>
   import("../modals/ActivityOverviewModal").then((module) => ({ default: module.ActivityOverviewModal })),
 );
+const GameCalendarModal = lazy(() =>
+  import("../modals/GameCalendarModal").then((module) => ({ default: module.GameCalendarModal })),
+);
+const WorldHistoryModal = lazy(() =>
+  import("../modals/WorldHistoryModal").then((module) => ({ default: module.WorldHistoryModal })),
+);
+const FamilyTreeModal = lazy(() =>
+  import("../modals/FamilyTreeModal").then((module) => ({ default: module.FamilyTreeModal })),
+);
+const PrepBoardModal = lazy(() =>
+  import("../modals/PrepBoardModal").then((module) => ({ default: module.PrepBoardModal })),
+);
+const RandomTablesModal = lazy(() =>
+  import("../modals/RandomTablesModal").then((module) => ({ default: module.RandomTablesModal })),
+);
 
 export function ModalRenderer() {
   const modal = useUIStore((s) => s.modal);
@@ -88,6 +103,12 @@ export function ModalRenderer() {
 
   let content = null;
   switch (type) {
+    case "prep-board":
+      content = <PrepBoardModal open onClose={closeModal} chatId={(modal?.props?.chatId as string) ?? ""} />;
+      break;
+    case "random-tables":
+      content = <RandomTablesModal open onClose={closeModal} chatId={(modal?.props?.chatId as string) ?? ""} />;
+      break;
     case "create-character":
       content = <CreateCharacterModal open onClose={closeModal} />;
       break;
@@ -217,6 +238,15 @@ export function ModalRenderer() {
       break;
     case "activity-overview":
       content = <ActivityOverviewModal open onClose={closeModal} />;
+      break;
+    case "game-calendar":
+      content = <GameCalendarModal open onClose={closeModal} chatId={(modal?.props?.chatId as string) ?? ""} />;
+      break;
+    case "world-history":
+      content = <WorldHistoryModal open onClose={closeModal} chatId={(modal?.props?.chatId as string) ?? ""} />;
+      break;
+    case "family-tree":
+      content = <FamilyTreeModal open onClose={closeModal} chatId={(modal?.props?.chatId as string) ?? ""} />;
       break;
     default:
       content = null;

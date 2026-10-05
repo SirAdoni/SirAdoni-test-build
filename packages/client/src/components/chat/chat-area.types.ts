@@ -53,7 +53,7 @@ export type PeekPromptData = {
   decisions?: { unanswered: string[]; dropped?: string[]; decisionModelSet: boolean };
   chatMode?: string;
   parameters: unknown;
-  source?: "cached" | "live_preview" | "raw_messages";
+  source?: "cached" | "live_preview" | "raw_messages" | "assembled";
   exact?: boolean;
   generationInfo?: {
     model?: string;

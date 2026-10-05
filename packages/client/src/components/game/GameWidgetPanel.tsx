@@ -1,3 +1,5 @@
+import { translate } from "../../localization/i18n";
+
 // ──────────────────────────────────────────────
 // Game: HUD Widget Renderers
 //
@@ -20,6 +22,16 @@ import { Modal } from "../ui/Modal";
 import { PanelLockButton, useDraggablePanel } from "./DraggablePanel";
 import { GameWidgetSetupEditor } from "./GameWidgetSetupEditor";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import {
+  isExtendedHudWidgetType,
+  extendedWidgetConfigFromText,
+  extendedWidgetConfigToText,
+} from "@marinara-engine/shared";
+import { useQueryClient } from "@tanstack/react-query";
+import { useExtendedWidgetsEnabled, canUseExtendedWidgetsNow } from "../../hooks/use-extended-widgets";
+import { useChatStore } from "../../stores/chat.store";
+import { ExtendedWidgetView } from "./ExtendedWidgets";
+import { arrangeMobileWidgets, useMobileWidgetArrangement } from "../../hooks/use-mobile-widget-arrangement";
 
 // ── Public API ──
 
@@ -36,6 +48,9 @@ interface MobileWidgetPanelProps {
   widgets: HudWidget[];
   position: "hud_left" | "hud_right";
   chatId: string;
+  arrangementScopeId: string;
+  arrangementEnabled: boolean;
+  canWriteArrangement: () => boolean;
 }
 
 interface WidgetEditorDraft {
@@ -85,15 +100,14 @@ function getNumericWidgetValue(widget: HudWidget) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-function getVisibleWidgets(widgets: HudWidget[], position: "hud_left" | "hud_right") {
-  return widgets.filter((w) => w.position === position).slice(0, MAX_WIDGETS);
+function getVisibleWidgets(widgets: HudWidget[], position: "hud_left" | "hud_right", allowExtended: boolean) {
+  return widgets
+    .filter((w) => w.position === position && (allowExtended || !isExtendedHudWidgetType(w.type)))
+    .slice(0, allowExtended ? undefined : MAX_WIDGETS);
 }
 
 function formatWidgetTypeLabel(type: HudWidget["type"]) {
-  return type
-    .split("_")
-    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
-    .join(" ");
+  return translate(`ui.game.widgetTypes.${type}`);
 }
 
 function describeWidget(widget: HudWidget) {
@@ -136,7 +150,11 @@ function createWidgetEditorDraft(widget: HudWidget): WidgetEditorDraft {
     stats: Array.isArray(widget.config.stats)
       ? widget.config.stats.map((stat) => ({ name: stat.name, value: String(stat.value ?? "") }))
       : [],
-    items: Array.isArray(widget.config.items) ? widget.config.items.join("\n") : "",
+    items: isExtendedHudWidgetType(widget.type)
+      ? extendedWidgetConfigToText(widget.type, widget.config)
+      : Array.isArray(widget.config.items)
+        ? widget.config.items.join("\n")
+        : "",
   };
 }
 
@@ -168,6 +186,8 @@ function buildUpdatedWidgetConfig(
   draft: WidgetEditorDraft,
   options?: { syncStartingValue?: boolean },
 ): HudWidget["config"] {
+  if (isExtendedHudWidgetType(widget.type))
+    return extendedWidgetConfigFromText(widget.type, draft.items, widget.config);
   const nextConfig = { ...widget.config };
 
   switch (widget.type) {
@@ -227,14 +247,19 @@ function buildUpdatedWidgetConfig(
 }
 
 function useWidgetEditor(widgets: HudWidget[], chatId: string) {
+  const queryClient = useQueryClient();
+  const allowExtended = useExtendedWidgetsEnabled(chatId);
   const { t: localizeUi } = useUiTranslation();
   const setHudWidgets = useGameModeStore((s) => s.setHudWidgets);
   const updateGameWidgets = useUpdateGameWidgets();
   const [editingWidgetId, setEditingWidgetId] = useState<string | null>(null);
 
   const editingWidget = useMemo(
-    () => widgets.find((widget) => widget.id === editingWidgetId) ?? null,
-    [editingWidgetId, widgets],
+    () =>
+      widgets.find(
+        (widget) => widget.id === editingWidgetId && (allowExtended || !isExtendedHudWidgetType(widget.type)),
+      ) ?? null,
+    [editingWidgetId, widgets, allowExtended],
   );
 
   useEffect(() => {
@@ -254,7 +279,12 @@ function useWidgetEditor(widgets: HudWidget[], chatId: string) {
 
   const saveWidget = useCallback(
     async (nextConfig: HudWidget["config"]) => {
-      if (!editingWidget) return;
+      if (
+        !editingWidget ||
+        useChatStore.getState().activeChatId !== chatId ||
+        (isExtendedHudWidgetType(editingWidget.type) && !canUseExtendedWidgetsNow(queryClient, chatId))
+      )
+        return;
 
       const previousWidgets = widgets;
       const nextWidgets = widgets.map((widget) =>
@@ -272,11 +302,11 @@ function useWidgetEditor(widgets: HudWidget[], chatId: string) {
         );
         setEditingWidgetId(null);
       } catch {
-        setHudWidgets(previousWidgets);
+        if (useChatStore.getState().activeChatId === chatId) setHudWidgets(previousWidgets);
         toast.error(localizeUi("ui.game.widgetEditor.saveFailed"));
       }
     },
-    [chatId, editingWidget, localizeUi, setHudWidgets, updateGameWidgets, widgets],
+    [chatId, editingWidget, queryClient, localizeUi, setHudWidgets, updateGameWidgets, widgets],
   );
 
   return {
@@ -291,7 +321,8 @@ function useWidgetEditor(widgets: HudWidget[], chatId: string) {
 /** Renders a panel of model-defined widgets for a given position. */
 export function GameWidgetPanel({ widgets, position, chatId, constraintsRef }: GameWidgetPanelProps) {
   useRenderTimer("game-hud"); // [#3104 diagnostic]
-  const filtered = getVisibleWidgets(widgets, position);
+  const allowExtended = useExtendedWidgetsEnabled(chatId);
+  const filtered = getVisibleWidgets(widgets, position, allowExtended);
   const { editingWidget, openEditor, closeEditor, saveWidget, isSaving } = useWidgetEditor(widgets, chatId);
 
   if (filtered.length === 0) return null;
@@ -321,19 +352,33 @@ export function GameWidgetPanel({ widgets, position, chatId, constraintsRef }: G
 }
 
 /** Mobile: collapsed emoji pills that expand into full widget on tap. */
-export function MobileWidgetPanel({ widgets, position, chatId }: MobileWidgetPanelProps) {
+export function MobileWidgetPanel({
+  widgets,
+  position,
+  chatId,
+  arrangementScopeId,
+  arrangementEnabled,
+  canWriteArrangement,
+}: MobileWidgetPanelProps) {
   const { t: localizeUi } = useUiTranslation();
-  const filtered = getVisibleWidgets(widgets, position);
+  const allowExtended = useExtendedWidgetsEnabled(chatId);
+  const filtered = getVisibleWidgets(widgets, position, allowExtended);
+  const { arrangement, update } = useMobileWidgetArrangement(
+    arrangementScopeId,
+    arrangementEnabled,
+    canWriteArrangement,
+  );
+  const arranged = arrangementEnabled ? arrangeMobileWidgets(filtered, arrangement) : filtered;
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const { editingWidget, openEditor, closeEditor, saveWidget, isSaving } = useWidgetEditor(widgets, chatId);
 
-  if (filtered.length === 0) return null;
+  if (arranged.length === 0) return null;
 
   return (
     <>
       <div className={cn("pointer-events-auto flex flex-col gap-1.5", position === "hud_right" && "items-end")}>
-        {filtered.map((w) => {
-          const isExpanded = expandedId === w.id;
+        {arranged.map((w) => {
+          const isExpanded = arrangementEnabled ? arrangement.expanded.includes(w.id) : expandedId === w.id;
 
           if (isExpanded) {
             return (
@@ -357,7 +402,11 @@ export function MobileWidgetPanel({ widgets, position, chatId }: MobileWidgetPan
                   </button>
                   <button
                     type="button"
-                    onClick={() => setExpandedId(null)}
+                    onClick={() =>
+                      arrangementEnabled
+                        ? update({ ...arrangement, expanded: arrangement.expanded.filter((id) => id !== w.id) })
+                        : setExpandedId(null)
+                    }
                     className={cn(GAME_WIDGET_ICON_BUTTON_CLASS, "text-xs font-medium")}
                     title={localizeUi("ui.game.mobilewidgetpanel.collapseWidget")}
                   >
@@ -374,7 +423,11 @@ export function MobileWidgetPanel({ widgets, position, chatId }: MobileWidgetPan
           return (
             <button
               key={w.id}
-              onClick={() => setExpandedId(w.id)}
+              onClick={() =>
+                arrangementEnabled
+                  ? update({ ...arrangement, expanded: [...new Set([...arrangement.expanded, w.id])] })
+                  : setExpandedId(w.id)
+              }
               className="marinara-chat-toolbar-button flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] text-base text-[var(--marinara-chat-chrome-button-text)] backdrop-blur-md transition-all hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)] active:scale-95"
               title={w.label}
             >
@@ -470,6 +523,7 @@ function WidgetCard({
 
 function WidgetBody({ widget }: { widget: HudWidget }) {
   const { t: localizeUi } = useUiTranslation();
+  if (isExtendedHudWidgetType(widget.type)) return <ExtendedWidgetView widget={widget} />;
   switch (widget.type) {
     case "progress_bar":
       return <ProgressBarWidget widget={widget} />;
@@ -687,10 +741,12 @@ function WidgetEditorModal({
           </div>
         )}
 
-        {widget.type === "list" && (
+        {(widget.type === "list" || isExtendedHudWidgetType(widget.type)) && (
           <label className="space-y-1.5">
             <span className="text-xs font-medium text-[var(--muted-foreground)]">
-              {localizeUi("ui.game.widgeteditormodal.items")}
+              {localizeUi(
+                widget.type === "list" ? "ui.game.widgeteditormodal.items" : "ui.game.widgeteditormodal.content",
+              )}
             </span>
             <textarea
               value={draft.items}
@@ -699,7 +755,13 @@ function WidgetEditorModal({
               className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm text-[var(--foreground)] outline-none transition focus:border-[var(--primary)]"
             />
             <span className="block text-xs text-[var(--muted-foreground)]">
-              {localizeUi("ui.game.widgeteditormodal.enterOneItemPerLine")}
+              {widget.type === "list"
+                ? localizeUi("ui.game.widgeteditormodal.enterOneItemPerLine")
+                : widget.type === "note"
+                  ? localizeUi("ui.game.widgeteditormodal.noteHint")
+                  : localizeUi("ui.game.widgeteditormodal.formatHint", {
+                      format: localizeUi(`ui.game.widgetFormats.${widget.type}`),
+                    })}
             </span>
           </label>
         )}
@@ -788,6 +850,8 @@ export function GameWidgetSessionPrepModal({
   onStartSession,
   isStartingSession,
 }: GameWidgetSessionPrepModalProps) {
+  const queryClient = useQueryClient();
+  const allowExtended = useExtendedWidgetsEnabled(chatId);
   const { t: localizeUi } = useUiTranslation();
   const updateGameWidgets = useUpdateGameWidgets();
   const [draftWidgets, setDraftWidgets] = useState<HudWidget[]>(widgets);
@@ -801,8 +865,11 @@ export function GameWidgetSessionPrepModal({
   }, [open, widgets]);
 
   const editingWidget = useMemo(
-    () => draftWidgets.find((widget) => widget.id === editingWidgetId) ?? null,
-    [draftWidgets, editingWidgetId],
+    () =>
+      draftWidgets.find(
+        (widget) => widget.id === editingWidgetId && (allowExtended || !isExtendedHudWidgetType(widget.type)),
+      ) ?? null,
+    [draftWidgets, editingWidgetId, allowExtended],
   );
   const hasWidgetChanges = useMemo(
     () => JSON.stringify(draftWidgets) !== JSON.stringify(widgets),
@@ -862,22 +929,32 @@ export function GameWidgetSessionPrepModal({
         cancelLabel: localizeUi("chat.delete.dialog.cancel"),
         tone: "destructive",
       });
-      if (!confirmed) return;
+      if (
+        !confirmed ||
+        useChatStore.getState().activeChatId !== chatId ||
+        (isExtendedHudWidgetType(target.type) && !canUseExtendedWidgetsNow(queryClient, chatId))
+      )
+        return;
 
       setDraftWidgets((current) => current.filter((widget) => widget.id !== widgetId));
     },
-    [copy.removeConfirm, draftWidgets, localizeUi],
+    [copy.removeConfirm, draftWidgets, localizeUi, queryClient, chatId],
   );
 
   const handleSaveWidget = useCallback(
     async (nextConfig: HudWidget["config"]) => {
-      if (!editingWidget) return;
+      if (
+        !editingWidget ||
+        useChatStore.getState().activeChatId !== chatId ||
+        (isExtendedHudWidgetType(editingWidget.type) && !canUseExtendedWidgetsNow(queryClient, chatId))
+      )
+        return;
       setDraftWidgets((current) =>
         current.map((widget) => (widget.id === editingWidget.id ? { ...widget, config: nextConfig } : widget)),
       );
       setEditingWidgetId(null);
     },
-    [editingWidget],
+    [editingWidget, queryClient, chatId],
   );
 
   const handleStart = useCallback(async () => {
@@ -895,6 +972,7 @@ export function GameWidgetSessionPrepModal({
   }, [chatId, copy.savingError, draftWidgets, hasWidgetChanges, onStartSession, updateGameWidgets]);
 
   const interactionsLocked = updateGameWidgets.isPending || isStartingSession;
+  const visibleDraftWidgets = draftWidgets.filter((widget) => allowExtended || !isExtendedHudWidgetType(widget.type));
 
   return (
     <>
@@ -906,13 +984,13 @@ export function GameWidgetSessionPrepModal({
             <div className="max-h-[52vh] overflow-y-auto pr-1">
               <GameWidgetSetupEditor widgets={draftWidgets} onChange={setDraftWidgets} disabled={interactionsLocked} />
             </div>
-          ) : draftWidgets.length === 0 ? (
+          ) : visibleDraftWidgets.length === 0 ? (
             <div className="rounded-xl border border-[var(--border)] bg-[var(--accent)]/30 px-4 py-3 text-sm text-[var(--muted-foreground)]">
               {copy.empty}
             </div>
           ) : (
             <div className="max-h-[52vh] space-y-2 overflow-y-auto pr-1">
-              {draftWidgets.map((widget) => (
+              {visibleDraftWidgets.map((widget) => (
                 <div
                   key={widget.id}
                   className="flex flex-col gap-3 rounded-xl border border-[var(--border)] bg-[var(--accent)]/20 px-4 py-3 sm:flex-row sm:items-start sm:justify-between"

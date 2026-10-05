@@ -24,6 +24,7 @@ import type { GameInitialSetupSnapshot, GameMap, GameNpc, PartyArc, SessionSumma
 import { toast } from "sonner";
 import { AnimatedText } from "./AnimatedText";
 import { GameSetupSummary } from "./GameSetupSummary";
+import { GameContinuityPanel } from "./GameContinuityPanel";
 import { useTranslation as useUiTranslation } from "react-i18next";
 
 function normalizeText(value: unknown, fallback = ""): string {
@@ -185,6 +186,8 @@ function SpoilerJsonSection({ label, value }: { label: string; value: unknown[] 
 }
 
 interface GameSessionHistoryProps {
+  chatId?: string;
+  metadata?: import("@marinara-engine/shared").ChatMetadata | null;
   summaries: SessionSummary[];
   currentSessionNumber: number;
   currentSessionDate?: string | null;
@@ -213,6 +216,8 @@ interface GameSessionHistoryProps {
 }
 
 export function GameSessionHistory({
+  chatId,
+  metadata,
   summaries,
   currentSessionNumber,
   currentSessionDate = null,
@@ -419,6 +424,7 @@ export function GameSessionHistory({
 
       <div className={embedded ? "px-1 py-2" : "flex-1 overflow-y-auto px-4 py-3"}>
         <div className="flex flex-col gap-2">
+          {chatId && <GameContinuityPanel chatId={chatId} metadata={metadata} />}
           <div className="rounded-lg border border-[var(--border)] bg-[var(--secondary)]/45">
             <div className="flex flex-wrap items-center gap-3 px-4 py-3">
               <span className="text-sm font-semibold text-[var(--foreground)]">

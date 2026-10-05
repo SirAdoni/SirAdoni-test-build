@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isStockMarinaraUniversalPreset } from "../../packages/shared/src/types/prompt.js";
+import * as schema from "../../packages/server/src/db/schema/index.js";
 
 const dataDir = mkdtempSync(join(tmpdir(), "marinara-admin-preset-expunge-"));
 const previousDataDir = process.env.DATA_DIR;
@@ -38,6 +39,15 @@ try {
   const db = await getDB();
   const presets = createPromptsStorage(db);
   const folders = createLibraryFoldersStorage(db);
+  const [{ createGamePrepBoardsStorage }, { createGameDiceRollsStorage }, { createRandomTablesStorage }] =
+    await Promise.all([
+      import("../../packages/server/src/services/storage/game-prep-boards.storage.js"),
+      import("../../packages/server/src/services/storage/game-dice-rolls.storage.js"),
+      import("../../packages/server/src/services/storage/random-tables.storage.js"),
+    ]);
+  const prepBoards = createGamePrepBoardsStorage(db);
+  const diceRolls = createGameDiceRollsStorage(db);
+  const randomTables = createRandomTablesStorage(db);
 
   async function stockSnapshot() {
     const stockPreset = (await presets.list()).find(isStockMarinaraUniversalPreset);
@@ -122,6 +132,65 @@ try {
     "scoped preset expunge must restore the stock preset as default",
   );
   await assertEditableFixtureDeleted(scopedEditablePresetId);
+
+  // Chat-scope cleanup removes campaign authoring state while retaining global random tables.
+  const cleanupChatId = "authoring-cleanup-chat";
+  const cleanupGameId = "authoring-cleanup-game";
+  const cleanupTimestamp = "2026-10-02T00:00:00.000Z";
+  await db.insert(schema.chats).values({
+    id: cleanupChatId,
+    name: "Synthetic authoring cleanup chat",
+    mode: "game",
+    metadata: JSON.stringify({ gameId: cleanupGameId }),
+    createdAt: cleanupTimestamp,
+    updatedAt: cleanupTimestamp,
+  });
+  assert.equal(
+    (await prepBoards.save(cleanupGameId, { sections: [], items: [] }, 0)).ok,
+    true,
+    "synthetic prep board is created",
+  );
+  assert.ok(
+    await randomTables.create({ name: "Synthetic campaign table", rows: [{ text: "keep? no" }] }, cleanupGameId),
+  );
+  const globalTable = await randomTables.create({ name: "Synthetic global table", rows: [{ text: "keep" }] }, "");
+  assert.ok(globalTable);
+  const { applyFeatureSettingsValue } = await import("../../packages/server/src/services/features/feature-settings.js");
+  applyFeatureSettingsValue(JSON.stringify({ diceLog: true }));
+  assert.equal(
+    await diceRolls.record(cleanupChatId, [
+      {
+        source: "player",
+        actor: null,
+        label: null,
+        notation: "1d20",
+        rolls: [12],
+        modifier: 0,
+        total: 12,
+        critical: false,
+        fumble: false,
+      },
+    ]),
+    1,
+  );
+  applyFeatureSettingsValue(null); // Cleanup remains unconditional after optional logging is disabled.
+  const clearChatsResponse = await app.inject({
+    method: "POST",
+    url: "/api/admin/expunge",
+    payload: { confirm: true, scopes: ["chats"] },
+  });
+  assert.equal(clearChatsResponse.statusCode, 200, "chat-scope cleanup must succeed");
+  assert.equal(await prepBoards.get(cleanupGameId), null, "campaign prep boards are cleared with chats");
+  assert.deepEqual(await diceRolls.list({ gameId: cleanupGameId }), [], "dice history is cleared with chats");
+  const remainingRandomTables = await randomTables.listVisible(cleanupGameId);
+  assert.ok(
+    remainingRandomTables.some((table) => table.id === globalTable.id),
+    "global random tables are preserved",
+  );
+  assert.ok(
+    !remainingRandomTables.some((table) => table.name === "Synthetic campaign table"),
+    "campaign random tables are cleared with chats",
+  );
 
   const clearAllEditablePresetId = await createEditableFixture("clear_all", false);
   const stockBeforeClearAll = await stockSnapshot();

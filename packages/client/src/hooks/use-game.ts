@@ -1,3 +1,4 @@
+import { assertWidgetUpdateAllowed } from "./use-extended-widgets";
 // ──────────────────────────────────────────────
 // Hook: Game Mode API
 // ──────────────────────────────────────────────
@@ -8,6 +9,7 @@ import { toast } from "sonner";
 import { ApiError, api, isJsonRepairApiError } from "../lib/api-client";
 import { captureChatMetadataVersion, chatKeys, guardServerChatSnapshot } from "./use-chats";
 import { lorebookKeys } from "./use-lorebooks";
+import { recordDiceLogEntry } from "./use-game-tools";
 import {
   clearPendingHudWidgetPersist,
   getHudWidgetStateSignature,
@@ -588,13 +590,20 @@ export function useRemovePartyMember() {
 }
 
 export function useRollDice() {
+  const qc = useQueryClient();
   const store = useGameModeStore;
 
   return useMutation({
     mutationFn: (data: { chatId: string; notation: string; context?: string }) =>
       api.post<DiceRollResponse>("/game/dice/roll", data),
-    onSuccess: (res) => {
+    onSuccess: (res, variables) => {
       store.getState().setDiceRollResult(res.result);
+      recordDiceLogEntry(qc, {
+        source: "player",
+        chatId: variables.chatId,
+        result: res.result,
+        context: variables.context,
+      });
     },
   });
 }
@@ -630,6 +639,12 @@ export function useSkillCheck() {
         qc.invalidateQueries({ queryKey: chatKeys.messages(variables.chatId) });
         qc.invalidateQueries({ queryKey: lorebookKeys.active(variables.chatId) });
       }
+      recordDiceLogEntry(qc, {
+        source: "skill_check",
+        chatId: variables.chatId,
+        result: res.result,
+        messageId: variables.messageId,
+      });
     },
   });
 }
@@ -689,14 +704,18 @@ export function useUpdateGameWidgets() {
   const qc = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ chatId, widgets }: { chatId: string; widgets: HudWidget[] }) =>
-      api.put<UpdateGameWidgetsResponse>(`/game/${chatId}/widgets`, { widgets }),
+    mutationFn: ({ chatId, widgets }: { chatId: string; widgets: HudWidget[] }) => {
+      assertWidgetUpdateAllowed(qc, chatId, widgets);
+      return api.put<UpdateGameWidgetsResponse>(`/game/${chatId}/widgets`, { widgets });
+    },
     onMutate: (variables) => {
+      assertWidgetUpdateAllowed(qc, variables.chatId, variables.widgets);
       clearPendingHudWidgetPersist(variables.chatId);
       registerPendingHudWidgetPersistence(variables.chatId, variables.widgets);
     },
     onSuccess: (_, variables) => {
-      useGameModeStore.getState().setHudWidgets(variables.widgets);
+      if (useChatStore.getState().activeChatId === variables.chatId)
+        useGameModeStore.getState().setHudWidgets(variables.widgets);
       const queryKey = chatKeys.detail(variables.chatId);
       const patched = patchChatMetadata(qc.getQueryData<Chat>(queryKey), { gameWidgetState: variables.widgets });
       if (patched) {

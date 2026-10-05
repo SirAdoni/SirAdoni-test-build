@@ -29,6 +29,17 @@ export function createDefaultRpgStatPools(): RPGStatPool[] {
   return DEFAULT_RPG_STAT_POOLS.map((pool) => ({ ...pool }));
 }
 
+export function normalizeRpgStatAttributes(value: unknown): Array<{ name: string; value: number }> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const raw = entry as Record<string, unknown>;
+    const name = typeof raw.name === "string" ? raw.name.trim() : "";
+    if (!name) return [];
+    return [{ name, value: finiteNumber(raw.value, 0, Number.NEGATIVE_INFINITY) }];
+  });
+}
+
 export function normalizeRpgStatPools(
   rpgStats: Pick<RPGStatsConfig, "hp" | "pools"> | null | undefined,
 ): RPGStatPool[] {

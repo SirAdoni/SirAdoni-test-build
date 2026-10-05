@@ -133,7 +133,7 @@ function InventoryGroup({ group, label, rows, onUpdate, deleteMode, addMode }: I
           const showDetails = !!row.description || !!row.location || addMode || lockMode;
           return (
             <div
-              key={`${row.name}-${index}`}
+              key={row.itemId ?? `${row.name}-${index}`}
               className={cn(
                 "mari-chrome-tag flex min-h-6 min-w-0 max-w-full flex-col justify-center gap-1 border border-[var(--tracker-profile-slot-rule)] bg-[image:var(--tracker-profile-slot-surface)] px-1.5 text-[color:var(--tracker-profile-text)] shadow-[inset_0_1px_2px_var(--tracker-profile-slot-shadow)] [@media(pointer:coarse)]:min-h-7",
                 showDetails && "w-full py-1",

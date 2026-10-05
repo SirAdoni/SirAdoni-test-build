@@ -8,8 +8,20 @@ import {
 import { rejectGenerationOutput, type GenerationOutput } from "./generate/sse.js";
 import { resolveStoredChatOptions, resolveStoredMaxTokens } from "../services/generation/generation-parameters.js";
 import { normalizeGameDifficulty, normalizeWeatherType, combatWeatherSchema } from "@marinara-engine/shared";
+import {
+  EXTENDED_HUD_WIDGET_TYPES,
+  isExtendedHudWidgetType,
+  isGameExtendedWidgetsEnabled,
+  upstreamHudWidgets,
+} from "@marinara-engine/shared";
+import { isDeepStrictEqual } from "node:util";
+import { isFeatureEnabled } from "../services/features/feature-settings.js";
 import { resolveCombatWeather } from "../services/game/weather.service.js";
 import { resolveGameConnection } from "../services/game/connection.service.js";
+import {
+  consolidateGameKeeperLorebooks,
+  planGameKeeperLorebookConsolidation,
+} from "../services/game/game-keeper-lorebook.js";
 import { combatAiHintsSchema, combatTacticsSchema, combatInterruptFields } from "@marinara-engine/shared";
 // ──────────────────────────────────────────────
 // Routes: Game Mode
@@ -28,8 +40,27 @@ import { logger, logDebugOverride } from "../lib/logger.js";
 import { registerSequentialGameTasks, retainSequentialGameTask } from "../services/game/sequential-tasks.js";
 import { readImageDimensionsFromFile } from "../utils/image-metadata.js";
 import { createChatsStorage, METADATA_WRITE_ORDINALS_KEY } from "../services/storage/chats.storage.js";
+import { keeperDisabledByContinuity, readContinuityOwnership } from "../services/game/continuity-ownership.js";
+import { sceneTimelineRecap } from "../services/game/scene-timeline.service.js";
+import { isSceneTimelineEnabled } from "../services/game/game-feature-switches.js";
+import { gameSceneTimelineRoutes } from "./game-scene-timeline.routes.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
+import {
+  resolveCampaignPortraitOwners,
+  type PortraitRequest,
+  type ResolvedCampaignPortraitOwner,
+} from "../services/game/campaign-portrait-roster.js";
+import {
+  buildGameContactBook,
+  selectContactBookChats,
+  selectContactBookNpcOwners,
+} from "../services/game/game-contact-book.js";
+import {
+  captureNpcAvatarRevisions,
+  readCharacterAvatarState,
+  readGameNpcAvatarState,
+} from "../services/game/npc-avatar-state.js";
 import { createCharacterGalleryStorage } from "../services/storage/character-gallery.storage.js";
 import { createPersonaGalleryStorage } from "../services/storage/persona-gallery.storage.js";
 import { createGalleryStorage } from "../services/storage/gallery.storage.js";
@@ -164,6 +195,13 @@ import {
   type Journal,
 } from "../services/game/journal.service.js";
 import { dedupeSessionSummaryLists } from "../services/game/session-summary-normalization.js";
+import { salvageSessionConclusionDraft } from "../services/game/session-conclusion-salvage.js";
+import { reviewSessionSummary, SessionSummaryReviewError } from "../services/game/session-summary-review.js";
+import {
+  assertSessionSummaryFingerprint,
+  assertSessionSummaryUnchanged,
+  sessionSummaryFingerprint,
+} from "../services/game/session-summary-write-guard.js";
 import {
   findKnownModel,
   generationParametersSchema,
@@ -270,6 +308,7 @@ import { getAssetManifest, GAME_ASSETS_DIR } from "../services/game/asset-manife
 import {
   GENERATED_GAME_BACKGROUND_EXTS,
   generateNpcPortrait,
+  removeOwnedNpcPortrait,
   generateBackground,
   generateSceneIllustration,
   resolveSceneIllustrationGenerationConcurrency,
@@ -1771,7 +1810,7 @@ function sourceIllustrationPathForMetadata(assetPath: string): string {
   return `game-assets/backgrounds/illustrations/${basename(assetPath)}`;
 }
 
-const MAX_GAME_HUD_WIDGETS = 4;
+const MAX_BASELINE_GAME_HUD_WIDGETS = 4;
 /** Cap for the opaque `experienceConfig`, so it can't grow into a payload every later write of the
  *  setup config has to carry. Generous next to what a setup wizard actually collects. */
 const MAX_EXPERIENCE_CONFIG_CHARS = 262_144;
@@ -1806,6 +1845,8 @@ const hudWidgetSchema = z.object({
     "stat_block",
     "list",
     "inventory_grid",
+    ...EXTENDED_HUD_WIDGET_TYPES,
+
     "timer",
   ]),
   label: trimmedWidgetString(120),
@@ -1814,6 +1855,8 @@ const hudWidgetSchema = z.object({
   accent: z.string().trim().max(32).optional(),
   config: z.record(z.unknown()).default({}),
 });
+
+const gameHudWidgetsSchema = z.array(hudWidgetSchema);
 
 const gameSetupConfigSchema = z.object({
   genre: z.string().min(1).max(200),
@@ -1883,7 +1926,7 @@ const gameSetupConfigSchema = z.object({
   activeLorebookIds: z.array(z.string()).optional(),
   activeLorebookEntryIds: z.array(z.string().min(1)).max(100).optional(),
   enableCustomWidgets: z.boolean().optional(),
-  customHudWidgets: z.array(hudWidgetSchema).max(MAX_GAME_HUD_WIDGETS).optional(),
+  customHudWidgets: gameHudWidgetsSchema.optional(),
   enableSpotifyDj: z.boolean().optional(),
   spotifySourceType: z.enum(["liked", "playlist", "artist", "any"]).optional(),
   spotifyPlaylistId: z.string().nullable().optional(),
@@ -1966,6 +2009,10 @@ const jsonRepairApplySchema = z.object({
   rawJson: z.string().min(1),
   connectionId: z.string().optional(),
   sessionNumber: z.number().int().min(1).optional(),
+  summaryFingerprint: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/u)
+    .optional(),
   nextSessionRequest: z.string().max(5000).optional().default(""),
 });
 
@@ -2713,7 +2760,7 @@ function normalizeHudWidgetValues(
 }
 
 function sanitizeGameHudWidgets(value: unknown, preserveCurrentValues = false): HudWidget[] {
-  const parsed = z.array(hudWidgetSchema).max(MAX_GAME_HUD_WIDGETS).safeParse(value);
+  const parsed = gameHudWidgetsSchema.safeParse(value);
   if (!parsed.success) return [];
 
   const widgets = parsed.data.map((widget) => ({
@@ -2726,6 +2773,54 @@ function sanitizeGameHudWidgets(value: unknown, preserveCurrentValues = false): 
   }));
   normalizeHudWidgetValues(widgets, preserveCurrentValues);
   return widgets as HudWidget[];
+}
+
+function storedGameHudWidgets(metadata: Record<string, unknown>): HudWidget[] {
+  if (Array.isArray(metadata.gameWidgetState)) return sanitizeGameHudWidgets(metadata.gameWidgetState, true);
+  const blueprint = metadata.gameBlueprint;
+  if (blueprint && typeof blueprint === "object" && !Array.isArray(blueprint)) {
+    const widgets = (blueprint as Record<string, unknown>).hudWidgets;
+    if (Array.isArray(widgets)) return sanitizeGameHudWidgets(widgets, true);
+  }
+  const setup = metadata.gameSetupConfig;
+  if (setup && typeof setup === "object" && !Array.isArray(setup)) {
+    const widgets = (setup as Record<string, unknown>).customHudWidgets;
+    if (Array.isArray(widgets)) return sanitizeGameHudWidgets(widgets, true);
+  }
+  return [];
+}
+
+function extendedHudWidgetsEnabled(metadata: Record<string, unknown>): boolean {
+  return isFeatureEnabled("extendedHudWidgets") && isGameExtendedWidgetsEnabled(metadata);
+}
+
+function enforceExtendedHudWidgetOptIn(metadata: Record<string, unknown>, requested: HudWidget[]): HudWidget[] {
+  if (extendedHudWidgetsEnabled(metadata)) return requested;
+  if (
+    upstreamHudWidgets(requested).length >
+    Math.max(MAX_BASELINE_GAME_HUD_WIDGETS, upstreamHudWidgets(storedGameHudWidgets(metadata)).length)
+  ) {
+    throw Object.assign(new Error("Extended HUD widgets must be enabled to add more than four widgets"), {
+      statusCode: 409,
+    });
+  }
+  const savedExtended = storedGameHudWidgets(metadata).filter((widget) => isExtendedHudWidgetType(widget.type));
+  const savedIds = new Set(savedExtended.map((widget) => widget.id));
+  return [...upstreamHudWidgets(requested).filter((widget) => !savedIds.has(widget.id)), ...savedExtended];
+}
+
+/** While the opt-in is off, accept baseline edits but retain and freeze saved extended widgets. */
+function mergeDisabledExtendedHudWidgets(current: HudWidget[], requested: HudWidget[]): HudWidget[] | null {
+  const savedExtended = current.filter((widget) => isExtendedHudWidgetType(widget.type));
+  const savedById = new Map(savedExtended.map((widget) => [widget.id, widget]));
+  const requestedExtended = requested.filter((widget) => isExtendedHudWidgetType(widget.type));
+  if (requestedExtended.some((widget) => !isDeepStrictEqual(savedById.get(widget.id), widget))) return null;
+
+  const baseline = upstreamHudWidgets(requested);
+  if (baseline.length > Math.max(MAX_BASELINE_GAME_HUD_WIDGETS, upstreamHudWidgets(current).length)) return null;
+  const savedIds = new Set(savedExtended.map((widget) => widget.id));
+  if (baseline.some((widget) => savedIds.has(widget.id))) return null;
+  return [...baseline, ...savedExtended];
 }
 
 function buildMoraleMetadataUpdates(meta: Record<string, unknown>, morale: number): Record<string, unknown> {
@@ -3587,7 +3682,7 @@ function fitSessionConclusionMessages(args: {
   nextSessionRequest?: string | null;
   modelAccessPolicy: ModelAccessPolicy;
   maxTokens?: number;
-}): { messages: ChatMessage[]; transcriptTruncated: boolean } {
+}): { messages: ChatMessage[]; fullMessages: ChatMessage[]; transcriptTruncated: boolean } {
   let transcriptText = args.transcriptText;
   let transcriptTruncated = false;
   let conclusionMessages = buildSessionConclusionMessages({
@@ -3607,6 +3702,7 @@ function fitSessionConclusionMessages(args: {
     currentNpcs: args.currentNpcs,
     nextSessionRequest: args.nextSessionRequest,
   });
+  const fullMessages = conclusionMessages;
   let fit = fitMessagesToModelAccessContext({
     messages: conclusionMessages,
     policy: args.modelAccessPolicy,
@@ -3654,12 +3750,171 @@ function fitSessionConclusionMessages(args: {
 
   return {
     messages: fit.trimmed ? fit.messages : conclusionMessages,
+    fullMessages,
     transcriptTruncated,
   };
 }
 
+type SessionConclusionReviewResult = { draft: Record<string, unknown>; reviewApplied: boolean };
+
+async function reviewSessionConclusionDraft(args: {
+  draft: Record<string, unknown>;
+  messages: ChatMessage[];
+  transcript: string;
+  provider: Parameters<typeof runGameChatComplete>[0];
+  options: ChatOptions;
+  modelAccessPolicy: ModelAccessPolicy;
+  timeoutMs: number;
+  debugMode: boolean;
+}): Promise<SessionConclusionReviewResult> {
+  if (!isFeatureEnabled("recapFactualReview")) return { draft: args.draft, reviewApplied: false };
+  let reviewSkippedBeforeDispatch = false;
+  try {
+    const reviewed = await reviewSessionSummary({
+      messages: args.messages,
+      transcript: args.transcript,
+      draft: args.draft.summary,
+      complete: async (messages) => {
+        const fit = fitMessagesToModelAccessContext({
+          messages,
+          policy: args.modelAccessPolicy,
+          maxTokens: args.options.maxTokens,
+        });
+        if (fit.trimmed) {
+          throw new Error(
+            "The full session and factual review exceed the selected context window; no summary was saved.",
+          );
+        }
+        if (!isFeatureEnabled("recapFactualReview")) {
+          reviewSkippedBeforeDispatch = true;
+          return JSON.stringify({ corrections: [], additions: [], decisionChecks: [] });
+        }
+        logDebugOverride(
+          args.debugMode || isDebugAgentsEnabled(),
+          "[debug/game/session-summary-review] messages:\\n%s",
+          JSON.stringify(messages),
+        );
+        const result = await runGameChatComplete(
+          args.provider,
+          messages,
+          args.options,
+          "Game session summary factual review",
+          args.timeoutMs,
+        );
+        args.options.signal?.throwIfAborted();
+        if (result.finishReason && result.finishReason !== "stop") {
+          throw new Error(`Session summary factual review did not finish (${result.finishReason}); nothing was saved.`);
+        }
+        return extractLeadingThinkingBlocks(result.content ?? "").content;
+      },
+    });
+    // The setting can change while the optional provider pass is in flight. In that case discard
+    // its result and keep the already-generated baseline draft for the normal apply/write path.
+    if (reviewSkippedBeforeDispatch || !isFeatureEnabled("recapFactualReview")) {
+      return { draft: args.draft, reviewApplied: false };
+    }
+    const reviewApplied = !isDeepStrictEqual(args.draft.summary, reviewed.summary);
+    return {
+      draft: reviewApplied ? { ...args.draft, summary: reviewed.summary } : args.draft,
+      reviewApplied,
+    };
+  } catch (error) {
+    if (reviewSkippedBeforeDispatch || !isFeatureEnabled("recapFactualReview")) {
+      return { draft: args.draft, reviewApplied: false };
+    }
+    if (error instanceof SessionSummaryReviewError) throw error;
+    throw new SessionSummaryReviewError(error);
+  }
+}
+
+class SessionConclusionIncompleteError extends Error {
+  readonly statusCode = 422;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "SessionConclusionIncompleteError";
+  }
+}
+
+function salvageGeneratedSessionConclusion(raw: string, finishReason: unknown) {
+  const assertNotTruncated = () => {
+    try {
+      assertCompleteGameJson(raw, finishReason);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new SessionConclusionIncompleteError(message);
+    }
+  };
+  let salvaged: ReturnType<typeof salvageSessionConclusionDraft>;
+  try {
+    salvaged = salvageSessionConclusionDraft(raw);
+  } catch (error) {
+    assertNotTruncated();
+    throw error;
+  }
+  const recoveredCompleteRestart = salvaged.repairs.some((repair) =>
+    repair.includes("used the last complete attempt from a reply that started the conclusion over"),
+  );
+  if (!recoveredCompleteRestart || isLengthFinishReason(finishReason)) assertNotTruncated();
+  return salvaged;
+}
+
+function isSessionConclusionIncompleteError(error: unknown): error is SessionConclusionIncompleteError {
+  return error instanceof SessionConclusionIncompleteError;
+}
+
+async function reviewRepairedSessionConclusion(args: {
+  db: Parameters<typeof createConnectionsStorage>[0];
+  chatConnectionId: string | null;
+  connectionId?: string;
+  meta: Record<string, unknown>;
+  transcript: string;
+  draft: Record<string, unknown>;
+}): Promise<SessionConclusionReviewResult> {
+  if (!isFeatureEnabled("recapFactualReview")) return { draft: args.draft, reviewApplied: false };
+  const connections = createConnectionsStorage(args.db);
+  const { conn, baseUrl, defaultGenerationParameters } = await resolveConnection(
+    connections,
+    args.connectionId,
+    args.chatConnectionId,
+  );
+  const generationParameters = resolveStoredGameGenerationParameters(args.meta, defaultGenerationParameters);
+  const modelAccessPolicy = resolveGameModelAccessPolicy({
+    provider: conn.provider,
+    model: conn.model,
+    maxContext: conn.maxContext,
+    parameters: generationParameters,
+  });
+  const provider = await createGameMainProvider(connections, conn, baseUrl);
+  const options = gameGenOptions(
+    conn.model,
+    { maxTokens: SESSION_CONCLUSION_DEFAULT_OUTPUT_TOKENS, temperature: 0.45, stream: false },
+    generationParameters,
+    conn.provider,
+  );
+  const messages: ChatMessage[] = [{ role: "user", content: `Full session transcript:\n${args.transcript}` }];
+  return reviewSessionConclusionDraft({
+    draft: args.draft,
+    messages,
+    transcript: args.transcript,
+    provider,
+    options,
+    modelAccessPolicy,
+    timeoutMs: getChatGenerationTimeoutMs(),
+    debugMode: args.meta.debugMode === true,
+  });
+}
+
 function parseJSON(raw: string): unknown {
   return parseGameJsonish(raw);
+}
+
+function parseSessionConclusionForApply(rawJson: string): Record<string, unknown> {
+  try {
+    return salvageSessionConclusionDraft(rawJson).draft;
+  } catch {
+    return parseJSON(rawJson) as Record<string, unknown>;
+  }
 }
 
 type GameLorebookKeeperEntry = {
@@ -4081,6 +4336,15 @@ async function runGameLorebookKeeperAfterConclusion(args: {
   const chat = await chats.getById(args.chatId);
   if (!chat) return { status: "skipped", reason: "Chat not found" };
   const meta = parseMeta(chat.metadata);
+  if (
+    keeperDisabledByContinuity({
+      continuityActive: await args.app.gameContinuity.isIncrementalActive(args.chatId),
+      ownership: isFeatureEnabled("gameMemoryControls") ? readContinuityOwnership(meta.gameContinuity) : null,
+      sessionNumber: args.sessionNumber,
+    })
+  ) {
+    return { status: "skipped", reason: "Incremental Game Continuity is enabled" };
+  }
   if (meta.gameLorebookKeeperEnabled !== true) return { status: "skipped", reason: "Lorebook Keeper is disabled" };
 
   let lorebookId: string | null = null;
@@ -4352,6 +4616,8 @@ function normalizeJournalMatch(value: string): string {
 }
 
 type SceneAssetNpcCandidate = {
+  npcId?: string | null;
+  characterId?: string | null;
   name: string;
   description: string;
   gender?: string | null;
@@ -4361,7 +4627,21 @@ type SceneAssetNpcCandidate = {
 
 type SceneAssetNpcAvatarEntry = SceneAssetNpcCandidate & {
   avatarUrl: string;
+  avatarState?: NonNullable<GameNpc["avatarState"]>;
 };
+
+function isForcedSceneAssetNpcAvatar(forceValues: readonly string[], candidate: SceneAssetNpcCandidate): boolean {
+  const candidateId = candidate.npcId?.trim();
+  const normalizedName = normalizeJournalMatch(candidate.name);
+  return forceValues.some((value) => {
+    const trimmed = value.trim();
+    const separatorIndex = trimmed.indexOf(":");
+    const prefix = separatorIndex >= 0 ? trimmed.slice(0, separatorIndex).toLowerCase() : "";
+    if (prefix === "id") return !!candidateId && trimmed.slice(separatorIndex + 1) === candidateId;
+    const forcedName = prefix === "name" ? trimmed.slice(separatorIndex + 1) : trimmed;
+    return !!forcedName && normalizeJournalMatch(forcedName) === normalizedName;
+  });
+}
 
 const NARRATION_NPC_SPEECH_VERB_PATTERN =
   "(?:said|says|whispered|whispers|muttered|mutters|replied|replies|called|calls|shouted|shouts|asked|asks|warned|warns|growled|growls|hissed|hisses|exclaimed|exclaims|murmured|murmurs|sighed|sighs|snapped|snaps|barked|barks|declared|declares|continued|continues|added|adds|spoke|speaks|began|begins|remarked|remarks|chuckled|chuckles|laughed|laughs|cried|cries)";
@@ -4461,10 +4741,14 @@ function addPresentCharacterPortraitAppearance(
   addPortraitAppearancePart(parts, seenValues, presentCharacter.mood, "Current expression or mood");
 }
 
-function findNpcRecordByName(npcs: GameNpc[], name: string): GameNpc | null {
-  const normalizedName = normalizeJournalMatch(name);
-  if (!normalizedName) return null;
-  return npcs.find((npc) => normalizeJournalMatch(npc.name) === normalizedName) ?? null;
+function findNpcRecordForAsset(npcs: GameNpc[], candidate: SceneAssetNpcCandidate): GameNpc | null {
+  const npcId = candidate.npcId?.trim();
+  if (npcId) {
+    const matches = npcs.filter((npc) => npc.id?.trim() === npcId);
+    return matches.length === 1 ? matches[0]! : null;
+  }
+  const matches = npcs.filter((npc) => normalizeJournalMatch(npc.name) === normalizeJournalMatch(candidate.name));
+  return matches.length === 1 ? matches[0]! : null;
 }
 
 function findRecordByName(records: Array<Record<string, unknown>>, name: string): Record<string, unknown> | null {
@@ -4676,13 +4960,24 @@ function upsertGameNpcAvatarEntries(currentNpcs: GameNpc[], avatarEntries: Scene
     const normalizedName = normalizeJournalMatch(entry.name);
     if (!normalizedName) continue;
 
-    const existingIndex = nextNpcs.findIndex((npc) => normalizeJournalMatch(npc.name) === normalizedName);
+    const existingMatches = entry.npcId?.trim()
+      ? nextNpcs.flatMap((npc, index) => (npc.id === entry.npcId!.trim() ? [index] : []))
+      : nextNpcs.flatMap((npc, index) => (normalizeJournalMatch(npc.name) === normalizedName ? [index] : []));
+    if (existingMatches.length > 1) continue;
+    const existingIndex = existingMatches[0] ?? -1;
     if (existingIndex !== -1) {
       const existing = nextNpcs[existingIndex]!;
       let nextNpc = existing;
 
       if (existing.avatarUrl !== entry.avatarUrl) {
         nextNpc = { ...nextNpc, avatarUrl: entry.avatarUrl };
+      }
+      if (
+        entry.avatarState &&
+        existing.characterId === entry.characterId &&
+        existing.avatarState !== entry.avatarState
+      ) {
+        nextNpc = { ...nextNpc, avatarState: entry.avatarState };
       }
       if (!nextNpc.description && entry.description) {
         nextNpc = { ...nextNpc, description: entry.description, descriptionSource: "narration" };
@@ -4702,7 +4997,7 @@ function upsertGameNpcAvatarEntries(currentNpcs: GameNpc[], avatarEntries: Scene
     }
 
     nextNpcs.push({
-      id: buildGameNpcId(entry.name),
+      id: entry.npcId?.trim() || buildGameNpcId(entry.name),
       name: entry.name,
       emoji: "👤",
       description: entry.description,
@@ -4710,6 +5005,8 @@ function upsertGameNpcAvatarEntries(currentNpcs: GameNpc[], avatarEntries: Scene
       reputation: 0,
       notes: [],
       avatarUrl: entry.avatarUrl,
+      ...(entry.characterId ? { characterId: entry.characterId } : {}),
+      ...(entry.avatarState ? { avatarState: entry.avatarState } : {}),
       gender: entry.gender,
       pronouns: entry.pronouns,
       descriptionSource: entry.description ? "narration" : undefined,
@@ -5894,6 +6191,30 @@ export interface GameRouteOptions {
 export type CreateGameRequest = z.input<typeof createGameSchema>;
 export type SetupGameRequest = z.input<typeof setupSchema>;
 export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions = {}) {
+  await app.register(gameSceneTimelineRoutes);
+  const keeperConsolidationSchema = z.object({ chatId: z.string().min(1).max(200), apply: z.boolean().default(false) });
+  app.post("/session/lorebook-keeper/consolidate", async (req, reply) => {
+    const isEnabled = () => isFeatureEnabled("gameKeeperConsolidation");
+    if (!isEnabled()) return reply.code(403).send({ error: "FEATURE_DISABLED", feature: "gameKeeperConsolidation" });
+    const input = keeperConsolidationSchema.parse(req.body);
+    try {
+      if (input.apply) {
+        const result = await consolidateGameKeeperLorebooks(app.db, input.chatId, { apply: true, isEnabled });
+        return "conflict" in result ? reply.code(409).send(result) : result;
+      }
+      const result = await planGameKeeperLorebookConsolidation(app.db, input.chatId);
+      if (!isEnabled()) return reply.code(403).send({ error: "FEATURE_DISABLED", feature: "gameKeeperConsolidation" });
+      return result;
+    } catch (error) {
+      if (error instanceof Error && error.message === "GAME_KEEPER_CONSOLIDATION_DISABLED") {
+        return reply.code(403).send({ error: "FEATURE_DISABLED", feature: "gameKeeperConsolidation" });
+      }
+      if (error instanceof Error && error.message === "GAME_CHAT_NOT_GAME") {
+        return reply.code(400).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
   registerSequentialGameTasks(app, [
     "/setup",
     "/session/conclude",
@@ -6051,6 +6372,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
   const applyGameSetupPayload = async (args: {
     chatId: string;
     chatPersonaId: string | null;
+
     chatCharacterIds: string[];
     meta: Record<string, unknown>;
     setupData: Record<string, unknown>;
@@ -6058,7 +6380,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
   }) => {
     const { chatId, meta, setupData, rpgContext } = args;
     const setupConfig = (meta.gameSetupConfig as GameSetupConfig | null) ?? null;
-    const customHudWidgets = sanitizeGameHudWidgets(setupConfig?.customHudWidgets);
+    const customHudWidgets = enforceExtendedHudWidgetOptIn(meta, sanitizeGameHudWidgets(setupConfig?.customHudWidgets));
     const updates: Record<string, unknown> = { ...meta, gameSessionStatus: "ready" };
     let generatedStartingMap: GameMap | null = null;
     if (setupData.worldOverview) updates.gameWorldOverview = setupData.worldOverview as string;
@@ -6283,6 +6605,8 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
                 "stat_block",
                 "list",
                 "inventory_grid",
+                ...EXTENDED_HUD_WIDGET_TYPES,
+
                 "timer",
               ]),
               label: z.string(),
@@ -6332,6 +6656,10 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       };
       const parsed = blueprintSchema.safeParse(setupData.blueprint);
       if (parsed.success) {
+        parsed.data.hudWidgets = enforceExtendedHudWidgetOptIn(
+          meta,
+          parsed.data.hudWidgets as HudWidget[],
+        ) as typeof parsed.data.hudWidgets;
         normalizeStatBlocks(parsed.data.hudWidgets);
         normalizeHudWidgetValues(parsed.data.hudWidgets);
         updates.gameBlueprint = parsed.data;
@@ -6347,10 +6675,16 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         const hudOnly = z.object({ hudWidgets: blueprintSchema.shape.hudWidgets }).safeParse({
           hudWidgets: (setupData.blueprint as { hudWidgets?: unknown })?.hudWidgets,
         });
-        if (hudOnly.success && hudOnly.data.hudWidgets.length > 0) {
-          normalizeStatBlocks(hudOnly.data.hudWidgets);
-          normalizeHudWidgetValues(hudOnly.data.hudWidgets);
-          updates.gameBlueprint = { hudWidgets: hudOnly.data.hudWidgets };
+        const safeHudWidgets = hudOnly.success
+          ? (enforceExtendedHudWidgetOptIn(
+              meta,
+              hudOnly.data.hudWidgets as HudWidget[],
+            ) as unknown as typeof hudOnly.data.hudWidgets)
+          : [];
+        if (hudOnly.success && safeHudWidgets.length > 0) {
+          normalizeStatBlocks(safeHudWidgets);
+          normalizeHudWidgetValues(safeHudWidgets);
+          updates.gameBlueprint = { hudWidgets: safeHudWidgets };
         }
       }
     }
@@ -6376,7 +6710,24 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     }
 
     const hydratedUpdates = await buildHydratedGameMeta(chatId, updates);
-    await createChatsStorage(app.db).updateMetadata(chatId, hydratedUpdates);
+    await createChatsStorage(app.db).patchMetadata(chatId, (freshMeta) => {
+      const blueprint = hydratedUpdates.gameBlueprint as Record<string, unknown> | undefined;
+      const requested =
+        customHudWidgets.length > 0 ? customHudWidgets : sanitizeGameHudWidgets(blueprint?.hudWidgets, true);
+      const admitted = enforceExtendedHudWidgetOptIn(freshMeta, requested);
+      return {
+        ...hydratedUpdates,
+        gameExtendedWidgetsEnabled: isGameExtendedWidgetsEnabled(freshMeta),
+        gameSessionStatus: freshMeta.gameSessionStatus === "active" ? "active" : hydratedUpdates.gameSessionStatus,
+        gameWidgetState: freshMeta.gameSessionStatus === "active" ? freshMeta.gameWidgetState : admitted,
+        gameWidgetInitialState: freshMeta.gameSessionStatus === "active" ? freshMeta.gameWidgetInitialState : admitted,
+        ...(blueprint ? { gameBlueprint: { ...blueprint, hudWidgets: admitted } } : {}),
+        gameSetupConfig: {
+          ...((hydratedUpdates.gameSetupConfig as Record<string, unknown>) ?? {}),
+          customHudWidgets: admitted,
+        },
+      };
+    });
 
     return {
       setup: setupData,
@@ -6405,7 +6756,12 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
           )
         : null;
     const selectedPromptPresetId = promptPresetId || parsedCreateGameInput.setupConfig.promptPresetId || null;
-    const customHudWidgets = sanitizeGameHudWidgets(parsedCreateGameInput.setupConfig.customHudWidgets);
+    const chats = createChatsStorage(app.db);
+    const setupSourceMeta = parseMeta((chatId ? await chats.getById(chatId) : null)?.metadata);
+    const customHudWidgets = enforceExtendedHudWidgetOptIn(
+      setupSourceMeta,
+      sanitizeGameHudWidgets(parsedCreateGameInput.setupConfig.customHudWidgets),
+    );
     const gameSystemPrompt = parsedCreateGameInput.setupConfig.gameSystemPrompt?.trim() || null;
     const gameSpecialInstructions = parsedCreateGameInput.setupConfig.gameSpecialInstructions?.trim() || null;
     const storyboardKeyframeCount = normalizeStoryboardKeyframeCount(
@@ -6494,7 +6850,6 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       gameSystemPrompt,
       gameSpecialInstructions,
     };
-    const chats = createChatsStorage(app.db);
     const connectionStorage = createConnectionsStorage(app.db);
 
     const gameId = randomUUID();
@@ -6537,6 +6892,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     }
 
     const sessionMeta = parseMeta(sessionChat.metadata);
+
     const setupActiveAgentIds = [
       ...(setupConfig.enableSpotifyDj ? ["spotify"] : []),
       ...(setupConfig.gameWorldMapMode === "hierarchical" ? [HIERARCHICAL_MAPS_AGENT_ID] : []),
@@ -6562,98 +6918,105 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       snapshotConnection(setupConfig.videoConnectionId),
       snapshotConnection(setupConfig.audioConnectionId),
     ]);
-    await chats.updateMetadata(sessionChat.id, {
-      ...sessionMeta,
-      gameId,
-      gameSessionNumber: 1,
-      gameSessionStatus: "setup",
-      ...(setupConfig.autoTranslate !== undefined ? { autoTranslate: setupConfig.autoTranslate } : {}),
-      ...(setupConfig.translationOutputTargetLang
-        ? { translationOutputTargetLang: setupConfig.translationOutputTargetLang }
-        : {}),
-      gameCurrentSessionStartedAt: new Date().toISOString(),
-      gameActiveState: "exploration",
-      gameGmMode: setupConfig.gmMode,
-      gameGmCharacterId: setupConfig.gmCharacterId || null,
-      gamePartyCharacterIds: setupConfig.partyCharacterIds,
-      gamePartyChatId: null,
-      gameMap: null,
-      gameMaps: [],
-      activeGameMapId: null,
-      gameInitialMapFallback: null,
-      gamePreviousSessionSummaries: [],
-      gameStoryArc: null,
-      gamePlotTwists: [],
-      gameDialogueChatId: null,
-      gameCombatChatId: null,
-      gameSceneBackground: null,
-      gameSceneMusic: null,
-      gameSceneAmbient: null,
-      gameRecentMusic: [],
-      gameRecentSpotifyTracks: [],
-      gameSetupConfig: setupConfig,
-      gameInitialSetup: {
-        config: setupConfig,
-        effectiveGenerationParameters: gameChatParameters,
-        preferences: preferences.trim() || null,
-        connections: {
-          gm: gmConnection,
-          scene: sceneConnection,
-          image: imageConnection,
-          video: videoConnection,
-          audio: audioConnection,
+    await chats.patchMetadata(sessionChat.id, (freshMeta) => {
+      const initialHudWidgets = enforceExtendedHudWidgetOptIn(freshMeta, customHudWidgets);
+      const admittedSetupConfig = { ...setupConfig, customHudWidgets: initialHudWidgets };
+      return {
+        ...freshMeta,
+        gameId,
+        gameSessionNumber: 1,
+        gameSessionStatus: "setup",
+        ...(setupConfig.autoTranslate !== undefined ? { autoTranslate: setupConfig.autoTranslate } : {}),
+        ...(setupConfig.translationOutputTargetLang
+          ? { translationOutputTargetLang: setupConfig.translationOutputTargetLang }
+          : {}),
+        gameCurrentSessionStartedAt: new Date().toISOString(),
+        gameActiveState: "exploration",
+        gameGmMode: setupConfig.gmMode,
+        gameGmCharacterId: setupConfig.gmCharacterId || null,
+        gamePartyCharacterIds: setupConfig.partyCharacterIds,
+        gamePartyChatId: null,
+        gameMap: null,
+        gameMaps: [],
+        activeGameMapId: null,
+        gameInitialMapFallback: null,
+        gamePreviousSessionSummaries: [],
+        gameStoryArc: null,
+        gamePlotTwists: [],
+        gameDialogueChatId: null,
+        gameCombatChatId: null,
+        gameSceneBackground: null,
+        gameSceneMusic: null,
+        gameSceneAmbient: null,
+        gameRecentMusic: [],
+        gameRecentSpotifyTracks: [],
+        gameSetupConfig: admittedSetupConfig,
+        gameInitialSetup: {
+          config: admittedSetupConfig,
+          effectiveGenerationParameters: gameChatParameters,
+          preferences: preferences.trim() || null,
+          connections: {
+            gm: gmConnection,
+            scene: sceneConnection,
+            image: imageConnection,
+            video: videoConnection,
+            audio: audioConnection,
+          },
+          labels: shareLabels,
+          createdAt: new Date().toISOString(),
         },
-        labels: shareLabels,
-        createdAt: new Date().toISOString(),
-      },
-      gameSystemPrompt,
-      gameSpecialInstructions,
-      gameSceneConnectionId: setupConfig.sceneConnectionId || null,
-      // Chosen at creation and fixed for the game's lifetime (see GameSetupConfig).
-      gameExperienceId: setupConfig.gameExperienceId || null,
-      // Likewise fixed for the game's lifetime. Written only when a ruleset was chosen, so a game
-      // on Marinara's own rules carries exactly the metadata it always has.
-      ...(gameRuleset ? { gameRuleset } : {}),
-      gameNpcs: [],
-      enableAgents: setupConfig.enableAgents === true,
-      activeAgentIds: setupActiveAgentIds,
-      enableSpriteGeneration: setupConfig.enableSpriteGeneration || false,
-      gameImageDynamicPromptEnabled: resolveGameImageDynamicPromptEnabled(setupConfig),
-      gameImageConnectionId: setupConfig.imageConnectionId || null,
-      gameVideoConnectionId: setupConfig.videoConnectionId || null,
-      gameAudioConnectionId: setupConfig.audioConnectionId || null,
-      gameAudioSoundEffectsEnabled: setupConfig.enableGameSoundEffects !== false,
-      gameAudioMusicEnabled: setupConfig.enableGameMusic !== false,
-      gameSceneVideosEnabled: false,
-      gameStoryboardAutoIllustrationsEnabled: setupConfig.gameStoryboardAutoIllustrationsEnabled !== false,
-      gameStoryboardAutoGenerationEnabled: setupConfig.gameStoryboardAutoGenerationEnabled === true,
-      gameStoryboardsEnabled: setupConfig.gameStoryboardsEnabled,
-      gameStoryboardKeyframeCount: storyboardKeyframeCount,
-      gameGmPromptTemplateId: setupConfig.gameGmPromptTemplateId || null,
-      gameStoryboardAnimationPromptTemplateId: setupConfig.gameStoryboardAnimationPromptTemplateId || null,
-      gameStoryboardImagePromptTemplateId: setupConfig.gameStoryboardImagePromptTemplateId || null,
-      gameStoryboardVideoPromptTemplateId: setupConfig.gameStoryboardVideoPromptTemplateId || null,
-      gameLastSceneVideoId: null,
-      activeLorebookIds: setupConfig.activeLorebookIds || [],
-      enableCustomWidgets: setupConfig.enableCustomWidgets !== false,
-      ...(customHudWidgets.length > 0 ? { gameWidgetState: customHudWidgets } : {}),
-      gameUseMusicDj: setupConfig.enableSpotifyDj === true,
-      gameUseSpotifyMusic: setupConfig.enableSpotifyDj === true,
-      gameSpotifySourceType: spotifySourceType,
-      gameSpotifyPlaylistId:
-        setupConfig.enableSpotifyDj === true && spotifySourceType === "playlist"
-          ? setupConfig.spotifyPlaylistId || null
-          : null,
-      gameSpotifyPlaylistName:
-        setupConfig.enableSpotifyDj === true && spotifySourceType === "playlist"
-          ? setupConfig.spotifyPlaylistName || null
-          : null,
-      gameSpotifyArtist:
-        setupConfig.enableSpotifyDj === true && spotifySourceType === "artist"
-          ? setupConfig.spotifyArtist || null
-          : null,
-      gameLorebookKeeperEnabled: setupConfig.enableLorebookKeeper === true,
-      ...(gameChatParameters ? { chatParameters: gameChatParameters } : {}),
+        gameSystemPrompt,
+        gameSpecialInstructions,
+        gameSceneConnectionId: setupConfig.sceneConnectionId || null,
+        // Chosen at creation and fixed for the game's lifetime (see GameSetupConfig).
+        gameExperienceId: setupConfig.gameExperienceId || null,
+        // Likewise fixed for the game's lifetime. Written only when a ruleset was chosen, so a game
+        // on Marinara's own rules carries exactly the metadata it always has.
+        ...(gameRuleset ? { gameRuleset } : {}),
+        gameNpcs: [],
+        enableAgents: setupConfig.enableAgents === true,
+        activeAgentIds: setupActiveAgentIds,
+        enableSpriteGeneration: setupConfig.enableSpriteGeneration || false,
+        gameImageDynamicPromptEnabled: resolveGameImageDynamicPromptEnabled(setupConfig),
+        gameImageConnectionId: setupConfig.imageConnectionId || null,
+        gameVideoConnectionId: setupConfig.videoConnectionId || null,
+        gameAudioConnectionId: setupConfig.audioConnectionId || null,
+        gameAudioSoundEffectsEnabled: setupConfig.enableGameSoundEffects !== false,
+        gameAudioMusicEnabled: setupConfig.enableGameMusic !== false,
+        gameSceneVideosEnabled: false,
+        gameStoryboardAutoIllustrationsEnabled: setupConfig.gameStoryboardAutoIllustrationsEnabled !== false,
+        gameStoryboardAutoGenerationEnabled: setupConfig.gameStoryboardAutoGenerationEnabled === true,
+        gameStoryboardsEnabled: setupConfig.gameStoryboardsEnabled,
+        gameStoryboardKeyframeCount: storyboardKeyframeCount,
+        gameGmPromptTemplateId: setupConfig.gameGmPromptTemplateId || null,
+        gameStoryboardAnimationPromptTemplateId: setupConfig.gameStoryboardAnimationPromptTemplateId || null,
+        gameStoryboardImagePromptTemplateId: setupConfig.gameStoryboardImagePromptTemplateId || null,
+        gameStoryboardVideoPromptTemplateId: setupConfig.gameStoryboardVideoPromptTemplateId || null,
+        gameLastSceneVideoId: null,
+        activeLorebookIds: setupConfig.activeLorebookIds || [],
+        enableCustomWidgets: setupConfig.enableCustomWidgets !== false,
+
+        gameExtendedWidgetsEnabled: isGameExtendedWidgetsEnabled(freshMeta),
+        gameWidgetInitialState: initialHudWidgets,
+        gameWidgetState: initialHudWidgets,
+        gameUseMusicDj: setupConfig.enableSpotifyDj === true,
+        gameUseSpotifyMusic: setupConfig.enableSpotifyDj === true,
+        gameSpotifySourceType: spotifySourceType,
+        gameSpotifyPlaylistId:
+          setupConfig.enableSpotifyDj === true && spotifySourceType === "playlist"
+            ? setupConfig.spotifyPlaylistId || null
+            : null,
+        gameSpotifyPlaylistName:
+          setupConfig.enableSpotifyDj === true && spotifySourceType === "playlist"
+            ? setupConfig.spotifyPlaylistName || null
+            : null,
+        gameSpotifyArtist:
+          setupConfig.enableSpotifyDj === true && spotifySourceType === "artist"
+            ? setupConfig.spotifyArtist || null
+            : null,
+        gameLorebookKeeperEnabled: setupConfig.enableLorebookKeeper === true,
+        ...(gameChatParameters ? { chatParameters: gameChatParameters } : {}),
+      };
     });
 
     const updatedSession = await chats.getById(sessionChat.id);
@@ -7237,6 +7600,9 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     string,
     Promise<{ sessionChat: StoredChatRecord; sessionNumber: number; recap: string }>
   >();
+  const sceneTimelineDisabledResult = {
+    error: { code: "FEATURE_DISABLED", feature: "sceneTimeline", message: "This feature is disabled in Settings." },
+  };
   const pendingSessionConclusions = new Map<string, Promise<unknown>>();
 
   const findSessionSummaryForNumber = (summaries: SessionSummary[], sessionNumber: number): SessionSummary | null =>
@@ -7311,6 +7677,8 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       if (!latestSession) throw new Error("No previous session found for this game");
 
       const prevMeta = parseMeta(latestSession.metadata);
+      const carriedHudWidgets = storedGameHudWidgets(prevMeta);
+
       const baseSessionName = latestSession.name.replace(/ — Session \d+$/, "");
       const latestStatus = (prevMeta.gameSessionStatus as string) || "active";
       const prevSetupConfig = (prevMeta.gameSetupConfig as GameSetupConfig | null) ?? null;
@@ -7413,6 +7781,13 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         gameLastIllustrationSessionNumber: _previousIllustrationSessionNumber,
         gameLastIllustrationTag: _previousIllustrationTag,
         branchName: _previousBranchName,
+        branchParentChatId: _previousBranchParentChatId,
+        branchParentMessageId: _previousBranchParentMessageId,
+        branchMessageId: _previousBranchMessageId,
+        branchLineageVersion: _previousBranchLineageVersion,
+        branchCopyMode: _previousBranchCopyMode,
+        branchCopiedMessageCount: _previousBranchCopiedMessageCount,
+        gameSessionParentChatId: _previousSessionParentChatId,
         gameSceneBackground: _previousSceneBackground,
         gameSceneMusic: _previousSceneMusic,
         gameSceneAmbient: _previousSceneAmbient,
@@ -7435,7 +7810,11 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         ...newMeta,
         ...carryMeta,
         gameId,
+        gameWidgetInitialState: carriedHudWidgets,
+        gameWidgetState: carriedHudWidgets,
+
         gameSessionNumber: sessionNumber,
+        gameSessionParentChatId: latestSession.id,
         gameSessionStatus: "ready",
         gameCurrentSessionStartedAt: new Date().toISOString(),
         gameActiveState: "exploration",
@@ -7620,6 +7999,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     const existingConclusion = pendingSessionConclusions.get(chatId);
     if (existingConclusion) {
       const conclusionResult = await existingConclusion;
+      if (conclusionResult === sceneTimelineDisabledResult) return reply.status(403).send(conclusionResult);
       if (isJsonRepairRouteResult(conclusionResult)) {
         sendJsonRepairRouteResult(reply, conclusionResult);
         return;
@@ -7627,7 +8007,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       return conclusionResult;
     }
 
-    const conclusionRequest = (async () => {
+    const conclusionRequest: Promise<unknown> = (async () => {
       const trimmedNextSessionRequest = nextSessionRequest.trim();
       logger.info("[game/session/conclude] Starting manual conclude for chat %s", chatId);
       const chats = createChatsStorage(app.db);
@@ -7656,7 +8036,10 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         (message) => message.role !== "system",
       );
       const transcriptText = formatGameTranscript(relevantMessages);
-      const journalRecap = buildStructuredRecap((meta.gameJournal as Journal | null) ?? createJournal(), sessionNumber);
+      const sceneTimelineRecapText = isSceneTimelineEnabled(meta) ? await sceneTimelineRecap(app.db, chatId) : "";
+      const journalRecap =
+        buildStructuredRecap((meta.gameJournal as Journal | null) ?? createJournal(), sessionNumber) +
+        sceneTimelineRecapText;
 
       const gameStates = createGameStateStorage(app.db);
       const latestState = await gameStates.getLatest(chatId);
@@ -7697,7 +8080,11 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         conclusionGenerationParameters,
         conn.provider,
       );
-      const { messages: conclusionMessages, transcriptTruncated } = fitSessionConclusionMessages({
+      const {
+        messages: conclusionMessages,
+        fullMessages,
+        transcriptTruncated,
+      } = fitSessionConclusionMessages({
         sessionNumber,
         language: setupConfig?.language ?? null,
         journalRecap,
@@ -7722,6 +8109,12 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         );
       }
 
+      if (sceneTimelineRecapText) {
+        const latestTimelineChat = await createChatsStorage(app.db).getById(chatId);
+        if (!latestTimelineChat || !isSceneTimelineEnabled(parseMeta(latestTimelineChat.metadata)))
+          return sceneTimelineDisabledResult;
+      }
+
       const result = await withLlmRequestTimeout(conclusionTimeoutMs, () =>
         runGameChatComplete(
           provider,
@@ -7744,25 +8137,48 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         );
       }
 
-      assertCompleteGameJson(conclusionExtraction.content, result.finishReason);
       let appliedConclusion: SessionConclusionApplication;
+      let baselineAppliedConclusion: SessionConclusionApplication | undefined;
+      let factualReviewApplied = false;
       try {
-        const parsedConclusion = parseJSON(conclusionExtraction.content) as Record<string, unknown>;
-        appliedConclusion = applySessionConclusionPayload(parsedConclusion, {
-          sessionNumber,
-          nextSessionRequest: trimmedNextSessionRequest || null,
-          currentStoryArc,
-          currentPlotTwists,
-          currentPartyArcs,
-          currentMorale,
-          currentCards,
+        const salvagedConclusion = salvageGeneratedSessionConclusion(
+          conclusionExtraction.content,
+          result.finishReason,
+        ).draft;
+        const applyConclusion = (draft: Record<string, unknown>) =>
+          applySessionConclusionPayload(draft, {
+            sessionNumber,
+            nextSessionRequest: trimmedNextSessionRequest || null,
+            currentStoryArc,
+            currentPlotTwists,
+            currentPartyArcs,
+            currentMorale,
+            currentCards,
+          });
+        const reviewResult = await reviewSessionConclusionDraft({
+          draft: salvagedConclusion,
+          messages: fullMessages,
+          transcript: transcriptText,
+          provider,
+          options: conclusionOptions,
+          modelAccessPolicy,
+          timeoutMs: conclusionTimeoutMs,
+          debugMode: meta.debugMode === true,
         });
+        factualReviewApplied = reviewResult.reviewApplied;
+        if (factualReviewApplied) {
+          baselineAppliedConclusion = applyConclusion(salvagedConclusion);
+          appliedConclusion = applyConclusion(reviewResult.draft);
+        } else {
+          appliedConclusion = applyConclusion(salvagedConclusion);
+        }
         if (appliedConclusion.updatedCardCount > 0) {
           logger.info(
             `[session/conclude] Updated ${appliedConclusion.updatedCardCount} character cards after session ${sessionNumber}`,
           );
         }
       } catch (err) {
+        if (err instanceof SessionSummaryReviewError || isSessionConclusionIncompleteError(err)) throw err;
         logger.warn(err, "[session/conclude] Combined session conclusion parsing failed");
         return {
           type: "json_repair",
@@ -7785,6 +8201,9 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         if (existingSummary) {
           storedConclusionSummary = existingSummary;
           return {};
+        }
+        if (factualReviewApplied && !isFeatureEnabled("recapFactualReview") && baselineAppliedConclusion) {
+          appliedConclusion = baselineAppliedConclusion;
         }
 
         conclusionWasStored = true;
@@ -7874,6 +8293,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     pendingSessionConclusions.set(chatId, conclusionRequest);
     try {
       const conclusionResult = await conclusionRequest;
+      if (conclusionResult === sceneTimelineDisabledResult) return reply.status(403).send(conclusionResult);
       if (isJsonRepairRouteResult(conclusionResult)) {
         sendJsonRepairRouteResult(reply, conclusionResult);
         return;
@@ -7892,6 +8312,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     const existingConclusion = pendingSessionConclusions.get(chatId);
     if (existingConclusion) {
       const conclusionResult = await existingConclusion;
+      if (conclusionResult === sceneTimelineDisabledResult) return reply.status(403).send(conclusionResult);
       if (isJsonRepairRouteResult(conclusionResult)) {
         sendJsonRepairRouteResult(reply, conclusionResult);
         return;
@@ -7899,7 +8320,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       return conclusionResult;
     }
 
-    const conclusionRequest = (async () => {
+    const conclusionRequest: Promise<unknown> = (async () => {
       const trimmedNextSessionRequest = nextSessionRequest.trim();
       const chats = createChatsStorage(app.db);
       const chat = await chats.getById(chatId);
@@ -7924,18 +8345,9 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       const currentPartyArcs = Array.isArray(meta.gamePartyArcs) ? normalizePartyArcPayload(meta.gamePartyArcs) : [];
       const currentMorale = normalizeMoraleValue(meta.gameMorale, 50);
       const currentCards = (meta.gameCharacterCards as Array<Record<string, unknown>>) ?? [];
-      let appliedConclusion: SessionConclusionApplication;
+      let parsedConclusion: Record<string, unknown>;
       try {
-        const parsedConclusion = parseJSON(rawJson) as Record<string, unknown>;
-        appliedConclusion = applySessionConclusionPayload(parsedConclusion, {
-          sessionNumber,
-          nextSessionRequest: trimmedNextSessionRequest || null,
-          currentStoryArc,
-          currentPlotTwists,
-          currentPartyArcs,
-          currentMorale,
-          currentCards,
-        });
+        parsedConclusion = parseSessionConclusionForApply(rawJson);
       } catch (err) {
         logger.warn(err, "[session/conclude/apply-json] Repaired session conclusion JSON still failed to parse");
         return {
@@ -7946,10 +8358,40 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
             title: `Repair Session ${sessionNumber} Summary JSON`,
             rawJson,
             applyEndpoint: "/game/session/conclude/apply-json",
-            applyBody: { chatId, nextSessionRequest: trimmedNextSessionRequest },
+            applyBody: { chatId, connectionId, nextSessionRequest: trimmedNextSessionRequest },
           }),
         } satisfies JsonRepairRouteResult;
       }
+
+      const messages = await chats.listMessages(chatId);
+      const transcriptText = formatGameTranscript(
+        applyGameSegmentEditsForPrompt(messages, meta).filter(
+          (message) => message.role !== "system" && !isSessionConclusionMessage(message.content),
+        ),
+      );
+      const reviewResult = await reviewRepairedSessionConclusion({
+        db: app.db,
+        chatConnectionId: chat.connectionId,
+        connectionId,
+        meta,
+        transcript: transcriptText,
+        draft: parsedConclusion,
+      });
+      const applyConclusion = (draft: Record<string, unknown>) =>
+        applySessionConclusionPayload(draft, {
+          sessionNumber,
+          nextSessionRequest: trimmedNextSessionRequest || null,
+          currentStoryArc,
+          currentPlotTwists,
+          currentPartyArcs,
+          currentMorale,
+          currentCards,
+        });
+      const factualReviewApplied = reviewResult.reviewApplied;
+      const baselineAppliedConclusion = factualReviewApplied ? applyConclusion(parsedConclusion) : undefined;
+      let appliedConclusion = factualReviewApplied
+        ? applyConclusion(reviewResult.draft)
+        : applyConclusion(parsedConclusion);
 
       let conclusionWasStored = false;
       let storedConclusionSummary = appliedConclusion.summary;
@@ -7959,6 +8401,9 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         if (existingSummary) {
           storedConclusionSummary = existingSummary;
           return {};
+        }
+        if (factualReviewApplied && !isFeatureEnabled("recapFactualReview") && baselineAppliedConclusion) {
+          appliedConclusion = baselineAppliedConclusion;
         }
 
         conclusionWasStored = true;
@@ -8043,6 +8488,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     pendingSessionConclusions.set(chatId, conclusionRequest);
     try {
       const conclusionResult = await conclusionRequest;
+      if (conclusionResult === sceneTimelineDisabledResult) return reply.status(403).send(conclusionResult);
       if (isJsonRepairRouteResult(conclusionResult)) {
         sendJsonRepairRouteResult(reply, conclusionResult);
         return;
@@ -8203,12 +8649,16 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     if (!chat) throw new Error("Chat not found");
 
     const meta = parseMeta(chat.metadata);
+    const rawPreviousSummaries = Array.isArray(meta.gamePreviousSessionSummaries)
+      ? meta.gamePreviousSessionSummaries
+      : [];
     const setupConfig = meta.gameSetupConfig as GameSetupConfig | null;
     const prevSummaries = normalizeStoredSessionSummaries(meta.gamePreviousSessionSummaries);
     const targetIndex = sessionNumber - 1;
     if (targetIndex < 0 || targetIndex >= prevSummaries.length) {
       throw new Error("Session summary not found");
     }
+    const originalTargetSummary = rawPreviousSummaries[targetIndex];
     const existingNextSessionRequest = prevSummaries[targetIndex]?.nextSessionRequest?.trim() || null;
 
     const messages = await chats.listMessages(chatId);
@@ -8261,7 +8711,11 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       conclusionGenerationParameters,
       conn.provider,
     );
-    const { messages: conclusionMessages, transcriptTruncated } = fitSessionConclusionMessages({
+    const {
+      messages: conclusionMessages,
+      fullMessages,
+      transcriptTruncated,
+    } = fitSessionConclusionMessages({
       sessionNumber,
       language: setupConfig?.language ?? null,
       journalRecap,
@@ -8299,19 +8753,41 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       result.content ?? "",
       conclusionGenerationParameters?.customThinkingTags,
     );
-    assertCompleteGameJson(conclusionExtraction.content, result.finishReason);
     let appliedConclusion: SessionConclusionApplication;
+    let baselineAppliedConclusion: SessionConclusionApplication | undefined;
+    let factualReviewApplied = false;
     try {
-      const parsedConclusion = parseJSON(conclusionExtraction.content) as Record<string, unknown>;
-      appliedConclusion = applySessionConclusionPayload(parsedConclusion, {
-        sessionNumber,
-        nextSessionRequest: existingNextSessionRequest,
-        currentStoryArc,
-        currentPlotTwists,
-        currentPartyArcs,
-        currentMorale,
-        currentCards,
+      const salvagedConclusion = salvageGeneratedSessionConclusion(
+        conclusionExtraction.content,
+        result.finishReason,
+      ).draft;
+      const applyConclusion = (draft: Record<string, unknown>) =>
+        applySessionConclusionPayload(draft, {
+          sessionNumber,
+          nextSessionRequest: existingNextSessionRequest,
+          currentStoryArc,
+          currentPlotTwists,
+          currentPartyArcs,
+          currentMorale,
+          currentCards,
+        });
+      const reviewResult = await reviewSessionConclusionDraft({
+        draft: salvagedConclusion,
+        messages: fullMessages,
+        transcript: transcriptText,
+        provider,
+        options: conclusionOptions,
+        modelAccessPolicy,
+        timeoutMs: conclusionTimeoutMs,
+        debugMode: meta.debugMode === true,
       });
+      factualReviewApplied = reviewResult.reviewApplied;
+      if (factualReviewApplied) {
+        baselineAppliedConclusion = applyConclusion(salvagedConclusion);
+        appliedConclusion = applyConclusion(reviewResult.draft);
+      } else {
+        appliedConclusion = applyConclusion(salvagedConclusion);
+      }
       if (appliedConclusion.updatedCardCount > 0) {
         logger.info(
           "[session/regenerate-conclusion] Updated %d character cards for session %d",
@@ -8321,6 +8797,10 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       }
     } catch (err) {
       logger.warn(err, "[session/regenerate-conclusion] Session conclusion parsing failed");
+      if (err instanceof SessionSummaryReviewError || isSessionConclusionIncompleteError(err)) {
+        reply.code(err.statusCode).send({ error: err.message });
+        return;
+      }
       sendJsonRepairError(
         reply,
         "The regenerated conclusion was not valid JSON.",
@@ -8329,16 +8809,28 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
           title: `Repair Session ${sessionNumber} Summary JSON`,
           rawJson: conclusionExtraction.content,
           applyEndpoint: "/game/session/regenerate-conclusion/apply-json",
-          applyBody: { chatId, sessionNumber },
+          applyBody: {
+            chatId,
+            connectionId: conn.id,
+            sessionNumber,
+            summaryFingerprint: sessionSummaryFingerprint(originalTargetSummary),
+          },
         }),
       );
       return;
     }
 
     await chats.patchMetadata(chatId, (freshMeta) => {
-      const freshSummaries = normalizeStoredSessionSummaries(freshMeta.gamePreviousSessionSummaries);
+      const rawFreshSummaries = Array.isArray(freshMeta.gamePreviousSessionSummaries)
+        ? freshMeta.gamePreviousSessionSummaries
+        : [];
+      assertSessionSummaryUnchanged(originalTargetSummary, rawFreshSummaries[targetIndex], sessionNumber);
+      const freshSummaries = normalizeStoredSessionSummaries(rawFreshSummaries);
       if (!findSessionSummaryForNumber(freshSummaries, sessionNumber)) {
         throw new Error("Session summary not found");
+      }
+      if (factualReviewApplied && !isFeatureEnabled("recapFactualReview") && baselineAppliedConclusion) {
+        appliedConclusion = baselineAppliedConclusion;
       }
       const nextSummaries = freshSummaries.map((existingSummary) =>
         existingSummary.sessionNumber === sessionNumber ? appliedConclusion.summary : existingSummary,
@@ -8370,36 +8862,32 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
 
   // ── POST /game/session/regenerate-conclusion/apply-json ──
   app.post("/session/regenerate-conclusion/apply-json", async (req, reply) => {
-    const { chatId, rawJson, sessionNumber } = jsonRepairApplySchema.parse(req.body);
+    const { chatId, rawJson, sessionNumber, connectionId, summaryFingerprint } = jsonRepairApplySchema.parse(req.body);
     if (!sessionNumber) throw new Error("Session number is required");
     const chats = createChatsStorage(app.db);
     const chat = await chats.getById(chatId);
     if (!chat) throw new Error("Chat not found");
 
     const meta = parseMeta(chat.metadata);
+    const rawPreviousSummaries = Array.isArray(meta.gamePreviousSessionSummaries)
+      ? meta.gamePreviousSessionSummaries
+      : [];
     const prevSummaries = normalizeStoredSessionSummaries(meta.gamePreviousSessionSummaries);
     const targetIndex = sessionNumber - 1;
     if (targetIndex < 0 || targetIndex >= prevSummaries.length) {
       throw new Error("Session summary not found");
     }
+    const originalTargetSummary = rawPreviousSummaries[targetIndex];
+    assertSessionSummaryFingerprint(summaryFingerprint, originalTargetSummary, sessionNumber);
     const existingNextSessionRequest = prevSummaries[targetIndex]?.nextSessionRequest?.trim() || null;
     const currentStoryArc = (meta.gameStoryArc as string) || null;
     const currentPlotTwists = Array.isArray(meta.gamePlotTwists) ? (meta.gamePlotTwists as string[]) : [];
     const currentPartyArcs = Array.isArray(meta.gamePartyArcs) ? normalizePartyArcPayload(meta.gamePartyArcs) : [];
     const currentMorale = normalizeMoraleValue(meta.gameMorale, 50);
     const currentCards = (meta.gameCharacterCards as Array<Record<string, unknown>>) ?? [];
-    let appliedConclusion: SessionConclusionApplication;
+    let parsedConclusion: Record<string, unknown>;
     try {
-      const parsedConclusion = parseJSON(rawJson) as Record<string, unknown>;
-      appliedConclusion = applySessionConclusionPayload(parsedConclusion, {
-        sessionNumber,
-        nextSessionRequest: existingNextSessionRequest,
-        currentStoryArc,
-        currentPlotTwists,
-        currentPartyArcs,
-        currentMorale,
-        currentCards,
-      });
+      parsedConclusion = parseSessionConclusionForApply(rawJson);
     } catch (err) {
       logger.warn(err, "[session/regenerate-conclusion/apply-json] Repaired session JSON still failed to parse");
       sendJsonRepairError(
@@ -8410,16 +8898,53 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
           title: `Repair Session ${sessionNumber} Summary JSON`,
           rawJson,
           applyEndpoint: "/game/session/regenerate-conclusion/apply-json",
-          applyBody: { chatId, sessionNumber },
+          applyBody: { chatId, connectionId, sessionNumber, summaryFingerprint },
         }),
       );
       return;
     }
 
+    const messages = await chats.listMessages(chatId);
+    const transcriptText = formatGameTranscript(
+      applyGameSegmentEditsForPrompt(messages, meta).filter(
+        (message) => message.role !== "system" && !isSessionConclusionMessage(message.content),
+      ),
+    );
+    const reviewResult = await reviewRepairedSessionConclusion({
+      db: app.db,
+      chatConnectionId: chat.connectionId,
+      connectionId,
+      meta,
+      transcript: transcriptText,
+      draft: parsedConclusion,
+    });
+    const applyConclusion = (draft: Record<string, unknown>) =>
+      applySessionConclusionPayload(draft, {
+        sessionNumber,
+        nextSessionRequest: existingNextSessionRequest,
+        currentStoryArc,
+        currentPlotTwists,
+        currentPartyArcs,
+        currentMorale,
+        currentCards,
+      });
+    const factualReviewApplied = reviewResult.reviewApplied;
+    const baselineAppliedConclusion = factualReviewApplied ? applyConclusion(parsedConclusion) : undefined;
+    let appliedConclusion = factualReviewApplied
+      ? applyConclusion(reviewResult.draft)
+      : applyConclusion(parsedConclusion);
+
     await chats.patchMetadata(chatId, (freshMeta) => {
-      const freshSummaries = normalizeStoredSessionSummaries(freshMeta.gamePreviousSessionSummaries);
+      const rawFreshSummaries = Array.isArray(freshMeta.gamePreviousSessionSummaries)
+        ? freshMeta.gamePreviousSessionSummaries
+        : [];
+      assertSessionSummaryUnchanged(originalTargetSummary, rawFreshSummaries[targetIndex], sessionNumber);
+      const freshSummaries = normalizeStoredSessionSummaries(rawFreshSummaries);
       if (!findSessionSummaryForNumber(freshSummaries, sessionNumber)) {
         throw new Error("Session summary not found");
+      }
+      if (factualReviewApplied && !isFeatureEnabled("recapFactualReview") && baselineAppliedConclusion) {
+        appliedConclusion = baselineAppliedConclusion;
       }
       const nextSummaries = freshSummaries.map((existingSummary) =>
         existingSummary.sessionNumber === sessionNumber ? appliedConclusion.summary : existingSummary,
@@ -8437,8 +8962,8 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
 
     const conclusionHeader = `**Session ${sessionNumber} Concluded**`;
     const nextContent = `**Session ${sessionNumber} Concluded**\n\n${appliedConclusion.summary.summary}\n\n*Party Dynamics:* ${appliedConclusion.summary.partyDynamics}`;
-    const messages = await chats.listMessages(chatId);
-    const existingConclusionMessage = [...messages]
+    const currentMessages = await chats.listMessages(chatId);
+    const existingConclusionMessage = [...currentMessages]
       .reverse()
       .find((message) => message.role === "narrator" && message.content.trim().startsWith(conclusionHeader));
     if (existingConclusionMessage) {
@@ -11552,32 +12077,43 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
   );
 
   // ── PUT /game/:chatId/widgets ──
-  app.put<{ Params: { chatId: string } }>("/:chatId/widgets", async (req) => {
-    const { widgets: rawWidgets } = z
-      .object({ widgets: z.array(hudWidgetSchema).max(MAX_GAME_HUD_WIDGETS) })
-      .parse(req.body);
-    const widgets = sanitizeGameHudWidgets(rawWidgets, true);
+  app.put<{ Params: { chatId: string } }>("/:chatId/widgets", async (req, reply) => {
+    const { widgets: rawWidgets } = z.object({ widgets: gameHudWidgetsSchema }).parse(req.body);
+    const requestedWidgets = sanitizeGameHudWidgets(rawWidgets, true);
     const chats = createChatsStorage(app.db);
     const chat = await chats.getById(req.params.chatId);
     if (!chat) throw new Error("Chat not found");
 
-    const enableCustomWidgets = widgets.length > 0;
+    let widgetsToSave = requestedWidgets;
+    let rejectedExtendedChange = false;
     await chats.patchMetadata(req.params.chatId, (freshMeta) => {
+      if (!extendedHudWidgetsEnabled(freshMeta)) {
+        const merged = mergeDisabledExtendedHudWidgets(storedGameHudWidgets(freshMeta), requestedWidgets);
+        if (!merged) {
+          rejectedExtendedChange = true;
+          return {};
+        }
+        widgetsToSave = merged;
+      }
+      const enableCustomWidgets = widgetsToSave.length > 0;
       const setupConfig = (freshMeta.gameSetupConfig as GameSetupConfig | null) ?? null;
       return {
-        gameWidgetState: widgets,
+        gameWidgetState: widgetsToSave,
         enableCustomWidgets,
         ...(setupConfig
           ? {
               gameSetupConfig: {
                 ...setupConfig,
                 enableCustomWidgets,
-                customHudWidgets: widgets.length > 0 ? widgets : undefined,
+                customHudWidgets: widgetsToSave.length > 0 ? widgetsToSave : undefined,
               },
             }
           : {}),
       };
     });
+    if (rejectedExtendedChange) {
+      return reply.code(409).send({ error: "Extended HUD widgets are disabled and cannot be changed" });
+    }
 
     return { ok: true };
   });
@@ -12354,6 +12890,13 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     npcsNeedingAvatars: z
       .array(
         z.object({
+          npcId: z.string().min(1).max(200).optional(),
+          characterId: z.string().min(1).max(200).optional(),
+          sourceChatId: z.string().min(1).max(200).optional(),
+          avatarState: z
+            .object({ revision: z.number().int().nonnegative(), removed: z.boolean() })
+            .nullable()
+            .optional(),
           name: z.string().min(1).max(200),
           description: z.string().max(5000),
           gender: z.string().max(80).nullable().optional(),
@@ -12362,7 +12905,9 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       )
       .max(10)
       .optional(),
-    forceNpcAvatarNames: z.array(z.string().min(1).max(200)).max(10).optional(),
+    forceNpcAvatarNames: z.array(z.string().min(1).max(203)).max(10).optional(),
+    campaignPortraitBatch: z.boolean().optional(),
+    npcPortraitStylePrompt: z.string().max(1000).optional(),
     illustration: z
       .object({
         segment: z.number().int().min(0).max(500).optional(),
@@ -13828,8 +14373,12 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     }
   });
 
-  app.post("/generate-assets/preview", async (req) => {
+  app.post("/generate-assets/preview", async (req, reply) => {
     const input = generateAssetsSchema.parse(req.body);
+    const campaignPortraitsRequest = input.campaignPortraitBatch === true || !!input.npcPortraitStylePrompt?.trim();
+    if (campaignPortraitsRequest && !isFeatureEnabled("campaignPortraits")) {
+      return reply.status(403).send({ error: "Campaign portraits are disabled" });
+    }
     const chats = createChatsStorage(app.db);
     const connections = createConnectionsStorage(app.db);
     const agents = createAgentsStorage(app.db);
@@ -14097,11 +14646,34 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       }
     }
 
-    if (input.npcsNeedingAvatars?.length) {
-      const forceNpcAvatarNames = new Set(
-        (input.forceNpcAvatarNames ?? []).map((name) => normalizeJournalMatch(name)).filter(Boolean),
+    let npcCandidates: PortraitRequest[] = input.npcsNeedingAvatars ?? [];
+    if (npcCandidates.length) {
+      const previewCharacters = createCharactersStorage(app.db);
+      const previewRemovedByCharacterId = new Map<string, boolean>();
+      let currentNpcs = (meta.gameNpcs as GameNpc[]) ?? [];
+      let portraitOwners: ResolvedCampaignPortraitOwner[] = [];
+      if (input.campaignPortraitBatch) {
+        try {
+          portraitOwners = await resolveCampaignPortraitOwners(app.db, chat, npcCandidates);
+          currentNpcs = portraitOwners.flatMap((owner) => owner.npcs) as GameNpc[];
+          npcCandidates = portraitOwners.flatMap((owner) => owner.candidates);
+        } catch (error) {
+          return reply
+            .status(400)
+            .send({ error: error instanceof Error ? error.message : "Portrait roster is invalid" });
+        }
+      }
+      const portraitNpcsByOwner = new Map(portraitOwners.map((owner) => [owner.sourceChatId, owner.npcs as GameNpc[]]));
+      const portraitPresentByOwner = new Map<string, Array<Record<string, unknown>>>();
+      await Promise.all(
+        portraitOwners.map(async (owner) => {
+          const state = await createGameStateStorage(app.db).getLatest(owner.sourceChatId);
+          portraitPresentByOwner.set(
+            owner.sourceChatId,
+            parseStoredJson<Array<Record<string, unknown>>>(state?.presentCharacters) ?? [],
+          );
+        }),
       );
-      const currentNpcs = (meta.gameNpcs as GameNpc[]) ?? [];
       const existingNpcAvatarByName = new Map<string, string>();
       for (const currentNpc of currentNpcs) {
         addExistingNpcAvatar(existingNpcAvatarByName, currentNpc.name, currentNpc.avatarUrl);
@@ -14113,7 +14685,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         addExistingNpcAvatar(existingNpcAvatarByName, presentCharacter.name, presentCharacter.avatarPath);
       }
 
-      for (const npc of input.npcsNeedingAvatars) {
+      for (const npc of npcCandidates) {
         const generatedAvatarUrl = buildNpcAvatarUrl(input.chatId, npc.name);
         addExistingNpcAvatar(existingNpcAvatarByName, npc.name, generatedAvatarUrl);
       }
@@ -14121,24 +14693,46 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       const charAvatarByName = await loadGameAvatarLookup(meta, parseChatCharacterIds(chat.characterIds));
 
       type PreviewAssetItem = (typeof items)[number];
-      const portraitPreviewItems: Array<PreviewAssetItem | null> = new Array(input.npcsNeedingAvatars.length).fill(
-        null,
-      );
+      const portraitPreviewItems: Array<PreviewAssetItem | null> = new Array(npcCandidates.length).fill(null);
       let nextNpcIndex = 0;
       const runPortraitPreviewWorker = async () => {
         while (true) {
           const index = nextNpcIndex++;
-          const npc = input.npcsNeedingAvatars?.[index];
+          const npc = npcCandidates[index];
           if (!npc) return;
 
           const normalizedNpcName = normalizeJournalMatch(npc.name);
-          const forceNpcAvatar = forceNpcAvatarNames.has(normalizedNpcName);
+          const metadataNpc = findNpcRecordForAsset(
+            npc.sourceChatId ? (portraitNpcsByOwner.get(npc.sourceChatId) ?? []) : currentNpcs,
+            npc,
+          );
+          if (!metadataNpc?.id || (npc.characterId && npc.characterId !== metadataNpc.characterId)) continue;
+          const avatarCharacterId = metadataNpc.characterId?.trim() || null;
+          let canonicalAvatarRemoved = readGameNpcAvatarState(metadataNpc.avatarState)?.removed === true;
+          if (avatarCharacterId) {
+            const cachedRemoved = previewRemovedByCharacterId.get(avatarCharacterId);
+            if (cachedRemoved !== undefined) {
+              canonicalAvatarRemoved = cachedRemoved;
+            } else {
+              const character = await previewCharacters.getById(avatarCharacterId);
+              canonicalAvatarRemoved = readCharacterAvatarState(character?.data)?.removed === true;
+              previewRemovedByCharacterId.set(avatarCharacterId, canonicalAvatarRemoved);
+            }
+          }
+          const forceNpcAvatar =
+            input.campaignPortraitBatch ||
+            isForcedSceneAssetNpcAvatar(input.forceNpcAvatarNames ?? [], npc) ||
+            canonicalAvatarRemoved;
           if (!forceNpcAvatar && existingNpcAvatarByName.get(normalizedNpcName)) continue;
           if (!forceNpcAvatar && findCharAvatarFuzzy(npc.name, charAvatarByName)) continue;
-          const metadataNpc = findNpcRecordByName(currentNpcs, npc.name);
-          const presentCharacter = findRecordByName(presentCharacters, npc.name);
+          const sourcePresentCharacters = npc.sourceChatId
+            ? (portraitPresentByOwner.get(npc.sourceChatId) ?? [])
+            : presentCharacters;
+          const presentCharacter = findRecordByName(sourcePresentCharacters, npc.name);
           const appearance = resolveNpcPortraitAppearance(npc, metadataNpc, presentCharacter);
-          const promptOverride = promptOverrideById.get(gameImagePromptReviewId("portrait", npc.name));
+          const promptOverride = promptOverrideById.get(
+            gameImagePromptReviewId("portrait", input.campaignPortraitBatch ? (npc.npcId ?? npc.name) : npc.name),
+          );
 
           const compiledReviewPrompt = await buildNpcPortraitProviderPrompt({
             chatId: input.chatId,
@@ -14146,7 +14740,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
             appearance,
             gender: npc.gender ?? metadataNpc?.gender ?? optionalTrimmedString(presentCharacter?.gender),
             pronouns: npc.pronouns ?? metadataNpc?.pronouns ?? optionalTrimmedString(presentCharacter?.pronouns),
-            artStyle,
+            artStyle: input.npcPortraitStylePrompt?.trim() || artStyle,
             imgSource,
             imgModel,
             imgBaseUrl,
@@ -14160,13 +14754,15 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
             styleProfileId,
             promptOverridesStorage,
             dynamicPromptGenerator,
+            isAllowed: campaignPortraitsRequest ? () => isFeatureEnabled("campaignPortraits") : undefined,
             size: portraitSize,
+            styleCacheKey: input.campaignPortraitBatch ? input.npcPortraitStylePrompt?.trim() || artStyle : undefined,
             promptOverride: promptOverride?.prompt,
             negativePromptOverride: promptOverride?.negativePrompt,
           });
           const previewSize = previewSizeFor(compiledReviewPrompt.prompt, portraitSize);
           portraitPreviewItems[index] = {
-            id: gameImagePromptReviewId("portrait", npc.name),
+            id: gameImagePromptReviewId("portrait", input.campaignPortraitBatch ? (npc.npcId ?? npc.name) : npc.name),
             kind: "portrait",
             title: `Portrait: ${npc.name}`,
             prompt: compiledReviewPrompt.prompt,
@@ -14179,7 +14775,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       const portraitPreviewWorkerCount =
         meta.gameSequentialAgents === true || input.queueImageGenerationRequests
           ? 1
-          : Math.min(GAME_ASSET_PORTRAIT_CONCURRENCY, input.npcsNeedingAvatars.length);
+          : Math.min(GAME_ASSET_PORTRAIT_CONCURRENCY, npcCandidates.length);
       await Promise.all(Array.from({ length: portraitPreviewWorkerCount }, () => runPortraitPreviewWorker()));
       items.push(...portraitPreviewItems.filter((item): item is PreviewAssetItem => item !== null));
     }
@@ -14189,10 +14785,82 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
 
   app.post("/generate-assets", async (req, reply) => {
     const input = generateAssetsSchema.parse(req.body);
+    const campaignPortraitsRequest = input.campaignPortraitBatch === true || !!input.npcPortraitStylePrompt?.trim();
+    const assertPortraitPublicationAllowed = () => {
+      if (campaignPortraitsRequest && !isFeatureEnabled("campaignPortraits")) {
+        throw Object.assign(new Error("Campaign portraits are disabled"), { statusCode: 403 });
+      }
+    };
+    if (campaignPortraitsRequest && !isFeatureEnabled("campaignPortraits")) {
+      return reply.status(403).send({ error: "Campaign portraits are disabled" });
+    }
     const assetAbortSignal = createResponseAbortSignal(
       reply,
       GAME_ASSET_GENERATION_TIMEOUT_MS,
       "Game asset generation",
+    );
+    const chats = createChatsStorage(app.db);
+    const chat = await chats.getById(input.chatId);
+    if (!chat) throw new Error("Chat not found");
+    const meta = parseMeta(chat.metadata);
+    let campaignPortraitOwners: ResolvedCampaignPortraitOwner[] = [];
+    let startGameNpcs = Array.isArray(meta.gameNpcs) ? (meta.gameNpcs as GameNpc[]) : [];
+    let npcCandidates: PortraitRequest[] = input.npcsNeedingAvatars ?? [];
+    if (input.campaignPortraitBatch) {
+      try {
+        campaignPortraitOwners = await resolveCampaignPortraitOwners(app.db, chat, npcCandidates);
+        startGameNpcs = campaignPortraitOwners.flatMap((owner) =>
+          owner.npcs.map((npc) => ({ ...npc, sourceChatId: owner.sourceChatId })),
+        ) as GameNpc[];
+        npcCandidates = campaignPortraitOwners.flatMap((owner) => owner.candidates);
+      } catch (error) {
+        return reply.status(400).send({ error: error instanceof Error ? error.message : "Portrait roster is invalid" });
+      }
+    }
+    const startNpcsByOwner = new Map(
+      campaignPortraitOwners.map((owner) => [owner.sourceChatId, owner.npcs as GameNpc[]]),
+    );
+    const requestedNpcIdCounts = new Map<string, number>();
+    for (const candidate of npcCandidates) {
+      const npcId = candidate.npcId?.trim();
+      if (npcId) requestedNpcIdCounts.set(npcId, (requestedNpcIdCounts.get(npcId) ?? 0) + 1);
+    }
+    const unlinkedNpcAvatarRevisionsAtStart = new Map<string, number>();
+    const unlinkedNpcAvatarRemovedAtStart = new Map<string, boolean>();
+    for (const candidate of npcCandidates) {
+      const npcId = candidate.npcId?.trim();
+      if (!npcId || requestedNpcIdCounts.get(npcId) !== 1) continue;
+      const ownerId = candidate.sourceChatId?.trim() || input.chatId;
+      const sourceNpcs = startNpcsByOwner.get(ownerId) ?? startGameNpcs;
+      const npc = findNpcRecordForAsset(sourceNpcs, candidate);
+      if (!npc || npc.characterId?.trim()) continue;
+      const avatarState = readGameNpcAvatarState(npc.avatarState);
+      const key = `${ownerId}:${npcId}`;
+      unlinkedNpcAvatarRevisionsAtStart.set(key, avatarState?.revision ?? 0);
+      unlinkedNpcAvatarRemovedAtStart.set(key, avatarState?.removed === true);
+    }
+    const revisionCaptureNpcs = npcCandidates.flatMap((candidate) => {
+      const npcId = candidate.npcId?.trim();
+      if (npcId && requestedNpcIdCounts.get(npcId) !== 1) return [];
+      const sourceNpcs = candidate.sourceChatId ? (startNpcsByOwner.get(candidate.sourceChatId) ?? []) : startGameNpcs;
+      const linkedNpc = findNpcRecordForAsset(sourceNpcs, candidate);
+      if (!linkedNpc?.characterId) return [];
+      if (candidate.characterId && candidate.characterId !== linkedNpc.characterId) return [];
+      return [linkedNpc];
+    });
+    // Authority belongs to request arrival, including callers waiting behind another asset job.
+    const avatarRevisionSnapshot = await captureNpcAvatarRevisions(app.db, revisionCaptureNpcs);
+    const avatarPathsAtPortraitStart = new Map<string, string | null>();
+    const avatarRemovedAtPortraitStart = new Map<string, boolean>();
+    const avatarCharacters = createCharactersStorage(app.db);
+    await Promise.all(
+      [...avatarRevisionSnapshot.keys()].map(async (characterId) => {
+        const character = await avatarCharacters.getById(characterId);
+        if (character) {
+          avatarPathsAtPortraitStart.set(characterId, character.avatarPath ?? null);
+          avatarRemovedAtPortraitStart.set(characterId, readCharacterAvatarState(character.data)?.removed === true);
+        }
+      }),
     );
     const releaseAssetGeneration = await acquireGameAssetGenerationLock(input.chatId, assetAbortSignal);
     try {
@@ -14202,7 +14870,6 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       const debugLog = (message: string, ...args: any[]) => {
         logDebugOverride(debugOverrideEnabled, message, ...args);
       };
-      const chats = createChatsStorage(app.db);
       const connections = createConnectionsStorage(app.db);
       const agents = createAgentsStorage(app.db);
 
@@ -14235,10 +14902,6 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         );
       }
 
-      const chat = await chats.getById(input.chatId);
-      if (!chat) throw new Error("Chat not found");
-
-      const meta = parseMeta(chat.metadata);
       const enableGen = !!meta.enableSpriteGeneration;
       const backgroundGenerationEnabled = meta.gameStoryboardViewerDisplayMode !== "background";
       const imgConnId = await resolveGameImageConnectionId(meta, agents);
@@ -14327,7 +14990,13 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       let generatedBackground: string | null = null;
       let fallbackBackground: string | null = null;
       let generatedIllustration: { tag: string; segment?: number } | null = null;
-      const generatedNpcAvatars: Array<{ name: string; avatarUrl: string }> = [];
+      const generatedNpcAvatars: Array<{
+        npcId?: string | null;
+        characterId?: string | null;
+        avatarState?: NonNullable<GameNpc["avatarState"]>;
+        name: string;
+        avatarUrl: string;
+      }> = [];
 
       // ── Generate background ──
       if (!assetAbortSignal.aborted && backgroundGenerationEnabled && input.backgroundTag) {
@@ -14557,65 +15226,137 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       }
 
       // ── Generate NPC avatars ──
-      if (!assetAbortSignal.aborted && input.npcsNeedingAvatars?.length) {
-        const forceNpcAvatarNames = new Set(
-          (input.forceNpcAvatarNames ?? []).map((name) => normalizeJournalMatch(name)).filter(Boolean),
-        );
+      if (!assetAbortSignal.aborted && npcCandidates.length) {
         const latestChat = await chats.getById(input.chatId);
         const latestMeta = latestChat ? parseMeta(latestChat.metadata) : meta;
-        const currentNpcs = (latestMeta.gameNpcs as GameNpc[]) ?? [];
-        const existingNpcAvatarByName = new Map<string, string>();
-        for (const currentNpc of currentNpcs) {
-          addExistingNpcAvatar(existingNpcAvatarByName, currentNpc.name, currentNpc.avatarUrl);
+        const currentNpcs = [...((latestMeta.gameNpcs as GameNpc[]) ?? [])];
+        for (const candidate of startGameNpcs) {
+          if (candidate.id.startsWith("party:") && !currentNpcs.some((npc) => npc.id === candidate.id)) {
+            currentNpcs.push(candidate);
+          }
         }
-
         const latestState = await createGameStateStorage(app.db).getLatest(input.chatId);
         const presentCharacters = parseStoredJson<Array<Record<string, unknown>>>(latestState?.presentCharacters) ?? [];
-        for (const presentCharacter of presentCharacters) {
-          addExistingNpcAvatar(existingNpcAvatarByName, presentCharacter.name, presentCharacter.avatarPath);
-        }
-
-        for (const npc of input.npcsNeedingAvatars) {
-          const generatedAvatarUrl = buildNpcAvatarUrl(input.chatId, npc.name);
-          addExistingNpcAvatar(existingNpcAvatarByName, npc.name, generatedAvatarUrl);
-        }
-
-        const charAvatarByName = await loadGameAvatarLookup(
-          latestMeta,
-          parseChatCharacterIds((latestChat ?? chat).characterIds),
-        );
+        const chatCharacterIds = parseChatCharacterIds((latestChat ?? chat).characterIds);
+        const isPartyCandidate = (
+          npcId: string | null | undefined,
+          targetMeta: Record<string, unknown>,
+          targetChatIds: string[],
+        ) => {
+          if (!npcId?.startsWith("party:")) return false;
+          const characterId = npcId.slice("party:".length);
+          if (!characterId) return true;
+          const setup = (targetMeta.gameSetupConfig ?? {}) as GameSetupConfig;
+          return getStoredPartyCharacterIds(targetMeta, setup, targetChatIds).includes(characterId);
+        };
+        const isExplicitPartyCharacter = (
+          characterId: string | null | undefined,
+          targetMeta: Record<string, unknown>,
+          targetChatIds: string[],
+        ) => {
+          if (!characterId) return false;
+          const setup = (targetMeta.gameSetupConfig ?? {}) as GameSetupConfig;
+          const explicitPartyIds = new Set([
+            ...readStringArray(targetMeta.gamePartyCharacterIds),
+            ...readStringArray(setup.partyCharacterIds),
+          ]);
+          return (
+            explicitPartyIds.has(characterId) &&
+            getStoredPartyCharacterIds(targetMeta, setup, targetChatIds).includes(characterId)
+          );
+        };
 
         let nextNpcIndex = 0;
         const runPortraitWorker = async () => {
           while (!assetAbortSignal.aborted) {
-            const npc = input.npcsNeedingAvatars?.[nextNpcIndex++];
-            if (!npc) return;
+            const nextNpc = npcCandidates[nextNpcIndex++];
+            if (!nextNpc) return;
+            let npc: PortraitRequest = nextNpc;
 
+            let outputToken: string | undefined;
+            let generatedPath: string | undefined;
+            let linkedAvatarAssignmentStarted = false;
+            let ownerChatId = input.chatId;
             try {
-              const normalizedNpcName = normalizeJournalMatch(npc.name);
-              const forceNpcAvatar = forceNpcAvatarNames.has(normalizedNpcName);
-              const existingAvatarUrl = existingNpcAvatarByName.get(normalizedNpcName);
+              let portraitNpcs = currentNpcs;
+              let portraitMeta = latestMeta;
+              let portraitChatIds = chatCharacterIds;
+              let portraitPresentCharacters = presentCharacters;
+              let metadataNpc: GameNpc | null = null;
+              if (input.campaignPortraitBatch) {
+                const currentOwnerChat = await chats.getById(input.chatId);
+                if (!currentOwnerChat || !npc.sourceChatId) continue;
+                const freshOwners = await resolveCampaignPortraitOwners(app.db, currentOwnerChat, [npc]);
+                const freshOwner = freshOwners.find((owner) => owner.sourceChatId === npc.sourceChatId);
+                const freshCandidate = freshOwner?.candidates[0];
+                if (!freshOwner || !freshCandidate) continue;
+                npc = freshCandidate;
+                ownerChatId = freshOwner.sourceChatId;
+                portraitNpcs = freshOwner.npcs as GameNpc[];
+                portraitMeta = freshOwner.meta;
+                portraitChatIds = parseChatCharacterIds(freshOwner.chat.characterIds);
+                const sourceState = await createGameStateStorage(app.db).getLatest(ownerChatId);
+                portraitPresentCharacters =
+                  parseStoredJson<Array<Record<string, unknown>>>(sourceState?.presentCharacters) ?? [];
+              }
+              metadataNpc = findNpcRecordForAsset(portraitNpcs, npc);
+              const ownerIgnoredNpcIds = new Set(readStringArray(portraitMeta.gameIgnoredNpcIds));
+              const explicitCampaignPortrait = input.campaignPortraitBatch === true;
+              if (
+                !metadataNpc?.id ||
+                ownerIgnoredNpcIds.has(metadataNpc.id) ||
+                (isPartyCandidate(npc.npcId, portraitMeta, portraitChatIds) && !explicitCampaignPortrait) ||
+                (metadataNpc.id.startsWith("party:") && !explicitCampaignPortrait) ||
+                (isPartyNpcId(metadataNpc.id) && !(explicitCampaignPortrait && metadataNpc.id.startsWith("party:")))
+              )
+                continue;
+              if (npc.characterId && npc.characterId !== metadataNpc.characterId) continue;
+              const linkedCharacterId = metadataNpc.characterId?.trim() || null;
+              if (
+                isExplicitPartyCharacter(linkedCharacterId, portraitMeta, portraitChatIds) &&
+                !explicitCampaignPortrait
+              )
+                continue;
+              const canonicalAvatarRemoved = linkedCharacterId
+                ? avatarRemovedAtPortraitStart.get(linkedCharacterId) === true
+                : unlinkedNpcAvatarRemovedAtStart.get(`${ownerChatId}:${metadataNpc.id.trim()}`) === true;
+              const forceNpcAvatar =
+                explicitCampaignPortrait ||
+                isForcedSceneAssetNpcAvatar(input.forceNpcAvatarNames ?? [], {
+                  ...npc,
+                  npcId: metadataNpc.id,
+                }) ||
+                canonicalAvatarRemoved;
+              const existingAvatarUrl = metadataNpc.avatarUrl?.trim() || null;
               if (!forceNpcAvatar && existingAvatarUrl) {
                 logger.info('[game/generate-assets] NPC avatar exists, skipping generation: "%s"', npc.name);
-                generatedNpcAvatars.push({ name: npc.name, avatarUrl: existingAvatarUrl });
+                generatedNpcAvatars.push({
+                  npcId: metadataNpc.id,
+                  name: npc.name,
+                  avatarUrl: existingAvatarUrl,
+                  ...(linkedCharacterId ? { characterId: linkedCharacterId } : {}),
+                  ...(metadataNpc.avatarState ? { avatarState: metadataNpc.avatarState } : {}),
+                });
                 continue;
               }
 
-              const libAvatar = findCharAvatarFuzzy(npc.name, charAvatarByName);
-              if (!forceNpcAvatar && libAvatar) {
-                generatedNpcAvatars.push({ name: npc.name, avatarUrl: libAvatar });
-                continue;
-              }
-              const metadataNpc = findNpcRecordByName(currentNpcs, npc.name);
-              const presentCharacter = findRecordByName(presentCharacters, npc.name);
+              const avatarPathAtStart = linkedCharacterId ? avatarPathsAtPortraitStart.get(linkedCharacterId) : null;
+              if (explicitCampaignPortrait && !canonicalAvatarRemoved && avatarPathAtStart) continue;
+              if (!forceNpcAvatar && avatarPathAtStart) continue;
+              const presentCharacter = portraitPresentCharacters.find((record) => record.id === metadataNpc.id) ?? null;
               const appearance = resolveNpcPortraitAppearance(npc, metadataNpc, presentCharacter);
+              const requestOutputToken = randomUUID();
+              outputToken = requestOutputToken;
               const avatarUrl = await generateNpcPortrait({
-                chatId: input.chatId,
+                chatId: ownerChatId,
+                outputToken: requestOutputToken,
                 npcName: npc.name,
                 appearance,
                 gender: npc.gender ?? metadataNpc?.gender ?? optionalTrimmedString(presentCharacter?.gender),
                 pronouns: npc.pronouns ?? metadataNpc?.pronouns ?? optionalTrimmedString(presentCharacter?.pronouns),
-                artStyle,
+                artStyle: explicitCampaignPortrait ? input.npcPortraitStylePrompt?.trim() || artStyle : artStyle,
+                npcId: metadataNpc.id,
+                styleCacheKey: explicitCampaignPortrait ? input.npcPortraitStylePrompt?.trim() : undefined,
                 imgSource,
                 imgModel,
                 imgBaseUrl,
@@ -14631,20 +15372,245 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
                 debugLog: debugLogsEnabled ? debugLog : undefined,
                 promptOverridesStorage,
                 dynamicPromptGenerator,
+                isAllowed: campaignPortraitsRequest ? () => isFeatureEnabled("campaignPortraits") : undefined,
                 size: portraitSize,
-                promptOverride: promptOverrideById.get(gameImagePromptReviewId("portrait", npc.name))?.prompt,
-                negativePromptOverride: promptOverrideById.get(gameImagePromptReviewId("portrait", npc.name))
-                  ?.negativePrompt,
+                promptOverride: promptOverrideById.get(
+                  gameImagePromptReviewId("portrait", explicitCampaignPortrait ? metadataNpc.id : npc.name),
+                )?.prompt,
+                negativePromptOverride: promptOverrideById.get(
+                  gameImagePromptReviewId("portrait", explicitCampaignPortrait ? metadataNpc.id : npc.name),
+                )?.negativePrompt,
                 force: forceNpcAvatar,
                 signal: assetAbortSignal,
               });
               if (avatarUrl) {
+                generatedPath = avatarUrl.split(/[?#]/u, 1)[0] ?? avatarUrl;
+                const urlWithVersion = `${generatedPath}?v=${Date.now()}`;
+                if (campaignPortraitsRequest && !isFeatureEnabled("campaignPortraits")) {
+                  removeOwnedNpcPortrait(ownerChatId, generatedPath, requestOutputToken);
+                  continue;
+                }
+                if (linkedCharacterId) {
+                  const expectedAvatarRevision = avatarRevisionSnapshot.get(linkedCharacterId);
+                  if (expectedAvatarRevision === undefined || avatarPathAtStart === undefined) {
+                    removeOwnedNpcPortrait(ownerChatId, generatedPath, requestOutputToken);
+                    continue;
+                  }
+                  linkedAvatarAssignmentStarted = true;
+                  const assignedCharacter = await avatarCharacters.updateAvatar(linkedCharacterId, urlWithVersion, {
+                    beforeWrite: assertPortraitPublicationAllowed,
+                    expectedAvatarRevision,
+                    canUpdate: async (transaction) => {
+                      if (campaignPortraitsRequest && !isFeatureEnabled("campaignPortraits")) return false;
+                      const currentRows = await transaction
+                        .select({
+                          id: chatsTable.id,
+                          mode: chatsTable.mode,
+                          groupId: chatsTable.groupId,
+                          metadata: chatsTable.metadata,
+                          characterIds: chatsTable.characterIds,
+                        })
+                        .from(chatsTable);
+                      if (campaignPortraitsRequest && !isFeatureEnabled("campaignPortraits")) return false;
+                      const campaignChat = currentRows.find((row) => row.id === input.chatId);
+                      const ownerChat = currentRows.find((row) => row.id === ownerChatId);
+                      if (!campaignChat || !ownerChat) return false;
+                      const scopedRows = selectContactBookChats(campaignChat, currentRows);
+                      if (explicitCampaignPortrait && !scopedRows.some((row) => row.id === ownerChatId)) return false;
+                      if (
+                        explicitCampaignPortrait &&
+                        !metadataNpc.id.startsWith("party:") &&
+                        selectContactBookNpcOwners(campaignChat, scopedRows).find(
+                          (owner) => owner.id === metadataNpc.id,
+                        )?.row.id !== ownerChatId
+                      )
+                        return false;
+                      const currentMeta = parseMeta(ownerChat.metadata);
+                      const currentIds = parseChatCharacterIds(ownerChat.characterIds);
+                      const currentNpcs = Array.isArray(currentMeta.gameNpcs)
+                        ? (currentMeta.gameNpcs as GameNpc[])
+                        : [];
+                      if (explicitCampaignPortrait && metadataNpc.id === `party:${linkedCharacterId}`) {
+                        const currentSetup = (currentMeta.gameSetupConfig ?? {}) as GameSetupConfig;
+                        const currentPartyIds = getStoredPartyCharacterIds(currentMeta, currentSetup, currentIds);
+                        const ignored = new Set(readStringArray(currentMeta.gameIgnoredNpcIds));
+                        return (
+                          currentIds.includes(linkedCharacterId) &&
+                          currentPartyIds.includes(linkedCharacterId) &&
+                          !ignored.has(metadataNpc.id)
+                        );
+                      }
+                      const linkedNpc = findNpcRecordForAsset(currentNpcs, { ...npc, npcId: metadataNpc.id });
+                      const ignored = new Set(readStringArray(currentMeta.gameIgnoredNpcIds));
+                      return (
+                        !!linkedNpc &&
+                        linkedNpc.characterId === linkedCharacterId &&
+                        linkedNpc.name.trim() === metadataNpc.name.trim() &&
+                        linkedNpc.description === metadataNpc.description &&
+                        linkedNpc.descriptionSource === metadataNpc.descriptionSource &&
+                        linkedNpc.observedAppearance === metadataNpc.observedAppearance &&
+                        linkedNpc.observedDescription === metadataNpc.observedDescription &&
+                        (!npc.characterId || npc.characterId === linkedCharacterId) &&
+                        !ignored.has(metadataNpc.id) &&
+                        (explicitCampaignPortrait || !isPartyCandidate(npc.npcId, currentMeta, currentIds)) &&
+                        (explicitCampaignPortrait ||
+                          !isExplicitPartyCharacter(linkedCharacterId, currentMeta, currentIds)) &&
+                        currentIds.includes(linkedCharacterId) &&
+                        !isPartyNpcId(linkedNpc.id)
+                      );
+                    },
+                  });
+                  if (!assignedCharacter) {
+                    removeOwnedNpcPortrait(ownerChatId, generatedPath, requestOutputToken);
+                    continue;
+                  }
+                  const avatarState = readCharacterAvatarState(assignedCharacter.data);
+                  if (!avatarState || avatarState.removed) {
+                    removeOwnedNpcPortrait(ownerChatId, generatedPath, requestOutputToken);
+                    continue;
+                  }
+                  generatedNpcAvatars.push({
+                    npcId: metadataNpc.id,
+                    characterId: linkedCharacterId,
+                    avatarState,
+                    name: npc.name,
+                    avatarUrl: urlWithVersion,
+                  });
+                  continue;
+                }
+
+                const expectedRevision = unlinkedNpcAvatarRevisionsAtStart.get(
+                  `${ownerChatId}:${metadataNpc.id.trim()}`,
+                );
+                if (expectedRevision === undefined || npc.characterId) {
+                  removeOwnedNpcPortrait(ownerChatId, generatedPath, requestOutputToken);
+                  continue;
+                }
+                if (explicitCampaignPortrait) {
+                  const latestCampaignChat = await chats.getById(input.chatId);
+                  if (!latestCampaignChat) {
+                    removeOwnedNpcPortrait(ownerChatId, generatedPath, requestOutputToken);
+                    continue;
+                  }
+                  try {
+                    const [latestOwner] = await resolveCampaignPortraitOwners(app.db, latestCampaignChat, [npc]);
+                    if (latestOwner?.sourceChatId !== ownerChatId || !latestOwner.candidates.length) {
+                      removeOwnedNpcPortrait(ownerChatId, generatedPath, requestOutputToken);
+                      continue;
+                    }
+                  } catch {
+                    removeOwnedNpcPortrait(ownerChatId, generatedPath, requestOutputToken);
+                    continue;
+                  }
+                }
+                await chats.patchMetadata(
+                  ownerChatId,
+                  async (freshMeta) => {
+                    if (campaignPortraitsRequest && !isFeatureEnabled("campaignPortraits")) return {};
+                    if (explicitCampaignPortrait) {
+                      const latestCampaignChat = await chats.getById(input.chatId);
+                      if (!latestCampaignChat) return {};
+                      const latestScopeRows = (await app.db.select().from(chatsTable)) as Array<{
+                        id: string;
+                        mode: string;
+                        groupId: string | null;
+                        characterIds: unknown;
+                        metadata: unknown;
+                      }>;
+                      const scopedRows = selectContactBookChats(latestCampaignChat, latestScopeRows);
+                      if (!scopedRows.some((row) => row.id === ownerChatId)) {
+                        return {};
+                      }
+                      if (
+                        selectContactBookNpcOwners(latestCampaignChat, scopedRows).find(
+                          (owner) => owner.id === metadataNpc.id,
+                        )?.row.id !== ownerChatId
+                      ) {
+                        return {};
+                      }
+                    }
+                    const freshNpcs = Array.isArray(freshMeta.gameNpcs) ? (freshMeta.gameNpcs as GameNpc[]) : [];
+                    const freshNpc = findNpcRecordForAsset(freshNpcs, { ...npc, npcId: metadataNpc.id });
+                    const freshIgnoredIds = new Set(readStringArray(freshMeta.gameIgnoredNpcIds));
+                    const freshAvatarState = readGameNpcAvatarState(freshNpc?.avatarState);
+                    if (
+                      !freshNpc ||
+                      freshNpc.characterId ||
+                      freshNpc.name.trim() !== npc.name.trim() ||
+                      freshNpc.description !== metadataNpc.description ||
+                      freshNpc.descriptionSource !== metadataNpc.descriptionSource ||
+                      freshNpc.observedAppearance !== metadataNpc.observedAppearance ||
+                      freshNpc.observedDescription !== metadataNpc.observedDescription ||
+                      freshNpc.gender !== metadataNpc.gender ||
+                      freshNpc.pronouns !== metadataNpc.pronouns ||
+                      (freshAvatarState?.revision ?? 0) !== expectedRevision ||
+                      (freshAvatarState?.removed ?? false) !==
+                        (unlinkedNpcAvatarRemovedAtStart.get(`${ownerChatId}:${metadataNpc.id.trim()}`) ?? false) ||
+                      freshIgnoredIds.has(metadataNpc.id) ||
+                      isPartyCandidate(
+                        npc.npcId,
+                        freshMeta,
+                        parseChatCharacterIds(
+                          ownerChatId === input.chatId ? (latestChat ?? chat).characterIds : undefined,
+                        ),
+                      ) ||
+                      metadataNpc.id.startsWith("party:") ||
+                      isPartyNpcId(metadataNpc.id)
+                    )
+                      return {};
+                    if (campaignPortraitsRequest && !isFeatureEnabled("campaignPortraits")) return {};
+                    const nextNpcs = upsertGameNpcAvatarEntries(freshNpcs, [
+                      {
+                        npcId: metadataNpc.id,
+                        name: npc.name,
+                        description: npc.description,
+                        gender: npc.gender,
+                        pronouns: npc.pronouns,
+                        avatarUrl: generatedPath!,
+                      },
+                    ]);
+                    return nextNpcs !== freshNpcs ? { gameNpcs: nextNpcs } : {};
+                  },
+                  {
+                    npcAvatarWriteIntents: [{ npcId: metadataNpc.id, expectedRevision }],
+                    beforeWrite: assertPortraitPublicationAllowed,
+                  },
+                );
+                const savedChat = await chats.getById(ownerChatId);
+                const savedMeta = savedChat ? parseMeta(savedChat.metadata) : null;
+                const savedNpc =
+                  savedMeta && Array.isArray(savedMeta.gameNpcs)
+                    ? findNpcRecordForAsset(savedMeta.gameNpcs as GameNpc[], { ...npc, npcId: metadataNpc.id })
+                    : null;
+                const savedState = readGameNpcAvatarState(savedNpc?.avatarState);
+                if (
+                  !savedNpc ||
+                  savedNpc.characterId ||
+                  savedNpc.avatarUrl?.split(/[?#]/u, 1)[0] !== generatedPath ||
+                  !savedState ||
+                  savedState.removed ||
+                  savedState.revision !== expectedRevision + 1
+                ) {
+                  removeOwnedNpcPortrait(ownerChatId, generatedPath, requestOutputToken);
+                  continue;
+                }
                 generatedNpcAvatars.push({
+                  npcId: metadataNpc.id,
                   name: npc.name,
-                  avatarUrl: `${avatarUrl.split("?")[0]}?v=${Date.now()}`,
+                  avatarState: savedState,
+                  avatarUrl: `${savedNpc.avatarUrl}?v=${Date.now()}`,
                 });
               }
             } catch (err) {
+              // ponytail: After a linked write starts, the card may already reference this file despite a later sync error; retain it until reference-aware cleanup exists.
+              if (
+                generatedPath &&
+                outputToken &&
+                !linkedAvatarAssignmentStarted &&
+                !generatedNpcAvatars.some((avatar) => avatar.avatarUrl.startsWith(generatedPath!))
+              ) {
+                removeOwnedNpcPortrait(ownerChatId, generatedPath, outputToken);
+              }
               if (assetAbortSignal.aborted) throw err;
               logger.warn(err, '[game/generate-assets] Failed to generate NPC avatar for "%s"', npc.name);
             }
@@ -14653,31 +15619,8 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         const portraitWorkerCount =
           meta.gameSequentialAgents === true || input.queueImageGenerationRequests
             ? 1
-            : Math.min(GAME_ASSET_PORTRAIT_CONCURRENCY, input.npcsNeedingAvatars.length);
+            : Math.min(GAME_ASSET_PORTRAIT_CONCURRENCY, npcCandidates.length);
         await Promise.all(Array.from({ length: portraitWorkerCount }, () => runPortraitWorker()));
-
-        // Persist avatar URLs to NPC list in metadata
-        if (generatedNpcAvatars.length > 0) {
-          const avatarEntries: SceneAssetNpcAvatarEntry[] = generatedNpcAvatars.map((generatedAvatar) => ({
-            ...generatedAvatar,
-            ...(() => {
-              const candidate = input.npcsNeedingAvatars?.find(
-                (npc) => normalizeJournalMatch(npc.name) === normalizeJournalMatch(generatedAvatar.name),
-              );
-              const metadataNpc = findNpcRecordByName(currentNpcs, generatedAvatar.name);
-              return {
-                description: candidate?.description?.trim() || metadataNpc?.description || "",
-                gender: candidate?.gender ?? metadataNpc?.gender,
-                pronouns: candidate?.pronouns ?? metadataNpc?.pronouns,
-              };
-            })(),
-          }));
-          await chats.patchMetadata(input.chatId, (freshMeta) => {
-            const freshNpcs = Array.isArray(freshMeta.gameNpcs) ? (freshMeta.gameNpcs as GameNpc[]) : [];
-            const nextNpcs = upsertGameNpcAvatarEntries(freshNpcs, avatarEntries);
-            return nextNpcs !== freshNpcs ? { gameNpcs: nextNpcs } : {};
-          });
-        }
       }
 
       logger.info(
@@ -14763,6 +15706,15 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
   });
 
   // ── GET /game/:chatId/checkpoints ──
+  // Campaign contact roster used by the in-game Contact list and portrait action.
+  app.get("/:chatId/contacts", async (req, reply) => {
+    if (!isFeatureEnabled("gameContactBook")) {
+      return reply.status(403).send({ error: "Campaign contact book is disabled" });
+    }
+    const { chatId } = req.params as { chatId: string };
+    return buildGameContactBook(app.db, chatId);
+  });
+
   // List all checkpoints for a chat.
   app.get("/:chatId/checkpoints", async (req) => {
     const { chatId } = req.params as { chatId: string };

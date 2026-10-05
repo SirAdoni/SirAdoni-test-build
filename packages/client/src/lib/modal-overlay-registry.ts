@@ -58,6 +58,11 @@ export function isModalOverlayOpen(): boolean {
   return openOverlays.length > 0;
 }
 
+/** Counts open modals so shortcuts can distinguish the palette from another overlay above it. */
+export function countModalOverlays(): number {
+  return openOverlays.length;
+}
+
 /** Test seam: drop all state so a regression can drive the module repeatedly. */
 export function __resetModalOverlayRegistryForTests() {
   openOverlays = [];

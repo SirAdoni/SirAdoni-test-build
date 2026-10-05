@@ -19,6 +19,7 @@ import { getFileTableConfig, isFileTable, type AnyFileColumn, type AnyFileTable 
 import * as schema from "../../db/schema/index.js";
 import { getFileStorageDir, getMonorepoRoot, isCustomToolScriptEnabled } from "../../config/runtime-config.js";
 import { logger } from "../../lib/logger.js";
+import { isFeatureEnabled } from "../features/feature-settings.js";
 import { chatIdForMariSession } from "../professor-mari/mari-session.js";
 import { createCharactersStorage } from "../storage/characters.storage.js";
 import {
@@ -62,6 +63,7 @@ import {
   type MariDbValidationIssue,
   type MariDbValidationResult,
   MARI_PERMISSIONS_MODE_SETTINGS_KEY,
+  PRIVATE_NOTEBOOK_SETTINGS_PREFIX,
   createLorebookEntrySchema,
   lorebookDecisionModeSchema,
   parseLorebookDecisionActivation,
@@ -74,6 +76,7 @@ import { runMariTransformSandbox } from "./mari-transform-sandbox.js";
 import { reloadFeatureSettingsIfTouched } from "../features/feature-settings.js";
 import { createAppSettingsStorage } from "../storage/app-settings.storage.js";
 import { encryptCustomToolWebhookUrl, ENCRYPTED_WEBHOOK_PREFIX } from "../../utils/custom-tool-webhook.js";
+import { professorMariCodePathspecs } from "../professor-mari/workspace-change-review.service.js";
 
 type Row = Record<string, unknown>;
 type Table = AnyFileTable;
@@ -210,6 +213,20 @@ const COMMAND_OUTPUT_LIMIT = 32_000;
 const CODE_READ_TIMEOUT_MS = 30_000;
 const CODE_CHECK_TIMEOUT_MS = 15 * 60 * 1000;
 const FILE_BACKED_TABLE_SET = new Set<string>(FILE_BACKED_TABLES);
+const MARI_PRIVATE_TABLES = new Set(["game_prep_boards"]);
+function optionalFeatureForMariTable(table: string) {
+  if (table === "random_tables") return "randomTables" as const;
+  if (table === "game_dice_rolls") return "diceLog" as const;
+  return null;
+}
+
+function visibleMariFileBackedTables() {
+  return FILE_BACKED_TABLES.filter((table) => {
+    if (MARI_PRIVATE_TABLES.has(table)) return false;
+    const feature = optionalFeatureForMariTable(table);
+    return feature === null || isFeatureEnabled(feature);
+  });
+}
 const THEME_TABLE = "custom_themes";
 const THEME_ACTIVE_TRUE = "true";
 const THEME_ACTIVE_FALSE = "false";
@@ -765,6 +782,15 @@ function deepMerge(base: unknown, patch: unknown): unknown {
 }
 
 function getMeta(table: string): TableMeta {
+  const feature = optionalFeatureForMariTable(table);
+  if (feature && !isFeatureEnabled(feature)) throw new Error(`FEATURE_DISABLED: ${feature}`);
+  return getInternalMeta(table);
+}
+
+// Integrity checks, cascades and restore must work while optional features are OFF.
+function getInternalMeta(table: string): TableMeta {
+  if (MARI_PRIVATE_TABLES.has(table))
+    throw new Error("Table " + table + " is not available through generic Mari DB commands");
   let meta = TABLE_METAS.get(table);
   if (!meta) {
     // Capability packages register their tables after this module loads (registerTables).
@@ -774,6 +800,79 @@ function getMeta(table: string): TableMeta {
     TABLE_METAS.set(table, meta);
   }
   return meta;
+}
+
+function isPrivateNotebookSettingsKey(value: unknown): value is string {
+  return typeof value === "string" && value.startsWith(PRIVATE_NOTEBOOK_SETTINGS_PREFIX);
+}
+
+function isPrivateNotebookSettingsRow(table: string, row: Row): boolean {
+  return table === "app_settings" && isPrivateNotebookSettingsKey(row.key);
+}
+
+function assertPrivateNotebookMutationRequestAllowed(request: ParsedMutationRequest): void {
+  if (request.table !== "app_settings") return;
+  if (isPrivateNotebookSettingsKey(request.id) || isPrivateNotebookSettingsKey(request.row?.key)) {
+    throw new Error("Private notebook data cannot be accessed through generic Professor Mari DB commands.");
+  }
+}
+
+function assertPrivateNotebookChangesAllowed(changes: PlanChange[]): void {
+  if (
+    changes.some(
+      (change) =>
+        isPrivateNotebookSettingsRow(change.table, change.beforeRaw ?? {}) ||
+        isPrivateNotebookSettingsRow(change.table, change.afterRaw ?? {}),
+    )
+  ) {
+    throw new Error("Private notebook data cannot be accessed through generic Professor Mari DB commands.");
+  }
+}
+
+async function assertPrivateNotebookOwnerDeletesAllowed(db: DB, changes: PlanChange[]): Promise<void> {
+  const deletedChatIds = new Set(
+    changes
+      .filter((change) => change.apply && change.table === "chats" && change.action === "delete")
+      .map((change) => change.id),
+  );
+  const deletedCharacterIds = new Set(
+    changes
+      .filter((change) => change.apply && change.table === "characters" && change.action === "delete")
+      .map((change) => change.id),
+  );
+  if (deletedChatIds.size === 0 && deletedCharacterIds.size === 0) return;
+
+  const notebookKeys = new Set(
+    (await db.select({ key: schema.appSettings.key }).from(schema.appSettings))
+      .map((row) => row.key)
+      .filter(isPrivateNotebookSettingsKey),
+  );
+  if (
+    [...deletedChatIds].some((id) => notebookKeys.has(`${PRIVATE_NOTEBOOK_SETTINGS_PREFIX}chat:${id}`)) ||
+    [...deletedCharacterIds].some((id) => notebookKeys.has(`${PRIVATE_NOTEBOOK_SETTINGS_PREFIX}character:${id}`))
+  ) {
+    throw new Error("Private notebook data cannot be accessed through generic Professor Mari DB commands.");
+  }
+
+  const deletedChats = changes.filter(
+    (change) => change.apply && change.table === "chats" && change.action === "delete" && change.beforeRaw,
+  );
+  const affectedGroupIds = new Set(
+    deletedChats
+      .map((change) => change.beforeRaw?.groupId)
+      .filter((groupId): groupId is string => typeof groupId === "string" && groupId.length > 0),
+  );
+  if (affectedGroupIds.size === 0) return;
+
+  const liveChats = await db.select({ id: schema.chats.id, groupId: schema.chats.groupId }).from(schema.chats);
+  const strandsFamilyNotebook = [...affectedGroupIds].some(
+    (groupId) =>
+      notebookKeys.has(`${PRIVATE_NOTEBOOK_SETTINGS_PREFIX}family:${groupId}`) &&
+      !liveChats.some((chat) => chat.groupId === groupId && !deletedChatIds.has(chat.id)),
+  );
+  if (strandsFamilyNotebook) {
+    throw new Error("Private notebook data cannot be accessed through generic Professor Mari DB commands.");
+  }
 }
 
 function getPrimary(meta: TableMeta): string {
@@ -5469,7 +5568,8 @@ export class MariDbService {
   }
 
   async validate(table?: string | null): Promise<MariDbValidationResult> {
-    return this.validateStoredRows(table ? [table] : [...FILE_BACKED_TABLES]);
+    if (table) getMeta(table);
+    return this.validateStoredRows(table ? [table] : [...visibleMariFileBackedTables()]);
   }
 
   private async validateStoredRows(tables: string[], changes?: PlanChange[]): Promise<MariDbValidationResult> {
@@ -5477,7 +5577,7 @@ export class MariDbService {
     const rowCache = new Map<string, Row[]>();
 
     for (const tableName of tables) {
-      const meta = getMeta(tableName);
+      const meta = getInternalMeta(tableName);
       const rows = changes
         ? ((await this.db
             .select()
@@ -5488,7 +5588,7 @@ export class MariDbService {
                 changes.filter((change) => change.table === tableName).map((change) => change.id),
               ),
             )) as Row[])
-        : await this.rawRows(tableName);
+        : await this.rawRows(tableName, true);
       rowCache.set(tableName, rows);
       const pk = meta.primaryKey;
       if (!pk) {
@@ -5552,7 +5652,7 @@ export class MariDbService {
     const getRows = async (tableName: string) => {
       const cached = rowCache.get(tableName);
       if (cached) return cached;
-      const rows = await this.rawRows(tableName);
+      const rows = await this.rawRows(tableName, true);
       rowCache.set(tableName, rows);
       return rows;
     };
@@ -5566,7 +5666,7 @@ export class MariDbService {
       // at an anchor the destination chat never had). See CASCADE_DANGLING_EXEMPT_PREFIXES.
       const exemptPrefix = CASCADE_DANGLING_EXEMPT_PREFIXES[`${cascade.child}.${cascade.childKey}`];
       const children = await getRows(cascade.child);
-      const parentMeta = getMeta(cascade.parent);
+      const parentMeta = getInternalMeta(cascade.parent);
       const parentRows = changes
         ? ((await this.db
             .select()
@@ -5588,7 +5688,7 @@ export class MariDbService {
           issues.push({
             level: "error",
             table: cascade.child,
-            id: String(child[getMeta(cascade.child).primaryKey ?? "id"] ?? ""),
+            id: String(child[getInternalMeta(cascade.child).primaryKey ?? "id"] ?? ""),
             message: `Dangling reference ${cascade.childKey}=${ref} -> ${cascade.parent}.${cascade.parentKey}`,
           });
         }
@@ -5816,11 +5916,15 @@ export class MariDbService {
 
   private async executeCodeStatus(context: CodeCommandContext): Promise<MariDbCommandResult> {
     const cwd = this.codeCwd(context.cwd);
+    const pathspecs = professorMariCodePathspecs(cwd);
     const [repoRoot, branch, status, stat, version] = await Promise.all([
       runProcess("git", ["rev-parse", "--show-toplevel"], { cwd, timeoutMs: CODE_READ_TIMEOUT_MS }),
       runProcess("git", ["branch", "--show-current"], { cwd, timeoutMs: CODE_READ_TIMEOUT_MS }),
-      runProcess("git", ["status", "--short", "--branch"], { cwd, timeoutMs: CODE_READ_TIMEOUT_MS }),
-      runProcess("git", ["diff", "--stat"], { cwd, timeoutMs: CODE_READ_TIMEOUT_MS }),
+      runProcess("git", ["status", "--short", "--branch", ...pathspecs], { cwd, timeoutMs: CODE_READ_TIMEOUT_MS }),
+      runProcess("git", ["diff", "--no-ext-diff", "--no-textconv", "--stat", ...pathspecs], {
+        cwd,
+        timeoutMs: CODE_READ_TIMEOUT_MS,
+      }),
       readPackageVersion(cwd),
     ]);
     const statusText = status.stdout.trim();
@@ -5860,13 +5964,14 @@ export class MariDbService {
     const cwd = this.codeCwd(context.cwd);
     const cached = hasFlag(flags, "cached") || hasFlag(flags, "staged");
     const includePatch = hasFlag(flags, "patch") || hasFlag(flags, "full");
-    const diffBaseArgs = ["diff", ...(cached ? ["--cached"] : [])];
+    const diffBaseArgs = ["diff", "--no-ext-diff", "--no-textconv", ...(cached ? ["--cached"] : [])];
+    const pathspecs = professorMariCodePathspecs(cwd);
     const [status, stat, nameOnly, patch] = await Promise.all([
-      runProcess("git", ["status", "--short", "--branch"], { cwd, timeoutMs: CODE_READ_TIMEOUT_MS }),
-      runProcess("git", [...diffBaseArgs, "--stat"], { cwd, timeoutMs: CODE_READ_TIMEOUT_MS }),
-      runProcess("git", [...diffBaseArgs, "--name-only"], { cwd, timeoutMs: CODE_READ_TIMEOUT_MS }),
+      runProcess("git", ["status", "--short", "--branch", ...pathspecs], { cwd, timeoutMs: CODE_READ_TIMEOUT_MS }),
+      runProcess("git", [...diffBaseArgs, "--stat", ...pathspecs], { cwd, timeoutMs: CODE_READ_TIMEOUT_MS }),
+      runProcess("git", [...diffBaseArgs, "--name-only", ...pathspecs], { cwd, timeoutMs: CODE_READ_TIMEOUT_MS }),
       includePatch
-        ? runProcess("git", [...diffBaseArgs, "--patch"], { cwd, timeoutMs: CODE_READ_TIMEOUT_MS })
+        ? runProcess("git", [...diffBaseArgs, "--patch", ...pathspecs], { cwd, timeoutMs: CODE_READ_TIMEOUT_MS })
         : Promise.resolve(null),
     ]);
     const statusText = status.stdout.trim();
@@ -5918,8 +6023,9 @@ export class MariDbService {
 
   private async executeCodeHealth(context: CodeCommandContext): Promise<MariDbCommandResult> {
     const cwd = this.codeCwd(context.cwd);
+    const pathspecs = professorMariCodePathspecs(cwd);
     const [gitStatus, validation] = await Promise.all([
-      runProcess("git", ["status", "--short"], { cwd, timeoutMs: CODE_READ_TIMEOUT_MS }),
+      runProcess("git", ["status", "--short", ...pathspecs], { cwd, timeoutMs: CODE_READ_TIMEOUT_MS }),
       this.validate().catch((err) => ({
         status: "blocked" as const,
         errors: [{ level: "error" as const, message: err instanceof Error ? err.message : String(err) }],
@@ -7145,10 +7251,10 @@ export class MariDbService {
           ok: true,
           mode: "read",
           command: context.command,
-          output: { status: "ok", dataDir: getFileStorageDir(), tables: FILE_BACKED_TABLES.length },
+          output: { status: "ok", dataDir: getFileStorageDir(), tables: visibleMariFileBackedTables().length },
         };
       case "tables":
-        return { ok: true, mode: "read", command: context.command, output: [...FILE_BACKED_TABLES] };
+        return { ok: true, mode: "read", command: context.command, output: [...visibleMariFileBackedTables()] };
       case "schema": {
         const table = parsed.positionals[0];
         if (!table) throw new Error("Usage: mari db schema <table>");
@@ -7172,7 +7278,10 @@ export class MariDbService {
       }
       case "counts": {
         const counts: Record<string, number> = {};
-        for (const table of FILE_BACKED_TABLES) counts[table] = (await this.rawRows(table)).length;
+        for (const table of visibleMariFileBackedTables()) {
+          const rows = await this.rawRows(table);
+          counts[table] = rows.filter((row) => !isPrivateNotebookSettingsRow(table, row)).length;
+        }
         return { ok: true, mode: "read", command: context.command, output: counts };
       }
       case "data-dir":
@@ -7218,7 +7327,9 @@ export class MariDbService {
     flags: Map<string, string | boolean>,
   ): Promise<MariDbCommandResult> {
     if (!table) throw new Error("Usage: mari db list <table>");
-    const rows = (await this.rawRows(table)).map((row) => (hasFlag(flags, "parsed") ? parseRow(table, row) : row));
+    const rows = (await this.rawRows(table))
+      .filter((row) => !isPrivateNotebookSettingsRow(table, row))
+      .map((row) => (hasFlag(flags, "parsed") ? parseRow(table, row) : row));
     const limit = normalizeLimit(flagString(flags, "limit"), 50, 1000);
     const offset = normalizeLimit(flagString(flags, "offset"), 0, Number.MAX_SAFE_INTEGER);
     return { ok: true, mode: "read", command, output: rows.slice(offset, offset + limit) };
@@ -7233,11 +7344,12 @@ export class MariDbService {
     if (!table || !id) throw new Error("Usage: mari db get <table> <id>");
     const meta = getMeta(table);
     const row = await this.getRawById(meta, id);
+    const visibleRow = row && !isPrivateNotebookSettingsRow(table, row) ? row : null;
     return {
-      ok: Boolean(row),
+      ok: Boolean(visibleRow),
       mode: "read",
       command,
-      output: row && hasFlag(flags, "parsed") ? parseRow(table, row) : row,
+      output: visibleRow && hasFlag(flags, "parsed") ? parseRow(table, visibleRow) : visibleRow,
     };
   }
 
@@ -7248,7 +7360,10 @@ export class MariDbService {
   ): Promise<MariDbCommandResult> {
     if (!table) throw new Error("Usage: mari db select <table> --where <expr>");
     const predicate = createMariWherePredicate(flagString(flags, "where"));
-    const rows = (await this.rawRows(table)).map((row) => parseRow(table, row)).filter(predicate);
+    const rows = (await this.rawRows(table))
+      .filter((row) => !isPrivateNotebookSettingsRow(table, row))
+      .map((row) => parseRow(table, row))
+      .filter(predicate);
     const limit = normalizeLimit(flagString(flags, "limit"), 100, 5000);
     return { ok: true, mode: "read", command, output: rows.slice(0, limit) };
   }
@@ -7261,12 +7376,13 @@ export class MariDbService {
   ): Promise<MariDbCommandResult> {
     if (!tableArg || !query) throw new Error("Usage: mari db search <table|all> <query>");
     const needle = query.toLowerCase();
-    const tables = tableArg === "all" ? [...FILE_BACKED_TABLES] : [tableArg];
+    const tables = tableArg === "all" ? [...visibleMariFileBackedTables()] : [tableArg];
     const results: Array<{ table: string; row: Row }> = [];
     const limit = normalizeLimit(flagString(flags, "limit"), 50, 1000);
     for (const table of tables) {
       getMeta(table);
       for (const raw of await this.rawRows(table)) {
+        if (isPrivateNotebookSettingsRow(table, raw)) continue;
         const row = parseRow(table, raw);
         if (JSON.stringify(row).toLowerCase().includes(needle)) results.push({ table, row });
         if (results.length >= limit) return { ok: true, mode: "read", command, output: results };
@@ -7481,6 +7597,8 @@ export class MariDbService {
     command: string,
     timestamp: string = now(),
   ): Promise<Plan> {
+    assertPrivateNotebookMutationRequestAllowed(request);
+
     const issues: MariDbValidationIssue[] = [];
     const allocateId = createRequestIdAllocator(request);
     let changes: PlanChange[] = [];
@@ -7495,6 +7613,9 @@ export class MariDbService {
     else if (request.kind === "preset-section-delete") changes = await this.planPresetSectionDelete(request, timestamp);
     else if (request.kind === "preset-group-delete") changes = await this.planPresetGroupDelete(request, timestamp);
     else changes = await this.planTransform(request, timestamp, allocateId);
+
+    assertPrivateNotebookChangesAllowed(changes);
+    await assertPrivateNotebookOwnerDeletesAllowed(this.db, changes);
 
     // systemKey identifies Engine-owned presets. Apply this after every planner so raw writes and
     // transforms cannot bypass the structured preset-action boundary.
@@ -8077,6 +8198,9 @@ export class MariDbService {
       ? (row: Row) => String(row[getPrimary(meta)]) === request.id
       : createMariWherePredicate(request.where);
     const selected = rows.filter((row) => predicate(parseRow(meta.name, row)));
+    if (selected.some((row) => isPrivateNotebookSettingsRow(meta.name, row))) {
+      throw new Error("Private notebook data cannot be accessed through generic Professor Mari DB commands.");
+    }
     const changes: PlanChange[] = selected.map((row) => ({
       table: meta.name,
       id: rowId(meta, row),
@@ -8125,7 +8249,7 @@ export class MariDbService {
   ): Promise<PlanChange[]> {
     const cwd = request.cwd ? resolve(request.cwd) : process.cwd();
     const scriptPath = resolve(cwd, String(request.scriptPath));
-    const tables = request.table === "all" ? [...FILE_BACKED_TABLES] : [String(request.table)];
+    const tables = request.table === "all" ? [...visibleMariFileBackedTables()] : [String(request.table)];
     const allParsed = new Map<string, Row[]>();
     const allRaw = new Map<string, Row[]>();
     for (const table of tables) {
@@ -8366,9 +8490,11 @@ export class MariDbService {
     for (let index = 0; index < queue.length; index++) {
       const parent = queue[index]!;
       for (const cascade of CASCADES.filter((entry) => entry.parent === parent.table)) {
-        const childMeta = getMeta(cascade.child);
+        const childMeta = getInternalMeta(cascade.child);
         const parentValue = parent.beforeRaw?.[cascade.parentKey];
-        const childRows = (await this.rawRows(cascade.child)).filter((row) => row[cascade.childKey] === parentValue);
+        const childRows = (await this.rawRows(cascade.child, true)).filter(
+          (row) => row[cascade.childKey] === parentValue,
+        );
         for (const child of childRows) {
           const id = rowId(childMeta, child);
           const key = `${cascade.child}:${id}`;
@@ -8415,7 +8541,7 @@ export class MariDbService {
     const issues = [...priorIssues];
     for (const change of changes) {
       if (change.action === "delete") continue;
-      const meta = getMeta(change.table);
+      const meta = getInternalMeta(change.table);
       const row = change.afterRaw ?? {};
       addUnknownColumnIssues(meta, row, change.id, issues);
       const pk = getPrimary(meta);
@@ -8469,7 +8595,7 @@ export class MariDbService {
           (entry) =>
             entry.table === cascade.parent && entry.action === "delete" && entry.beforeRaw?.[cascade.parentKey] === ref,
         );
-        const parentMeta = getMeta(cascade.parent);
+        const parentMeta = getInternalMeta(cascade.parent);
         const parentExists =
           !parentDeleted &&
           (
@@ -8504,10 +8630,11 @@ export class MariDbService {
       await replaceHomeWidgetCatalog(this.db, before.revision, after.widgets);
     } else {
       await this.db.transaction(async (tx) => {
+        await assertPrivateNotebookOwnerDeletesAllowed(tx as unknown as DB, plan.changes);
         const characterStorage = createCharactersStorage(tx as unknown as DB);
         for (const change of plan.changes) {
           if (!change.apply) continue;
-          const meta = getMeta(change.table);
+          const meta = change.cascadeOf ? getInternalMeta(change.table) : getMeta(change.table);
           const pk = getPrimary(meta);
           if ((change.action === "update" || change.action === "replace") && change.table === "characters") {
             await characterStorage.createVersionSnapshot(change.id, {
@@ -8569,7 +8696,7 @@ export class MariDbService {
       // pending review intact. Cascade rows carry apply:false because the parent delete removed
       // them implicitly, but Restore writes those snapshots back and must protect them too.
       for (const change of changes) {
-        const meta = getMeta(change.table);
+        const meta = getInternalMeta(change.table);
         const pk = getPrimary(meta);
         const rows = (await tx
           .select()
@@ -8583,7 +8710,7 @@ export class MariDbService {
 
       const insertedRows = [...changes].reverse().filter((change) => change.action === "insert");
       for (const change of insertedRows) {
-        const meta = getMeta(change.table);
+        const meta = getInternalMeta(change.table);
         const pk = getPrimary(meta);
         await tx.delete(meta.table as any).where(eq(meta.byKey.get(pk)!.column as any, change.id));
       }
@@ -8591,7 +8718,7 @@ export class MariDbService {
       const updatedRows = changes.filter((change) => change.action === "update" || change.action === "replace");
       for (const change of updatedRows) {
         if (!change.beforeRaw) continue;
-        const meta = getMeta(change.table);
+        const meta = getInternalMeta(change.table);
         const pk = getPrimary(meta);
         await tx
           .update(meta.table as any)
@@ -8601,13 +8728,13 @@ export class MariDbService {
 
       const deletedRows = changes.filter((change) => change.action === "delete");
       for (const change of [...deletedRows].reverse()) {
-        const meta = getMeta(change.table);
+        const meta = getInternalMeta(change.table);
         const pk = getPrimary(meta);
         await tx.delete(meta.table as any).where(eq(meta.byKey.get(pk)!.column as any, change.id));
       }
       for (const change of deletedRows) {
         if (!change.beforeRaw) continue;
-        const meta = getMeta(change.table);
+        const meta = getInternalMeta(change.table);
         await tx.insert(meta.table as any).values(knownColumnPatch(meta, change.beforeRaw));
       }
 
@@ -8622,7 +8749,7 @@ export class MariDbService {
         if (change.action === "insert" || change.table !== "lorebook_entries" || !change.beforeRaw) continue;
         const lorebookId = change.beforeRaw.lorebookId;
         if (typeof lorebookId !== "string") continue;
-        const meta = getMeta("lorebooks");
+        const meta = getInternalMeta("lorebooks");
         const pk = getPrimary(meta);
         const parent = (await tx
           .select()
@@ -8993,7 +9120,7 @@ export class MariDbService {
         const cascadeDelete = !change.apply && change.action === "delete" && typeof change.cascadeOf === "string";
         if (!change.apply && !cascadeDelete) continue;
         checkedRows += 1;
-        const meta = getMeta(change.table);
+        const meta = getInternalMeta(change.table);
         const persisted = await this.getRawById(meta, change.id);
         if (change.action === "delete") {
           if (persisted !== null) {
@@ -9043,7 +9170,7 @@ export class MariDbService {
         }
         if (outcome.status !== "synced") continue;
         checkedRows += 1;
-        const meta = getMeta("characters");
+        const meta = getInternalMeta("characters");
         const persisted = await this.getRawById(meta, outcome.characterId);
         const persistedBook = (() => {
           if (persisted === null) return undefined;
@@ -9085,8 +9212,8 @@ export class MariDbService {
     }
   }
 
-  private async rawRows(table: string): Promise<Row[]> {
-    const meta = getMeta(table);
+  private async rawRows(table: string, integrity = false): Promise<Row[]> {
+    const meta = integrity ? getInternalMeta(table) : getMeta(table);
     const rows = (await this.db.select().from(meta.table as any)) as Row[];
     return rows.map((row) => ({ ...row }));
   }
@@ -9238,7 +9365,7 @@ export class MariDbService {
       "Write: insert|patch|replace|delete|transform ... (dry-run by default; --apply saves reversible changes and shows a Keep/Restore review card)",
       "Use -- before positional arguments that match option names, with options first: mari db get --parsed -- characters --apply",
       "Transform scripts use an OS sandbox where supported; on other systems, reviewed local scripts remain available only with MARI_DB_ALLOW_UNSAFE_TRANSFORMS=true.",
-      `Known tables: ${FILE_BACKED_TABLES.slice(0, 8).join(", ")} ... (${FILE_BACKED_TABLES.length})`,
+      `Known tables: ${visibleMariFileBackedTables().slice(0, 8).join(", ")} ... (${visibleMariFileBackedTables().length})`,
       `Journal directory: ${this.journalDir()} (${basename(getFileStorageDir())})`,
     ].join("\n");
   }

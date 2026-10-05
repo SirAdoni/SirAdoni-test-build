@@ -14,10 +14,49 @@ export const FEATURE_SWITCHES_CONTROL_ID = "feature-switches";
 
 /** Server switches in display order. */
 const SERVER_SWITCHES: ReadonlyArray<FeatureSwitchName> = [
+  "campaignRoster",
   "stableLorebookGroupPicks",
   "providerRetry",
+  "providerDiagnostics",
   "usageAndActivationStats",
   "messageTrash",
+  "gameContinuity",
+  "campaignMemory",
+  "campaignIndex",
+  "gameMemoryControls",
+  "campaignMemoryRecall",
+  "campaignWiki",
+  "familyTree",
+  "factionWeb",
+  "gameCalendar",
+  "worldHistory",
+  "sceneTimeline",
+  "privateNotebook",
+  "libraryNavigation",
+  "gamePrepBoard",
+  "randomTables",
+  "diceLog",
+  "recapFactualReview",
+  "gameKeeperConsolidation",
+  "savedCharacterProfiles",
+  "draftRewrites",
+  "localRewriteConnection",
+  "gameContactBook",
+  "campaignPortraits",
+  "galleryBrowsing",
+  "floatingMediaPlacement" as FeatureSwitchName,
+  "speechDiagnostics" as FeatureSwitchName,
+  "promptInspector",
+  "gamePromptEditing",
+  "gmNarrationReasoning",
+  "chatgptCacheAffinity",
+  "backupModes",
+  "inventoryBrowsing",
+  "gameGuide",
+  "extendedHudWidgets",
+  "playerStatus",
+  "mobileHudArrangement",
+  "hudListVisibility",
 ];
 
 /**
@@ -31,7 +70,7 @@ export function FeatureSwitchesSettings({ anchorId }: { anchorId?: string }) {
   const settings = query.data?.settings;
   const envOverrides = query.data?.envOverrides ?? {};
   const envEffective = query.data?.effective ?? {};
-  const disabled = !query.data || save.isPending;
+  const disabled = !query.data || query.isError || save.isPending;
 
   const update = (patch: FeatureSettings) => {
     const next: FeatureSettings = { ...(settings ?? {}), ...patch };

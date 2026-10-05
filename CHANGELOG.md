@@ -3,6 +3,14 @@
 This file is the release-notes source of truth for Marinara Engine. Reuse these entries when publishing GitHub Releases for tags in the `vX.Y.Z` format.
 
 ## [Unreleased]
+- Optional session recap fact review starts off and can be enabled in Features. Ordinary recap generation stays available; malformed restarted output can be recovered, and regeneration refuses to overwrite a newer recap.
+
+### Fixed
+
+- Combined optional features now share their controls correctly. Profile backups preserve valid chat branches, and recap reviews reject edits outside the supplied summary or scene context.
+- Windows crash recovery retries a timed-out machine identity lookup once before safely refusing an unverified storage owner.
+- Private GM prep boards stay protected from Professor Mari even when app storage uses a linked folder. A prep board that fails to load now explains the error and offers Retry without changing saved notes.
+- Opening a linked lorebook entry now follows the most recent selection even while entries are loading or the editor is already open.
 
 - Home widgets: the **Daily Encounter** message for an empty library and its **Open character library** link now fit inside the widget on desktop and phones (only the very largest text sizes can still cut off the link), Professor Mari's head is no longer cut off in **Your guide** (she can now reach over the widget's top edge instead), and hovering a widget no longer makes its glow and edges pop in after the card lifts (#7032).
 
@@ -107,7 +115,94 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 - A Game Mode ruleset's items can now be used outside a fight: the inventory's Use button on a poultice or a potion heals whoever carries it with the Engine's dice, takes it out of the bag and tells the Game Master what happened, and the Game Master can use items the same way. An item can also give back a pool, such as a tonic that restores Resolve, in a fight or out of one. Rulesets that restore a pool need Capability API 1.60 (#6881).
 
+- Registry-owned notes and organizations accept their generated stable owner ID. Campaign history uses verified session and branch ancestry; incomplete or conflicting lineage stays local to the selected chat.
+
+- Keep continuity snapshots scoped to their chat and preserve cached receipts during retry. Campaign history accepts sessions identified by saved metadata while preserving lineage ownership checks; source caches remain bounded.
+
+- Keep undo journal timestamps aligned with their saved campaign-memory records.
+- Keep disabled continuity status neutral, cancel narrator follow-ups when applied memory controls turn off, and resume indexing with only currently enabled steps. Chat deletion removes its continuity receipts, and retirement follows campaign identity across sessions.
+- Game memory controls and source-aware campaign recall have separate opt-in switches. Turning them off preserves saved settings and history while restoring ordinary future prompt behavior.
+- Game continuity, Campaign Memory, and Campaign Index now have separate controls in Advanced Features and start turned off. Turning a control off preserves saved knowledge and indexing progress for later use.
+- Keep campaign history when sessions move between folders, constrain continuity snapshots to their chat, and preserve cached receipts during retry.
+- Disable unavailable Index steps and close the mobile action menu when opening the Index.
+- Session conclusions return a separate disabled-feature response to each waiting request. Campaign memory follows verified session and branch ancestry; incomplete or conflicting lineage stays local to the selected chat. Registry-owned notes and organizations accept their generated stable owner ID.
+
+- Keep continuity snapshots scoped to their chat and preserve cached receipts during retry. Campaign history accepts saved metadata identity while preserving lineage ownership checks; source caches remain bounded.
+
+- Keep undo journal timestamps aligned with their saved campaign-memory records.
+
+- Preserve campaign identity during continuity retirement, remove receipts with deleted chats, reject unsupported review objections for retry, and bound automatic structuring calls. Index Resume uses only currently enabled steps.
+
+- Add an explicit, resumable campaign-history backfill command with checkpointed retry and reviewed-receipt publication. Disabled continuity remains disabled; retries preserve newer live facts and campaign-copy integrity.
+
+- Turning off Campaign Memory prevents an in-flight unresolved transition from adding a pending journal entry after its duplicate lookup; saved history remains intact.
+- Game continuity, Campaign Memory, and Campaign Index now have separate controls in Advanced Features and start turned off. Turning a control off preserves saved knowledge and indexing progress for later use.
+
+- Game sessions now retain the exact prior session selected at session start, and new branches record their copied-prefix evidence. Profile and SillyTavern transfers discard those local chat IDs so imported data cannot point back into another campaign.
+- Retrying a failed Campaign Index load no longer opens a second first-run dialog over the manually opened one.
+- Game Mode continuity now tracks accepted scene turns in durable, source-verified receipts and exposes bounded continuity state to prompts and status reads; edits, deletions, visibility changes, and swipe changes invalidate affected published coverage for safe reconciliation.
+- Game Mode campaign knowledge now has durable, chat-scoped records for entities, facts, events, current state, and relationships, with source evidence, message ordering, imports, campaign-scope reads, and auditable edits.
+- The Campaign Index can register campaign owners, backfill earlier sessions, and publish verified coverage through a resumable job. It follows verified branch and session lineage, pauses when source lineage is missing or changes, and is available from both desktop and mobile Game Mode controls.
+- Keep calendars disabled when reopening setup, suppress calendar prompt details while the feature is off, and resolve correction evidence from its originating session.
+- Retain campaign history after moving sessions between folders and bound cached source transcripts.
+- Preserve calendar event drafts after failed saves, keep the Game clock synchronized after admitted writes, and open Wiki owner links in the correct chat.
+- Keep held World History dependencies out of copied branches and align undo journal timestamps with their saved records; scoped pickers and record audit trails remain usable.
+- Avoid stale campaign-memory rows when a database adapter does not provide invalidation counters.
+- Campaign Memory, Campaign Wiki, Family Tree, Faction Web, Game Calendar, and World History now start off and have separate controls under Settings → Advanced → Features. Disabling them preserves saved records. Faction Web and World History work independently of the Wiki; calendar controls preserve the ordinary Game Mode clock.
+- Game Mode's Campaign Wiki lets you search campaign records, inspect source evidence, make reviewed edits, and open linked character cards or lorebook entries.
+- Game Mode chats can keep a custom in-world calendar with their existing clock, including named months and weekdays, leap rules, moons, events and deadlines. Setting or advancing a date updates the same saved clock, and invalid date changes are rejected.
+- Game Mode now supports manually authored world history with eras, precise or approximate dates, linked Campaign Wiki records, and archive/restore controls; it remains separate from current facts and scene events.
+- Branching a Game chat carries forward World History as it existed before the fork, remaps its links to the copied records, and holds entries whose history or references cannot be proven safely.
+- Game Mode now has a family tree for reviewing and editing confirmed kinship links between campaign people.
+- Game Mode’s Campaign Wiki adds a faction relationship view over existing organization and relationship records, with directed connections, status filters, citation counts, and auditable user edits.
+- Scene Timeline is opt-in under Features and still respects each chat's saved scene-tracking preference. Turning it off preserves history and ordinary scene presence.
+- The Campaign Index can register campaign owners, backfill earlier sessions, and publish verified coverage through a resumable job. It follows verified branch and session lineage, pauses when source lineage is missing or changes, and is available from both desktop and mobile Game Mode controls.
+- Added a private notebook for developer-authored notes scoped to the app, a character, a chat, or a campaign branch family. Notes remain outside generation prompts and Professor Mari's managed database/workspace context, and are removed with their owning chat or character. The feature can now be disabled in Settings > Advanced > Features; it is off by default, blocks notebook reads and writes while disabled, and retains saved notes for later re-enabling. Unsaved drafts survive disabling and reopening the feature during the same app session; conflicting edits wait for explicit resolution.
+- Private Notebook can close after a failed save without losing the unsaved draft during the current app session; conflicts still require resolution and failed saves do not switch note scopes.
+- Add independently optional GM prep boards and random tables with an oracle. Each starts off in Settings > Advanced > Features; disabling a feature keeps its saved content and stops new feature work.
+- Allow authoring results to be inserted into the Game composer without sending a message.
+
+- Add an optional keyboard-accessible search palette for finding chats and characters and opening matching message search results. It starts off in Features.
+- Optional Dice log starts off in Features. Enable it to record and review player, skill-check and Game Master roll history and statistics. Disabling preserves saved history while ordinary rolls and checks remain available; client-submitted results are history, not independently verified rolls.
+- Keep internal validation, chat cleanup, and undo working when authoring features are off, while direct access remains disabled. Prep board search now clears its spinner when cancelled, and failed saves explain when saved content will reload.
+- Optional Keeper book consolidation starts off and can be enabled in Features. Its API supports read-only preview and explicit apply for eligible Game Lorebook Keeper books; branch, ambiguous and future-session entries stay held. Empty books from ineligible sessions also stay intact, including their folders, links and chat references.
+- Saved character profiles in Game sheets are optional and off by default in Settings > Advanced > Features. Disable them without changing saved profiles or ordinary sheets; current scene values and explicit portrait clears remain authoritative.
+- Optional AI draft rewrites offer selection, undo and stale-response protection in conversation, roleplay and Game Mode. Draft rewrites and local rewrite connections have independent switches, both off by default; disabling them preserves ordinary editing and saved text.
+- Campaign library membership and filters now start off in Advanced Features. Disabling them preserves saved membership and restores ordinary library catalogs.
+- Game Mode campaign APIs can list and edit library membership for characters, personas and lorebooks, and character/lorebook catalog requests can filter by campaign.
+- Keep campaign membership caches accurate when the feature is turned off during a request, so re-enabling it shows saved changes without a false empty roster.
+- Removing an NPC portrait now clears linked Game Mode views and prevents stale refreshes or older image-generation requests from restoring it. Delete then Generate bypasses a retained identity-file portrait, refreshes the linked character card, and serves the replacement through a revalidating avatar URL.
+
+- The Game Contact Book and campaign portrait generation have separate switches under Advanced > Features, both off by default. Disabling them retains saved contacts and portraits; ordinary scene portraits and portrait removal safeguards remain available.
+- Campaign portrait prompt edits now target the correct contact, cancelling prompt review stops later batches, and superseded GIF/AVIF portrait files are cleaned up safely. The Contact Book closes with other game panels and pauses narration while open.
+- Gallery Select all follows the displayed image page, preventing batch actions from including unseen images. Lightboxes without navigation controls leave arrow keys alone, and optional gallery controls wait for successful feature settings.
+- Optional gallery browsing controls are off by default in Settings > Advanced > Features. Enable batched image lists and previous/next preview navigation; disable them to restore complete lists without changing saved images or ordinary gallery actions.
+- Spotify controls in forced-floating desktop mode now avoid marked interface controls when floating media placement is enabled.
+- Floating music bubbles now remeasure their size when the rendered bubble is replaced, while keeping placement observers inactive when the optional feature is off.
+
+- Game Mode audio resumes suspended playback when a tab becomes visible, ignores layers stopped during resume, and applies mute and volume changes during music crossfades and fade-outs.
+- Game Mode no longer retries broken music or ambient files after every gesture, and ignores stale sound-effect failures when a newer effect has reused the pooled audio element.
+- Speech settings translate their provider hints, voice labels and preview errors, and show the normal-speed marker at the correct position for each provider's speed range.
+- Optional speech outcome diagnostics are OFF by default and can be enabled in Features without changing speech playback or logging sensitive speech/provider details.
+- Optional floating music placement and touch improvements are OFF by default. Enabling them avoids marked controls; disabling restores baseline placement without migrating or overwriting saved positions.
+- Prompt inspection now returns the edit revision saved with the selected swipe, keeping exact cached prompts paired with their original editing state.
+
+- Advanced prompt search, filtering, text copy and diagnostics are optional and off by default in Settings > Advanced > Features. Standard prompt previews and saved content remain available when disabled.
+- Optional Game request editing and GM narration reasoning overrides can be enabled independently in Advanced > Features. Both default off; disabling them retains saved choices and restores ordinary request construction without changing historical prompts.
+- Added an optional ChatGPT cache-affinity setting that keeps an opaque cache identity stable within each chat without changing prompt text. It is off by default; cache hits remain provider-controlled.
+- Provider diagnostics are now optional and off by default in Advanced > Features. Enable them to match safe diagnostic references to provider failures; disabling them stops new references without exposing private error text or changing ordinary error, retry, or partial-response handling.
+- Incremental backups now support a data directory reached through a filesystem symlink or junction while retaining snapshot-internal path protections. Manual downloads use the current selected mode and stop with an error if enabled mode settings are unavailable.
+
+- Additional backup modes are off by default and can be enabled in Advanced > Features. Turning them off restores ordinary full downloads and scheduled backups while retaining your chosen mode and existing archives. If disabled during snapshot publication, only that unfinished new snapshot is discarded. Data-only backups keep built-in profile tables and long-term-memory files; incremental snapshots reuse unchanged files.
+- Export Profile now preserves branch-history references when their source chats and messages are included. Import omits dangling or mismatched branch references and lists each affected chat in its warnings.
+- Update notifications now fall back to a page reload when refresh stalls and keep the refresh action available if reloading fails.
+- Game Mode inventory rows keep durable identities across tracker writes, older-turn regeneration and retry snapshots, so duplicate names remain distinct and locked independently. Separate tracker groups cannot reuse the same row identity, and reordering retains stable row controls. Optional inventory search and sorting start off and can be enabled in Settings > Advanced > Features; disabling them restores original order without changing saved items.
+- Added an optional localized Game Mode guide to maps and status widgets. Enable it under Settings > Advanced > Features; it starts off and can be disabled while ordinary contextual Help stays available. Opening a cached guide keeps keyboard focus inside the guide, and disabling it returns focus to Help.
+- Game Mode has separate, off-by-default controls for arranging mobile HUD widgets and hiding the party or present-character lists. Device preferences are retained when either feature is disabled.
+- Game Mode offers optional extended HUD widgets and a separate player-status panel, both off by default in Features. Turning widgets off keeps their saved contents; ordinary widgets remain available, and re-enabling restores the extended controls.
+- Delayed Game setup results preserve active-session widget values. Hidden widgets keep their original contents after malformed imported entries, and widget dialogs show their empty state when all entries are hidden.
 - Updated brace-expansion, fast-uri, and ip-address dependencies with upstream denial-of-service and address-validation security fixes.
+
 - Termux rebuilds now include the multiplayer guest assets required by startup checks, and dependency updates retain Sharp's matching WebAssembly fallback for Android image processing (#6883, #6859).
 - Merged Roleplay groups update expressions for the active, selected cast during replies and manual retries, instead of only the first character (#6872).
 - Roleplay's Gallery and `/illustrate` can generate one illustration with the installed Illustrator without enabling automatic agents or changing chat settings (#6874).

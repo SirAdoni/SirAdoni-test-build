@@ -3144,13 +3144,26 @@ export function useGenerate() {
               break;
             }
 
+            case "game_prompt_edits_warning": {
+              const count = (event.data as { count?: number } | null)?.count ?? 0;
+              if (isActiveChat() && count > 0) {
+                toast.warning(translate("ui.chatSettings.gamePromptRequestEditor.unappliedEdits", { count }));
+              }
+              break;
+            }
+
             case "error": {
               // Flush pending text so the user sees what arrived before the error
               flushLeadingSpeakerPrefix();
               flushTypewriterBuffer();
               setProcessingRun(agentProcessingRunId, false, params.chatId);
               clearMariPhaseForThisChat();
-              showError((event.data as string) || "Generation failed");
+              const errorMessage = (event.data as string) || "Generation failed";
+              showError(
+                errorMessage === "GAME_PROMPT_EDITS_EXCEED_CONTEXT"
+                  ? translate("ui.chatSettings.gamePromptRequestEditor.exceedsContext")
+                  : errorMessage,
+              );
               window.dispatchEvent(new CustomEvent("marinara:generation-error", { detail: { chatId: params.chatId } }));
               break;
             }

@@ -2,6 +2,8 @@
 // LLM Provider — Abstract Base
 // ──────────────────────────────────────────────
 import { logger } from "../../lib/logger.js";
+import { isFeatureEnabled } from "../features/feature-settings.js";
+import { recordProviderHttpFailure, type ProviderHttpDiagnostic } from "./provider-error.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
   getChatGenerationTimeoutMs,
@@ -76,11 +78,16 @@ export function yieldToEventLoop(): Promise<void> {
 export class LLMHttpError extends Error {
   readonly status: number;
   readonly retryAfterMs?: number;
-  constructor(message: string, options: { status: number; retryAfterMs?: number }) {
+  readonly diagnostic?: ProviderHttpDiagnostic;
+  constructor(
+    message: string,
+    options: { status: number; retryAfterMs?: number; diagnostic?: ProviderHttpDiagnostic },
+  ) {
     super(message);
     this.name = "LLMHttpError";
     this.status = options.status;
     this.retryAfterMs = options.retryAfterMs;
+    this.diagnostic = options.diagnostic;
   }
 }
 
@@ -104,9 +111,11 @@ export function parseRetryAfterMs(headerValue: string | null | undefined): numbe
 
 /** Read the status + Retry-After off a Response and build a typed rate-limit-aware error. */
 export function llmHttpErrorFromResponse(message: string, response: Response): LLMHttpError {
+  const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
   return new LLMHttpError(message, {
     status: response.status,
-    retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after")),
+    retryAfterMs,
+    diagnostic: recordProviderHttpFailure(response, retryAfterMs),
   });
 }
 
@@ -683,7 +692,22 @@ export abstract class BaseLLMProvider {
     const gen = this.chat(messages, { ...options, stream: useStream });
     const returnPartialOnStreamFailure = (error: unknown): ChatCompletionResult => {
       if (!content) throw error;
-      logger.warn(error, "LLM stream failed after partial content; returning partial completion");
+      if (error instanceof LLMHttpError && error.diagnostic && isFeatureEnabled("providerDiagnostics")) {
+        logger.warn(
+          { diagnosticRef: error.diagnostic.diagnosticRef },
+          "LLM stream failed after partial content; returning partial completion",
+        );
+      } else if (error instanceof LLMHttpError) {
+        logger.warn(
+          {
+            providerStatus: error.status,
+            ...(typeof error.retryAfterMs === "number" ? { retryAfterMs: error.retryAfterMs } : {}),
+          },
+          "LLM stream failed after partial content; returning partial completion",
+        );
+      } else {
+        logger.warn(error, "LLM stream failed after partial content; returning partial completion");
+      }
       return { content, toolCalls: [], finishReason: options.signal?.aborted ? "abort" : "error", usage: undefined };
     };
 

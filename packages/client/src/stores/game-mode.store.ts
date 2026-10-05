@@ -3,18 +3,41 @@ import { applyGameWidgetUpdate } from "@marinara-engine/shared";
 // Store: Game Mode
 // ──────────────────────────────────────────────
 import { create } from "zustand";
-import { isSameNpcAvatarResource, normalizeNpcAvatarName, withFreshNpcAvatarRevision } from "../lib/game-npc-avatar";
+import {
+  hasAuthoritativeNpcAvatarState,
+  isNpcAvatarRemoved,
+  mergeGameNpcsPreservingAvatars,
+  normalizeNpcAvatarName,
+  resolveNpcAvatarStateForIdentity,
+  withFreshNpcAvatarRevision,
+} from "../lib/game-npc-avatar";
 import { api } from "../lib/api-client";
 import type {
   GameActiveState,
   GameMap,
   GameNpc,
+  GameNpcAvatarState,
   DiceRollResult,
   HudWidget,
   GameBlueprint,
   WidgetUpdate,
 } from "@marinara-engine/shared";
 
+/**
+ * Campaign Wiki reader navigation kept across window close/reopen. Chat-scoped:
+ * the window ignores a state whose chatId differs from its own.
+ */
+export interface CampaignWikiNavState {
+  chatId: string;
+  /** Entity page being read; null is the entity list. */
+  entityId: string | null;
+  /** Previously read pages, oldest first. */
+  back: Array<string | null>;
+  /** Pages left with the back control, nearest first. */
+  forward: Array<string | null>;
+  /** Reader scroll offset captured when the window closed. */
+  scrollTop: number;
+}
 interface GameModeStore {
   /** The active game ID (groupId that links all sessions). */
   activeGameId: string | null;
@@ -49,6 +72,8 @@ interface GameModeStore {
   hudWidgets: HudWidget[];
   /** Game blueprint from setup. */
   blueprint: GameBlueprint | null;
+  /** Campaign Wiki reader position, retained while the window is closed. */
+  campaignWikiNav: CampaignWikiNavState | null;
 
   // Actions
   setActiveGame: (gameId: string | null, sessionChatId?: string | null, partyChatId?: string | null) => void;
@@ -70,8 +95,17 @@ interface GameModeStore {
   setHudWidgets: (widgets: HudWidget[]) => void;
   applyWidgetUpdate: (update: WidgetUpdate) => HudWidget[];
   setBlueprint: (bp: GameBlueprint | null) => void;
+  setCampaignWikiNav: (nav: CampaignWikiNavState | null) => void;
   /** Patch avatarUrl on tracked NPCs after server-side image generation. */
-  patchNpcAvatars: (avatars: Array<{ name: string; avatarUrl: string }>) => void;
+  patchNpcAvatars: (
+    avatars: Array<{
+      npcId?: string | null;
+      characterId?: string | null;
+      name: string;
+      avatarUrl: string | null;
+      avatarState?: GameNpcAvatarState;
+    }>,
+  ) => void;
   reset: () => void;
 }
 
@@ -200,6 +234,7 @@ const INITIAL_STATE = {
   sessionNumber: 1,
   hudWidgets: [],
   blueprint: null,
+  campaignWikiNav: null,
 };
 
 export const useGameModeStore = create<GameModeStore>((set) => ({
@@ -261,47 +296,76 @@ export const useGameModeStore = create<GameModeStore>((set) => ({
       const currentMap = s.maps.find((map, index) => getMapId(map, index) === mapId) ?? s.currentMap;
       return { activeMapId: mapId, currentMap };
     }),
-  setNpcs: (npcs) =>
-    set((s) => {
-      // Preserve existing avatarUrls: the incoming list may come from a stale
-      // chat-metadata cache that predates a recent /generate-assets call. If
-      // we already have an avatarUrl for an NPC and the incoming record is
-      // missing one, keep ours rather than clobbering it to null.
-      const existingByName = new Map<string, string>();
-      for (const existing of s.npcs) {
-        if (existing.avatarUrl && existing.name) {
-          existingByName.set(normalizeNpcAvatarName(existing.name), existing.avatarUrl);
-        }
-      }
-      const merged = npcs.map((npc) => {
-        const preserved = existingByName.get(normalizeNpcAvatarName(npc.name ?? ""));
-        if (!preserved) return npc;
-        if (!npc.avatarUrl || isSameNpcAvatarResource(npc.avatarUrl, preserved)) {
-          return { ...npc, avatarUrl: preserved };
-        }
-        return npc;
-      });
-      return { npcs: merged };
-    }),
+  setNpcs: (npcs) => set((s) => ({ npcs: mergeGameNpcsPreservingAvatars(s.npcs, npcs) })),
   patchNpcAvatars: (avatars) =>
     set((s) => {
       let modified = false;
+      const npcNameCounts = new Map<string, number>();
+      for (const npc of s.npcs) {
+        const name = normalizeNpcAvatarName(npc.name);
+        if (name) npcNameCounts.set(name, (npcNameCounts.get(name) ?? 0) + 1);
+      }
       const nextNpcs = s.npcs.map((npc) => {
-        const npcName = normalizeNpcAvatarName(npc.name);
-        const match = avatars.find((avatar) => normalizeNpcAvatarName(avatar.name) === npcName);
+        const normalizedName = normalizeNpcAvatarName(npc.name);
+        const nameMatches = avatars.filter(
+          (avatar) => !avatar.npcId && !avatar.characterId && normalizeNpcAvatarName(avatar.name) === normalizedName,
+        );
+        const match =
+          avatars.find((avatar) => avatar.npcId && avatar.npcId === npc.id) ??
+          avatars.find((avatar) => avatar.characterId && avatar.characterId === npc.characterId) ??
+          (npcNameCounts.get(normalizedName) === 1 && nameMatches.length === 1 ? nameMatches[0] : undefined);
         if (match) {
-          const avatarUrl = withFreshNpcAvatarRevision(match.avatarUrl);
+          const avatarState = resolveNpcAvatarStateForIdentity(
+            npc.avatarState,
+            npc.characterId,
+            match.avatarState,
+            match.characterId,
+          );
+          if (
+            hasAuthoritativeNpcAvatarState(npc.avatarState) &&
+            avatarState === npc.avatarState &&
+            match.avatarState !== npc.avatarState
+          ) {
+            return npc;
+          }
+          const avatarUrl =
+            isNpcAvatarRemoved(avatarState) || !match.avatarUrl
+              ? undefined
+              : withFreshNpcAvatarRevision(match.avatarUrl);
           modified = true;
-          return { ...npc, avatarUrl };
+          return {
+            ...npc,
+            characterId: match.characterId?.trim() || npc.characterId,
+            avatarUrl,
+            ...(avatarState ? { avatarState } : {}),
+          };
         }
         return npc; // preserve reference — no churn
       });
 
       for (const avatar of avatars) {
         const avatarName = normalizeNpcAvatarName(avatar.name);
-        const exists = nextNpcs.some((npc) => normalizeNpcAvatarName(npc.name) === avatarName);
+        const id = avatar.npcId?.trim();
+        const characterId = avatar.characterId?.trim();
+        if (!avatar.avatarUrl || isNpcAvatarRemoved(avatar.avatarState)) continue;
+        const exists = id
+          ? nextNpcs.some((npc) => npc.id === id)
+          : characterId
+            ? nextNpcs.some((npc) => npc.characterId === characterId)
+            : nextNpcs.filter((npc) => normalizeNpcAvatarName(npc.name) === avatarName).length === 1;
         if (!exists) {
-          nextNpcs.push(buildTrackedNpcStub(avatar.name, withFreshNpcAvatarRevision(avatar.avatarUrl)));
+          if (
+            !avatar.name ||
+            (!id && !characterId && nextNpcs.some((npc) => normalizeNpcAvatarName(npc.name) === avatarName))
+          )
+            continue;
+          const stub = buildTrackedNpcStub(avatar.name, withFreshNpcAvatarRevision(avatar.avatarUrl));
+          nextNpcs.push({
+            ...stub,
+            ...(id ? { id } : {}),
+            ...(characterId ? { characterId } : {}),
+            ...(avatar.avatarState ? { avatarState: avatar.avatarState } : {}),
+          });
           modified = true;
         }
       }
@@ -337,5 +401,6 @@ export const useGameModeStore = create<GameModeStore>((set) => ({
     return nextWidgets;
   },
   setBlueprint: (bp) => set({ blueprint: bp }),
+  setCampaignWikiNav: (nav) => set({ campaignWikiNav: nav }),
   reset: () => set(INITIAL_STATE),
 }));

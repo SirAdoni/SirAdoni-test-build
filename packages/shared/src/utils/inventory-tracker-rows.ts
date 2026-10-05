@@ -46,7 +46,10 @@ export function normalizeInventoryTrackerName(value: unknown): string {
  * merged with summed quantities. Callers that need to tell a user their input was
  * malformed must validate first — see `findInvalidInventoryTrackerRow`.
  */
-export function normalizeInventoryTrackerRows(value: unknown, options?: { merge?: boolean }): InventoryTrackerRow[] {
+export function normalizeInventoryTrackerRows(
+  value: unknown,
+  options?: { merge?: boolean; trustedItemIds?: ReadonlySet<string> },
+): InventoryTrackerRow[] {
   if (!Array.isArray(value)) return [];
   const merge = options?.merge ?? true;
 
@@ -56,16 +59,26 @@ export function normalizeInventoryTrackerRows(value: unknown, options?: { merge?
     if (!isPlainRecord(candidate)) continue;
     const name = normalizeInventoryTrackerName(candidate.name);
     if (!name) continue;
-    const key = name.toLocaleLowerCase("en-US");
+    const itemId =
+      typeof candidate.itemId === "string" && candidate.itemId.trim() ? candidate.itemId.trim() : undefined;
+    // Only an ID already known to the current snapshot may collapse duplicate rows.
+    // Unknown IDs remain separate through storage reconciliation, even when the
+    // repeated ID and name match; legacy rows keep their name-based merge behavior.
+    const key = itemId
+      ? options?.trustedItemIds?.has(itemId)
+        ? `id:${itemId}`
+        : null
+      : `name:${name.toLocaleLowerCase("en-US")}`;
     const numericQty = Number(candidate.qty);
     const qty = Number.isFinite(numericQty) ? clampInventoryTrackerQty(numericQty) : 1;
     const row: InventoryTrackerRow = {
+      ...(itemId ? { itemId } : {}),
       name,
       ...(qty > 1 ? { qty } : {}),
       ...(typeof candidate.description === "string" ? { description: candidate.description } : {}),
       ...(typeof candidate.location === "string" ? { location: candidate.location } : {}),
     };
-    const existingIndex = merge ? indexByName.get(key) : undefined;
+    const existingIndex = merge && key ? indexByName.get(key) : undefined;
     if (existingIndex !== undefined) {
       const existing = rows[existingIndex]!;
       const combinedQty = clampInventoryTrackerQty((existing.qty ?? 1) + qty);
@@ -73,7 +86,7 @@ export function normalizeInventoryTrackerRows(value: unknown, options?: { merge?
       rows[existingIndex] = { ...row, ...existing, qty: combinedQty };
       continue;
     }
-    indexByName.set(key, rows.length);
+    if (key) indexByName.set(key, rows.length);
     rows.push(row);
   }
   return rows.slice(0, INVENTORY_TRACKER_MAX_ROWS);
@@ -88,7 +101,8 @@ export function inventoryTrackerComparableName(value: unknown): string {
 
 /**
  * The exclusivity rule, in one place: an item that is equipped or counted as money is
- * not also sitting in the backpack.
+ * not also sitting in the backpack. ID-bearing rows are compared by itemId;
+ * name comparison is retained only for legacy rows where at least one side has no ID.
  *
  * Note this is a one-way filter, not three-way exclusivity — currencies and equipped
  * may still name the same thing. That is pre-existing behaviour, kept deliberately so
@@ -100,8 +114,16 @@ export function excludeInventoryTrackerCarriedDuplicates(
   equipped: readonly InventoryTrackerRow[],
 ): InventoryTrackerRow[] {
   if (carried.length === 0 || (currencies.length === 0 && equipped.length === 0)) return [...carried];
-  const excluded = new Set([...currencies, ...equipped].map((row) => inventoryTrackerComparableName(row?.name)));
-  return carried.filter((row) => !excluded.has(inventoryTrackerComparableName(row?.name)));
+  const excluded = [...currencies, ...equipped];
+  return carried.filter((row) => {
+    const carriedId = typeof row.itemId === "string" && row.itemId.trim() ? row.itemId.trim() : null;
+    const carriedName = inventoryTrackerComparableName(row.name);
+    return !excluded.some((other) => {
+      const otherId = typeof other.itemId === "string" && other.itemId.trim() ? other.itemId.trim() : null;
+      if (carriedId && otherId) return carriedId === otherId;
+      return carriedName === inventoryTrackerComparableName(other.name);
+    });
+  });
 }
 
 /** Rows to use for a group nobody is rewriting. Never trusts the stored value's shape. */
